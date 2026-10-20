@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/review-helper.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/utils/review-helper.sh, lib/core/workflow-runner.sh, lib/utils/pr-detection.sh::detect_review_state
 # Regression test for issue #354: Stale-review-loop guard fires on fresh reviews
 # Regression test for issue #1303: Fix loop deadlocks when staleness oracles disagree
+# Regression test for issue #1305: detect_review_state standalone-path deadlock (timestamp-only)
 #
 # Root cause (#354): The staleness check in assess-and-resolve.sh used timestamp
 # comparison (review.createdAt vs latest commit time). This is racy — GitHub's
@@ -15,11 +16,21 @@
 # reroutes to Phase 2, Phase 2 declines to regenerate, and the loop hard-fails
 # after hours of correct completed work (live: issue #1231, 7h23m wasted).
 #
+# Root cause (#1305): detect_review_state (lib/utils/pr-detection.sh) uses
+# timestamp-only comparison (iso_to_epoch), not the SHA oracle. The standalone
+# --review-latest path calls it to decide whether to skip regeneration. When
+# GitHub API createdAt post-dates local commit time but the embedded SHA mismatches
+# HEAD, --review-latest incorrectly reports "current". --assess-and-fix is not
+# deadlocked (its assess-and-resolve.sh SHA oracle detects stale and triggers a
+# fresh review via exit 3), but --review-latest in isolation misleads the user.
+#
 # Fix (#354): SHA-based staleness detection in assess-and-resolve.sh.
 # Fix (#1303): Phase 2's skip decision now uses extract_review_sha (same oracle).
 #   - local-review.sh embeds the HEAD SHA in the review marker: commit:<sha>
 #   - Both phases compare that SHA to the current HEAD
 #   - Timestamp comparison is preserved as a fallback for pre-#354 reviews
+# Known limitation (#1305): detect_review_state remains timestamp-only (tracked
+#   for migration — see behavioral-design.md "Stale Review Loop" section).
 #
 # These tests verify:
 #   1. extract_review_sha correctly parses the commit: attribute from markers
@@ -31,6 +42,8 @@
 #      produce a false stale verdict
 #   7. Phase 2 skip decision uses the same SHA oracle as Phase 3 (issue #1303)
 #   8. SHA-mismatch: Phase 2 does NOT skip, so Phase 3's reroute can proceed
+#   9. detect_review_state uses timestamp oracle (not SHA) — standalone-path
+#      limitation sentinel (issue #1305)
 
 setup() {
   RITE_REPO_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
@@ -725,6 +738,56 @@ Review content.\"
       echo \"FAIL: iso_to_epoch (fn-line \$line_epoch) precedes extract_review_sha (fn-line \$line_sha) — timestamp is the primary oracle, not the fallback\"
       exit 1
     fi
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == PASS* ]]
+}
+
+# =============================================================================
+# Structural sentinel: detect_review_state uses timestamp oracle, not SHA oracle
+#
+# detect_review_state (lib/utils/pr-detection.sh) is the standalone-path site.
+# Unlike the two orchestrated-loop sites above, it uses iso_to_epoch timestamp
+# comparison — not extract_review_sha. This is the known limitation tracked in
+# issue #1305.
+#
+# The deadlock scenario: GitHub API createdAt post-dates local commit time, but
+# the embedded SHA mismatches HEAD. detect_review_state reports REVIEW_IS_CURRENT=true
+# (timestamp says current), while assess-and-resolve.sh says stale (SHA mismatch).
+# --review-latest calls detect_review_state and refuses to regenerate.
+# --assess-and-fix is not permanently deadlocked (assess-and-resolve.sh exit 3
+# triggers a fresh review), but --review-latest in isolation misleads the user.
+#
+# This test is a sentinel: it passes while issue #1305 is open (detect_review_state
+# is still timestamp-only) and fails with an explanatory message when the migration
+# to the SHA oracle lands (at which point this test must be updated).
+# =============================================================================
+
+@test "structural: detect_review_state uses timestamp oracle (not SHA oracle) — standalone-path limitation (issue #1305)" {
+  # Sentinel for issue #1305: documents that detect_review_state is the remaining
+  # timestamp-only site. Fails with a clear message when issue #1305 is resolved.
+  run bash -c "
+    set -euo pipefail
+    det=\"\${RITE_REPO_ROOT}/lib/utils/pr-detection.sh\"
+
+    # Extract detect_review_state body: from function header to first top-level '}'
+    fn_body=\$(awk '/^detect_review_state\(\) \{/,/^\}/' \"\$det\")
+
+    # Invariant 1: timestamp oracle (iso_to_epoch) must be present
+    if ! echo \"\$fn_body\" | grep -q 'iso_to_epoch'; then
+      echo 'FAIL: iso_to_epoch not found in detect_review_state — timestamp oracle missing or function shape changed'
+      exit 1
+    fi
+
+    # Invariant 2: SHA oracle (extract_review_sha) must NOT be present
+    # If this fires, issue #1305 may have been resolved — update this test to assert
+    # the new SHA-oracle invariants (mirroring the phase_create_pr structural test above)
+    if echo \"\$fn_body\" | grep -q 'extract_review_sha'; then
+      echo 'SENTINEL FIRED: extract_review_sha found in detect_review_state — issue #1305 may be resolved; update this test to assert the SHA-oracle invariants'
+      exit 1
+    fi
+
+    echo 'PASS: detect_review_state is timestamp-only (issue #1305 open)'
   "
   [ "$status" -eq 0 ]
   [[ "$output" == PASS* ]]

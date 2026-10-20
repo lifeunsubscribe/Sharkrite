@@ -663,23 +663,23 @@ All review comment queries MUST filter by body marker (`contains("<!-- sharkrite
 
 **The canonical staleness check is SHA-based, not timestamp-based.** The 2-reroute guard in `workflow-runner.sh::phase_assess_and_resolve` is defense-in-depth; with correct SHA detection it should rarely fire.
 
-**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the fix loop (a third timestamp-only site, `detect_review_state` in `lib/utils/pr-detection.sh`, is tracked for migration in issue #1305):
+**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the orchestrated fix loop (`detect_review_state` in `lib/utils/pr-detection.sh` is the standalone-path site — timestamp-only, tracked for migration in issue #1305):
 1. `workflow-runner.sh::phase_create_pr` — decides whether to skip the push/review phase (review already current)
 2. `assess-and-resolve.sh` — decides whether a review is stale and must reroute back to Phase 2
 
-Both sites extract the `commit:<sha>` attribute from the review marker and compare it to the current branch HEAD. Using the same oracle at both sites prevents the deadlock described in issue #1303: Phase 2 declares the review "current" while Phase 3 declares it "stale", producing an infinite reroute with no progress (live: issue #1231, batch `20261014-184054`, 7h23m wasted after correct dev work).
+Both orchestrated-loop sites extract the `commit:<sha>` attribute from the review marker and compare it to the current branch HEAD. Using the same oracle at both sites prevents the deadlock described in issue #1303: Phase 2 declares the review "current" while Phase 3 declares it "stale", producing an infinite reroute with no progress (live: issue #1231, batch `20261014-184054`, 7h23m wasted after correct dev work).
 
 **Primary check (SHA-based):** `local-review.sh` embeds the HEAD SHA at review generation time into the review marker:
 ```
 <!-- sharkrite-local-review model:X timestamp:Y commit:<sha> -->
 ```
-Both sites use `extract_review_sha` (defined in `lib/utils/review-helper.sh`) to parse the embedded SHA:
+Both orchestrated-loop sites use `extract_review_sha` (defined in `lib/utils/review-helper.sh`) to parse the embedded SHA:
 - `review_sha == HEAD_sha` → review covers HEAD, no reroute / skip is valid
 - `review_sha` is ancestor of HEAD → review is genuinely stale (fix commits were pushed after review), do not skip / reroute to Phase 2
 - `review_sha` not in ancestry chain → likely a force-push, treat as stale
 - No `review_sha` (pre-#354 review) → fall back to timestamp comparison
 
-**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility at both sites.
+**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility at both orchestrated-loop sites.
 
 **Why timestamps alone are insufficient (issue #354):**
 Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind the local git commit timestamp by seconds to minutes (API eventual consistency). In a fix-loop iteration, a fix commit pushed at T+1 and a new review generated at T+2 can still appear "stale" if the API returns T+1 as the review timestamp but the local commit time reads T+2. SHAs are deterministic: the review either covers this commit or it doesn't.
@@ -688,7 +688,9 @@ Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind
 
 **Live deadlock (2026-10-14, issue #1303 / PR #1304):** Phase 2's timestamp-based "current" check and Phase 3's SHA-based "stale" check disagreed. Phase 3 rerouted to Phase 2; Phase 2 declined to regenerate. Hard-fail after 7h23m on a correct, clean PR. Fix: align Phase 2's skip decision to the same SHA oracle as Phase 3.
 
-**Do NOT replace SHA comparison with timestamp comparison** at either site. Timestamps are racy (GitHub API eventual consistency lag). `assess-and-resolve.sh` has carried this note since #354; `workflow-runner.sh::phase_create_pr` now carries it too.
+**Standalone-path deadlock risk (`detect_review_state`, issue #1305).** `detect_review_state` in `lib/utils/pr-detection.sh` uses timestamp-only comparison (the same racy check that caused the #354 false-positive). The standalone `--review-latest` path calls it to decide whether to skip regeneration. When GitHub API `createdAt` post-dates the local commit time but the review's embedded SHA mismatches HEAD, `--review-latest` incorrectly reports "current" and refuses to regenerate. `--assess-and-fix` is not deadlocked by this (its `assess-and-resolve.sh` SHA oracle detects the stale review, returns exit 3, and the standalone fix loop triggers a fresh review), but `--review-latest` in isolation will mislead the user. This is the same oracle-disagreement class as #1303, reproduced via the manual path.
+
+**Do NOT replace SHA comparison with timestamp comparison** at either orchestrated-loop site. Timestamps are racy (GitHub API eventual consistency lag). `assess-and-resolve.sh` has carried this note since #354; `workflow-runner.sh::phase_create_pr` now carries it too.
 
 **Do NOT remove timestamp comparison.** It's still used for display (`--status` timestamp output) and as a backward-compat fallback for pre-#354 reviews. Only remove it from the *primary staleness decision* path.
 
