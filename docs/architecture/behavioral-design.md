@@ -2137,3 +2137,56 @@ owns means the check is reading the wrong stage of the pipeline, and a check
 that can only pass by accident is worse than no check — it fails closed on
 correct work. The prompt text and Check 1's premise are coupled, so
 `tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.
+
+## Deterministic Conflict Mergers Read Stage Blobs, Not the Conflicted File (#1319)
+
+Some merge conflicts have exactly one correct resolution and need no judgment.
+The drift log is the clearest case: append-only, each entry a self-delimited
+block with its own `recorded:` ISO8601 timestamp, entries mutually
+independent, burn-down removing whole blocks. The resolution is the union of
+both sides ordered by timestamp — computable, so no provider call is justified.
+Two of three conflicts in dogfooding logs were this file (#1231 pr:1299 at
+274s, #1143 pr:1312 at 60s), both sessions arriving at exactly that answer.
+
+`attempt_claude_merge_resolution` now runs a deterministic pre-pass before
+building its prompt, and skips the session entirely when nothing is left for
+it.
+
+**Entries come from git's stage blobs, never from the conflicted file.** This
+is the correctness argument, and it was learned by getting it wrong. When both
+sides append at the same spot, git emits a line-level hunk and **deduplicates
+the shared closing delimiter**:
+
+```
+<<<<<<< HEAD
+<!-- sharkrite-doc-drift pr:1304 ... -->
+**Changed files**: ...
+=======
+<!-- sharkrite-doc-drift pr:1312 ... -->
+**Changed files**: ...
+>>>>>>> side
+<!-- /sharkrite-doc-drift -->      ← ONE closer for TWO entries
+```
+
+Strip the markers and you have two openers and one closer — structurally
+damaged. The first implementation did that and **silently dropped the first
+entry**. For an append-only log, losing an entry is the worst outcome
+available: it is indistinguishable from burn-down, so nobody notices.
+`git show :2:<path>` (ours) and `:3:<path>` (theirs) each return a complete,
+well-formed log, which is what the merger parses.
+
+The general principle: a conflicted file is a *presentation* of two versions,
+not a container of both. Anything that needs the versions must ask git for the
+versions.
+
+**Every deterministic merger must fail closed.** If it cannot prove the
+conflict is the shape it understands — no conflict stages, an unreadable
+stage, zero entries found (so the conflict is in header prose) — it returns
+non-zero and the path stays in the LLM list with the file untouched. A
+deterministic merge may only replace judgment where there is no judgment to
+make.
+
+**Not every accumulating doc qualifies.** `docs/architecture/conventions.md`
+looks similar but is accumulate-**in-place**: one entry per convention title,
+with later PR numbers appended to that entry's References line. A naive union
+would duplicate titles. It needs its own design and deliberately has no merger.
