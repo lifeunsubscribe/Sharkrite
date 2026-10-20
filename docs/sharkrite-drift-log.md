@@ -637,3 +637,18 @@ CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review 
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `docs/architecture/behavioral-design.md` may still describe the log-capture mechanism as a FIFO-based tee rather than the nested-procsub pattern that CLAUDE.md now documents.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T21:35:40Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md` still describes `bin/rite` as using a FIFO-based tee, but PR #1358 changed the implementation to a nested process-substitution pattern (`exec > >(tee >(strip_ansi >> FILE))`).
+
+`behavioral-design.md` claims `bin/rite` uses a FIFO-based tee to prevent tail-truncation, but the implementation was changed to nested process-substitution with a known truncation race.
+<!-- /sharkrite-doc-drift -->
