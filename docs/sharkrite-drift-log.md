@@ -424,3 +424,18 @@ CLAUDE.md's fix-session timeout formula (`300 + 240 × ACTIONABLE_NOW_COUNT` sec
 - docs/configuration.md — "Configuration"
 **Suspected inaccuracy**: `branch-flag-design.md:276` documents single-issue promote as `rite --promote <branch> --cherry-pick <issue>`, but the shipped command uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1331 issue:1203 recorded:2026-10-20T14:14:15Z -->
+**Changed files**: lib/core/claude-workflow.sh, lib/utils/config.sh, tests/regression/fix-timeout-retry.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/research/rtk-assessment.md — "RTK (Rust Token Killer) — Sharkrite Compatibility Assessment"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `RITE_MAX_ISSUE_HOURS` (default 4h) may now silently stall an otherwise-successful dev session, since the new no-commit timeout retry can itself consume up to 14400s (4h) before the merge gate fires.
+<!-- /sharkrite-doc-drift -->
