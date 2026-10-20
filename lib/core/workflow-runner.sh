@@ -1201,8 +1201,12 @@ phase_create_pr() {
 
       if [ -n "$_skip_review_sha" ]; then
         # SHA oracle (same as assess-and-resolve.sh): review covers HEAD iff SHAs match.
-        # local_head == remote_head here (we are inside that branch), so local_head
-        # is the authoritative PR HEAD — no GitHub API call needed.
+        # local_head == remote_head confirmed above, so local git is sufficient for the
+        # common case (no external force-push + stale tracking ref).
+        # NOTE: Phase 3 (assess-and-resolve.sh) resolves HEAD via resolve_pr_head_sha
+        # (GitHub API first), while this site uses git rev-parse HEAD (local git).
+        # The residual deadlock window from this divergence is documented in
+        # behavioral-design.md "Stale Review Loop" and tracked as issue #1306.
         if [ "$_skip_review_sha" = "$local_head" ]; then
           print_info "Issue #$issue_number already has a current review — skipping push/review phase"
           return 0

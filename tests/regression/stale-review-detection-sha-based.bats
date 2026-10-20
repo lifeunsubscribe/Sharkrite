@@ -763,6 +763,59 @@ Review content.\"
 # to the SHA oracle lands (at which point this test must be updated).
 # =============================================================================
 
+# =============================================================================
+# Structural sentinel: phase_create_pr resolves HEAD via local git, not API
+#
+# phase_create_pr uses git rev-parse HEAD (local git) to get the PR's HEAD SHA.
+# assess-and-resolve.sh uses resolve_pr_head_sha (GitHub API headRefOid first).
+# Both use the same SHA oracle (extract_review_sha) to compare, but they resolve
+# what "HEAD" means differently.
+#
+# The residual deadlock window: external force-push + stale local tracking ref.
+# local_head and remote_head both point at the pre-force-push SHA (tracking ref
+# not yet fetched), so Phase 2 says "current". Phase 3 calls the GitHub API,
+# gets the post-force-push SHA, and says "stale" — rerouting into a deadlock.
+#
+# This is the same oracle-disagreement class as #1303, but narrower (requires
+# an external force-push) and accepted for the current release (issue #1306).
+#
+# This test is a sentinel: it passes while issue #1306 is open (phase_create_pr
+# still uses git rev-parse HEAD) and fails with an explanatory message when
+# phase_create_pr is migrated to resolve_pr_head_sha (at which point this test
+# and the behavioral-design.md entry must be updated).
+# =============================================================================
+
+@test "phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — divergence from Phase 3 (issue #1306)" {
+  # Sentinel for issue #1306: documents that phase_create_pr resolves HEAD via
+  # local git rather than the GitHub API (headRefOid). Fails with a clear message
+  # when issue #1306 is resolved and the migration to resolve_pr_head_sha lands.
+  run bash -c "
+    set -euo pipefail
+    wf=\"\${RITE_REPO_ROOT}/lib/core/workflow-runner.sh\"
+
+    # Extract phase_create_pr body: from function header to first top-level '}'
+    fn_body=\$(awk '/^phase_create_pr\(\) \{/,/^\}/' \"\$wf\")
+
+    # Invariant 1: resolve_pr_head_sha must NOT be present (Phase 2 still uses local git)
+    # If this fires, issue #1306 may be resolved — update this sentinel and
+    # behavioral-design.md to reflect the new API-first HEAD resolution.
+    if echo \"\$fn_body\" | grep -q 'resolve_pr_head_sha'; then
+      echo 'SENTINEL FIRED: resolve_pr_head_sha found in phase_create_pr — issue #1306 may be resolved; update this test and behavioral-design.md Stale Review Loop to remove the accepted-divergence note'
+      exit 1
+    fi
+
+    # Invariant 2: git rev-parse HEAD must be present (the local-git path still exists)
+    if ! echo \"\$fn_body\" | grep -qE 'git rev-parse (HEAD|--abbrev-ref)'; then
+      echo 'FAIL: git rev-parse HEAD not found in phase_create_pr — function shape may have changed; update this sentinel'
+      exit 1
+    fi
+
+    echo 'PASS: phase_create_pr uses local git HEAD resolution (issue #1306 open)'
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == PASS* ]]
+}
+
 @test "structural: detect_review_state uses timestamp oracle (not SHA oracle) — standalone-path limitation (issue #1305)" {
   # Sentinel for issue #1305: documents that detect_review_state is the remaining
   # timestamp-only site. Fails with a clear message when issue #1305 is resolved.

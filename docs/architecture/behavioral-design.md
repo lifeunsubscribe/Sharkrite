@@ -696,6 +696,17 @@ Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind
 
 **Do NOT increase the reroute cap from 2.** The guard isn't the bug; the detection is. Bumping the cap delays failure without addressing root cause.
 
+**Accepted head-resolution divergence between Phase 2 and Phase 3 (issue #1306).** Both orchestrated-loop sites use the same SHA oracle (`extract_review_sha`) to _compare_ a review's embedded SHA against the branch HEAD. However, they resolve what "HEAD" means through different authorities:
+
+- **Phase 2** (`workflow-runner.sh::phase_create_pr`): uses `git rev-parse HEAD` (local git). It only enters the currency check when `local_head == remote_head` (confirmed-equal tracking refs), so local git is sufficient for the common case.
+- **Phase 3** (`assess-and-resolve.sh`): uses `resolve_pr_head_sha`, which queries the GitHub API (`headRefOid`) first and falls back to local git only when the API is unavailable and the local branch name matches.
+
+The residual deadlock window: an external force-push to the PR branch followed by a stale local tracking ref (git fetch not yet run) can leave both `git rev-parse HEAD` and `git rev-parse origin/<branch>` pointing at the pre-force-push SHA. Phase 2 enters the currency check, compares the review SHA against the stale local SHA, sees a match ("current"), and skips the push/review phase. Phase 3 then calls the GitHub API, sees the post-force-push SHA, and declares the review stale — rerouting back to Phase 2, which again skips, producing a deadlock.
+
+This window is narrow in practice (requires an external force-push — rare in a single-operator workflow) and is partially protected by the issue lock (concurrent external pushes are uncommon). The full fix — calling `resolve_pr_head_sha` in Phase 2 too — exceeds the time budget of the issue that introduced the SHA oracle alignment (#1303) and is tracked for a follow-on session as issue #1306.
+
+The structural sentinel test `"phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — divergence from Phase 3 (issue #1306)"` in `tests/regression/stale-review-detection-sha-based.bats` documents this accepted condition and will fire when issue #1306 is resolved.
+
 ### LOW Severity Threshold
 
 LOW findings only become ACTIONABLE_LATER if they represent a real functional or security concern. "Consider doing X" and style suggestions are DISMISSED. Added after 5 of 7 tech-debt issues were closed as noise (code aesthetics, hypothetical optimizations, intentional patterns flagged as problems).
