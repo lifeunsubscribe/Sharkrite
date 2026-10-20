@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh::_provision_pytest_testmon
+# sharkrite-test-covers: lib/utils/gate-runners.sh::_provision_pytest_testmon
 # Regression tests for #1127: auto-provision pytest-testmon into the repo venv
 # for per-cycle scoped gating.
 #
@@ -9,6 +9,10 @@
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   FIXTURE_DIR=$(mktemp -d); export FIXTURE_DIR
+  # Pin RITE_PROJECT_ROOT to the empty fixture dir so no-venv tests are
+  # deterministic regardless of whether the sharkrite repo has its own .venv.
+  unset RITE_PROJECT_ROOT
+  export RITE_PROJECT_ROOT="$FIXTURE_DIR"
 
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/config.sh" 2>/dev/null || true
