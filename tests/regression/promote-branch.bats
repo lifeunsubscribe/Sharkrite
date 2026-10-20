@@ -17,125 +17,13 @@
 #      per-issue comments attempted.
 
 load '../helpers/setup'
+load '../helpers/promote-stubs'
 
-# ---------------------------------------------------------------------------
-# Shared minimal lib stubs written into a fake RITE_LIB_DIR so unit tests can
-# source the real promote-branch.sh without network or filesystem side-effects.
-# ---------------------------------------------------------------------------
+# Thin wrapper: delegates all stub writing to the shared base in promote-stubs.bash.
+# Set _PROMOTE_CALLLOG before running a runner if you need to assert local-review.sh
+# was called (the stub appends "local-review-called pr=$1" to that path).
 _write_promote_stubs() {
-  local _lib="$1"
-  mkdir -p "$_lib/utils" "$_lib/core" "$_lib/providers"
-
-  cat > "$_lib/utils/config.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f _pb_config_stub >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-_pb_config_stub() { true; }
-RITE_DATA_DIR="${RITE_DATA_DIR:-.rite}"
-RITE_PROJECT_ROOT="${RITE_PROJECT_ROOT:-$(pwd)}"
-RITE_LIB_DIR="${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/.."}"
-RITE_PROJECT_NAME="${RITE_PROJECT_NAME:-fake-project}"
-RITE_INSTALL_DIR="${RITE_INSTALL_DIR:-$(dirname "${BASH_SOURCE[0]}")/../..}"
-RITE_STATE_DIR="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
-RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-/tmp/test-worktrees}"
-export RITE_DATA_DIR RITE_PROJECT_ROOT RITE_LIB_DIR RITE_PROJECT_NAME
-export RITE_INSTALL_DIR RITE_STATE_DIR RITE_WORKTREE_DIR
-STUB
-
-  cat > "$_lib/utils/colors.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f print_info >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-print_header()  { echo "=== $* ==="; }
-print_info()    { echo "[INFO] $*"; }
-print_step()    { echo "[STEP] $*"; }
-print_success() { echo "[OK] $*"; }
-print_warning() { echo "[WARN] $*" >&2; }
-print_error()   { echo "[ERROR] $*" >&2; }
-STUB
-
-  cat > "$_lib/utils/logging.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f _diag >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-_diag() { true; }
-verbose_header()  { true; }
-verbose_info()    { true; }
-verbose_step()    { true; }
-verbose_success() { true; }
-verbose_warning() { true; }
-STUB
-
-  cat > "$_lib/utils/gh-retry.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f gh_safe >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-gh_safe() { true; }
-STUB
-
-  cat > "$_lib/utils/git-helpers.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f git_fetch_safe >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-git_fetch_safe() { return 0; }
-rmdir_empty_worktree_container() { return 0; }
-STUB
-
-  cat > "$_lib/utils/blocker-rules.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f detect_critical_issues >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-detect_critical_issues() { return 0; }
-STUB
-
-  cat > "$_lib/utils/integration-ledger.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f integration_ledger_append >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-integration_ledger_append()        { return 0; }
-integration_ledger_entries()       { return 0; }
-integration_ledger_mark_promoted() { return 0; }
-STUB
-
-  cat > "$_lib/providers/provider-interface.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f provider_resolve_model >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-provider_resolve_model()           { echo "claude-sonnet-4-6"; }
-provider_run_prompt_with_timeout() { echo "stub narrative"; return 0; }
-STUB
-
-  cat > "$_lib/utils/promotion-composer.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f compose_promotion_pr_body >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-gather_promotion_context()    { return 0; }
-compose_promotion_pr_body()   { echo "stub promotion body"; return 0; }
-STUB
-
-  cat > "$_lib/core/local-review.sh" << 'STUB'
-#!/bin/bash
-echo "local-review-called pr=$1" >> "${_PROMOTE_CALLLOG:-/dev/null}"
-exit 0
-STUB
-  chmod +x "$_lib/core/local-review.sh"
-
-  cat > "$_lib/utils/markers.sh" << 'STUB'
-#!/bin/bash
-set -euo pipefail
-if declare -f rite_markers_loaded >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
-rite_markers_loaded() { return 0; }
-RITE_MARKER_REVIEW="sharkrite-local-review"
-RITE_MARKER_ASSESSMENT="sharkrite-assessment"
-RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
-export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
-STUB
-
-  # Recording merge-pr.sh stub: if this file is ever sourced, it sets a flag.
-  cat > "$_lib/core/merge-pr.sh" << 'STUB'
-#!/bin/bash
-_MERGE_PR_SH_SOURCED_IN_TEST=true
-STUB
+  _write_promote_stubs_base "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -977,6 +865,85 @@ RUNEOF
   # The merge API must have been called with the post-sync SHA, not the pre-sync SHA
   grep -q "sha=sha-post-sync" "$_call_log"
   ! grep -q "sha=sha-pre-sync" "$_call_log"
+}
+
+# ===========================================================================
+# Group 10: Single-issue path invokes merge-pr.sh (pin for #1273)
+# ===========================================================================
+
+@test "single-issue promote invokes merge-pr.sh exactly once with the promotion PR number" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/si_merge.log"
+  local _wt_dir="$RITE_TEST_TMPDIR/wt-si-merge"
+  mkdir -p "$_wt_dir"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-si"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+case "${1:-}" in
+  fetch) exit 0 ;;
+  worktree)
+    [ "${2:-}" = "add" ] && mkdir -p "${5:-${4:-}}"
+    exit 0 ;;
+  cherry-pick) exit 0 ;;
+  push)  printf 'GIT_PUSH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"; exit 0 ;;
+  branch) exit 0 ;;
+  rev-list) echo "0"; exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  # Override merge-pr.sh stub to record the PR number it was called with
+  cat > "$_lib/core/merge-pr.sh" << MERGESTUB
+#!/bin/bash
+printf 'MERGE_PR_CALLED_WITH pr=%s\n' "\${1:-?}" >> "$_call_log"
+exit 0
+MERGESTUB
+  chmod +x "$_lib/core/merge-pr.sh"
+
+  local _runner
+  _runner=$(_write_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$_wt_dir"
+export _PROMOTE_CALLLOG="$_call_log"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() {
+  printf 'LEDGER_MARKED branch=%s issue=%s\n' "\$1" "\$2" >> "$_call_log"
+}
+run_test_gate() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        create) echo "333"; return 0 ;;
+      esac ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+promote_single_issue "si-test-branch" "42" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+
+  # merge-pr.sh must have been invoked exactly once with the promotion PR number
+  _merge_count=$(grep -c "MERGE_PR_CALLED_WITH" "$_call_log" || true)
+  [ "$_merge_count" -eq 1 ]
+  grep -q "MERGE_PR_CALLED_WITH pr=333" "$_call_log"
 }
 
 # ===========================================================================
