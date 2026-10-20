@@ -577,3 +577,14 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: CLAUDE.md's description of `_lint_issues_strict` says it emits a warning for parallel-file-overlap; PR #1361 changed it to auto-chain the later issue instead of warning when neither side is suppressed.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1361 issue:1359 recorded:2026-10-20T20:23:11Z -->
+**Changed files**: lib/core/plan-issues.sh, lib/utils/gate-runners.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md documents that when a parallel-file-overlap is detected, the behavior is to emit a `print_warning` — but PR #1361 changed this to auto-chain the later issue (rewrite its Dependencies line) when neither side carries a suppress marker, with a warning only when a suppress marker exists.
+
+`CLAUDE.md` states `parallel-file-overlap` triggers a warning only; it now auto-chains the later issue's `**Dependencies**` line when neither issue carries a `plan-lint suppress` marker.
+<!-- /sharkrite-doc-drift -->
