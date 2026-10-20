@@ -38,16 +38,6 @@
 
 
 
-## Guard
-- conventions.md → defensive-sourcing-must-be-idempotent
-- conventions.md → Variable-sentinel re-source guards for lib files that export -f
-- conventions.md → Guard bare RITE_* path vars under set -u
-
-
-## DO
-- behavioral-design.md → DO NOT skip the assessment based on diff content
-
-
 ## Created
 - behavioral-design.md → ADR Backfill (bootstrap-docs.sh)
 
