@@ -1206,7 +1206,8 @@ phase_create_pr() {
         # NOTE: Phase 3 (assess-and-resolve.sh) resolves HEAD via resolve_pr_head_sha
         # (GitHub API first), while this site uses git rev-parse HEAD (local git).
         # The residual deadlock window from this divergence is documented in
-        # behavioral-design.md "Stale Review Loop" and tracked as issue #1306.
+        # behavioral-design.md "Stale Review Loop"; the Phase 2 migration needs a
+        # follow-on issue (file one when the window becomes a live concern).
         if [ "$_skip_review_sha" = "$local_head" ]; then
           print_info "Issue #$issue_number already has a current review — skipping push/review phase"
           return 0

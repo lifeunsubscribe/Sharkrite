@@ -703,9 +703,9 @@ Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind
 
 The residual deadlock window: an external force-push to the PR branch followed by a stale local tracking ref (git fetch not yet run) can leave both `git rev-parse HEAD` and `git rev-parse origin/<branch>` pointing at the pre-force-push SHA. Phase 2 enters the currency check, compares the review SHA against the stale local SHA, sees a match ("current"), and skips the push/review phase. Phase 3 then calls the GitHub API, sees the post-force-push SHA, and declares the review stale — rerouting back to Phase 2, which again skips, producing a deadlock.
 
-This window is narrow in practice (requires an external force-push — rare in a single-operator workflow) and is partially protected by the issue lock (concurrent external pushes are uncommon). The full fix — calling `resolve_pr_head_sha` in Phase 2 too — exceeds the time budget of the issue that introduced the SHA oracle alignment (#1303) and is tracked for a follow-on session as issue #1306.
+This window is narrow in practice (requires an external force-push — rare in a single-operator workflow) and is partially protected by the issue lock (concurrent external pushes are uncommon). The full fix — calling `resolve_pr_head_sha` in Phase 2 too — exceeds the time budget of the issue that introduced the SHA oracle alignment (#1303); issue #1306 documented the divergence and added the sentinel, but the Phase 2 migration itself needs a new follow-on issue.
 
-The structural sentinel test `"phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — divergence from Phase 3 (issue #1306)"` in `tests/regression/stale-review-detection-sha-based.bats` documents this accepted condition and will fire when issue #1306 is resolved.
+The structural sentinel test `"phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — accepted divergence from Phase 3"` in `tests/regression/stale-review-detection-sha-based.bats` documents this accepted condition and will fire when the Phase 2 migration lands.
 
 ### LOW Severity Threshold
 

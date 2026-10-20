@@ -777,40 +777,43 @@ Review content.\"
 # gets the post-force-push SHA, and says "stale" — rerouting into a deadlock.
 #
 # This is the same oracle-disagreement class as #1303, but narrower (requires
-# an external force-push) and accepted for the current release (issue #1306).
+# an external force-push) and accepted for the current release (#1306 documented
+# it; full Phase 2 migration needs a follow-on issue).
 #
-# This test is a sentinel: it passes while issue #1306 is open (phase_create_pr
-# still uses git rev-parse HEAD) and fails with an explanatory message when
-# phase_create_pr is migrated to resolve_pr_head_sha (at which point this test
-# and the behavioral-design.md entry must be updated).
+# This test is a sentinel: it passes while phase_create_pr still uses git
+# rev-parse HEAD and fails with an explanatory message when phase_create_pr is
+# migrated to resolve_pr_head_sha (at which point this test and the
+# behavioral-design.md entry must be updated).
 # =============================================================================
 
-@test "phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — divergence from Phase 3 (issue #1306)" {
-  # Sentinel for issue #1306: documents that phase_create_pr resolves HEAD via
-  # local git rather than the GitHub API (headRefOid). Fails with a clear message
-  # when issue #1306 is resolved and the migration to resolve_pr_head_sha lands.
+@test "phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — accepted divergence from Phase 3" {
+  # Sentinel: documents that phase_create_pr resolves HEAD via local git rather
+  # than the GitHub API (headRefOid). Fails with a clear message when the Phase 2
+  # migration to resolve_pr_head_sha lands.
   run bash -c "
     set -euo pipefail
     wf=\"\${RITE_REPO_ROOT}/lib/core/workflow-runner.sh\"
 
     # Extract phase_create_pr body: from function header to first top-level '}'
     fn_body=\$(awk '/^phase_create_pr\(\) \{/,/^\}/' \"\$wf\")
+    # Strip comment lines so greps match code only, not documentation text
+    fn_code=\$(echo \"\$fn_body\" | sed 's/[[:space:]]*#.*//')
 
     # Invariant 1: resolve_pr_head_sha must NOT be present (Phase 2 still uses local git)
-    # If this fires, issue #1306 may be resolved — update this sentinel and
+    # If this fires, the Phase 2 migration landed — update this sentinel and
     # behavioral-design.md to reflect the new API-first HEAD resolution.
-    if echo \"\$fn_body\" | grep -q 'resolve_pr_head_sha'; then
-      echo 'SENTINEL FIRED: resolve_pr_head_sha found in phase_create_pr — issue #1306 may be resolved; update this test and behavioral-design.md Stale Review Loop to remove the accepted-divergence note'
+    if echo \"\$fn_code\" | grep -q 'resolve_pr_head_sha'; then
+      echo 'SENTINEL FIRED: resolve_pr_head_sha found in phase_create_pr — Phase 2 migration landed; update this test and behavioral-design.md Stale Review Loop to remove the accepted-divergence note'
       exit 1
     fi
 
     # Invariant 2: git rev-parse HEAD must be present (the local-git path still exists)
-    if ! echo \"\$fn_body\" | grep -qE 'git rev-parse (HEAD|--abbrev-ref)'; then
+    if ! echo \"\$fn_code\" | grep -qE 'git rev-parse (HEAD|--abbrev-ref)'; then
       echo 'FAIL: git rev-parse HEAD not found in phase_create_pr — function shape may have changed; update this sentinel'
       exit 1
     fi
 
-    echo 'PASS: phase_create_pr uses local git HEAD resolution (issue #1306 open)'
+    echo 'PASS: phase_create_pr uses local git HEAD resolution (accepted divergence)'
   "
   [ "$status" -eq 0 ]
   [[ "$output" == PASS* ]]
