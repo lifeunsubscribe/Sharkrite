@@ -2155,6 +2155,7 @@ NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*
 • Failed: ${#FAILED_ISSUES[@]} ❌
 • Blocked: ${#BLOCKED_ISSUES[@]} 🚨
 • Skipped: ${#SKIPPED_ISSUES[@]} ⏭️
+• Issues Created: $(_batch_followups_created | grep -c . || true) 📋
 • Duration: $(_format_elapsed "$TOTAL_DURATION")
 • Success Rate: $((COMPLETED_ISSUES * 100 / TOTAL_ISSUES))%"
 
