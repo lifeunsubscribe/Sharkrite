@@ -564,11 +564,19 @@ DOC_UPDATE_EOF
     while IFS= read -r _ue_rl || [ -n "$_ue_rl" ]; do
       case "$_ue_rl" in
         "---PROPOSAL---")
-          _ue_in_prop=1; _ue_in_content=0
-          _ue_cur_action=""; _ue_cur_file=""; _ue_cur_drift=""; _ue_cur_desc=""; _ue_cur_content=""
+          if [ "$_ue_in_content" = "1" ]; then
+            _ue_cur_content="${_ue_cur_content}${_ue_rl}"$'\n'
+          else
+            _ue_in_prop=1; _ue_in_content=0
+            _ue_cur_action=""; _ue_cur_file=""; _ue_cur_drift=""; _ue_cur_desc=""; _ue_cur_content=""
+          fi
           ;;
         "---CONTENT---")
-          [ "$_ue_in_prop" = "1" ] && _ue_in_content=1
+          if [ "$_ue_in_content" = "1" ]; then
+            _ue_cur_content="${_ue_cur_content}${_ue_rl}"$'\n'
+          else
+            [ "$_ue_in_prop" = "1" ] && _ue_in_content=1
+          fi
           ;;
         "${_ue_end_token}")
           if [ "$_ue_in_prop" = "1" ] && [ -n "$_ue_cur_file" ]; then
@@ -603,6 +611,9 @@ DOC_UPDATE_EOF
     rm -f "$_ue_raw_file"
 
     if [ "$_ue_prop_count" -eq 0 ]; then
+      if printf '%s\n' "$_ue_proposals_raw" | grep -q "^---PROPOSAL---$"; then
+        print_warning "Model output contained '---PROPOSAL---' markers but zero complete proposals were parsed — model may have used '---END---' instead of expected end token '${_ue_end_token}'; re-run to generate a new unique end token" >&2
+      fi
       print_info "No actionable proposals in LLM output"
       rm -rf "$_ue_props_dir"
       return 0

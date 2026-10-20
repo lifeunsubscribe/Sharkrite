@@ -855,7 +855,7 @@ The `git fetch origin <target>` before the proposal loop ensures the `origin/<ta
 
 ### Proposal Format: Per-Generation End Token (#1233)
 
-The proposal wire format uses a delimiter line to mark the end of each proposal's content block. A fixed delimiter like `---END---` is unsafe: any proposal whose content includes that literal string on a line by itself is silently truncated at parse time — self-referential risk since `docs/architecture/behavioral-design.md` (this file) and bats test fixtures both contain `---END---` lines.
+The proposal wire format uses a delimiter line to mark the end of each proposal's content block. A fixed delimiter like `---END---` is unsafe: any proposal whose content contains the `---END---` string (and future content documenting the format verbatim would place it on its own line) is silently truncated at parse time — self-referential risk since `docs/architecture/behavioral-design.md` (this file) and bats test fixtures both reference the `---END---` string.
 
 **Fix:** `_docs_update_engine` generates a per-call unique end token before the feedback loop:
 
