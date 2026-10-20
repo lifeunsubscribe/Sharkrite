@@ -326,3 +326,10 @@ CLAUDE.md's "Diagnostic logging" section omits `OVERLAP_DEFER` from its list of 
 
 CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER` diag line introduced by PR #1330.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T06:31:59Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md` says behavioral y/n/e main-flow tests are "deferred to #1169" but PR #1334 removed that issue citation, replacing it with "file a tracking issue" (no issue number).
+<!-- /sharkrite-doc-drift -->
