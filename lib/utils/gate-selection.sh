@@ -381,7 +381,10 @@ _changed_functions_in_file() {
 }
 
 # _bats_file_matches_changed — decide if a single bats file should run
-# Args: $1=bats_file_path, $2=changed_files (newline-separated)
+# Args: $1=bats_file_path, $2=changed_files (newline-separated),
+#       $3=project_root (optional; defaults to RITE_PROJECT_ROOT; pass the
+#          gate's own project_root so function-scoped attribution uses the
+#          worktree's diff, not the main checkout's diff)
 # Returns: 0 (include) or 1 (skip)
 #
 # Default behavior changed after the all-files backfill landed (#480):
@@ -394,6 +397,7 @@ _changed_functions_in_file() {
 _bats_file_matches_changed() {
   local bats_file="$1"
   local changed_files="$2"
+  local _root="${3:-${RITE_PROJECT_ROOT:-.}}"
   local _header
   _header=$(_parse_test_coverage_header "$bats_file")
   if [ -z "$_header" ]; then
@@ -432,7 +436,7 @@ _bats_file_matches_changed() {
       case "$_changed" in
         $_path_pat)
           [ -z "$_fn_list" ] && return 0          # file-level header: match as before
-          _changed_fns=$(_changed_functions_in_file "$_changed" "${RITE_PROJECT_ROOT:-.}")
+          _changed_fns=$(_changed_functions_in_file "$_changed" "$_root")
           # Unattributable change (top-level edit, no diff, non-shell file) →
           # fail safe: behave exactly like a file-level header.
           [ -z "$_changed_fns" ] && return 0
@@ -499,7 +503,7 @@ _select_tests_by_changed_paths() {
           echo "$_rel"
           continue
         fi
-        if _bats_file_matches_changed "$project_root/$_rel" "$changed_files"; then
+        if _bats_file_matches_changed "$project_root/$_rel" "$changed_files" "$project_root"; then
           echo "$_rel"
         fi
       done

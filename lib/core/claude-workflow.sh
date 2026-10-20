@@ -657,26 +657,17 @@ _run_dev_test_gate() {
   # a SECOND auto-fix session that churns on phantom failures. Verification is
   # the orchestrator's job.
   #
-  # Standalone auto-mode runs (RITE_ORCHESTRATED unset, AUTO_MODE=true) keep
-  # this as their only pre-commit verification. Standalone supervised runs also
-  # skip here — the post-commit gate (Phase 2/3) is the shared verification
-  # channel for both orchestrated and supervised standalone invocations.
+  # Orchestrated runs (RITE_ORCHESTRATED=true) skip: workflow-runner.sh Phase
+  # 2/3 runs the targeted post-commit gate. Both auto and supervised standalone
+  # runs reach the gate below — standalone supervised has no Phase 2/3 to fall
+  # back on, so this is their only pre-commit verification.
   if [ "${RITE_ORCHESTRATED:-false}" = "true" ]; then
     _diag "DEV_TEST_GATE skipped=orchestrated"
     return 0
   fi
 
-  local _should_run=false
-  if [ "$AUTO_MODE" = true ]; then
-    if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
-      print_info "Skipping tests (RITE_SKIP_TESTS=true)"
-      return 0
-    fi
-    _should_run=true
-  fi
-  # Supervised mode: post-commit gate owns test execution — no prompt here.
-
-  if [ "$_should_run" != true ]; then
+  if [ "${RITE_SKIP_TESTS:-false}" = "true" ]; then
+    print_info "Skipping tests (RITE_SKIP_TESTS=true)"
     return 0
   fi
 

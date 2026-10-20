@@ -674,6 +674,10 @@ DOC_UPDATE_EOF
             _ue_pi=$((_ue_pi + 1))
             continue
           fi
+        elif ! git -C "$RITE_PROJECT_ROOT" cat-file -e "origin/${_ue_target}:${_ue_p_file}" 2>/dev/null; then
+          print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file does not exist locally or on origin/${_ue_target} — use ACTION: CREATE for a new file" >&2
+          _ue_pi=$((_ue_pi + 1))
+          continue
         fi
       fi
 
@@ -744,29 +748,35 @@ DOC_UPDATE_EOF
           # Empty input (bare Enter) skips this proposal only, same as 'n'
           print_info "  Skipped: ${_ue_p_file}"
           ;;
-        *)
-          # Anything else is treated as feedback — trigger regeneration
-          local _ue_this_fb="$_ue_input"
-          if [[ "$_ue_input" =~ ^[Ff](eedback)?$ ]]; then
-            echo "  What changes do you want? (press Enter twice when done)" >&2
-            _ue_this_fb=""
-            local _ue_empty_ct=0
-            while IFS= read -r _ue_fb_line; do
-              if [ -z "$_ue_fb_line" ]; then
-                _ue_empty_ct=$((_ue_empty_ct + 1))
-                [ "$_ue_empty_ct" -ge 2 ] && break
-                _ue_this_fb="${_ue_this_fb}"$'\n'
-              else
-                _ue_empty_ct=0
-                _ue_this_fb="${_ue_this_fb}${_ue_fb_line}"$'\n'
-              fi
-            done
-          fi
+        [Ff]|[Ff][Ee][Ee][Dd][Bb][Aa][Cc][Kk])
+          # Explicit f/feedback: collect multi-line feedback; re-prompt on empty
+          echo "  What changes do you want? (press Enter twice when done)" >&2
+          local _ue_this_fb=""
+          local _ue_empty_ct=0
+          while IFS= read -r _ue_fb_line; do
+            if [ -z "$_ue_fb_line" ]; then
+              _ue_empty_ct=$((_ue_empty_ct + 1))
+              [ "$_ue_empty_ct" -ge 2 ] && break
+              _ue_this_fb="${_ue_this_fb}"$'\n'
+            else
+              _ue_empty_ct=0
+              _ue_this_fb="${_ue_this_fb}${_ue_fb_line}"$'\n'
+            fi
+          done
           if [ -n "$_ue_this_fb" ]; then
             _ue_feedback_this_round="$_ue_this_fb"
             print_info "  Feedback captured — regenerating all proposals..."
+            break
+          else
+            # Empty feedback: re-prompt this proposal without discarding approvals
+            print_warning "  No feedback entered — please re-answer for proposal ${_ue_pi}" >&2
+            continue
           fi
-          break
+          ;;
+        *)
+          # Unrecognized input: re-prompt this proposal without discarding approvals
+          print_warning "  Unrecognized response '${_ue_input}' — please enter y, n, or f" >&2
+          continue
           ;;
       esac
       _ue_pi=$((_ue_pi + 1))

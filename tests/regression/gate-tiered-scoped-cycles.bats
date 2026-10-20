@@ -13,7 +13,9 @@
 #   - sanity valve: jest 0 tests + non-test source → workspace full suite
 
 setup() {
-  export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
+  RITE_REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  export RITE_REPO_ROOT
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
   TEST_REPO=$(mktemp -d); export TEST_REPO
   STUB_DIR="$TEST_REPO/stub"; mkdir -p "$STUB_DIR"; export STUB_DIR
 
@@ -287,6 +289,17 @@ _run_gate_with_env() {
   # workflow — the overnight pipeline owns that. The merge-decision gate that
   # #975 originally designed was removed before merge; pin its absence so it
   # cannot be reintroduced silently.
+  #
+  # Precondition: assert both target files exist so the guard can never vacuously
+  # pass because RITE_REPO_ROOT is empty/wrong and grep exits 2 (file not found).
+  [ -f "$RITE_REPO_ROOT/lib/utils/test-gate.sh" ] || {
+    echo "FAIL: RITE_REPO_ROOT/lib/utils/test-gate.sh not found — RITE_REPO_ROOT='${RITE_REPO_ROOT:-}'"
+    false
+  }
+  [ -f "$RITE_REPO_ROOT/lib/core/workflow-runner.sh" ] || {
+    echo "FAIL: RITE_REPO_ROOT/lib/core/workflow-runner.sh not found — RITE_REPO_ROOT='${RITE_REPO_ROOT:-}'"
+    false
+  }
   run grep -n "RITE_GATE_TIER" "$RITE_REPO_ROOT/lib/utils/test-gate.sh"
   [ "$status" -ne 0 ] || {
     echo "FAIL: RITE_GATE_TIER reappeared in test-gate.sh: $output"
