@@ -725,37 +725,14 @@ if [ "$POST_REVIEW" = true ]; then
   # Parse review for summary display.
   # Priority 1: the embedded sharkrite-review-data JSON — authoritative, and the
   # exact source assess-and-resolve.sh and the merge gate already parse.
-  # Priority 2: the human Findings line, each severity parsed INDEPENDENTLY.
-  #
-  # The old joined regex required "CRITICAL: N | HIGH: N | ..." with fields
-  # ADJACENT, but the real line carries emoji between them:
-  #   "Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 3 | 🟢 LOW: 3"
-  # so it never matched → execution fell to the header-count fallback, which
-  # counts arbitrary keyword/header lines and emitted numbers unrelated to the
-  # real findings (observed 2026-06-12: issue #42 review MEDIUM:3/LOW:3 logged
-  # as medium=1/low=1; issue #43 CRITICAL:0 logged as critical=1 — phantom
-  # CRITICAL clusters that corrupt every health-report aggregation). The JSON
-  # block is present in all current reviews; the Findings fallback is kept
-  # emoji-tolerant for any review that lacks it.
-  _REVIEW_JSON_BLOCK=$(echo "$REVIEW_OUTPUT" | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
-  FINDINGS_LINE=$(echo "$REVIEW_OUTPUT" | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+.*LOW: *[0-9]+" | head -1 || true)
-  if [ -n "$_REVIEW_JSON_BLOCK" ] && echo "$_REVIEW_JSON_BLOCK" | jq -e '.summary' >/dev/null 2>&1; then
-    CRITICAL_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.critical // 0')
-    HIGH_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.high // 0')
-    MEDIUM_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.medium // 0')
-    LOW_COUNT=$(echo "$_REVIEW_JSON_BLOCK" | jq -r '.summary.low // 0')
-  elif [ -n "$FINDINGS_LINE" ]; then
-    CRITICAL_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
-    HIGH_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
-    MEDIUM_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
-    LOW_COUNT=$(echo "$FINDINGS_LINE" | grep -oE "LOW: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
-  else
-    # Last-resort fallback: count section headers (least reliable).
-    CRITICAL_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*critical|❌.*critical" || true)
-    HIGH_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*high|⚡.*high priority" || true)
-    MEDIUM_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*medium|📋.*medium priority" || true)
-    LOW_COUNT=$(echo "$REVIEW_OUTPUT" | grep -ciE "^### .*low|💡.*low|minor suggestion" || true)
-  fi
+  # Shared 3-tier parse: JSON block → Findings summary line → item markers.
+  # See parse_review_severity_counts in lib/utils/format-review.sh for the
+  # full rationale (emoji fix applied here was a divergence risk across copies).
+  parse_review_severity_counts "$REVIEW_OUTPUT"
+  CRITICAL_COUNT=$_PRC_CRITICAL
+  HIGH_COUNT=$_PRC_HIGH
+  MEDIUM_COUNT=$_PRC_MEDIUM
+  LOW_COUNT=$_PRC_LOW
 
   # Diagnostic logging for health reports
   _diag "REVIEW issue=${ISSUE_NUMBER:-?} critical=${CRITICAL_COUNT:-0} high=${HIGH_COUNT:-0} medium=${MEDIUM_COUNT:-0} low=${LOW_COUNT:-0}"

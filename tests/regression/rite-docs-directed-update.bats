@@ -72,7 +72,22 @@ source "${DOCS_CMD}"
 # Re-define stubs AFTER source (env-guarded libs overwrite pre-source stubs)
 # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; gh_safe stub must be post-source because gh-retry.sh uses _RITE_GH_RETRY_LOADED env guard which overwrites pre-source definitions
 load_provider()                    { return 0; }
-provider_run_prompt_with_timeout() { printf '%s\n' "${STUB_PROPOSALS:-NO_PROPOSALS_NEEDED}"; }
+provider_run_prompt_with_timeout() {
+  local _prompt="$1"
+  local _stub="${STUB_PROPOSALS:-NO_PROPOSALS_NEEDED}"
+  # Extract the per-generation end token from the prompt (#1233) so test stubs
+  # use @@END@@ as a placeholder and have it replaced with the real token.
+  # @@END@@ never appears in doc content, so it cannot collide with proposal
+  # content the way ---END--- could (enabling round-trip tests for ---END--- in
+  # content — see acceptance criterion 16).
+  local _end_tok
+  _end_tok="$(printf '%s\n' "$_prompt" | grep -oE -- '---END-[0-9]+---' | head -1 || true)"
+  if [ -n "$_end_tok" ]; then
+    printf '%s\n' "$_stub" | sed "s/@@END@@/${_end_tok}/"
+  else
+    printf '%s\n' "$_stub"
+  fi
+}
 provider_resolve_model()           { printf 'claude-sonnet-4-6\n'; }
 docs_map_ensure()                  { [ -s "${FAKE_PROJECT}/.rite/state/docs-map.tsv" ] || printf 'docs/test-doc.md\n' > "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
 docs_map_path()                    { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
@@ -192,7 +207,7 @@ DESCRIPTION: Update to reflect foo change
 # Test Doc
 
 Updated content for foo change.
----END---
+@@END@@
 PROP_EOF
 )"
 
@@ -238,7 +253,7 @@ PROP_EOF
     '# ADR 999 — Caching Strategy' \
     '' \
     'This is a fixture ADR created by the test.' \
-    '---END---')"
+    '@@END@@')"
 
   run bash -c "
     export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
@@ -292,7 +307,7 @@ DRIFT_EOF
     '# Test Doc' \
     '' \
     'Updated after bar change.' \
-    '---END---')"
+    '@@END@@')"
 
   run bash -c "
     export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
@@ -333,7 +348,7 @@ DRIFT_EOF
     '# ADR 998 — Changelog Mode Test' \
     '' \
     'Created while in changelog mode.' \
-    '---END---')"
+    '@@END@@')"
 
   run bash -c "
     export RITE_DOC_MODE=changelog
@@ -371,7 +386,7 @@ DRIFT_EOF
     '# Replacement Content' \
     '' \
     'This should not replace the original.' \
-    '---END---')"
+    '@@END@@')"
 
   run bash -c "
     export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
@@ -420,7 +435,7 @@ DRIFT_EOF
     '# Origin Only' \
     '' \
     'This content must not be applied.' \
-    '---END---')"
+    '@@END@@')"
 
   run bash -c "
     export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
@@ -474,7 +489,7 @@ DRIFT_EOF
     '# Fetch Probe' \
     '' \
     'This file is used only to trigger the proposal loop.' \
-    '---END---')"
+    '@@END@@')"
 
   run bash -c "
     export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
@@ -523,7 +538,7 @@ DRIFT_EOF
     '# Dropped Doc' \
     '' \
     'This content must not be applied.' \
-    '---END---')"
+    '@@END@@')"
 
   local doc_before
   doc_before="$(cat "$FAKE_PROJECT/docs/dropped.md")"
@@ -611,4 +626,75 @@ DRIFT_EOF
   local count
   count=$(grep -c 'pr merge' "$DOCS_CMD" || true)
   [ "$count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 15 (#1233): proposal content containing ---END--- is
+# not truncated by the delimiter parser
+# ---------------------------------------------------------------------------
+
+@test "proposal parser uses per-generation end token not hardcoded ---END--- (#1233)" {
+  # Structural: verify the fix is in place — the parser case pattern uses
+  # _ue_end_token (a per-generation unique string) instead of the literal
+  # ---END--- that could collide with content in behavioral-design.md and bats
+  # fixture files.
+
+  # _ue_end_token must be defined (assigned from $RANDOM$RANDOM before the loop)
+  local token_def_count
+  token_def_count=$(grep -c '_ue_end_token="---END-' "$DOCS_CMD" || true)
+  [ "$token_def_count" -ge 1 ]
+
+  # The old hardcoded case pattern must be gone from the parser
+  local old_pattern_count
+  old_pattern_count=$(grep -c '"---END---")' "$DOCS_CMD" || true)
+  [ "$old_pattern_count" -eq 0 ]
+
+  # The variable case pattern must be present
+  local new_pattern_count
+  new_pattern_count=$(grep -c '"${_ue_end_token}")' "$DOCS_CMD" || true)
+  [ "$new_pattern_count" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 16 (#1233): ---END--- inside proposal content is
+# preserved — it never truncates the proposal (behavioral round-trip)
+# ---------------------------------------------------------------------------
+
+@test "proposal content containing ---END--- on its own line is not truncated (#1233)" {
+  # The stub injects a proposal whose CONTENT block contains a literal
+  # ---END--- line (the old hardcoded terminator).  With the per-generation
+  # token fix the parser must treat it as ordinary content — the applied
+  # file must contain the ---END--- line intact.
+  local proposal
+  proposal="$(printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: EDIT' \
+    'FILE: docs/test-doc.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Update test-doc with content that includes ---END--- literally' \
+    '---CONTENT---' \
+    '# Test Doc' \
+    '' \
+    'This line contains the old terminator: ---END---' \
+    'Content after the old terminator must also be preserved.' \
+    '@@END@@')"
+
+  run bash -c "
+    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
+    bash '${_DOCS_HELPER}' docs_directed_update 'update with ---END--- in content' <<< 'y'
+  " || true
+
+  # Find the docs branch
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
+  [ -n "$docs_branch" ]
+
+  # The committed file must contain the literal ---END--- line
+  local committed
+  committed="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/test-doc.md" 2>/dev/null || true)"
+  [ -n "$committed" ]
+  printf '%s' "$committed" | grep -qF 'This line contains the old terminator: ---END---'
+
+  # The line AFTER the ---END--- must also be present (not truncated)
+  printf '%s' "$committed" | grep -qF 'Content after the old terminator must also be preserved.'
 }
