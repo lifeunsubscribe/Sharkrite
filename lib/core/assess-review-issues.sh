@@ -1456,6 +1456,14 @@ _Parent PR: #${PR_NUMBER}_"
             if [ -n "$NEW_ISSUE" ]; then
               CREATED_ISSUES="${CREATED_ISSUES}#${NEW_ISSUE} "
               print_success "  Created issue #$NEW_ISSUE"
+              # Telemetry for the batch reporter's "Issues Created" line. Must
+              # match the emission in assess-and-resolve.sh: this is the OTHER
+              # follow-up creation site in the per-issue path (ACTIONABLE_LATER
+              # per-item issues), so instrumenting only one undercounts a batch
+              # whose findings came out per-item rather than rolled up.
+              if declare -f _diag >/dev/null 2>&1; then
+                _diag "FOLLOWUP_CREATED issue=${RITE_ISSUE_NUMBER:-} pr=${PR_NUMBER:-} followup=${NEW_ISSUE}"
+              fi
               # Passback: write issue number to temp file so assess-and-resolve.sh
               # knows per-item issues were filed and can skip the consolidated rollup.
               if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
