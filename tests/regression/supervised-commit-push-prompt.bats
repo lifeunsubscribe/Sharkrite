@@ -74,7 +74,7 @@ setup() {
 # ---------------------------------------------------------------------------
 # Structural: y/n/e behavioral contracts — verified via code inspection
 # (Main-flow commit+push body is inline, not a callable function; structural
-# verification is the feasible coverage until it is extracted — behavioral-design.md)
+# verification is the feasible coverage until it is extracted — deferred to #1169)
 # ---------------------------------------------------------------------------
 
 @test "structural: n path calls 'exit 0' (aborts without committing)" {
