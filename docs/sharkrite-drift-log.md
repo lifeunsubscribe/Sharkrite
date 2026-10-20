@@ -300,3 +300,29 @@ CLAUDE.md's Phase 3 staleness description says "SHA match → review covers HEAD
 
 `behavioral-design.md:708` quotes the sentinel test name as `"…— accepted divergence from Phase 3"` but the actual bats test name ends `"— divergence from Phase 3 (issue #1306)"`.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1330 issue:1168 recorded:2026-10-20T06:09:51Z -->
+**Changed files**: lib/core/batch-process-issues.sh, tests/regression/batch-cross-batch-overlap.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md diagnostic logging section at lines 950-956 lists the diag line types but does NOT include `OVERLAP_DEFER` — the new diag line added by this PR. That's the documentation inaccuracy.
+
+CLAUDE.md's "Diagnostic logging" section omits `OVERLAP_DEFER` from its list of structured `[diag]` line types emitted by the batch.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1330 issue:1168 recorded:2026-10-20T06:14:44Z -->
+**Changed files**: lib/core/batch-process-issues.sh, tests/regression/batch-cross-batch-overlap.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md diagnostic logging section lists known `[diag]` line types but does not include `OVERLAP_DEFER`, which was added by this PR.
+
+CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER` diag line introduced by PR #1330.
+<!-- /sharkrite-doc-drift -->
