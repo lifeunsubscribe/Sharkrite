@@ -3828,6 +3828,19 @@ _detect_unverified_integrations() {
         if [ -n "$_hosts" ]; then
           while IFS= read -r _host; do
             [ -z "$_host" ] && continue
+            # Never-external check: loopback and RFC 2606 documentation hosts are
+            # categorically impossible external integrations — skip them before the
+            # grounded-set lookup so they never produce a fixture-capture spike.
+            # (Live: localhost:54324/Inbucket in a verification command spawned a spike.)
+            # IPv6 loopback ([::1]) cannot reach this branch — the host-char class
+            # [a-zA-Z0-9.-] excludes '[' and ':' — so it is inert by construction.
+            case "$_host" in
+              localhost|127.0.0.1|0.0.0.0) continue ;;
+              *.local|*.localhost) continue ;;
+              *.test|*.example|*.invalid) continue ;;
+              example.com|example.net|example.org) continue ;;
+              *.example.com|*.example.net|*.example.org) continue ;;
+            esac
             # Normalize first so that a fixtures/foo.co/ fixture grounds both
             # api.foo.co and auth.foo.co (all normalize to foo.co before the check).
             local _host_reg

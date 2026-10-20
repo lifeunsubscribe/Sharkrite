@@ -653,6 +653,15 @@ CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review 
 `behavioral-design.md` claims `bin/rite` uses a FIFO-based tee to prevent tail-truncation, but the implementation was changed to nested process-substitution with a known truncation race.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:02:36Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md`'s never-external paragraph contains a stray `**Verify:**` grep line accidentally committed from the issue's Documentation Impact section, not behavioral documentation.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T22:04:25Z -->
 **Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
 **Implicated docs**:
@@ -668,4 +677,15 @@ CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review 
 Now I have enough context. The PR changed the log-capture description from "FIFO-based (implemented)" to "nested-procsub (FIFO not implemented, has tail-truncation race)". CLAUDE.md now says FIFO was "not implemented" and still mentions a deadlock test in `full-suite-subcommand.bats`. That test actually covers `bin/rite-full-suite` safety-net behavior, not the FIFO deadlock — so CLAUDE.md's claim that `tests/regression/full-suite-subcommand.bats` documents the FIFO+wait deadlock is the most likely inaccuracy introduced by this PR.
 
 `CLAUDE.md`'s "Log capture pattern" section claims `tests/regression/full-suite-subcommand.bats` documents the FIFO+explicit-`wait` deadlock, but that file covers the full-suite safety-net behavior, not the FIFO deadlock.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:07:24Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The behavioral-design.md at line 1386 describes `_detect_unverified_integrations` as checking whether hostnames "are grounded in the project's fixture directories or dependency manifests" — but PR #1376 added a categorical never-external exclusion step that happens *before* the grounded-set check. The documentation doesn't mention this loopback/RFC-2606 exclusion layer.
+
+`_detect_unverified_integrations` docs say grounding is a set-membership fixture/manifest check, but PR #1376 added a never-external exclusion (`localhost`, `127.0.0.1`, `example.com`, etc.) that filters candidates before the grounded-set check runs.
 <!-- /sharkrite-doc-drift -->
