@@ -376,3 +376,19 @@ CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER
 - docs/configuration.md — "Configuration"
 **Suspected inaccuracy**: `branch-flag-design.md:276` documents single-issue promote as `rite --promote <branch> --cherry-pick <issue>`, but the shipped command uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1336 issue:1273 recorded:2026-10-20T22:17:48Z -->
+**Changed files**: CLAUDE.md, config/project.conf.example, lib/core/assess-documentation.sh, lib/core/claude-workflow.sh, lib/core/docs-command.sh, lib/utils/gate-selection.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/research/rtk-assessment.md — "RTK (Rust Token Killer) — Sharkrite Compatibility Assessment"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+**Suspected inaccuracy**: `docs/architecture/behavioral-design.md` likely still documents the timeout-retry loop (double-budget retry on timeout with no uncommitted changes) that was removed from `claude-workflow.sh`.
+<!-- /sharkrite-doc-drift -->
