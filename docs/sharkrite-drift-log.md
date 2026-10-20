@@ -559,3 +559,12 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: CLAUDE.md's bash 3.2 guidance omits `gate-runners.sh` as a sourced library requiring bash 4+; `gate-runners.sh` now enforces this with a `BASH_VERSINFO` guard using `return 1` — a third pattern not described in CLAUDE.md's documented options (the documented options are: self-re-exec guard for directly-executed scripts, and `BASH_SOURCE[0] != $0` + loud failure for sourced libraries).
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1361 issue:1359 recorded:2026-10-20T20:10:04Z -->
+**Changed files**: lib/core/plan-issues.sh, lib/utils/gate-runners.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md` documents the `parallel-file-overlap` detector as warn-only, but PR #1361 changed it to auto-rewrite the later issue's `Dependencies` line when neither side carries a suppress marker.
+<!-- /sharkrite-doc-drift -->
