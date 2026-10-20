@@ -5,6 +5,31 @@
 
 set -euo pipefail
 
+# Bash 4+ re-exec guard (issue #1361 fallout).
+#
+# This script carries a #!/bin/bash shebang, which on macOS is system bash
+# 3.2. It sources lib/utils/test-gate.sh, which sources lib/utils/gate-runners.sh,
+# and that file is not 3.2-parseable: it nests `case` statements (with their
+# `;;` terminators) inside process substitutions, which 3.2's parser rejects
+# outright. gate-runners.sh therefore refuses to load under 3.2 and every
+# invocation of this script dies with "requires bash 4+" before doing any work.
+#
+# Re-exec under a bash 4+ interpreter when one is available. The guard matches
+# the established pattern in batch-process-issues.sh, with one addition: it
+# fires ONLY when this file is being EXECUTED, never when it is sourced.
+# `exec "$_newer_bash" "$0" "$@"` in a sourced context would re-exec the
+# CALLER with the wrong argument vector (see CLAUDE.md -> "macOS bash 3.2
+# compatibility", the plan-issues.sh/docs-command.sh note).
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "${BASH:-}" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if [ "${_RITE_WORKFLOW_RUNNER_LOADED:-}" = "true" ]; then
   return 0 2>/dev/null || true
@@ -1201,8 +1226,13 @@ phase_create_pr() {
 
       if [ -n "$_skip_review_sha" ]; then
         # SHA oracle (same as assess-and-resolve.sh): review covers HEAD iff SHAs match.
-        # local_head == remote_head here (we are inside that branch), so local_head
-        # is the authoritative PR HEAD — no GitHub API call needed.
+        # local_head == remote_head confirmed above, so local git is sufficient for the
+        # common case (no external force-push + stale tracking ref).
+        # NOTE: Phase 3 (assess-and-resolve.sh) resolves HEAD via resolve_pr_head_sha
+        # (GitHub API first), while this site uses git rev-parse HEAD (local git).
+        # The residual deadlock window from this divergence is documented in
+        # behavioral-design.md "Stale Review Loop"; the Phase 2 migration needs a
+        # follow-on issue (file one when the window becomes a live concern).
         if [ "$_skip_review_sha" = "$local_head" ]; then
           print_info "Issue #$issue_number already has a current review — skipping push/review phase"
           return 0

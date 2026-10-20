@@ -33,6 +33,7 @@ fi
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
+source "$RITE_LIB_DIR/utils/sanitize-output.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 # issue-lock.sh: provides derive_followup_finding_key and write_followup_evidence
@@ -1437,6 +1438,7 @@ ${SCOPE_DO_BULLETS}
 _Created by Sharkrite assessment on ${ASSESSMENT_TIMESTAMP}_
 _Parent PR: #${PR_NUMBER}_"
 
+          ISSUE_BODY=$(sanitize_generated_commands "$ISSUE_BODY")
           CREATE_BODY_FILE=$(mktemp)
           printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
           ensure_labels_exist "tech-debt,from-review,${_priority_label}"

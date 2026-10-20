@@ -1205,6 +1205,13 @@ run_test_gate() {
         fi
       fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
+      # Provision pytest-testmon for per-cycle scoped gating (#1127 / #975).
+      # Only when native scoping is enabled; failure degrades to unscoped (#1125).
+      if [ "${RITE_GATE_NATIVE_SCOPING:-true}" != "false" ]; then
+        if ! _provision_pytest_testmon "$project_root" "$_gate_raw_sink"; then
+          print_warning "[test-gate] pytest-testmon unavailable — running unscoped (see sharkrite #975 / #1125)"
+        fi
+      fi
       echo "[test-gate] Running pytest..."
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true

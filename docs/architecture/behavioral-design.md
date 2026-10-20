@@ -165,6 +165,36 @@ When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
 
 **Parent-PR live-lock path (follow-up issues):** The same live-lock defer logic applies to the `PARENT_IN_QUEUE=false` branch. When a follow-up issue's parent PR is still open and the parent issue is not in this batch, `batch-process-issues.sh` checks whether the parent issue holds a live lock before skipping. If the parent holds a live lock, the follow-up is deferred to end of queue (`deferred_for_parent` status) with the same `RITE_LIVE_LOCK_DEFER_WAIT` background sleep and `RITE_LIVE_LOCK_MAX_DEFERS` cap. The `_PARENT_LIVE_LOCK_WAIT_PID` join runs on re-entry before the parent PR state is re-checked. Without this, concurrent batches where one batch owns the parent issue silently skip the follow-up even though the parent is actively merging.
 
+### Cross-Batch File Overlap: Warn and Reorder
+
+Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every other in-flight worktree. On intersection, the issue is re-appended to the end of the queue (warn-and-reorder, never skip).
+
+**Invariants (warn-only contract):**
+- An issue is **never skipped** or blocked by this check. Cap exhausted → run in place with the warning only.
+- The check is **local git only** — `git worktree list` + `git -C <wt> diff --name-only <base>...HEAD`. No network calls, no `gh` invocations.
+- A missing or empty `Files to Modify:` section is a **silent no-op**.
+
+**Overlap detection — `_ftm_file_overlap ISSUE_BODY`:**
+1. Parse the `Files to Modify:` section from the issue body (first backtick-quoted path per list item; falls back to first whitespace-delimited word). Entries without `/` or `.` are filtered as prose.
+2. Enumerate all worktrees via `git worktree list`, skipping the main checkout and current directory.
+3. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
+4. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
+5. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
+6. First intersection wins — records `_OVERLAP_FILES` (comma-joined matches) and `_OVERLAP_WT` (worktree path).
+
+**Deferral — shared `_DEFER_COUNT` cap:**
+The same `_DEFER_COUNT[ISSUE_NUM]` counter and `_UNIQUE_ISSUE_COUNT` bound used by the dep-defer path also gate the overlap defer. This prevents an issue from cycling forever when the overlapping worktree never clears. Cap exhausted → the issue runs in place after printing the warning; it is NOT skipped or blocked.
+
+**Dep-chain cohesion (free):** A deferred issue's position moves to the end of the queue. Any in-batch children whose dep is this issue will self-defer via `_check_dep_queued_later` — no extra code needed.
+
+**Deliberate batch-only divergence:** Single-issue mode has no queue to defer into, so `_ftm_file_overlap` is only called from the per-slot batch loop.
+
+**Diag line:** `[diag] OVERLAP_DEFER issue=N files=... worktree=...` emitted on each deferral (and on cap-exhausted in-place runs with `cap_exhausted=true`).
+
+**Motivation (live incident, 2026-10-11):** Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`. The concurrent worktrees caused rebase churn and extra fix rounds on the second batch. This check catches the overlap before Phase 1 starts, deferring until the first batch has cleared its worktrees.
+
+**Verification:** `grep -n "OVERLAP_DEFER" docs/architecture/behavioral-design.md` returns this paragraph.
+
 ### Session Timer
 
 `init_session` resets the session clock. workflow-runner does NOT call `init_session` when `BATCH_MODE=true` — the batch owns the session timer. Without this, each child workflow-runner resets the clock and the batch summary shows "Duration: 2s."
@@ -698,6 +728,17 @@ Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind
 
 **Do NOT increase the reroute cap from 2.** The guard isn't the bug; the detection is. Bumping the cap delays failure without addressing root cause.
 
+**Accepted head-resolution divergence between Phase 2 and Phase 3 (issue #1306).** Both orchestrated-loop sites use the same SHA oracle (`extract_review_sha`) to _compare_ a review's embedded SHA against the branch HEAD. However, they resolve what "HEAD" means through different authorities:
+
+- **Phase 2** (`workflow-runner.sh::phase_create_pr`): uses `git rev-parse HEAD` (local git). It only enters the currency check when `local_head == remote_head` (confirmed-equal tracking refs), so local git is sufficient for the common case.
+- **Phase 3** (`assess-and-resolve.sh`): uses `resolve_pr_head_sha`, which queries the GitHub API (`headRefOid`) first and falls back to local git only when the API is unavailable and the local branch name matches.
+
+The residual deadlock window: an external force-push to the PR branch followed by a stale local tracking ref (git fetch not yet run) can leave both `git rev-parse HEAD` and `git rev-parse origin/<branch>` pointing at the pre-force-push SHA. Phase 2 enters the currency check, compares the review SHA against the stale local SHA, sees a match ("current"), and skips the push/review phase. Phase 3 then calls the GitHub API, sees the post-force-push SHA, and declares the review stale — rerouting back to Phase 2, which again skips, producing a deadlock.
+
+This window is narrow in practice (requires an external force-push — rare in a single-operator workflow) and is partially protected by the issue lock (concurrent external pushes are uncommon). The full fix — calling `resolve_pr_head_sha` in Phase 2 too — exceeds the time budget of the issue that introduced the SHA oracle alignment (#1303); issue #1306 documented the divergence and added the sentinel, but the Phase 2 migration itself needs a new follow-on issue.
+
+The structural sentinel test `"phase_create_pr HEAD resolution: uses git rev-parse (not resolve_pr_head_sha) — accepted divergence from Phase 3"` in `tests/regression/stale-review-detection-sha-based.bats` documents this accepted condition and will fire when the Phase 2 migration lands.
+
 ### LOW Severity Threshold
 
 LOW findings only become ACTIONABLE_LATER if they represent a real functional or security concern. "Consider doing X" and style suggestions are DISMISSED. Added after 5 of 7 tech-debt issues were closed as noise (code aesthetics, hypothetical optimizations, intentional patterns flagged as problems).
@@ -813,6 +854,22 @@ The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces
 - **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
 
 The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. **Apply-site defense-in-depth (#1232):** `_docs_apply_approved` mirrors this guard: after forking the worktree from `origin/<target>` (with its own `git fetch` at ~line 206), it re-checks `[ -f "$_aa_target_file" ]` before writing any CREATE proposal. A file pushed to origin during the interactive preview session will be present in the worktree (the fetch pulled it) and the apply-site guard refuses the write with a warning. This shrinks the window from the full preview session to the fetch-to-write interval, provided the apply-site fetch succeeds (the fetch is `|| true`; on network failure the worktree may not contain the newest origin files, so the residual window degrades back to the full preview session (the last successfully fetched origin/<target> state)).
+
+### Proposal Format: Per-Generation End Token (#1233)
+
+The proposal wire format uses a delimiter line to mark the end of each proposal's content block. A fixed delimiter like `---END---` is unsafe: any proposal whose content contains the `---END---` string (and future content documenting the format verbatim would place it on its own line) is silently truncated at parse time — self-referential risk since `docs/architecture/behavioral-design.md` (this file) and bats test fixtures both reference the `---END---` string.
+
+**Fix:** `_docs_update_engine` generates a per-call unique end token before the feedback loop:
+
+```bash
+local _ue_end_token="---END-${RANDOM}${RANDOM}---"
+```
+
+The token is injected into the `DOC_UPDATE_EOF` prompt heredoc so the LLM knows which string to use as the end marker, and into the case pattern that detects the end-of-proposal during parsing. Because bash case patterns expand variables, `"${_ue_end_token}"` matches the generated string at runtime.
+
+**Why this approach over escaping:** An escaping scheme (e.g. replace `---END---` in content with `\---END---`, unescape on parse) requires the LLM to reliably apply the escaping rule — which it may not do when the content contains `---END---` in a code block or diff output. The per-generation token approach eliminates the collision opportunity entirely: the token is never in any existing document, so content cannot accidentally match it.
+
+**Scope:** only the `_docs_update_engine` LLM-output parser and its prompt. The saved proposal files (written by the parser, read by `_docs_apply_approved`) use EOF as their implicit delimiter and are unaffected.
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
@@ -2197,3 +2254,29 @@ make.
 looks similar but is accumulate-**in-place**: one entry per convention title,
 with later PR numbers appended to that entry's References line. A naive union
 would duplicate titles. It needs its own design and deliberately has no merger.
+
+## Output Sanitization: stripping operator-local commands from generated artifacts
+
+**Root cause.** `claude --print` (the provider call used for issue planning, review generation, assessment follow-ups, and promotion PR bodies) loads the operator's user-global `~/.claude/CLAUDE.md`. That file carries RTK hook instructions, so the model authors `rtk grep`, `rtk proxy git status`, etc. into generated text. Those commands are unrunnable for any human or CI without the operator's personal rtk hook installed — they leak into published GitHub issue bodies and PR comments.
+
+**Why input-side suppression is wrong.** Suppressing `~/.claude/CLAUDE.md` at the provider-call level (via a hypothetical `--no-user-config` flag) is not available and would also lose auth context. Output-side sanitization at the seam where LLM output becomes a GitHub artifact is the correct fix.
+
+**The helper: `sanitize_generated_commands`** (`lib/utils/sanitize-output.sh`).
+
+Strips `rtk proxy <cmd>` → `<cmd>` and `rtk <cmd>` → `<cmd>` at command positions:
+line-start, after `` ` ``, `$(`, `| `, `&& `. Prose mentions of "rtk" not at a command
+position are untouched. Emits one `print_info` line to stderr reporting the count when
+anything is rewritten.
+
+**Grounded exception.** When `git grep -qlw rtk` in the project root succeeds, the
+target repo genuinely ships rtk commands — sanitization is skipped. This prevents
+sharkrite from mangling its own generated bodies (sharkrite's `CLAUDE.md` documents
+rtk and the project's tracked files reference it).
+
+**Applied seams — the four highest-leak GitHub-write sites** (each is a one-line call immediately before the GitHub write; additional write sites remain unsanitized — see issue #1360 ACTIONABLE_LATER findings):
+- `lib/core/plan-issues.sh` — issue body before `gh issue create --body-file`
+- `lib/core/assess-review-issues.sh` — follow-up issue body before `gh issue create --body-file`
+- `lib/core/local-review.sh` — review output before the PR comment `--body-file`
+- `lib/utils/promotion-composer.sh` — LLM narrative before `printf` emits it to stdout
+
+**Extension point.** The helper is intentionally rtk-specific (rtk is the live failure class; a generic "unknown tool" detector is unbounded). To handle another operator-local tool, add a parallel check inside `sanitize_generated_commands` — see the comment in `lib/utils/sanitize-output.sh`.

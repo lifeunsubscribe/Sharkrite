@@ -585,6 +585,83 @@ JSON
 }
 
 # ---------------------------------------------------------------------------
+# Fixture-path round-trip: emit → mkdir → re-emit check
+#
+# Proves that the fixture path written in the spike body (fixtures/simplefin.io/)
+# is exactly what _build_grounded_hosts recognises on the next run: once the
+# directory exists, a second call to _detect_unverified_integrations sees the
+# host as grounded and emits no spike.
+#
+# This closes the grounding loop end-to-end:
+#   (1) spike body instructs "create fixtures/simplefin.io/"
+#   (2) user creates it (simulated here with mkdir)
+#   (3) next `rite plan` run finds the directory via _build_grounded_hosts
+#       and suppresses re-emission
+# ---------------------------------------------------------------------------
+
+@test "Fixture-path round-trip: creating spike-instructed directory grounds host on re-run" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-roundtrip.txt"
+  local stderr_out
+  stderr_out=$(mktemp)
+
+  # --- Run 1: host ungrounded → spike emitted ---
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL (run 1): expected 2 issues (spike + original), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Confirm the spike body contains the dotted-hostname fixture path (emit side)
+  local spike_body
+  spike_body=$(awk '/^---ISSUE---/{in_block=1} in_block{print} /^---END---/{in_block=0}' "$issues_file" | head -80)
+  echo "$spike_body" | grep -q "fixtures/simplefin\.io/" || {
+    echo "FAIL (run 1): spike body does not contain 'fixtures/simplefin.io/'" >&2
+    echo "--- spike body ---" >&2
+    echo "$spike_body" >&2
+    false
+  }
+
+  # --- User action: create the fixture directory named in the spike body ---
+  mkdir -p "$RITE_TEST_TMPDIR/fixtures/simplefin.io"
+
+  # --- Run 2: fixture directory exists → _build_grounded_hosts finds simplefin.io → no spike ---
+  write_issues_file "$issues_file" \
+    "Build payment integration" \
+    "Call https://simplefin.io/accounts to retrieve account data."
+
+  rm -f "$stderr_out"
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL (run 2): expected 1 issue (fixture directory grounded the host), got $issue_count" >&2
+    echo "  _build_grounded_hosts did not recognise the spike-emitted path fixtures/simplefin.io/" >&2
+    cat "$issues_file" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL (run 2): expected 0 WARNINGs (host now grounded by fixture directory), got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Fixture G: downstream issue referencing ungrounded host gets "Blocked by:"
 #
 # After the pass:

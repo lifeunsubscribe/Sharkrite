@@ -584,6 +584,11 @@ rite --promote <branch>    # Promote integration branch to main (PR + review + t
                            # to capturing the raw review — it never silently loses findings.
                            # See behavioral-design.md → "Promotion Review Is Assessed, Not Just
                            # Captured".
+rite --promote <branch> <issue>  # Single-issue promote: cherry-picks ONE staged ledger SHA onto a
+                           # temp branch off origin/main, runs the targeted gate, and merges it
+                           # through its own PR. A conflict aborts with an entanglement message
+                           # (rite --promote <branch> is the fallback). No issue arg → full-branch
+                           # path above, byte-identical.
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
@@ -817,6 +822,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **Phase 1 (development)** is where savings happen: `git status`, `git diff`, test runs, `grep`, `cat`, `ls`, etc.
 - **Phases 2-5** are unaffected. All Sharkrite `gh` calls use `--json` which rtk passes through unfiltered.
 - **stdin piping** (fix-review mode) is unaffected — the hook only rewrites command strings, not stdin.
+- **Generated artifacts are sanitized.** Because `claude --print` loads the operator's `~/.claude/CLAUDE.md` (which carries the RTK hook instructions), LLM-generated text can contain `rtk`-wrapped commands that are unrunnable without the operator's hook. `sanitize_generated_commands` (`lib/utils/sanitize-output.sh`) strips these at the four highest-leak GitHub-write seams (issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies); additional write sites remain unsanitized. Repos whose tracked files reference rtk are exempt (grounded exception). See `behavioral-design.md` → "Output Sanitization".
 
 ### Configuration
 

@@ -605,10 +605,33 @@ the resolved files after this session ends."
   # would be accepted (#533). Stripping CR keeps the regex exactly as documented
   # (no relaxed anchor → no trailing-space false positives) and is portable —
   # unlike '\r?', which GNU grep -E treats as a literal 'r'.
+  # FENCE-AWARE: a line inside a ``` block is documentation, not a marker.
+  #
+  # docs/architecture/behavioral-design.md documents this very conflict shape
+  # with a literal example at column 0 inside a fenced block (added by #1319).
+  # A plain grep matches it, so EVERY conflict touching that file became
+  # permanently unresolvable — and it is the most frequently conflicted file in
+  # the repo. Live: #1221, where the resolver session itself reported "the
+  # remaining <<<<<<< at line 2225 is inside a documentation code block, not an
+  # actual conflict marker" and this check overrode it, failing the rebase.
+  #
+  # Tradeoff, stated deliberately: a REAL conflict region that opens inside an
+  # already-open fence is skipped by this scan. That is the safer direction of
+  # the two. Index-level truth is Check 1's job (it compares unmerged paths
+  # against the conflict list), and `git merge`'s own exit status gates entry
+  # here at all; this scan exists only to catch a resolution that left markers
+  # behind in a file git now considers resolved. Failing closed on documented
+  # examples blocks real work every time, while the skipped case needs a
+  # conflict to begin mid-fence AND to survive Check 1.
   local _cr_marker_found=false
   while IFS= read -r _cr_f; do
     [ -z "$_cr_f" ] && continue
-    if tr -d '\r' < "$_cr_f" 2>/dev/null | grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])'; then
+    [ -f "$_cr_f" ] || continue
+    if tr -d '\r' < "$_cr_f" 2>/dev/null | awk '
+        /^```/ { fence = !fence; next }
+        !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+      '; then
       _cr_error "Conflict markers remain in: $_cr_f"
       _cr_marker_found=true
     fi

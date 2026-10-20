@@ -154,6 +154,11 @@ RITE_WORKTREE_DIR="${RITE_WORKTREE_DIR:-$RITE_WORKTREE_BASE/${_project_abbrev}-w
 #   4h of active work was correct intuition but the old implementation measured file age,
 #   not work. 12h of actual rite automation is a conservative daily budget.
 # RITE_MAX_ISSUE_HOURS: per-issue cap — protects against fix-loop runaway on a single issue.
+#   Interaction with RITE_CLAUDE_TIMEOUT: when the no-commit retry path fires (claude-workflow.sh),
+#   the retry budget can be up to 2×RITE_CLAUDE_TIMEOUT, capped at 14400s. A 14400s retry adds
+#   up to 4h of issue time, which silently trips this 4h default and stalls an otherwise-successful
+#   unattended recovery at the merge gate. If you raise RITE_CLAUDE_TIMEOUT above 7200s, raise
+#   RITE_MAX_ISSUE_HOURS proportionally (e.g. to 8h) so the retry path can complete.
 # RITE_MAX_ISSUES_PER_SESSION removed — was a stale heuristic with a misleading
 # "Approaching token limit" message; see detect_session_limit() in blocker-rules.sh.
 RITE_MAX_SESSION_HOURS="${RITE_MAX_SESSION_HOURS:-12}"

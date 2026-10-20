@@ -76,6 +76,11 @@ if ! declare -f print_warning >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/colors.sh"
 fi
 
+if ! declare -f sanitize_generated_commands >/dev/null 2>&1; then
+  # shellcheck source=/dev/null
+  source "$RITE_LIB_DIR/utils/sanitize-output.sh"
+fi
+
 # Hard cap on assembled context (~50 KB, same default as RITE_PLAN_DOC_BYTE_CAP).
 # Patch snips are the first thing truncated when the cap is approached.
 _PROMOTION_CONTEXT_CAP_BYTES=51200
@@ -498,7 +503,8 @@ SIGNALS_EOF
     # Emit deterministic fallback narrative
     _emit_fallback_body "$branch" "$unpromoted_issues" "$total_diff_lines"
   else
-    # LLM succeeded — emit its narrative
+    # LLM succeeded — strip operator-local rtk wrappers before publishing.
+    llm_output=$(sanitize_generated_commands "$llm_output")
     printf '%s\n' "$llm_output"
   fi
 
