@@ -534,7 +534,11 @@ handle_blocker() {
     exit 1
   elif [ "$is_batch_mode" = "true" ]; then
     print_warning "Blocker only affects this issue - continuing with next issue"
-    increment_failed
+    # No increment_failed here. This returns 1, which batch-process-issues.sh
+    # classifies in its "other failure" branch and counts there. Counting in
+    # both places double-reported a single blocked issue. The batch processor
+    # is the single owner of failure accounting because it is the only place
+    # that sees every outcome class (see #1361-era summary undercount).
     return 1
   else
     # Single issue unsupervised mode - stop
