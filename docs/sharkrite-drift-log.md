@@ -539,3 +539,14 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `CLAUDE.md` states `gate-runners.sh` handles "workspace bootstrap" via shell glob expansion that falls back to the literal pattern on no-match, but PR #1344 changed it to `find`-based traversal supporting `**` and `!exclusion` patterns.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1352 issue:1223 recorded:2026-10-20T17:01:23Z -->
+**Changed files**: lib/core/batch-process-issues.sh, lib/providers/claude.sh, tests/regression/cap-resume-manifest.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
