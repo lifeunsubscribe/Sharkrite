@@ -148,3 +148,95 @@ half of all failure-event content, and none of them carried the hint.
 - **Codebase-wide sweeps belong in lint rules, not bats:** full lint runs
   unfiltered in seconds, while a bats sweep imposes a selection floor on every
   gate run. Audit: 198 grep-pins across 48 files, 14 already dead.
+
+### 9. Assert against the verdict seam, not the full gate (prompt-residue)
+
+When every assertion in a test is a `jq` check on the gate's JSON output — exit
+code, `tests[]` length and content, `lint[]` length and content — call
+`_gate_build_verdict` directly instead of `run_test_gate`. The verdict seam is a
+pure function of its inputs: no subprocess, no stub runner on `PATH`, no git
+fixture needed.
+
+**How to recognise a verdict-only test:** every assertion after the gate call
+is one of `[ "$_rc" -eq N ]`, `run jq -r '...' "$_out"`, or
+`[[ "$output" == *"..."* ]]`. If any assertion touches a file created by the
+runner (a `diag.log`, a worktree, a node_modules tree) the test is not
+verdict-only and must keep `run_test_gate`.
+
+**Pattern:**
+
+```bash
+@test "description of the gate JSON behavior" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+
+  # Pre-built lint raw (empty = make check passed)
+  printf '' > "$_lint_raw"
+  # Pre-built TAP — exactly what run_test_gate would hand to _gate_build_verdict
+  # after watchdog/notrun synthesis:
+  printf 'TAP version 13\n1..1\nnot ok 1 deliberately failing test\n' > "$_tests_raw"
+
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
+
+  run jq -r '.exit_code' "$_out"; [ "$output" = "1" ]
+  run jq -r '.tests | length' "$_out"; [ "$output" -ge 1 ]
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
+}
+```
+
+**Signature:**
+`_gate_build_verdict lint_raw tests_raw lint_exit tests_exit out_json [reason] [head_sha]`
+
+- `lint_raw` — raw `make check` stdout (gcc format: `file:line:col: level: msg [SCnnnn]`)
+- `tests_raw` — raw bats TAP output, including any already-synthesized
+  `[tests_not_run]` lines (watchdog collapse or per-test synthesis from
+  `_synthesize_notrun_findings`)
+- `lint_exit` / `tests_exit` — original process exit codes (1 = failure)
+- `out_json` — path for the output JSON
+- `reason` — optional forced reason for all test findings (e.g. `"tests_not_run"`
+  for watchdog-kill tests); empty string uses per-line parsing
+- `head_sha` — optional SHA embedded in the JSON; empty string is fine for tests
+
+**TAP fixture content for watchdog tests.** Copy the exact text from
+`_make_tests_raw_watchdog` in `tests/regression/gate-verdict-seam.bats`:
+
+```
+1..N
+not ok 1 [tests_not_run] watchdog killed bats group after 1800s — N tests not run; root cause is gate runtime, not the tests (reduce selection cost: add # sharkrite-gate-serial to load-heavy files, or scope lint rules with SHARKRITE_LINT_ONLY=N)
+```
+
+**TAP fixture content for non-watchdog plan-deficit tests** (`_synthesize_notrun_findings`):
+
+```
+1..N
+not ok 1 [tests_not_run] planned test in selected bats file(s) never reported a result (bats plan/executed mismatch; killed before reporting)
+```
+
+**Setup.** Source only `gate-verdict.sh` (not `test-gate.sh`) and add the
+`BATS_PRE_SOURCE_STUB_OVERWRITE` suppression comment since the file uses a
+function-sentinel guard:
+
+```bash
+setup() {
+  export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
+  _diag() { true; }
+  source "$RITE_LIB_DIR/utils/config.sh" 2>/dev/null || true
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: gate-verdict.sh uses a function-sentinel guard (declare -f _gate_write_json); pre-source _diag() stub is preserved on source.
+  source "$RITE_LIB_DIR/utils/gate-verdict.sh"
+  set +u; set +o pipefail
+}
+```
+
+**Header.** Scope to `_gate_build_verdict` so the test only runs when that
+function changes:
+
+```
+# sharkrite-test-covers: lib/utils/gate-verdict.sh::_gate_build_verdict
+```
+
+**Serial hint.** Do NOT add `# sharkrite-gate-serial` — verdict-seam tests spawn
+no subprocesses and are safe to run in parallel.
+
+**Canonical reference:** `tests/regression/gate-verdict-seam.bats`.

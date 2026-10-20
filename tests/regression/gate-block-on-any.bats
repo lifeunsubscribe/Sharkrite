@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/core/assess-and-resolve.sh, lib/utils/gate-verdict.sh
+# sharkrite-test-covers: lib/utils/gate-verdict.sh::_gate_build_verdict, lib/core/assess-and-resolve.sh, lib/utils/test-gate.sh
 # Phase 3: the gate blocks on ANY test failure in the targeted selection.
 # Issue #718: block-on-any extended to the merge boundary (assess-and-resolve
 # retry-cap) — [GATE] ACTIONABLE_NOW findings at 3/3 retries block merge.
@@ -13,45 +13,13 @@
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   TEST_REPO=$(mktemp -d); export TEST_REPO
-  STUB_DIR="$TEST_REPO/stub"; mkdir -p "$STUB_DIR"
-
-  # Fake bats: emit a FAILING TAP on stdout and exit non-zero. It lacks the
-  # --report-formatter string, so the gate takes its fallback (stdout-TAP) path.
-  cat > "$STUB_DIR/bats" <<'STUB'
-#!/bin/bash
-printf 'TAP version 13\n1..1\nnot ok 1 deliberately failing test\n'
-exit 1
-STUB
-  chmod +x "$STUB_DIR/bats"
-
-  # Mock sharkrite repo: Makefile with no-op shellcheck:/lint: (gate detects
-  # sharkrite by those targets), a lib file, and a bats test that covers it.
-  # A second commit changes the lib file so the changed-paths diff selects the
-  # covering test (targeted selection, not FORCE_FULL).
-  cat > "$TEST_REPO/Makefile" <<'EOF'
-.PHONY: shellcheck lint
-shellcheck:
-	@echo ok
-lint:
-	@echo ok
-EOF
-  mkdir -p "$TEST_REPO/lib/utils" "$TEST_REPO/tests/regression"
-  printf '#!/bin/bash\nfoo() { echo hi; }\n' > "$TEST_REPO/lib/utils/foo.sh"
-  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/foo.sh\n@test "covers foo" { true; }\n' \
-    > "$TEST_REPO/tests/regression/foo.bats"
-  (cd "$TEST_REPO" \
-     && git init -q && git config user.email t@t && git config user.name t \
-     && git add -A && git commit -qm base \
-     && git update-ref refs/remotes/origin/main HEAD \
-     && printf '#!/bin/bash\nfoo() { echo changed; }\n' > lib/utils/foo.sh \
-     && git add -A && git commit -qm change) >/dev/null 2>&1
 
   _diag() { true; }
   # shellcheck source=/dev/null
   source "$RITE_LIB_DIR/utils/config.sh" 2>/dev/null || true
-  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: test-gate.sh uses a function-sentinel guard (declare -f run_test_gate); pre-source _diag() stub is preserved on source.
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: gate-verdict.sh uses a function-sentinel guard (declare -f _gate_write_json); pre-source _diag() stub is preserved on source.
   # shellcheck source=/dev/null
-  source "$RITE_LIB_DIR/utils/test-gate.sh"
+  source "$RITE_LIB_DIR/utils/gate-verdict.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 }
 
@@ -64,28 +32,24 @@ teardown() { rm -rf "${TEST_REPO:-}"; }
 }
 
 @test "block-on-any: a failing test in the targeted selection fails the gate" {
-  run bash -c "
-    export RITE_LIB_DIR='$RITE_LIB_DIR' PR_NUMBER=778
-    _diag() { true; }; export -f _diag 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/config.sh' 2>/dev/null || true
-    source '$RITE_LIB_DIR/utils/test-gate.sh'
-    PATH='$STUB_DIR':\$PATH run_test_gate '$TEST_REPO/gate.json' '$TEST_REPO'
-  " </dev/null
-  # On environments where the gate fixture cannot complete (e.g. GNU CI without
-  # the ~/.rite install env config.sh expects — the same condition the sibling
-  # gate-force-full-optin.bats hits there; tracked in #709), run_test_gate writes
-  # no gate.json. Skip rather than false-fail: block-on-any is verified on macOS,
-  # the environment the gate actually runs in.
-  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
-  [ "$status" -eq 1 ]
+  # Converted (issue #1241): pre-built TAP fixture — no stub runner, no git fixture.
+  # TAP from a bats run that emits 1..1 + not ok 1, exits 1.
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  printf '' > "$_lint_raw"
+  printf 'TAP version 13\n1..1\nnot ok 1 deliberately failing test\n' > "$_tests_raw"
+
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 0 1 "$_out" "" "" || _rc=$?
+  [ "$_rc" -eq 1 ]
 
   # outcome=failed ⟺ exit_code=1
-  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  run jq -r '.exit_code' "$_out"
   [ "$output" = "1" ]
 
   # The failure is reported in tests[] (NOT suppressed as 'pre-existing').
-  run jq -r '.tests | length' "$TEST_REPO/gate.json"
+  run jq -r '.tests | length' "$_out"
   [ "$output" -ge 1 ]
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
 
 # ─── Merge-boundary: [GATE] findings block at retry cap (issue #718) ─────────
