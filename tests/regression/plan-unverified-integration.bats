@@ -2714,11 +2714,11 @@ FIXTURE
   }
 
   # Must have no Blocked-by line
-  grep -q "Blocked by:" "$issues_file" && {
+  if grep -q "Blocked by:" "$issues_file"; then
     echo "FAIL: found spurious 'Blocked by:' for localhost URL" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   rm -f "$stderr_out"
 }
@@ -2827,11 +2827,11 @@ FIXTURE
   }
 
   # No spike for localhost must appear
-  grep -qi "capture localhost sample" "$issues_file" && {
+  if grep -qi "capture localhost sample" "$issues_file"; then
     echo "FAIL: found spurious 'localhost' spike — never-external exclusion failed" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   rm -f "$stderr_out"
 }
