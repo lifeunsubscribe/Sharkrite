@@ -1464,6 +1464,56 @@ _node_workspace_patterns() {
 }
 
 # ---------------------------------------------------------------------------
+# _provision_pytest_testmon — ensure pytest-testmon is installed in the repo
+# venv for per-cycle scoped gating (#1127 / #975).
+# Args: $1=project_root  $2=sink (log file, default /dev/null)
+# Returns: 0 = testmon available  1 = no venv found, or install failed
+#
+# Venv detection order mirrors post-merge-verify.sh:256-264 verbatim.
+# conda/poetry envs fall through to return 1 (the caller runs unscoped —
+# the degraded path covers them without special-casing).
+# Never edits requirements*.txt or creates a venv — venv-only install,
+# analogous to how _node_install_deps never edits package.json.
+# ---------------------------------------------------------------------------
+_provision_pytest_testmon() {
+  local _pr="$1"
+  local _sink="${2:-/dev/null}"
+
+  # Detect venv by pip binary — same order as post-merge-verify.sh:256-264.
+  local _pip=""
+  if [ -f "$_pr/.venv/bin/pip" ]; then _pip="$_pr/.venv/bin/pip"
+  elif [ -f "$_pr/venv/bin/pip" ]; then _pip="$_pr/venv/bin/pip"
+  elif [ -f "$_pr/env/bin/pip" ]; then _pip="$_pr/env/bin/pip"
+  elif [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -f "$RITE_PROJECT_ROOT/.venv/bin/pip" ]; then
+    _pip="$RITE_PROJECT_ROOT/.venv/bin/pip"
+  fi
+
+  if [ -z "$_pip" ]; then
+    echo "[test-gate] pytest-testmon: no venv found (.venv, venv, env) — skipping provision" >> "$_sink"
+    return 1
+  fi
+
+  local _venv_python="${_pip%/pip}/python"
+
+  # Probe: already installed?
+  if "$_venv_python" -c "import testmon" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "[test-gate] pytest-testmon: not found in venv — installing (best-effort)..." >> "$_sink"
+  "$_pip" install -q pytest-testmon >> "$_sink" 2>&1 || true
+
+  # Re-probe: confirm install landed
+  if "$_venv_python" -c "import testmon" >/dev/null 2>&1; then
+    echo "[test-gate] pytest-testmon: installed successfully" >> "$_sink"
+    return 0
+  fi
+
+  echo "[test-gate] pytest-testmon: install did not make testmon importable" >> "$_sink"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # _node_install_deps — package-manager-aware dependency install (issue #1097)
 # Args: $1=project_root  $2=sink file for installer output (default /dev/null)
 # Best-effort by contract (mirrors the historical inline npm block): a failed
@@ -3059,6 +3109,13 @@ run_test_gate() {
         fi
       fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
+      # Provision pytest-testmon for per-cycle scoped gating (#1127 / #975).
+      # Only when native scoping is enabled; failure degrades to unscoped (#1125).
+      if [ "${RITE_GATE_NATIVE_SCOPING:-true}" != "false" ]; then
+        if ! _provision_pytest_testmon "$project_root" "$_gate_raw_sink"; then
+          print_warning "[test-gate] pytest-testmon unavailable — running unscoped (see sharkrite #975 / #1125)"
+        fi
+      fi
       echo "[test-gate] Running pytest..."
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
