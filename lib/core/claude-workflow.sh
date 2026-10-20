@@ -622,8 +622,8 @@ _regen_lockfiles_if_needed() {
 # and project_root, emits machine-readable JSON consumed by assess-and-resolve.sh,
 # and runs in parallel with review generation during Phase 3.
 #
-# Auto mode: always run unless RITE_SKIP_TESTS=true (default: run).
-# Supervised mode: prompt the user.
+# Runs unconditionally for all non-orchestrated standalone runs (auto and supervised alike).
+# Skippable via RITE_SKIP_TESTS=true; orchestrated runs skip via RITE_ORCHESTRATED=true.
 # Exit code 3 = test failure in auto mode (detected by workflow-runner.sh as test_failures blocker).
 # ===================================================================
 # resolve_working_python — echo the first python interpreter that runs a trivial
@@ -670,6 +670,13 @@ _run_dev_test_gate() {
     print_info "Skipping tests (RITE_SKIP_TESTS=true)"
     return 0
   fi
+  # Sharkrite dogfood carve-out: supervised standalone in the sharkrite repo itself
+  # triggers runner fallthrough to `make test` (full bats suite), which violates the
+  # CRITICAL "no full suite in an interactive path" doctrine. Accepted trade-off:
+  # standalone supervised has no Phase 2/3 targeted gate to fall back on, so this
+  # is its only pre-commit verification. Mitigation: set RITE_SKIP_TESTS=true when
+  # running supervised standalone in the sharkrite repo to skip the full suite.
+  # See docs/architecture/behavioral-design.md → "Supervised standalone full-suite carve-out".
 
   # Helper: Install system dependencies when pip fails with missing system packages
   # Parses pip error logs for known patterns and installs via brew

@@ -763,6 +763,7 @@ DOC_UPDATE_EOF
               _ue_this_fb="${_ue_this_fb}${_ue_fb_line}"$'\n'
             fi
           done
+          _ue_this_fb=$(printf '%s' "$_ue_this_fb" | sed 's/[[:space:]]*$//' || true)
           if [ -n "$_ue_this_fb" ]; then
             _ue_feedback_this_round="$_ue_this_fb"
             print_info "  Feedback captured — regenerating all proposals..."

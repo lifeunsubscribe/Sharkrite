@@ -598,6 +598,16 @@ The supervised dev-flow previously asked five sequential questions: "Run tests b
 
 **Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a function — deferred to a future refactoring issue; structural verification is the current coverage.
 
+### Supervised standalone full-suite carve-out (2026-10-20, issue #1273)
+
+**The situation:** `_run_dev_test_gate` now runs unconditionally for all non-orchestrated standalone runs (auto and supervised alike). In the sharkrite repo itself (dogfood), this triggers runner fallthrough to `make test` (full bats suite) — directly violating the CRITICAL "no full suite in an interactive path" doctrine.
+
+**Why it is accepted:** Standalone supervised has no Phase 2/3 targeted gate to fall back on; `_run_dev_test_gate` is its only pre-commit verification. For non-sharkrite target repos (the normal case), the runner selects only the test framework relevant to the project's changed files, so the full-bats-suite problem is sharkrite-specific.
+
+**Mitigation for sharkrite dogfood runs:** Set `RITE_SKIP_TESTS=true` when running supervised standalone in the sharkrite repo to skip the full suite and rely solely on the post-commit targeted gate from whatever orchestration context calls it next. The `RITE_SKIP_TESTS` path is already the canonical operator escape hatch and is honored before any runner is reached.
+
+**Future fix direction:** Add sharkrite-specific targeted-selection logic to `_run_dev_test_gate` so standalone runs use `gate-selection.sh` rather than the full runner. That is a larger refactor tracked separately; this note is the acknowledgment required by the reword-all-locations contract.
+
 ### Dev test gate is skipped under orchestration (CRITICAL)
 
 **2026-06-24.** `_run_dev_test_gate` in [claude-workflow.sh](../../lib/core/claude-workflow.sh) — the dev/initial-commit test runner — now returns immediately when `RITE_ORCHESTRATED=true`.
