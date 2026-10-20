@@ -2388,6 +2388,124 @@ FIXTURE
   } || true
 }
 
+# ---------------------------------------------------------------------------
+# Table-driven unit tests for _normalize_host_to_registrable_domain (#1293)
+#
+# These tests exercise the function directly (not through _detect_unverified_integrations)
+# so each behavioral defect is caught at the unit level, independent of end-to-end setup.
+#
+# The setup() already loads _normalize_host_to_registrable_domain via the
+# _extract_packages_for_language → _dedup_issues line-range eval.
+# ---------------------------------------------------------------------------
+
+@test "registrable domain: standard last-two-labels strips subdomain (api.authsvc.io → authsvc.io)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.authsvc.io")
+  [ "$result" = "authsvc.io" ] || {
+    echo "FAIL: expected 'authsvc.io', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: trailing dot normalizes identically to same host without dot" {
+  local with_dot without_dot
+  with_dot=$(_normalize_host_to_registrable_domain "api.authsvc.io.")
+  without_dot=$(_normalize_host_to_registrable_domain "api.authsvc.io")
+  [ "$with_dot" = "$without_dot" ] || {
+    echo "FAIL: 'api.authsvc.io.' → '$with_dot', 'api.authsvc.io' → '$without_dot' (should be equal)" >&2
+    false
+  }
+  # Both must resolve to the registrable domain, not the full subdomain
+  [ "$with_dot" = "authsvc.io" ] || {
+    echo "FAIL: trailing-dot form expected 'authsvc.io', got '$with_dot'" >&2
+    false
+  }
+}
+
+@test "registrable domain: IP literal is returned unchanged (10.0.0.5 → 10.0.0.5)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "10.0.0.5")
+  [ "$result" = "10.0.0.5" ] || {
+    echo "FAIL: expected '10.0.0.5', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: unlisted ccSLD suffix returns host unchanged (api.foo.co.in → api.foo.co.in)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.foo.co.in")
+  [ "$result" = "api.foo.co.in" ] || {
+    echo "FAIL: expected 'api.foo.co.in' (fail-closed), got '$result'" >&2
+    false
+  }
+  # Must NOT return the bare public suffix co.in
+  [ "$result" != "co.in" ] || {
+    echo "FAIL: result is bare public suffix 'co.in'" >&2
+    false
+  }
+}
+
+@test "registrable domain: known hosting suffix (vercel.app) extracts user subdomain correctly" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.myapp.vercel.app")
+  [ "$result" = "myapp.vercel.app" ] || {
+    echo "FAIL: expected 'myapp.vercel.app', got '$result'" >&2
+    false
+  }
+  # Must NOT return the bare hosting suffix vercel.app
+  [ "$result" != "vercel.app" ] || {
+    echo "FAIL: result is bare hosting suffix 'vercel.app'" >&2
+    false
+  }
+}
+
+@test "registrable domain: known multi-part TLD (co.uk) extracts third-from-right label" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "api.myservice.co.uk")
+  [ "$result" = "myservice.co.uk" ] || {
+    echo "FAIL: expected 'myservice.co.uk', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: already-registrable host is returned as-is (authsvc.io → authsvc.io)" {
+  local result
+  result=$(_normalize_host_to_registrable_domain "authsvc.io")
+  [ "$result" = "authsvc.io" ] || {
+    echo "FAIL: expected 'authsvc.io', got '$result'" >&2
+    false
+  }
+}
+
+@test "registrable domain: warning names both originating hostname and normalized domain" {
+  # Integration test: _detect_unverified_integrations emits a warning that includes
+  # both the registrable domain AND the original subdomain that triggered it.
+  local issues_file="$RITE_TEST_TMPDIR/issues-warn-orig.txt"
+  write_issues_file "$issues_file" \
+    "Integrate payment API" \
+    "Call https://api.payments.io/v1/charge to initiate a charge."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+
+  # Warning must include the normalized domain
+  grep -q "payments.io" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention normalized domain 'payments.io'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Warning must ALSO include the originating hostname
+  grep -q "api.payments.io" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention originating hostname 'api.payments.io'" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
 @test "Fixture P: _normalize_python_import_name has no dead _strptime table entry" {
   local plan_issues_sh="${RITE_REPO_ROOT}/lib/core/plan-issues.sh"
 

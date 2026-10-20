@@ -1327,6 +1327,21 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 
 **Why `.` is excluded from the separator class:** Fixture AD exercises a `go.mod` containing `github.com/stretchr/testify`. The vendor token extracted from the `github.com` host is `github` (first label of the registrable domain). If `.` were included in the separator class alongside `@`, `/`, and `-`, the boundary regex `(^|[@/.-])github([@/.-]|$)` would match `github.com/stretchr/testify` — `github` sits at the start of the string, bounded on the right by `.` — causing the `github.com` host to be wrongly suppressed. The grounding mechanism is host-prefix self-grounding: the vendor token must match a package that is an SDK for that host (e.g., `@supabase/supabase-js` grounds `supabase.co`). A Go module path whose first domain label happens to equal the vendor token is not such an SDK. Excluding `.` confines the suppression to genuine SDK packages while rejecting coincidental Go module path matches. The accepted trade-off: a package name that uses `.` as a word-boundary separator (present in Go module paths by construction) would not ground a host even if it were the intended SDK. The `-` separator is retained because real SDK packages use it as a token boundary: `google-auth` grounds `*.google.com`, `stripe-python` grounds `*.stripe.com`.
 
+**Host-normalization contract — `_normalize_host_to_registrable_domain` (issue #1293, 2026-10-19):**
+
+`_normalize_host_to_registrable_domain` maps an extracted hostname to its registrable domain so that subdomain variants (`api.foo.co`, `auth.foo.co`) collapse to one key (`foo.co`) for fixture-grounding and spike-dedup purposes.  The function is **fail-closed**: when the suffix structure is unknown, it returns the host unchanged rather than producing a bare public suffix.  This invariant makes it impossible for a missing list entry to silently collapse a distinct service onto a public-suffix key.
+
+Four specific behaviors are guaranteed:
+
+1. **Trailing dot stripped before any other processing.** FQDN form `api.authsvc.io.` normalizes identically to `api.authsvc.io`.  Without this, a sentence-final URL yields two spike keys for one service.
+2. **IP literals returned unchanged.** A host whose dot-separated labels are all numeric (e.g. `10.0.0.5`) is returned as-is — no registrable-domain concept applies to an IP.
+3. **Known multi-part suffixes handled explicitly.** A hardcoded list covers ccSLD patterns (`co.uk`, `co.in`, …) and common hosting suffixes (`vercel.app`, `herokuapp.com`, …).  For a host ending in one of these suffixes the registrable domain is `<registrar-label>.<suffix>`.
+4. **Unknown ccSLD-like patterns return the host unchanged.** After the multi-part list, the last-two-labels rule is applied.  If the result matches `^(co|com|net|org|gov|edu|ac|sch)\.[a-z]{2}$` — a known SLD keyword followed by a 2-letter ccTLD that is not in the hardcoded list — the function returns the original host rather than emitting a bare public suffix.  This is the fail-closed guard for patterns the list does not yet cover.
+
+The unverified-integration warning names **both** the normalized domain and the originating hostname (e.g. `unverified external integration: payments.io (from: api.payments.io)`), so an operator can locate the reference in the planning doc without cross-referencing subdomains.
+
+**Verify:** `grep -n 'registrable domain' docs/architecture/behavioral-design.md`
+
 **Lint and creation share non-spike ordinal space (issue #1150, 2026-10-13):**
 
 When `_detect_unverified_integrations` prepends spike issues, all subsequent `#N` dependency references inside a plan file operate in **non-spike ordinal space**: `#1` means the first non-spike issue, not the first raw issue in the file. Both the strict linter (`_lint_issues_strict`) and the creation-side issue loop (in `create_issues`) must interpret `#N` the same way; a mismatch causes the linter to approve ordinals the creation side rejects (or vice versa).
