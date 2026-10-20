@@ -449,13 +449,13 @@ EOF
   # Check multi-line form: the guard may reappear on a separate line before the call,
   # which a same-line regex would miss.
   local _notrun_lineno
-  _notrun_lineno=$(grep -n '_synthesize_notrun_findings' "$_sh" | grep -v '^\s*#' | head -1 | cut -d: -f1 || true)
+  _notrun_lineno=$(grep -n '_synthesize_notrun_findings' "$_sh" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1 || true)
   if [ -z "$_notrun_lineno" ]; then
     echo "FAIL: _synthesize_notrun_findings call not found in test-gate.sh" >&2
     false
   fi
   if awk "NR>=$(( _notrun_lineno - 50 )) && NR<=$_notrun_lineno" "$_sh" \
-     | grep -qE '\$_tests_count[[:space:]]*-eq[[:space:]]*0'; then
+     | grep -qE '\$_tests_count"?[[:space:]]*-eq[[:space:]]*0'; then
     echo "FAIL: _tests_count -eq 0 guard detected near _synthesize_notrun_findings call" >&2
     echo "      This was the live regression from issue #847 — re-introduced." >&2
     false

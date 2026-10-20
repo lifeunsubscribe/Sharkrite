@@ -311,7 +311,7 @@ EOF
   # not just that both strings exist somewhere in the file (other call sites would
   # satisfy a bare grep even if the normalizer were removed from this branch).
   local _cmd_lineno
-  _cmd_lineno=$(grep -n 'if.*RITE_TEST_COMMAND' "$_sh" | grep -v '^\s*#' | head -1 | cut -d: -f1 || true)
+  _cmd_lineno=$(grep -n 'if.*RITE_TEST_COMMAND' "$_sh" | grep -v ':[[:space:]]*#' | head -1 | cut -d: -f1 || true)
   if [ -z "$_cmd_lineno" ]; then
     echo "FAIL: RITE_TEST_COMMAND conditional not found in test-gate.sh" >&2
     false
@@ -319,6 +319,14 @@ EOF
   if ! awk "NR>=$_cmd_lineno && NR<=$(( _cmd_lineno + 50 ))" "$_sh" | grep -q '_normalize_node_test_output'; then
     echo "FAIL: _normalize_node_test_output not called in RITE_TEST_COMMAND branch" >&2
     echo "      This was the live regression from issue #846 — re-introduced." >&2
+    false
+  fi
+  # Verify the _gate_write_json call in the branch passes the populated
+  # _cmd_tests_items variable — not hardcoded "[]" (the literal pre-fix #846 form).
+  if ! awk "NR>=$_cmd_lineno && NR<=$(( _cmd_lineno + 120 ))" "$_sh" \
+       | grep '_gate_write_json' | grep -q '_cmd_tests_items'; then
+    echo 'FAIL: RITE_TEST_COMMAND branch: _gate_write_json does not pass _cmd_tests_items' >&2
+    echo '      Pre-fix #846: "[]" was hardcoded — named findings never reached the fix loop.' >&2
     false
   fi
 }
