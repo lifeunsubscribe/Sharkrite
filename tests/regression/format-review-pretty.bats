@@ -246,6 +246,7 @@ ${stripped}"
   [ "$_PRC_HIGH"     -eq 2 ]
   [ "$_PRC_MEDIUM"   -eq 3 ]
   [ "$_PRC_LOW"      -eq 4 ]
+  [ "$_PRC_TIER"     -eq 1 ]
 }
 
 @test "parse_review_severity_counts: tier 2 — Findings line with emoji (production format)" {
@@ -259,6 +260,7 @@ Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 2 | 🟡 MEDIUM: 1 | 🟢 LOW: 0
   [ "$_PRC_HIGH"     -eq 2 ]
   [ "$_PRC_MEDIUM"   -eq 1 ]
   [ "$_PRC_LOW"      -eq 0 ]
+  [ "$_PRC_TIER"     -eq 2 ]
 }
 
 @test "parse_review_severity_counts: tier 2 — plain Findings line (no emoji)" {
@@ -269,6 +271,7 @@ Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 2 | 🟡 MEDIUM: 1 | 🟢 LOW: 0
   [ "$_PRC_HIGH"     -eq 3 ]
   [ "$_PRC_MEDIUM"   -eq 2 ]
   [ "$_PRC_LOW"      -eq 1 ]
+  [ "$_PRC_TIER"     -eq 2 ]
 }
 
 @test "parse_review_severity_counts: tier 3 — item markers when no JSON or Findings line" {
@@ -289,6 +292,7 @@ Critical item
   [ "$_PRC_HIGH"     -eq 1 ]
   [ "$_PRC_MEDIUM"   -eq 1 ]
   [ "$_PRC_LOW"      -eq 1 ]
+  [ "$_PRC_TIER"     -eq 3 ]
 }
 
 @test "parse_review_severity_counts: returns zeros when review has no parseable counts" {
@@ -297,6 +301,7 @@ Critical item
   [ "$_PRC_HIGH"     -eq 0 ]
   [ "$_PRC_MEDIUM"   -eq 0 ]
   [ "$_PRC_LOW"      -eq 0 ]
+  [ "$_PRC_TIER"     -eq 0 ]
 }
 
 @test "parse_review_severity_counts: tier 1 preferred over tier 2 when both present" {
@@ -314,4 +319,5 @@ Critical item
   [ "$_PRC_HIGH"     -eq 1 ]
   [ "$_PRC_MEDIUM"   -eq 0 ]
   [ "$_PRC_LOW"      -eq 0 ]
+  [ "$_PRC_TIER"     -eq 1 ]
 }
