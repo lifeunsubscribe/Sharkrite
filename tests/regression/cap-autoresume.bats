@@ -14,13 +14,14 @@
 #     3.  batch-process-issues.sh sets _CAP_ABORT=true near the cap break
 #     4.  batch-process-issues.sh calls attempt_cap_autoresume
 #     5.  batch-process-issues.sh sources cap-resume.sh
+#     6.  batch-process-issues.sh propagates _RITE_CAP_RESUMED=1 → manifest resumed=true
 #
 #   UNIT (attempt_cap_autoresume in cap-resume.sh):
-#     6.  Flag off (RITE_CAP_AUTORESUME unset/false) → returns 1, no exec
-#     7.  Flag on, future epoch, AC power → caffeinate invoked, rite exec'd
-#     8.  Flag on, future epoch, battery power → caffeinate NOT invoked, rite still exec'd
-#     9.  Flag on, manifest resumed=true → returns 1, no exec (one-resume guard)
-#    10.  Flag on, reset_epoch=0 (past/unknown) → returns 1, no exec
+#     7.  Flag off (RITE_CAP_AUTORESUME unset/false) → returns 1, no exec
+#     8.  Flag on, future epoch, AC power → caffeinate invoked and exec-wraps rite
+#     9.  Flag on, future epoch, battery power → caffeinate NOT invoked, rite still exec'd
+#    10.  Flag on, manifest resumed=true → returns 1, no exec (one-resume guard)
+#    11.  Flag on, reset_epoch=0 (past/unknown) → returns 1, no exec
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -86,6 +87,26 @@ teardown() {
 @test "structural: batch-process-issues.sh sources cap-resume.sh" {
   grep -q 'cap-resume.sh' "$BATCH_PROCESSOR" || {
     echo "FAIL: 'cap-resume.sh' not found in batch-process-issues.sh sources" >&2
+    return 1
+  }
+}
+
+@test "structural: batch-process-issues.sh propagates _RITE_CAP_RESUMED=1 → manifest resumed=true" {
+  # cap-resume.sh exports _RITE_CAP_RESUMED=1 before exec; the manifest writer in
+  # batch-process-issues.sh must read it and write resumed=true in the next run's
+  # manifest so a second cap in the resumed batch cannot trigger another auto-resume.
+  grep -q '_RITE_CAP_RESUMED' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _RITE_CAP_RESUMED reference not found in batch-process-issues.sh" >&2
+    echo "      cap-resume.sh exports _RITE_CAP_RESUMED=1 before exec; batch must honour it" >&2
+    return 1
+  }
+  grep -q '_resumed_val="true"' "$BATCH_PROCESSOR" || {
+    echo "FAIL: _resumed_val=\"true\" assignment not found in batch-process-issues.sh" >&2
+    echo "      The manifest writer must set resumed=true when _RITE_CAP_RESUMED=1" >&2
+    return 1
+  }
+  grep -qE '\-\-argjson resumed|resumed.*_resumed_val' "$BATCH_PROCESSOR" || {
+    echo "FAIL: manifest jq call does not pass the resumed value to the JSON output" >&2
     return 1
   }
 }
@@ -230,6 +251,13 @@ STUB
     echo "      output: $output" >&2
     return 1
   }
+  # Assert rite was passed as the exec target to caffeinate (not just that caffeinate
+  # ran as a background hold).  cap-resume.sh line: exec caffeinate -i "$_rite_bin" ...
+  grep -q "rite" "$_tmpdir/caffeinate.log" || {
+    echo "FAIL: caffeinate log does not show rite as exec target — exec was not caffeinate-wrapped" >&2
+    echo "      caffeinate log: $(cat "$_tmpdir/caffeinate.log")" >&2
+    return 1
+  }
 }
 
 @test "unit: flag on, future epoch, battery power → caffeinate NOT invoked, rite still exec'd" {
@@ -309,7 +337,7 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir:/usr/bin:/bin'
+    export PATH='$_tmpdir:$_jq_dir:/usr/bin:/bin'
     export RITE_CAP_AUTORESUME=true
     export MARKER_FILE='$_tmpdir/exec-marker'
     source '$CAP_RESUME'
@@ -341,7 +369,7 @@ STUB
 
   run bash -c "
     set -euo pipefail
-    export PATH='$_tmpdir:/usr/bin:/bin'
+    export PATH='$_tmpdir:$_jq_dir:/usr/bin:/bin'
     export RITE_CAP_AUTORESUME=true
     export MARKER_FILE='$_tmpdir/exec-marker'
     source '$CAP_RESUME'
