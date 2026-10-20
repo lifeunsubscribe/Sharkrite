@@ -3433,6 +3433,12 @@ else
         # requiring manual re-runs.
         if [ "$_dev_attempt" -eq 1 ]; then
           _retry_budget=$(( CLAUDE_TIMEOUT * 2 ))
+          # Cap at 4h (14400s). Note: a 14400s retry session adds up to 4h of
+          # issue time, which can silently trip RITE_MAX_ISSUE_HOURS (default 4h)
+          # during the retry and stall an otherwise-successful recovery at the
+          # merge gate with no clear cause. If retries are hitting the session
+          # cap, raise RITE_MAX_ISSUE_HOURS proportionally (e.g. to 8h when
+          # RITE_CLAUDE_TIMEOUT is already near 7200s).
           [ "$_retry_budget" -gt 14400 ] && _retry_budget=14400
           _diag "DEV_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
           print_info "No changes before timeout — retrying at double budget (${_retry_budget}s)..."
