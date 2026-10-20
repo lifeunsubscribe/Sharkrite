@@ -176,10 +176,16 @@ teardown() {
   }
 }
 
-@test "dev-structural: retry arm checks CLAUDE_TIMEOUT -lt 1800" {
-  grep -q 'CLAUDE_TIMEOUT.*-lt 1800' "$CLAUDE_WORKFLOW" || {
-    echo "FAIL: 'CLAUDE_TIMEOUT -lt 1800' guard not found in claude-workflow.sh" >&2
-    echo "      Dev session retry must be skipped when budget is already at cap" >&2
+@test "dev-structural: retry arm fires on first attempt at any budget (no budget cap guard)" {
+  # Dev session default is 7200s — no fixed cap like fix session's 1800s — so the
+  # retry must fire unconditionally on the first attempt without a budget threshold.
+  if grep -q 'CLAUDE_TIMEOUT.*-lt 1800' "$CLAUDE_WORKFLOW"; then
+    echo "FAIL: dev session has a CLAUDE_TIMEOUT -lt 1800 budget cap guard" >&2
+    echo "      This guard makes retry dead code at the 7200s default budget" >&2
+    return 1
+  fi
+  grep -q '_dev_attempt.*-eq 1' "$CLAUDE_WORKFLOW" || {
+    echo "FAIL: '_dev_attempt -eq 1' first-attempt guard not found in claude-workflow.sh" >&2
     return 1
   }
 }
@@ -192,11 +198,11 @@ teardown() {
   }
 }
 
-@test "dev-structural: dev session retry budget capped at 1800s" {
-  grep -A1 '_retry_budget=$(( CLAUDE_TIMEOUT \* 2 ))' "$CLAUDE_WORKFLOW" | grep -q '_retry_budget=1800' || \
-  grep -q '_retry_budget.*-gt 1800.*_retry_budget=1800' "$CLAUDE_WORKFLOW" || {
-    echo "FAIL: dev session retry budget cap (1800s) not found in claude-workflow.sh" >&2
-    echo "      min(2×budget, 1800) cap must be applied to dev session retry" >&2
+@test "dev-structural: dev session retry budget capped at 14400s" {
+  grep -A1 '_retry_budget=$(( CLAUDE_TIMEOUT \* 2 ))' "$CLAUDE_WORKFLOW" | grep -q '_retry_budget=14400' || \
+  grep -q '_retry_budget.*-gt 14400.*_retry_budget=14400' "$CLAUDE_WORKFLOW" || {
+    echo "FAIL: dev session retry budget cap (14400s) not found in claude-workflow.sh" >&2
+    echo "      min(2×budget, 14400) cap must be applied to dev session retry" >&2
     return 1
   }
 }
@@ -210,7 +216,7 @@ teardown() {
   }
 }
 
-@test "behavioral: dev first no-commit timeout retries at double budget; second timeout exits 1" {
+@test "behavioral: fix first no-commit timeout retries at double budget; second timeout exits 1" {
   _btest_tmpdir=$(mktemp -d)
   _budgets="$_btest_tmpdir/budgets"
   _calls="$_btest_tmpdir/calls"
@@ -344,9 +350,9 @@ while true; do
       print_warning "Found uncommitted changes - committing before exit"
       break
     else
-      if [ "$_dev_attempt" -eq 1 ] && [ "$CLAUDE_TIMEOUT" -lt 1800 ]; then
+      if [ "$_dev_attempt" -eq 1 ]; then
         _retry_budget=$(( CLAUDE_TIMEOUT * 2 ))
-        [ "$_retry_budget" -gt 1800 ] && _retry_budget=1800
+        [ "$_retry_budget" -gt 14400 ] && _retry_budget=14400
         _diag "DEV_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
         print_info "No changes before timeout — retrying at double budget (${_retry_budget}s)..."
         CLAUDE_TIMEOUT=$_retry_budget

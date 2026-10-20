@@ -3431,9 +3431,9 @@ else
         # Context-heavy dev sessions can exhaust their budget loading context
         # before making a single edit; a doubled budget recovers these without
         # requiring manual re-runs.
-        if [ "$_dev_attempt" -eq 1 ] && [ "$CLAUDE_TIMEOUT" -lt 1800 ]; then
+        if [ "$_dev_attempt" -eq 1 ]; then
           _retry_budget=$(( CLAUDE_TIMEOUT * 2 ))
-          [ "$_retry_budget" -gt 1800 ] && _retry_budget=1800
+          [ "$_retry_budget" -gt 14400 ] && _retry_budget=14400
           _diag "DEV_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
           print_info "No changes before timeout — retrying at double budget (${_retry_budget}s)..."
           CLAUDE_TIMEOUT=$_retry_budget
