@@ -41,3 +41,10 @@
 
 
 
+
+
+
+
+## DO
+- encountered-issues.md → Dev session deletes unrelated regression tests — scope boundary not enforced
+
