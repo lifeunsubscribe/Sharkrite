@@ -5224,3 +5224,104 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Fix 4 — prose-embedded ref before "parallel" in a paren group must NOT be
+# harvested as a parallel-with sibling.
+#
+# Issue body: "After #1 (needs #1's output; can run in parallel with #3)"
+# The paren group contains "parallel". Before this fix, both #1 and #3 were
+# extracted as parallel-with siblings because the harvest grep matched all
+# #N inside the group. With the fix, only #3 (after "parallel") is extracted.
+#
+# Consequence of the bug: #1 is a real dependency edge AND spuriously a
+# parallel-with sibling. If issues #1 and #2 share a file, Check 7 emits a
+# false parallel-file-overlap WARNING for the #1/#2 pair.
+# ---------------------------------------------------------------------------
+
+@test "Fix 4: prose-embedded ref before 'parallel' in paren group — not harvested as parallel sibling, no spurious WARNING" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix4.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Schema Builder
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds the shared schema.
+
+**Claude Context**:
+Files to Modify:
+- src/schema.cpp
+
+**Acceptance Criteria**:
+- [ ] Schema builds: `make test`
+
+**Done Definition**: Done when schema builds.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Parser
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Parses using the schema from issue one.
+
+**Claude Context**:
+Files to Modify:
+- src/schema.cpp
+
+**Acceptance Criteria**:
+- [ ] Parser passes: `make test`
+
+**Done Definition**: Done when parser passes.
+
+**Dependencies**: After #1 (needs #1's output; can run in parallel with #3)
+---END---
+---ISSUE---
+TITLE: Side Feature
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Independent side feature.
+
+**Claude Context**:
+Files to Modify:
+- src/side.cpp
+
+**Acceptance Criteria**:
+- [ ] Side passes: `make test`
+
+**Done Definition**: Done when side passes.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (no cycle, no dangling ref — #1 and #3 are valid)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a parallel-file-overlap WARNING — #1 is a real dependency
+  # edge, not a parallel sibling; the paren group prose ref is pre-"parallel"
+  # and must not be harvested as a scheduling hint.
+  grep -q "parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected parallel-file-overlap WARNING from prose-embedded ref before 'parallel' keyword" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}

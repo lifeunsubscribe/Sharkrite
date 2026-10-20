@@ -1889,8 +1889,12 @@ _lint_issues_strict() {
             # Fix 1: harvest parallel refs from this line BEFORE stripping
             # parens — scoped to the Dependencies section so prose mentions
             # elsewhere in the body (e.g. description) are not harvested.
+            # sed strips everything up to and including "parallel" so only
+            # refs that appear AFTER the keyword are collected (prevents
+            # prose-embedded refs like "(needs #2's schema; can run in
+            # parallel with #4)" from harvesting #2 as a sibling).
             local _dp_prefs
-            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | sed -E 's/.*[Pp]arallel//' | grep -oE '#[0-9]+' || true)
             [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Strip "(can run in parallel with #M, #P)" annotations before
             # harvesting refs. The generation prompt mandates that format for
@@ -1916,8 +1920,9 @@ _lint_issues_strict() {
               "---END---"|"**"*|"##"*) _in_deps=false; continue ;;
             esac
             # Fix 1: harvest parallel refs from this body line BEFORE stripping
+            # (same anchoring as the header-line site above — see comment there)
             local _dp_prefs
-            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | sed -E 's/.*[Pp]arallel//' | grep -oE '#[0-9]+' || true)
             [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Collect all #N patterns from dependency lines (parallel-with
             # annotations stripped — see header-line handling above)
