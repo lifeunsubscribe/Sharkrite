@@ -68,3 +68,13 @@ CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_b
 
 `gate-verdict.sh` description in CLAUDE.md cites issue #1236 as the extraction source, but it was extracted in issue #1240.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:04:39Z -->
+**Changed files**: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/gate-failure-empty-items-blocks-merge.bats, tests/regression/gate-verdict-seam.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
