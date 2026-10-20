@@ -149,3 +149,16 @@ STUB
 _MERGE_PR_SH_SOURCED_IN_TEST=true
 STUB
 }
+
+# ---------------------------------------------------------------------------
+# Helper: write a runner script to a temp path, chmod +x, echo the path.
+# The caller provides the script body via stdin (heredoc); this helper owns
+# the temp-file lifecycle so test bodies stay concise.
+# Requires $RITE_TEST_TMPDIR (set by setup_test_tmpdir in setup()).
+# ---------------------------------------------------------------------------
+_write_promote_runner() {
+  local _path="$RITE_TEST_TMPDIR/runner_$$.sh"
+  cat > "$_path"
+  chmod +x "$_path"
+  echo "$_path"
+}
