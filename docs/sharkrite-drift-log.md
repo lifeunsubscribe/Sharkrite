@@ -113,3 +113,10 @@ The issue number `#1236` in the gate-verdict.sh architecture entry is wrong — 
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 **Suspected inaccuracy**: `behavioral-design.md` line 417 claims `gate-block-on-any.bats` tests "a failing test in the targeted selection fails the gate (exit 1, reported in `tests[]`, not suppressed) + the `_tap_failure_name` canonicalizer," but after PR #1316 the test was converted to call only `_gate_build_verdict` directly without invoking the real gate runner or targeted selection.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1316 issue:1241 recorded:2026-10-20T01:42:58Z -->
+**Changed files**: tests/regression/gate-block-on-any.bats, tests/regression/gate-notrun-detection.bats, tests/regression/gate-shellcheck-findings.bats, tests/regression/gate-watchdog-collapse.bats, tests/regression/test-gate-node-failure-parsing.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md:417` says `gate-block-on-any.bats` pins the full `run_test_gate` targeted-selection path, but the test was converted to call `_gate_build_verdict` directly with pre-built TAP fixtures, no longer exercising the selection or stub-runner path.
+<!-- /sharkrite-doc-drift -->
