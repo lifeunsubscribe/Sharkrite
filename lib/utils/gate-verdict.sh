@@ -277,7 +277,7 @@ _parse_bats_failure_line() {
 # ---------------------------------------------------------------------------
 # bats-core 1.5+ supports `--report-formatter <type>` which writes a TAP
 # stream to a file while rendering the chosen `--formatter` to stdout.  We use
-# this to send pretty output to the terminal (stdout → FIFO-tee captures it in
+# this to send pretty output to the terminal (stdout → nested-procsub tee captures it in
 # the run log too) and keep TAP in the temp file that `_parse_bats_failure_line`
 # reads for JSON construction.
 #
