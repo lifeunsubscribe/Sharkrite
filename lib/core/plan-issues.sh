@@ -2967,7 +2967,54 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
     return 0
   fi
 
-  printf '%s\n' "$_blocks" >> "$issues_file"
+  # Title-guard: reject any appended block whose TITLE does not match an entry
+  # in $_missing.  A title-drifted echo block bypasses _dedup_issues (which
+  # only catches canonical exact-title matches) and _validate_coverage (which
+  # never strips blocks that lack a checklist title), so this is the sole
+  # rejection point for reworded near-duplicates before they enter the slate.
+  # Uses the same canonicalization (_missing_canon) as _coverage_missing_titles.
+  local _missing_canon=""
+  while IFS= read -r _m; do
+    [ -z "$_m" ] && continue
+    local _mc
+    _mc=$(printf '%s' "$_m" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    [ -n "$_mc" ] && _missing_canon="${_missing_canon}${_mc}"$'\n'
+  done <<< "$_missing"
+
+  local _filtered_blocks=""
+  local _blk_buf=""
+  local _in_blk=false
+  local _rejected_count=0
+  while IFS= read -r _line; do
+    if [ "$_line" = "---ISSUE---" ]; then
+      _in_blk=true
+      _blk_buf="${_line}"$'\n'
+    elif [ "$_in_blk" = true ]; then
+      _blk_buf="${_blk_buf}${_line}"$'\n'
+      if [ "$_line" = "---END---" ]; then
+        _in_blk=false
+        local _blk_title
+        _blk_title=$(printf '%s' "$_blk_buf" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
+        local _blk_canon
+        _blk_canon=$(printf '%s' "$_blk_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+        if [ -n "$_blk_canon" ] && printf '%s' "$_missing_canon" | grep -qxF "$_blk_canon"; then
+          _filtered_blocks="${_filtered_blocks}${_blk_buf}"
+        else
+          print_warning "Targeted completion: block TITLE '${_blk_title:-<empty>}' not in missing list — rejecting to prevent echo" >&2
+          _rejected_count=$((_rejected_count + 1))
+        fi
+        _blk_buf=""
+      fi
+    fi
+  done < <(printf '%s\n' "$_blocks")
+
+  if [ -z "$_filtered_blocks" ]; then
+    print_warning "Targeted completion: all ${_rejected_count} block(s) rejected by title-guard — keeping the partial slate" >&2
+    return 0
+  fi
+  [ "${_rejected_count}" -gt 0 ] && \
+    print_warning "Targeted completion: rejected ${_rejected_count} echo block(s) with unrecognized title(s)" >&2
+  printf '%s' "$_filtered_blocks" >> "$issues_file"
 
   local _still_missing
   _still_missing=$(_coverage_missing_titles "$issues_file" || true)
@@ -3465,13 +3512,30 @@ _sanitize_spike_key() {
 
 # _normalize_host_to_registrable_domain: strip subdomains, return the registrable domain.
 # api.foo.co → foo.co, auth.api.foo.co → foo.co, api.myservice.co.uk → myservice.co.uk
-# Limitation: uses a hardcoded multi-part TLD list, not a full public-suffix list (PSL).
-# Add entries to the for-loop as needed; a proper PSL lookup is a separate follow-up.
+#
+# Fail-closed contract: when the suffix is not in the known list and the last-two-labels
+# result looks like an unknown ccSLD pattern, the host is returned unchanged rather than
+# producing a bare public suffix.  IP literals and trailing-dot FQDN forms are also
+# handled explicitly.  A proper PSL lookup is a separate follow-up (#1260-adjacent).
 _normalize_host_to_registrable_domain() {
   local _h="$1"
   local _tld _tld_escaped _reg
-  # Hardcoded multi-part TLD list (covers major ccSLD patterns; not exhaustive).
-  for _tld in co.uk com.au co.jp com.br; do
+
+  # Strip trailing dot (FQDN form: api.authsvc.io. → api.authsvc.io).
+  _h="${_h%.}"
+
+  # IP literals: all dot-separated labels are numeric (e.g. 10.0.0.5).
+  # No registrable-domain concept applies — return unchanged.
+  if echo "$_h" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+    echo "$_h"
+    return
+  fi
+
+  # Known multi-part TLD list.  When a host ends in one of these suffixes, the
+  # registrable domain is the label immediately before the suffix plus the suffix.
+  # Covers ccSLD patterns (co.uk, co.in…) and common hosting suffixes (vercel.app…).
+  for _tld in co.uk com.au co.jp com.br co.in co.nz co.za net.au org.au org.uk \
+              vercel.app herokuapp.com github.io netlify.app; do
     _tld_escaped=$(echo "$_tld" | sed 's/\./\\./g' || true)
     if echo "$_h" | grep -qE "\\.$_tld_escaped$"; then
       # Extract registrar-label + multi-part TLD (e.g. foo.co.uk from api.foo.co.uk)
@@ -3480,8 +3544,17 @@ _normalize_host_to_registrable_domain() {
       return
     fi
   done
-  # Standard last-two-labels rule (e.g. api.foo.co → foo.co)
+
+  # Standard last-two-labels rule (e.g. api.foo.co → foo.co).
+  # Fail-closed guard: if the result would be a bare ccSLD-like public suffix
+  # (known SLD keyword + 2-letter ccTLD not in the list above), return the host
+  # unchanged rather than guessing — defects 1-3 all stem from this fallback
+  # firing on input the list does not cover.
   _reg=$(echo "$_h" | grep -oE '[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z0-9][a-zA-Z0-9-]*$' || true)
+  if [ -n "$_reg" ] && echo "$_reg" | grep -qE '^(co|com|net|org|gov|edu|ac|sch|go|or|ne|gob|mil|govt)\.[a-z]{2}$'; then
+    echo "$_h"
+    return
+  fi
   echo "${_reg:-$_h}"
 }
 
@@ -3577,7 +3650,9 @@ _detect_unverified_integrations() {
               if [ -n "${_grounding_pkg:-}" ]; then
                 print_info "host ${_host_reg:-$_host} grounded by SDK package ${_grounding_pkg} — suppressing spike" >&2
               else
-                echo "host${TAB_CHAR}${_host_reg:-$_host}" >> "$candidates_file"
+                # Store type<TAB>normalized-domain<TAB>original-host so the warning
+                # can name both the registrable domain and the hostname that triggered it.
+                echo "host${TAB_CHAR}${_host_reg:-$_host}${TAB_CHAR}$_host" >> "$candidates_file"
               fi
             fi
           done <<< "$_hosts"
@@ -3604,9 +3679,13 @@ _detect_unverified_integrations() {
     fi
   done < "$issues_file"
 
-  # De-duplicate the candidates file (same host/pkg may appear in multiple issues)
+  # De-duplicate the candidates file (same host/pkg may appear in multiple issues).
+  # Sort on fields 1-2 (type + normalized-domain) only, ignoring the third field
+  # (original hostname).  This collapses subdomain variants that share a registrable
+  # domain (api.foo.co + auth.foo.co → one "host<TAB>foo.co" candidate) so that
+  # only one spike and one WARNING are emitted per service.
   local unique_candidates
-  unique_candidates=$(sort -u "$candidates_file" || true)
+  unique_candidates=$(sort -t"$TAB_CHAR" -k1,2 -u "$candidates_file" || true)
   rm -f "$candidates_file"
 
   # If no unverified candidates, nothing to do
@@ -3626,9 +3705,11 @@ _detect_unverified_integrations() {
 
   while IFS= read -r _candidate_line; do
     [ -z "$_candidate_line" ] && continue
-    local _type _name
+    local _type _name _orig
     _type=$(echo "$_candidate_line" | cut -f1)
     _name=$(echo "$_candidate_line" | cut -f2)
+    # _orig: the original hostname before normalization (host entries only; empty for pkg).
+    _orig=$(echo "$_candidate_line" | cut -f3 || true)
     local _key
     _key=$(_sanitize_spike_key "$_name")
     # Fixture path: host candidates use the dotted hostname so _build_grounded_hosts
@@ -3648,7 +3729,7 @@ _detect_unverified_integrations() {
       _display_name="${_name:0:21}..."
     fi
 
-    print_warning "unverified external integration: $_name" >&2
+    print_warning "unverified external integration: $_name${_orig:+ (from: $_orig)}" >&2
 
     # Skip if a spike with this key was already emitted (key collision).
     # The downstream #SPIKE-<key> placeholder will resolve to the first spike.
@@ -3797,9 +3878,13 @@ No documentation updates required — the fixture artifact is this spike's deliv
             if [ "$_context_match" = true ]; then
               # Check if block already has a Dependencies line
               if echo "$_current_block" | grep -q "^\*\*Dependencies\*\*:"; then
-                # Append to existing Dependencies line
+                # Append to existing Dependencies line.
+                # Command substitution strips the trailing newline; restore it
+                # explicitly so the ---END--- separator stays on its own line.
                 _current_block=$(echo "$_current_block" | \
                   sed "s|^\(\*\*Dependencies\*\*:.*\)|\1, Blocked by: ${_placeholder}|" || true)
+                _current_block="${_current_block}
+"
               else
                 # Insert a Dependencies line before ---END---
                 # BSD sed (macOS) does not interpret \n in replacement strings;

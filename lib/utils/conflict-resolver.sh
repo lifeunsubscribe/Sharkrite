@@ -479,11 +479,43 @@ the resolved files after this session ends."
 
   # ── Step 6: Verify resolution ──
 
-  # Check 1: No remaining unmerged files
-  local _cr_remaining
-  _cr_remaining=$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ')
-  if [ "${_cr_remaining:-0}" -ne 0 ]; then
-    _cr_error "Unresolved files remain after Claude session"
+  # Check 1: No UNEXPECTED unmerged files
+  #
+  # Deliberately not "no unmerged files at all". This function's contract (see
+  # the header) is "resolved in the WORKING TREE — the caller stages via
+  # commit_resolved_conflicts, because the session cannot run git side
+  # effects", and the session prompt says in as many words: "do NOT run git
+  # add". So every known conflict path is still unmerged in the index at this
+  # point, by design.
+  #
+  # The original check (#435) predated that split and asserted an empty index.
+  # #932 moved staging out of the session and added the no-git-add instruction
+  # but left this assertion behind, so the check could only pass when the
+  # session DISOBEYED its prompt. Once it complied, every Claude conflict
+  # resolution failed with "Unresolved files remain" immediately after the
+  # session reported a correct resolution — live: #1231 (pr 1299) and #1143
+  # (pr 1312), both 2026-10-19, both resolving append-only drift-log entries
+  # correctly and both rejected.
+  #
+  # What is still worth catching here is an unmerged path that is NOT one the
+  # session was told about: a conflict that appeared after the path list was
+  # captured, or one the session silently introduced. Content validity of the
+  # known paths is Check 2's job (conflict markers in the working tree), and
+  # the two together are the real contract: every unmerged path is a known
+  # conflict path, and every known conflict path is marker-free.
+  local _cr_unexpected=""
+  local _cr_u_path
+  while IFS= read -r _cr_u_path; do
+    [ -z "$_cr_u_path" ] && continue
+    if ! printf '%s\n' "$_cr_conflict_files" | grep -qxF "$_cr_u_path"; then
+      _cr_unexpected="${_cr_unexpected}${_cr_u_path}
+"
+    fi
+  done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
+
+  if [ -n "${_cr_unexpected:-}" ]; then
+    _cr_error "Unmerged path(s) the session was never given:"
+    printf '%s' "$_cr_unexpected" | sed 's/^/    /' >&2
     git merge --abort 2>/dev/null || true
     return 1
   fi
@@ -515,7 +547,7 @@ the resolved files after this session ends."
   done <<< "$_cr_conflict_files"
 
   if [ "$_cr_marker_found" = true ]; then
-    _cr_error "Claude staged files with unresolved conflict markers"
+    _cr_error "Conflict markers remain in the working tree after the session"
     git merge --abort 2>/dev/null || true
     return 1
   fi

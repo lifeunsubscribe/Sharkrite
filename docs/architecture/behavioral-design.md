@@ -661,23 +661,34 @@ All review comment queries MUST filter by body marker (`contains("<!-- sharkrite
 
 **The canonical staleness check is SHA-based, not timestamp-based.** The 2-reroute guard in `workflow-runner.sh::phase_assess_and_resolve` is defense-in-depth; with correct SHA detection it should rarely fire.
 
+**Every staleness/currency decision in the orchestrated fix loop uses the SHA oracle.** There are two sites in the fix loop (a third timestamp-only site, `detect_review_state` in `lib/utils/pr-detection.sh`, is tracked for migration in issue #1305):
+1. `workflow-runner.sh::phase_create_pr` — decides whether to skip the push/review phase (review already current)
+2. `assess-and-resolve.sh` — decides whether a review is stale and must reroute back to Phase 2
+
+Both sites extract the `commit:<sha>` attribute from the review marker and compare it to the current branch HEAD. Using the same oracle at both sites prevents the deadlock described in issue #1303: Phase 2 declares the review "current" while Phase 3 declares it "stale", producing an infinite reroute with no progress (live: issue #1231, batch `20261014-184054`, 7h23m wasted after correct dev work).
+
 **Primary check (SHA-based):** `local-review.sh` embeds the HEAD SHA at review generation time into the review marker:
 ```
 <!-- sharkrite-local-review model:X timestamp:Y commit:<sha> -->
 ```
-`assess-and-resolve.sh` extracts this SHA and compares it to the current branch HEAD:
-- `review_sha == HEAD_sha` → review covers HEAD, proceed to assessment (no reroute)
-- `review_sha` is ancestor of HEAD → review is genuinely stale (fix commits were pushed after review), reroute to Phase 2
-- `review_sha` not in ancestry chain → likely a force-push, log warning and treat as stale
+Both sites use `extract_review_sha` (defined in `lib/utils/review-helper.sh`) to parse the embedded SHA:
+- `review_sha == HEAD_sha` → review covers HEAD, no reroute / skip is valid
+- `review_sha` is ancestor of HEAD → review is genuinely stale (fix commits were pushed after review), do not skip / reroute to Phase 2
+- `review_sha` not in ancestry chain → likely a force-push, treat as stale
+- No `review_sha` (pre-#354 review) → fall back to timestamp comparison
 
-**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility.
+**Fallback check (timestamp-based):** For reviews generated before issue #354 (no `commit:` attribute), the old epoch-seconds comparison is used as fallback. This path is preserved for backward compatibility at both sites.
 
 **Why timestamps alone are insufficient (issue #354):**
 Timestamps are racy: the review's `createdAt` from the GitHub API can lag behind the local git commit timestamp by seconds to minutes (API eventual consistency). In a fix-loop iteration, a fix commit pushed at T+1 and a new review generated at T+2 can still appear "stale" if the API returns T+1 as the review timestamp but the local commit time reads T+2. SHAs are deterministic: the review either covers this commit or it doesn't.
 
 **Live false-positive (2026-06-04, issue #354 / PR #342):** Finding counts changed across iterations (MEDIUM/LOW counts fluctuated), proving the review was being regenerated. Yet the staleness detector still flagged each fresh review as stale — the 2-reroute guard fired, the workflow exited 1, and a clean/mergeable PR was abandoned. Fix: embed SHA in review marker, compare SHAs instead of timestamps.
 
-**Do NOT remove timestamp comparison.** It's still used for display (`--status` timestamp output) and as a backward-compat fallback for pre-fix reviews. Only remove it from the *staleness decision* path — which this fix does.
+**Live deadlock (2026-10-14, issue #1303 / PR #1304):** Phase 2's timestamp-based "current" check and Phase 3's SHA-based "stale" check disagreed. Phase 3 rerouted to Phase 2; Phase 2 declined to regenerate. Hard-fail after 7h23m on a correct, clean PR. Fix: align Phase 2's skip decision to the same SHA oracle as Phase 3.
+
+**Do NOT replace SHA comparison with timestamp comparison** at either site. Timestamps are racy (GitHub API eventual consistency lag). `assess-and-resolve.sh` has carried this note since #354; `workflow-runner.sh::phase_create_pr` now carries it too.
+
+**Do NOT remove timestamp comparison.** It's still used for display (`--status` timestamp output) and as a backward-compat fallback for pre-#354 reviews. Only remove it from the *primary staleness decision* path.
 
 **Do NOT increase the reroute cap from 2.** The guard isn't the bug; the detection is. Bumping the cap delays failure without addressing root cause.
 
@@ -795,7 +806,7 @@ The per-proposal preview loop in `docs-command.sh::_docs_update_engine` enforces
 - **EDIT on a large file** — a proposal to EDIT a file larger than 2,000 bytes is auto-skipped with a warning (the model only saw the first 2,000-byte excerpt, so applying the proposal would truncate the unseen content). This check fires only for files that passed the context-membership check above.
 - **CREATE for a path that already exists** — a proposal to CREATE a file that already exists locally (`${RITE_PROJECT_ROOT}/${file}`) or on `origin/<target>` (checked via `git cat-file -e` after a fresh `git fetch origin <target>`) is auto-skipped with a warning (the model authored content without reading the original, so applying would overwrite it wholesale with unreviewed content). Genuinely new paths are unaffected.
 
-The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. A residual window persists from guard check to apply: the interactive preview session runs between the two, so a file pushed to origin during that session is not caught by this guard (`_docs_apply_approved`'s own fetch at ~line 206 pulls the latest remote state but does not re-run the CREATE check).
+The `git fetch origin <target>` before the proposal loop ensures the `origin/<target>` ref is current at guard check time — a file pushed to origin between the last fetch and the guard check would otherwise bypass the CREATE guard. **Apply-site defense-in-depth (#1232):** `_docs_apply_approved` mirrors this guard: after forking the worktree from `origin/<target>` (with its own `git fetch` at ~line 206), it re-checks `[ -f "$_aa_target_file" ]` before writing any CREATE proposal. A file pushed to origin during the interactive preview session will be present in the worktree (the fetch pulled it) and the apply-site guard refuses the write with a warning. This shrinks the window from the full preview session to the fetch-to-write interval, provided the apply-site fetch succeeds (the fetch is `|| true`; on network failure the worktree may not contain the newest origin files, so the residual window degrades back to the full preview session (the last successfully fetched origin/<target> state)).
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 
@@ -1316,6 +1327,21 @@ In two finance-glance planning runs, the phantom resolver regenerated issues alr
 **SDK-grounded host suppression (issue #1155, 2026-10-14):** A host candidate that passes the fixture check is additionally checked against the manifest's grounded packages before being spiked. The vendor token — the first label of the registrable domain (e.g. `supabase` from `supabase.co`) — is matched at word boundaries (`[@/-]` separators) against each grounded package name (e.g. `@supabase/supabase-js`). When matched, the session contract comes from a typed SDK already in the manifest; the host is not an unverified external feed, so no spike is emitted. An INFO line names the grounding package. The suppression check requires the package to be grounded (present in the manifest), not merely mentioned in issue bodies.
 
 **Why `.` is excluded from the separator class:** Fixture AD exercises a `go.mod` containing `github.com/stretchr/testify`. The vendor token extracted from the `github.com` host is `github` (first label of the registrable domain). If `.` were included in the separator class alongside `@`, `/`, and `-`, the boundary regex `(^|[@/.-])github([@/.-]|$)` would match `github.com/stretchr/testify` — `github` sits at the start of the string, bounded on the right by `.` — causing the `github.com` host to be wrongly suppressed. The grounding mechanism is host-prefix self-grounding: the vendor token must match a package that is an SDK for that host (e.g., `@supabase/supabase-js` grounds `supabase.co`). A Go module path whose first domain label happens to equal the vendor token is not such an SDK. Excluding `.` confines the suppression to genuine SDK packages while rejecting coincidental Go module path matches. The accepted trade-off: a package name that uses `.` as a word-boundary separator (present in Go module paths by construction) would not ground a host even if it were the intended SDK. The `-` separator is retained because real SDK packages use it as a token boundary: `google-auth` grounds `*.google.com`, `stripe-python` grounds `*.stripe.com`.
+
+**Host-normalization contract — `_normalize_host_to_registrable_domain` (issue #1293, 2026-10-19):**
+
+`_normalize_host_to_registrable_domain` maps an extracted hostname to its registrable domain so that subdomain variants (`api.foo.co`, `auth.foo.co`) collapse to one key (`foo.co`) for fixture-grounding and spike-dedup purposes.  The function is **fail-closed**: when the suffix structure is unknown, it returns the host unchanged rather than producing a bare public suffix.  This guard substantially reduces the risk of a missing list entry silently collapsing a distinct service onto a public-suffix key, though it covers only the SLD keywords explicitly listed in the guard regex — suffixes outside that set still fall through to the two-label rule.
+
+Four specific behaviors are guaranteed:
+
+1. **Trailing dot stripped before any other processing.** FQDN form `api.authsvc.io.` normalizes identically to `api.authsvc.io`.  Without this, a sentence-final URL yields two spike keys for one service.
+2. **IP literals returned unchanged.** A host whose dot-separated labels are all numeric (e.g. `10.0.0.5`) is returned as-is — no registrable-domain concept applies to an IP.
+3. **Known multi-part suffixes handled explicitly.** A hardcoded list covers ccSLD patterns (`co.uk`, `co.in`, …) and common hosting suffixes (`vercel.app`, `herokuapp.com`, …).  For a host ending in one of these suffixes the registrable domain is `<registrar-label>.<suffix>`.
+4. **Unknown ccSLD-like patterns return the host unchanged.** After the multi-part list, the last-two-labels rule is applied.  If the result matches `^(co|com|net|org|gov|edu|ac|sch|go|or|ne|gob|mil|govt)\.[a-z]{2}$` — a known SLD keyword followed by a 2-letter ccTLD that is not in the hardcoded list — the function returns the original host rather than emitting a bare public suffix.  This is the fail-closed guard for patterns the list does not yet cover; SLD keywords outside this alternation still fall through to the two-label rule.
+
+The unverified-integration warning names **both** the normalized domain and the originating hostname (e.g. `unverified external integration: payments.io (from: api.payments.io)`), so an operator can locate the reference in the planning doc without cross-referencing subdomains.
+
+**Verify:** `grep -n 'registrable domain' docs/architecture/behavioral-design.md`
 
 **Lint and creation share non-spike ordinal space (issue #1150, 2026-10-13):**
 
@@ -1946,3 +1972,169 @@ The skipped-gone preflight exists because ledger files are never pruned after pr
 **Overall exit code:** 0 if all items synced/current/skipped-by-rail; 1 if any operational failure (fetch/push error) occurred.
 
 **Regression tests:** `tests/regression/sync-integration-branch.bats` — dry-run dispatch for all three forms, design-contract greps (no rebase in `sync_integration_branch`, no stash anywhere, `--force-with-lease` in `sync_issue_branch` only, resolver availability-guarded), and behavioral rail tests (live-lock, dirty-worktree, staleness threshold, conflict-exits-0). **Not yet pinned:** the already-current (Rail 4) exit-0 path and the Phase A skipped-gone preflight behavioral test.
+
+## A Timeout Without SIGKILL Escalation Is Advisory (#1301)
+
+`timeout N cmd` sends SIGTERM at the deadline and then **waits for cmd to
+exit**. A process that ignores SIGTERM — or that is blocked writing to a pipe
+whose reader is gone — never exits, and `timeout` waits with it indefinitely.
+The deadline silently becomes a suggestion, and the symptom in the logs is
+indistinguishable from a slow call.
+
+Every LLM session routes through `run_with_timeout`, and `claude` is a node
+process that does not reliably die on SIGTERM. Batch `20261014-184054`:
+
+| Session | Deadline | Actual |
+|---|---|---|
+| `claude_fix_session` | 1800s | 2h 39m 38s |
+| `review_generation` | 600s | 4h 25m 35s |
+| `claude_dev_session` | 1800s | 10h 58m 3s |
+
+Issue #1231 ran 7h38m and #1262 ran 11h08m on the back of that.
+
+**The caps did not help, and could not have.** `RITE_MAX_ISSUE_HOURS` (4h) and
+`RITE_MAX_SESSION_HOURS` (12h) are evaluated at phase boundaries. A single
+unbounded call never reaches a boundary, so no cap is ever consulted. Bounding
+the individual call is therefore the only place this can be fixed; the caps
+are a backstop for *accumulated* work, not a watchdog.
+
+**`test-gate.sh` had it right the whole time.** Its bats watchdog uses
+`gtimeout -k 30` (`test-gate.sh:2433`), which is exactly why the gate reliably
+dies at its 1800s deadline while every LLM call could hang. It was the only
+`-k` in the codebase. `run_with_timeout` now carries the same contract: TERM at
+the deadline, KILL `RITE_TIMEOUT_KILL_AFTER` (default 30) seconds later. GNU
+`timeout`/`gtimeout` both support `-k`, and `ensure_timeout_cmd` only ever
+resolves to one of those two, so the flag is always available when
+`RITE_TIMEOUT_CMD` is set.
+
+**Unbounded is survivable; silent unbounded is not.** When no timeout command
+exists at all, the helper now warns once per process instead of quietly
+dropping the bound. An 11-hour run must not be able to look like a slow call.
+
+**Rule:** any deadline enforced with `timeout` carries `-k`. A bare
+`"$RITE_TIMEOUT_CMD" "$secs"` outside `timeout.sh` reintroduces the defect and
+is rejected by a structural test in
+`tests/regression/claude-timeout.bats`.
+## Promotion Review Is Assessed, Not Just Captured (#1278)
+
+The promotion review is a **fresh audit**, and that is not a bug — it is the
+only review that ever sees every constituent issue integrated together, so
+cross-issue findings appear nowhere else. But the freshness has a cost that
+showed up the first time promote filed its findings (#1273 carried 12 items for
+`supervised-ux`): the promotion PR has no prior review, so `local-review.sh`
+emits no `FIXREVIEW_CONTEXT_SECTION`, and the reviewer re-raises findings each
+constituent issue's own review loop had already judged.
+
+**Why already-reviewed code produces findings again.** Four distinct causes,
+only the last of which was fixable here:
+
+1. **Different diff.** A per-issue review audits one issue against its base.
+   The promotion review audits all of them integrated against `main`.
+2. **Convergence never meant "clean."** A slot converges when zero
+   ACTIONABLE_NOW items remain. DISMISSED and ACTIONABLE_LATER findings were
+   *deliberately* not fixed — the code still reads the same way, so a fresh
+   reviewer finds them again. Dismissed is not fixed.
+3. **Fix commits are new code.** Later rounds legitimately review what earlier
+   rounds produced.
+4. **No memory of prior judgment.** The promotion review had no record of the
+   per-issue assessments, and nothing downstream applied that judgment either.
+
+**The contract.** Phase 5b runs the standard `assess-review-issues.sh` on the
+promotion review after the CRITICAL hard gate and before the merge:
+
+| Classification | Disposition |
+|---|---|
+| ACTIONABLE_NOW | one aggregated issue (`Promotion review ACTIONABLE_NOW findings: <branch>`), deduped |
+| ACTIONABLE_LATER | per-item issues filed by the assessor, deduped |
+| DISMISSED | dropped |
+
+**Both actionable paths dedup, by different routes.** The assessor's own dedup
+lives inside its ACTIONABLE_LATER loop, so NOW items reached the aggregate
+unchecked — and the first live run proved that mattered: promoting
+`plan-quality` re-filed a finding already tracked as #1253, and a second item
+duplicated #1260. `_promote_title_matches_open_issue` now filters the NOW set
+against every open `from-review`/`tech-debt` issue before the aggregate is
+built, and `_promote_strip_tracked_now_blocks` removes the matched blocks from
+the body. When every NOW finding is already tracked, nothing is filed at all.
+
+That filter deliberately reuses the assessor's Stage-1 heuristic — lowercase,
+split on non-alphanumerics, count tokens longer than three characters that
+appear as whole words in an existing title, two or more means the same finding.
+A second, differently-tuned matcher would make the two paths disagree about
+what a duplicate *is*, which is worse than either rule alone. The comparison
+set is every open review/tech-debt issue rather than this PR's, because the
+duplicates a promotion must avoid were filed under the **constituent** issues.
+
+The dedup is best-effort like everything else in Phase 5b: an issue-list fetch
+that fails yields an empty set, nothing is filtered, and the aggregate is filed
+whole — the pre-dedup behaviour, which over-reports rather than losing a
+finding.
+
+Two properties make this the right reuse rather than a parallel classifier:
+
+- **`RITE_ISSUE_NUMBER` is deliberately empty.** That empty value is what
+  widens the assessor's Stage-2 dedup search from "same source issue" to "any
+  open follow-up" — exactly the scope a promotion needs, because the duplicates
+  it must avoid were filed under the *constituent* issues, not under this PR.
+  This is the mechanism that stops cause 4 above from re-filing work already
+  tracked.
+- **Still classify-only, never a fix loop.** Fixing on the integration branch
+  would land code on `main` that skipped the per-issue review cycle. Promote is
+  a gate; it files issues.
+
+**Degradation is one-directional.** The assessment is best-effort — promotion
+has already passed every gate by then, so nothing in Phase 5b may block, retry,
+or fail the merge. Assessor missing, non-zero exit, empty output, or the
+`ALL_ITEMS` sentinel (which means the provider declined to classify) all fall
+through to the pre-existing deterministic raw-review capture (#1209). A broken
+assessor therefore degrades to "captures more than needed", never to "loses
+findings". Treating `ALL_ITEMS` as a successful assessment would invert that,
+which is why it is tested explicitly.
+
+`RITE_ASSESSMENT_TIMEOUT` defaults to 600s on this path rather than the
+per-issue 300s: a promotion review spans every constituent issue and carries
+several times the findings. An operator override still wins.
+
+**Regression:** `tests/regression/promote-review-followup.bats` Group 6 pins the
+three-way outcome (assessed-with-NOW / assessed-with-nothing / not-assessed),
+the env contract passed to the assessor, and the no-bare-`exit` best-effort
+property of the region.
+
+## The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)
+
+`attempt_claude_merge_resolution` returns 0 for "conflicts resolved **in the
+working tree**". It cannot stage: the session prompt says "do NOT run git add",
+and the caller stages via `commit_resolved_conflicts` afterwards. So at
+verification time every known conflict path is still unmerged in the index, by
+design.
+
+Step-6 Check 1 asserted the opposite — `git diff --diff-filter=U` must be
+empty — which is only true if something staged, which only the session could
+have done, which the prompt forbids. **The check could only pass when the
+session disobeyed.**
+
+Check 1 came from #435. #932 moved staging out of the session and added the
+no-git-add instruction, but left the assertion behind. Once sessions actually
+complied, every Claude conflict resolution failed immediately after producing a
+correct one — live: #1231 (PR #1299) and #1143 (PR #1312), both 2026-10-19,
+both correctly merging append-only drift-log entries and independent bats
+tests, both discarded with "Unresolved files remain after Claude session".
+
+**The corrected split of responsibility:**
+
+| Check | Question | Oracle |
+|---|---|---|
+| 1 | Is every unmerged path one the session was given? | index vs `_cr_conflict_files` |
+| 2 | Is every given path marker-free? | working-tree content |
+
+Together those are the real contract. Check 1 still catches a conflict that
+appeared after the path list was captured, or one the session introduced; Check
+2 catches a resolution that left markers behind. Neither tests staging, because
+staging is a later step's job.
+
+**Rule:** a verification step asserts only what the steps before it were
+responsible for establishing. Asserting a postcondition that a *later* step
+owns means the check is reading the wrong stage of the pipeline, and a check
+that can only pass by accident is worse than no check — it fails closed on
+correct work. The prompt text and Check 1's premise are coupled, so
+`tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.

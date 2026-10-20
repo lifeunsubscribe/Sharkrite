@@ -34,7 +34,7 @@ lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
-lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + full-suite + merge + cleanup)
+lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + targeted gate + assessment + merge + cleanup)
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
@@ -569,7 +569,18 @@ rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodi
 rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
 rite --sync <N> [<N>...]  # Rebase issue feature branches onto their resolver-determined base (rebase goes stale-review by design)
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
-rite --promote <branch>    # Promote integration branch to main (PR + review + full-suite + squash-merge + cleanup)
+rite --promote <branch>    # Promote integration branch to main (PR + review + targeted gate +
+                           # CRITICAL hard gate + NOW/LATER/DISMISSED assessment + squash-merge
+                           # + cleanup). Classify-only — there is NO fix loop at promote: fixing
+                           # on the integration branch would land code on main that skipped the
+                           # per-issue review cycle. ACTIONABLE_NOW findings become one
+                           # aggregated issue and ACTIONABLE_LATER become per-item issues —
+                           # both deduped against the follow-ups the constituent issues already
+                           # filed — and DISMISSED are dropped. When every surviving finding is
+                           # already tracked, nothing is filed. If the assessor is unavailable it falls back
+                           # to capturing the raw review — it never silently loses findings.
+                           # See behavioral-design.md → "Promotion Review Is Assessed, Not Just
+                           # Captured".
 ```
 
 **`--status`** (per-issue) shows issue state, PR stats (files/lines/commits), review currency, assessment counts, follow-up issues, session state, logs, and suggests the next command to run.
@@ -664,6 +675,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — a `RITE_*` variable is read in `lib/` but is absent from both `config/project.conf.example` and `config/rite.conf.example`. Pre-existing undocumented vars are exempted via `tools/lint-rules/36-undocumented-rite-var.ledger` (frozen count as of 2026-07-14 — DO NOT add new ledger entries). New vars must be documented with a commented-out option entry in one of the config examples. Genuinely internal (non-config) new variables should use the `_RITE_` prefix, which falls outside this rule's pattern by construction. Suppress with `# sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: ...` on the preceding line for the rare internal var that must keep a bare `RITE_` name.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — a literal `origin/main` (slash form) or `origin main` (two-word form) appears on a non-comment line in one of the ten §5.2 BECOMES-TARGET files (`lib/core/claude-workflow.sh`, `workflow-runner.sh`, `create-pr.sh`, `merge-pr.sh`, `lib/utils/trivial-fix-fastpath.sh`, `mid-run-rebase.sh`, `conflict-resolver.sh`, `scope-checker.sh`, `test-gate.sh`, `stale-branch.sh`). These files are target-branch-aware: they should resolve the target via `resolve_target_branch` (#1033). A hardcoded `origin/main` silently mixes trunk code into integration-branch worktrees. Suppress with `# sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: ...` on the preceding line for sites that are genuinely trunk-relative (§5.1 STAYS-MAIN survivors: local-main housekeeping, cold-start function defaults, gate-selection hints where over-selecting vs main errs safe). See: `docs/architecture/branch-flag-design.md` §5/§6.4.
 - `UNSCOPED_LINTER_IN_BATS` (Rule 40) — a `.bats` file invokes `sharkrite-lint.sh` (or a `$*LINT_SCRIPT` variable) via `bash` without `SHARKRITE_LINT_ONLY` scoping on the same line or any of the 3 preceding lines. An unscoped full-scan per `@test` under `bats --jobs 8` starves the CPU, blows the 120s `BATS_TEST_TIMEOUT`, and drags the gate to its 1800s watchdog (live: batch 155134 2026-07-18, slot #1021 2026-10-11). Fix: add `SHARKRITE_LINT_ONLY=NN run bash "$LINT_SCRIPT"` (inline prefix) to scope to the rule(s) under test. Genuine all-rules sweeps must carry a suppression and be serial-marked. Suppress with `# sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: ...` on the preceding line; state why scoping would defeat the test purpose and confirm the file is serial-marked.
+- `BARE_BSD_SED_I_IN_BATS` (Rule 41) — a `.bats` file uses bare `sed -i ''` (the BSD form). Rule 10 forbids this in `bin/`, `lib/` and `tools/`, but its file list only covers `*.sh` there, so `.bats` files were unscanned. On GNU sed (Linux CI) the empty string is read as the *script* and the expression as a *filename*, so the call dies with `sed: can't read s/a/b/: No such file or directory` — passing on the macOS dev box and failing the Linux half of the matrix. Live: `gate-function-scoped-selection.bats` used it in a fixture helper, 14/14 green on macOS and 14/14 red on ubuntu-latest, with main's CI red for days and the cause buried in a ~40-failure log (2026-10-14). Fix: source `lib/utils/portable-cmds.sh` and call `portable_sed_i`. Exempt: `@test` title lines, single-quoted heredoc bodies (that content belongs to the fixture file being written), comments, and `tests/fixtures/`. Suppress with `# sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: ...` on the preceding line for a fixture STRING or grep pattern that is never executed as sed.
 
 **Suppressing false positives:**
 
@@ -687,6 +699,7 @@ Supported suppression rules:
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — for the rare internal `RITE_*` variable that must keep a bare `RITE_` name despite not being a user-facing config var. State why the `_RITE_` prefix cannot be used and why the var does not belong in either config example.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — for sites in the ten BECOMES-TARGET files where `origin/main` is genuinely trunk-relative: local-main housekeeping in `merge-pr.sh`, already-fixed trunk-health verification in `workflow-runner.sh`, cold-start function defaults in `conflict-resolver.sh`/`scope-checker.sh`/`test-gate.sh`, gate-selection hints in `stale-branch.sh`, and cross-worktree protection fallbacks in `claude-workflow.sh`. State the specific §5.1 reason (trunk housekeeping / cold-start default / gate-selection hint / etc.).
 - `UNSCOPED_LINTER_IN_BATS` (Rule 40) — for genuine all-rules sweeps in `.bats` files where `SHARKRITE_LINT_ONLY` would defeat the test purpose (e.g. stdin-safety tests, structural grep tests). State why scoping is inappropriate and confirm the file carries a `# sharkrite-gate-serial` marker. Note: Rule 40's static analysis cannot see `SHARKRITE_LINT_ONLY` exported in `setup()` — a helper function's invocation may also need suppression even when setup exports the var; document which setup function provides the scoping.
+- `BARE_BSD_SED_I_IN_BATS` (Rule 41) — for a fixture STRING or a grep pattern in a `.bats` file that contains the BSD form but is never executed as sed (rule meta-tests do this to assert Rule 05/10 fire). State that the occurrence is inert.
 
 **Pre-push hook** (optional):
 ```bash

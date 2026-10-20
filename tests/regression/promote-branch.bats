@@ -162,17 +162,35 @@ teardown() {
 # Group 1: bin/rite --promote dispatch
 # ===========================================================================
 
+# bin/rite checks for a git repository BEFORE it parses args, and
+# setup_test_tmpdir cd's into a bare temp dir. Without an init the run dies on
+# "Not inside a git repository" and never reaches --promote validation at all:
+# `$status -ne 0` then passes for the wrong reason while the message assertion
+# fails. That is exactly how both tests read on main. The repo is initialized
+# per-test (hermetic — never the real checkout, which a real --promote could
+# touch), and each test now also pins WHY it failed so the precondition can
+# never masquerade as arg validation again.
+_init_bare_repo_for_arg_test() {
+  git init -q . >/dev/null 2>&1
+  git config user.email t@t
+  git config user.name t
+}
+
 @test "bin/rite --promote rejects missing value" {
-  # Run without providing a value — must exit non-zero with an error mentioning --promote
+  _init_bare_repo_for_arg_test
   run bash "$RITE_REPO_ROOT/bin/rite" --promote < /dev/null 2>&1 || true
   [ "$status" -ne 0 ]
   echo "$output" | grep -qi "\-\-promote"
+  # It must be the arg-validation error, not a precondition bail.
+  ! echo "$output" | grep -qi "not inside a git repository"
 }
 
 @test "bin/rite --promote rejects flag-shaped value" {
+  _init_bare_repo_for_arg_test
   run bash "$RITE_REPO_ROOT/bin/rite" --promote --supervised < /dev/null 2>&1 || true
   [ "$status" -ne 0 ]
   echo "$output" | grep -qi "\-\-promote"
+  ! echo "$output" | grep -qi "not inside a git repository"
 }
 
 @test "bin/rite --dry-run --promote <branch> prints plan and exits 0" {
@@ -324,6 +342,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -398,6 +417,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -477,6 +497,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -548,6 +569,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -621,6 +643,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
 export PATH="$_fake_bin:\$PATH"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
@@ -714,6 +737,7 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
 export PATH="$_fake_bin:\$PATH"
 export _PROMOTE_CALLLOG="$_call_log"
 source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
