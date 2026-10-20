@@ -377,6 +377,21 @@ CLAUDE.md's diagnostic logging list (lines 950-956) omits the new `OVERLAP_DEFER
 **Suspected inaccuracy**: `branch-flag-design.md:276` documents single-issue promote as `rite --promote <branch> --cherry-pick <issue>`, but the shipped command uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1341 issue:1233 recorded:2026-10-20T15:09:11Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1341 issue:1233 recorded:2026-10-20T15:21:34Z -->
+**Changed files**: lib/core/docs-command.sh, tests/regression/rite-docs-directed-update.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `---END---` as a proposal terminator is documented nowhere, but the proposal format now uses a per-generation unique end token (`---END-RANDOMRANDOM---`) instead of the hardcoded `---END---`, so any doc or CLAUDE.md section describing the directed-update proposal format with `---END---` as the block terminator is now inaccurate.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1344 issue:1213 recorded:2026-10-20T15:51:57Z -->
 **Changed files**: lib/utils/gate-runners.sh, tests/regression/gate-tiered-scoped-cycles.bats
 **Implicated docs**:
