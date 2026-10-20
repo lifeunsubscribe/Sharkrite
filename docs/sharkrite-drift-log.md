@@ -806,3 +806,17 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 
 `behavioral-design.md §"Supervised commit/push"` Enforcement now claims issue #1368 covers the `RITE_GATE_FINDINGS` builder extraction, but #1368 may only track the commit+push body extraction.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T22:43:49Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s "macOS AC only" description of `RITE_CAP_AUTORESUME` is wrong — `cap-resume.sh` waits and re-invokes the batch on battery and non-macOS too, skipping only the `caffeinate` hold.
+<!-- /sharkrite-doc-drift -->
