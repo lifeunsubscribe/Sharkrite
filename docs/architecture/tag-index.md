@@ -49,6 +49,3 @@
 - behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
 
 
-## DO
-- encountered-issues.md → Dev session deletes unrelated regression tests — scope boundary not enforced
-
