@@ -1747,11 +1747,13 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
+      increment_failed   # session tracker: invariant_violated counts as processed
 
     elif [ $EXIT_CODE -eq 5 ]; then
       # Usage cap reached — abort batch, write resume manifest, print resume cmd.
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
+      increment_failed   # session tracker: usage_cap counts as processed
 
       # Read reset-line persisted by claude.sh when the cap was detected.
       # RITE_BATCH_ID is always set in batch context (see top of this file), so the
@@ -1849,6 +1851,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="auth_failure"
+      increment_failed   # session tracker: auth_failure counts as processed
       AUTH_FAILURE_ISSUES+=("$ISSUE_NUM")
       _BATCH_AUTH_HALT=true
       break
@@ -1876,6 +1879,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"
+      increment_failed   # session tracker: failed counts as processed
     fi
   fi
 
