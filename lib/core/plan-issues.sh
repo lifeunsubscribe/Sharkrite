@@ -2588,6 +2588,7 @@ _lint_issues_strict() {
             if [ -n "$_ch7_seq_shared" ]; then
               print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pi]}' and '${_titles[$_ch7_pj]}' have a dep edge (After #${_ch7_pi_ord_s}) but also declare (can run in parallel with #${_ch7_pi_ord_s}) — annotation is contradictory and After #${_ch7_pi_ord_s} takes precedence; both modify '${_ch7_seq_shared}'; stripping the parallel annotation" >&2
               _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pj]}" "$_ch7_pi_ord_s"
+              _parallel_with[$_ch7_pj]=$(printf '%s\n' "${_parallel_with[$_ch7_pj]:-}" | grep -vxF "#${_ch7_pi_ord_s}" || true)
               _warning_count=$((_warning_count + 1))
             fi
           fi
@@ -2609,6 +2610,7 @@ _lint_issues_strict() {
             if [ -n "$_ch7_sq2_shared" ]; then
               print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pj]}' and '${_titles[$_ch7_pi]}' have a dep edge (After #${_ch7_pj_ord_s}) but also declare (can run in parallel with #${_ch7_pj_ord_s}) — annotation is contradictory and After #${_ch7_pj_ord_s} takes precedence; both modify '${_ch7_sq2_shared}'; stripping the parallel annotation" >&2
               _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pi]}" "$_ch7_pj_ord_s"
+              _parallel_with[$_ch7_pi]=$(printf '%s\n' "${_parallel_with[$_ch7_pi]:-}" | grep -vxF "#${_ch7_pj_ord_s}" || true)
               _warning_count=$((_warning_count + 1))
             fi
           fi
@@ -2662,7 +2664,9 @@ _lint_issues_strict() {
           # Neither suppressed — auto-chain: rewrite later issue, strip annotations both ways
           _autochain_rewrite_deps "$issues_file" "$_ch7_later_title" "$_ch7_after_num"
           _autochain_remove_par_annotation "$issues_file" "$_ch7_earlier_title" "$_ch7_later_ord"
+          _parallel_with[$_ch7_earlier]=$(printf '%s\n' "${_parallel_with[$_ch7_earlier]:-}" | grep -vxF "#${_ch7_later_ord}" || true)
           _autochain_remove_par_annotation "$issues_file" "$_ch7_later_title" "$_ch7_after_num"
+          _parallel_with[$_ch7_later]=$(printf '%s\n' "${_parallel_with[$_ch7_later]:-}" | grep -vxF "#${_ch7_after_num}" || true)
           print_info "[auto-chained] parallel-file-overlap: '${_ch7_later_title}' rewired After #${_ch7_after_num} ('${_ch7_earlier_title}'); both modify '${_ch7_shared}'" >&2
 
           # Update _rev_adj in memory so the next fixpoint pass sees this new edge
