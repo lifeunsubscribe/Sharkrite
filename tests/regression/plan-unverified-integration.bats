@@ -110,6 +110,11 @@ setup() {
   # shellcheck disable=SC1090
   eval "$(sed -n "${_di_start},${_di_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
 
+  # Top-level constant from plan-issues.sh (line ~93) — not inside any function,
+  # so not captured by the sed line-range extraction above. Must be set explicitly.
+  # Used by _detect_unverified_integrations to budget the spike title display name.
+  _RITE_PLAN_TITLE_MAX_LEN=50
+
 }
 
 teardown() {
