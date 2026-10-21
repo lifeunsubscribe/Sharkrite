@@ -834,3 +834,13 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: `CLAUDE.md`'s "macOS AC only" qualifier on `RITE_CAP_AUTORESUME` is wrong — `cap-resume.sh` waits and re-invokes the batch on battery and non-macOS too, skipping only the `caffeinate` hold.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1383 issue:1372 recorded:2026-10-21T15:23:05Z -->
+**Changed files**: lib/utils/sanitize-output.sh, tests/regression/sanitize-rtk-wrappers.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md says `sanitize_generated_commands` "strips these" — but the PR change makes it preserve (not strip) rtk meta-commands like `gain`, `discover`, `stats`, `init`, `read`. The documented behavior claims the function strips all rtk-wrapped commands at the four seams, but it now selectively preserves meta-commands through unchanged.
+
+`sanitize_generated_commands` is documented as stripping rtk-wrapped commands, but it now preserves meta-commands (`gain`, `discover`, `stats`, `init`, `read`) intact rather than stripping them.
+<!-- /sharkrite-doc-drift -->
