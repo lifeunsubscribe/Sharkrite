@@ -1437,15 +1437,40 @@ The original H5 planning proposal called for a self-critique LLM pass after issu
 
 **Check 7 Auto-Chain Contract (issue #1388, 2026-10-21):** Two issues are *derived-concurrent* when neither is reachable from the other via the `_rev_adj` adjacency already built by Check 2's Kahn pass — no parallel annotation is required for detection. For each derived-concurrent pair sharing a file in `Files to Modify`, Check 7 either auto-chains the later issue (lower non-spike ordinal → `After #N` added to the later issue's `Dependencies` line, both-way parallel annotations stripped) or warns when either side carries a `parallel-file-overlap` suppression marker (disjoint-functions escape hatch). The loop runs to fixpoint: after each auto-chain, `_rev_adj` is updated in memory and reachability is recomputed — this avoids re-chaining pairs already covered by earlier rewrites (e.g. once A→B and B→C are both in `_rev_adj`, A→C is transitively covered, so a direct A→C edge is not added if the pair is seen as sequential before it fires). Annotations in `_parallel_with` are consumed only for annotation-stripping, never for detection.
 
-The complete four-linter chain (in call order within `generate_issues`):
+The complete linter chain (in call order within `generate_issues`):
 1. `_detect_unverified_integrations` — external dependency grounding (#351)
 2. `_dedup_issues` — title deduplication
 3. `_validate_coverage` — coverage checklist 1:1 invariant (#348)
 4. `_lint_issues` — service-layer anti-patterns
 5. `_lint_provenance_flags` — provenance table signal quality (#367)
-6. `_lint_issues_strict` — graph checks, dangling refs, verification paths, deferral citations (#353)
+6. `_lint_issues_strict` — graph checks, dangling refs, verification paths, deferral citations (#353); **zero-LLM contract**
+7. `_lint_negative_existence_claims` — two-stage negative-existence check (#1390); see below
 
-**If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match.
+**Fifth application — two-stage negative-existence claim lint (#1390, 2026-10):**
+
+Two orrery planning rounds were blocked by the planner asserting repo-state negatives that were false: round 3 ("no `adult_confirmed_at` migration" while the column existed at `init.sql:17`) and round 6 ("there is no `find_profile_by_username` function yet" while the function was defined at `init.sql:363`). Both were caught only by human review.
+
+`_lint_negative_existence_claims` in `lib/core/plan-issues.sh` addresses this with a two-stage design:
+
+**Stage 1 — deterministic gate (zero LLM):** for each body line matching a negative-existence phrase (`no <X> yet`, `does not exist` / `doesn't exist`, `no migration`, `no schema change`, `not in the schema`, `missing`), extract identifier-shaped tokens (backtick-quoted, snake_case, camelCase) and run `git grep -nw <ident> -- ':!*.md'` from `RITE_PROJECT_ROOT`. No hit → silent pass, no LLM call. This gate ensures the LLM is only invoked for raw hits — cost is zero on the common clean-plan path.
+
+**Stage 2 — triage validation (haiku, narrow binary):** each Stage 1 hit is classified by `provider_resolve_model triage` (the haiku role — narrow binary classification, not deep reasoning). The prompt gives the claim line, identifier, and the first hit's `file:line` context, and asks: `CONTRADICTED` or `CONSISTENT`?
+
+| Stage 2 verdict | Action |
+|---|---|
+| `CONTRADICTED` | `negex-lint: WARNING: negative-existence: '<ident>' claimed absent in '<title>' but defined at <file:line>` |
+| `CONSISTENT` | Drop silently (claim is scoped to a different layer/component) |
+| Provider unavailable / no parseable verdict | `negex-lint: WARNING: … (unvalidated)` — findings degrade, never disappear |
+
+The function is **separate from `_lint_issues_strict`** so its triage model call does not violate that function's zero-LLM contract. It is also **non-fatal** (always exits 0, warn-only) — the preview feedback loop owns the fix.
+
+**Suppression (per issue):**
+```
+<!-- sharkrite-plan-lint disable negative-existence - Reason: ... -->
+```
+`Reason:` field is required; a marker without `Reason:` is rejected and the check runs anyway.
+
+**If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match. The two-stage design above (`_lint_negative_existence_claims`) is the canonical example: Stage 1 is fully deterministic and gates LLM cost to the non-common case; Stage 2 uses only the triage role (haiku) for a narrow binary classification.
 
 **Suppression markers (inline per item, not env-var flags):**
 
@@ -2423,6 +2448,16 @@ bad paragraph and a wrong ADR edit is a wrong product. It gets its own pass.
    question is never asked twice.
 3. **Apply.** Changes are described narratively *and* stated explicitly, then
    applied, rejected, or iterated on through the same loop.
+4. **Restructure.** When the declared documentation is one oversized document
+   (this file, at the time of writing: 2,283 lines, 38 contract sections, the
+   ADR and every feature doc concatenated) — or when there is no ADR at all —
+   `align-docs` can propose **splitting it into an ADR plus feature docs**, and
+   **consolidating** that result with an existing ADR and feature docs:
+   merging overlapping sections, de-duplicating assertions, re-linking the ADR,
+   re-pointing `sharkrite-enforced-by` markers. Boundary scoping favors few
+   docs that stay comprehensive over many thin ones. It is a structural edit
+   to human documents, so it goes through the same propose/approve loop, and
+   it is the mechanism behind the measured-threshold split below.
 
 **Simplified mode** when no drift entries exist: deterministic reference and
 test checks run over every doc; the model pass runs **only** over docs whose
@@ -2431,6 +2466,30 @@ update recommendations from the reference checks are folded into this one
 round of approvals so the operator is not asked twice. Zero changes since last
 align → zero model calls.
 
+### Queryability: the docs map is the index, content is read by anchor
+
+No pass reads a whole document to find out whether something is in it.
+`lib/utils/docs-map.sh` already builds `.rite/state/docs-map.tsv` — every
+doc's headings with a per-file `last_verified_sha` ("catalog as map, not
+content") — and that map is the query layer for **every** pass here: Tier 1,
+Tier 2, `align-docs`, and `rite plan`. A pass consults the map to decide which
+files and which sections it needs, then reads only those sections by heading
+anchor. The byte cap bounds *content loaded per pass*; it never bounds *what
+is discoverable*. That `rite plan`'s 50 KB auto-discovery cap applied to
+discovery itself — so a 217 KB design doc was either loaded whole or not seen —
+is the oversight this corrects.
+
+The map must be rebuilt whenever a doc changes: on merge of any PR touching
+`docs/`, on the promote docs-PR, and as the final step of `align-docs`. Today
+only `rite docs` rebuilds it, and the live map was 64 commits and four doc
+changes stale when measured. The per-file SHA doubles as the ledger
+`align-docs` simplified mode uses to decide which docs' referenced code changed
+since the last alignment.
+
+The tag index (`tag-index-system.md`, still a proposal) is the router layer
+above this map — tag → heading pointer. This contract neither depends on it
+nor changes it.
+
 ### Keeping it lean over time
 
 - **Every model pass emits a diag**: `[diag] DOC_PASS kind=promote|align
@@ -2438,8 +2497,8 @@ align → zero model calls.
   The retired layer rotted for ~130 runs because nothing measured it.
 - **Oversized docs split.** When a pass's measured duration exceeds a
   configured threshold (order of a minute or two), the workflow suggests
-  `rite align-docs`, and the next alignment **proposes** splitting the doc into
-  focused files — a structural edit to a human document, so it goes through the
+  `rite align-docs`, and the next alignment **proposes** a restructure (step 4
+  above) — a structural edit to a human document, so it goes through the
   approval loop and updates the ADR's references in the same change. The
   trigger is the diag, never a feeling.
 
@@ -2469,6 +2528,9 @@ align → zero model calls.
 - **Associating individual issues with feature docs** — quota-driven bloat.
 - **An open-ended "review the architecture" prompt inside `align-docs`** —
   the unbounded input in a new costume. The rubric lives in the ADR.
+- **Whole-document loading under a byte cap as the discovery mechanism** —
+  what the cap should bound is content read, not content findable. Query the
+  map; read by anchor.
 
 **Enforcement:** to be pinned per issue as the set lands. Planned:
 `tests/regression/doc-drift-entry-schema.bats` (fields, per-doc/per-branch
@@ -2477,4 +2539,9 @@ path — structural grep plus a stubbed-provider run that must make zero calls),
 `promote-doc-gate-interactive.bats` (no `--auto` path reaches the merge without
 the prompt; reject does not block merge; accepted entries fold into the docs PR
 body), `align-docs-approval-history.bats`, and the `DOC_PASS` diag presence
-check. `sharkrite-enforced-by` marker parsing gets its own file.
+check. `sharkrite-enforced-by` marker parsing gets its own file. Queryability:
+`docs-map-rebuild-on-doc-change.bats` (merge of a docs-touching PR, promote
+docs-PR, and `align-docs` all leave the map at HEAD) and
+`plan-reads-docs-map.bats` (`rite plan` consults the map before loading any
+content; a section past the byte cap is still discoverable). Restructure:
+`align-docs-restructure-proposes-not-writes.bats`.

@@ -1258,7 +1258,7 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
         # Last resort: branch tip — validated as this PR's squash commit to guard
         # against a concurrent merge having moved the tip.
         git_fetch_safe origin "$PR_BASE" || true
-        SQUASH_SHA=$(git rev-parse "origin/$PR_BASE" 2>/dev/null || true)
+        SQUASH_SHA=$(git rev-parse --verify --quiet "origin/$PR_BASE" 2>/dev/null || true)
         _tip_subject=$(git log -1 --format=%s "${SQUASH_SHA:-HEAD}" 2>/dev/null || true)
         case "$_tip_subject" in
           *"(#$PR_NUMBER)"*) : ;;          # subject carries (#PRNUM) — tip is this PR's squash commit

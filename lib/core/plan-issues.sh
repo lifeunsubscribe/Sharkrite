@@ -1166,8 +1166,8 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
   fi
 
   # Strict deterministic validator: graph checks, dangling refs, verification
-  # paths, and deferral citations. Runs last in the linter chain. Errors (cycles,
-  # unresolved refs) are fatal; warnings are non-fatal.
+  # paths, and deferral citations. Runs last in the deterministic linter chain.
+  # Errors (cycles, unresolved refs) are fatal; warnings are non-fatal.
   # Pass existing_issues so dangling-ref check can validate against open issues.
   _strict_lint_rc=0
   _lint_issues_strict "$temp_file" "$existing_issues" || _strict_lint_rc=$?
@@ -1177,6 +1177,12 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
     rm -f "$temp_file"
     return "$_strict_lint_rc"
   fi
+
+  # Negative-existence claim lint: warn when plan text asserts a symbol absent
+  # while git grep finds it in the repo. Two-stage: deterministic git grep gate +
+  # triage-model validation. Separate from _lint_issues_strict so its LLM call
+  # does not violate that function's zero-LLM contract. Non-fatal: warn-only.
+  _lint_negative_existence_claims "$temp_file" || true
 
   # Section-completeness lint: every block must carry all required runbook
   # sections. Attempts targeted per-block regeneration on failure (bounded:
@@ -2837,6 +2843,214 @@ pytest"
   fi
 
   return "$_strict_exit"
+}
+
+# =============================================================================
+# Negative-existence claim lint (two-stage): detect plan text asserting that a
+# symbol does not exist when the symbol actually appears in the repo.
+#
+# Motivation: two orrery approval blockers were caused by the planner asserting
+# repo-state negatives ("no migration", "there is no function yet") that were
+# false — the symbols existed in the repo. Both were caught only by human review.
+#
+# Stage 1 — deterministic (zero LLM): for each body line matching a
+# negative-existence phrase, extract identifier-shaped tokens (backtick-quoted,
+# snake_case, camelCase) and git-grep them against tracked non-markdown files.
+# No hit → silent; no LLM call is made (gates cost to the non-common path).
+#
+# Stage 2 — triage validation (LLM, narrow binary): each Stage 1 hit is
+# classified by the triage model (haiku) with the claim line + hit context.
+# Only a "CONTRADICTED" verdict emits a warning. A "CONSISTENT" verdict
+# (e.g., the claim is scoped to a different layer) is dropped silently.
+# Provider unavailable or call fails → the raw hit is still reported, tagged
+# "(unvalidated)" — findings degrade gracefully, never disappear.
+#
+# Known non-goal: positive-claim verification ("X exists" in the plan when it
+# doesn't) — different class, different failure economics. The provenance lint
+# and Check 4 (verification paths) cover the positive-claim residue.
+#
+# Suppression (per issue):
+#   <!-- sharkrite-plan-lint disable negative-existence - Reason: ... -->
+# Reason field is required; a marker without Reason is rejected and the check runs.
+#
+# Non-fatal: always exits 0 (warn-only; the preview feedback loop owns fixes).
+#
+# Usage: _lint_negative_existence_claims <issues_file>
+# =============================================================================
+_lint_negative_existence_claims() {
+  local issues_file="$1"
+  local _negex_project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Negative-existence phrases (ERE, case-insensitive).
+  # Each alternative flags lines that assert a symbol does not exist.
+  local _NEGEX_RE='no [a-zA-Z_][a-zA-Z0-9_ ]* yet|does not exist|doesn'"'"'t exist|no .* migration|no schema change|not in the schema|missing'
+
+  local _negex_in_issue=false
+  local _negex_issue_block=""
+  local _negex_issue_title=""
+
+  while IFS= read -r _negex_line; do
+    if [ "$_negex_line" = "---ISSUE---" ]; then
+      _negex_in_issue=true
+      _negex_issue_block=""
+      _negex_issue_title=""
+      continue
+    fi
+
+    if [ "$_negex_in_issue" = true ]; then
+      _negex_issue_block="${_negex_issue_block}${_negex_line}"$'\n'
+
+      case "$_negex_line" in
+        TITLE:\ *)
+          _negex_issue_title="${_negex_line#TITLE: }"
+          ;;
+      esac
+
+      if [ "$_negex_line" = "---END---" ]; then
+        _negex_in_issue=false
+
+        # --- Per-issue suppression check ---
+        local _negex_suppressed=false
+        local _negex_has_reason=false
+        local _negex_marker_line
+        while IFS= read -r _negex_marker_line; do
+          [ -z "$_negex_marker_line" ] && continue
+          if echo "$_negex_marker_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence[[:space:]]+-[[:space:]]+Reason:"; then
+            _negex_suppressed=true
+            _negex_has_reason=true
+          elif echo "$_negex_marker_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence"; then
+            _negex_suppressed=true
+            _negex_has_reason=false
+          fi
+        done < <(echo "$_negex_issue_block" | grep "${RITE_MARKER_PLAN_LINT}" || true)
+
+        if [ "$_negex_suppressed" = true ] && [ "$_negex_has_reason" = false ]; then
+          print_warning "negex-lint: suppression marker missing required Reason: field for rule 'negative-existence' in '${_negex_issue_title}'; rule will run anyway" >&2
+          _negex_suppressed=false
+        elif [ "$_negex_suppressed" = true ]; then
+          local _negex_reason
+          _negex_reason=$(echo "$_negex_issue_block" | grep "${RITE_MARKER_PLAN_LINT}" | \
+            grep -E "disable[[:space:]]+negative-existence" | \
+            sed 's/.*Reason:[[:space:]]*//' | sed 's/[[:space:]]*-->[[:space:]]*//' | \
+            sed 's/[[:space:]]*$//' | head -1 || true)
+          print_info "[suppressed] negative-existence: ${_negex_reason}" >&2
+        fi
+
+        if [ "$_negex_suppressed" = true ]; then
+          _negex_issue_block=""
+          continue
+        fi
+
+        # Resolve triage model once per issue block (avoids redundant calls)
+        local _negex_triage_model
+        _negex_triage_model=$(provider_resolve_model "triage")
+
+        # --- Stage 1: scan each body line for negative-existence phrases ---
+        while IFS= read -r _negex_bline; do
+          # Skip structural / metadata lines — they carry syntax, not claims
+          case "$_negex_bline" in
+            ""|"---ISSUE---"|"---END---")
+              continue ;;
+            TITLE:*|LABELS:*|TIME:*|BODY:*|SPIKE_KEY:*)
+              continue ;;
+            "<!--"*)
+              continue ;;
+          esac
+
+          # Does this line match a negative-existence phrase?
+          if ! echo "$_negex_bline" | grep -iqE "$_NEGEX_RE"; then
+            continue
+          fi
+
+          # Extract identifier-shaped tokens from the matching line.
+          # 1. Backtick-quoted (highest precision — explicit by author)
+          local _negex_idents=""
+          local _negex_btidents
+          _negex_btidents=$(echo "$_negex_bline" | grep -oE '`[^`]+`' | sed 's/`//g' || true)
+          [ -n "$_negex_btidents" ] && _negex_idents="${_negex_idents}${_negex_btidents}"$'\n'
+
+          # 2. Bare snake_case (two or more lower-case words joined by underscores)
+          local _negex_snidents
+          _negex_snidents=$(echo "$_negex_bline" | grep -oE '\b[a-z][a-z0-9]*(_[a-z0-9]+)+\b' || true)
+          [ -n "$_negex_snidents" ] && _negex_idents="${_negex_idents}${_negex_snidents}"$'\n'
+
+          # 3. Bare camelCase (lower-case start, at least one upper-case in body)
+          local _negex_ccidents
+          _negex_ccidents=$(echo "$_negex_bline" | grep -oE '\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b' || true)
+          [ -n "$_negex_ccidents" ] && _negex_idents="${_negex_idents}${_negex_ccidents}"$'\n'
+
+          [ -z "$_negex_idents" ] && continue
+
+          # Deduplicate and drop very short tokens (< 3 chars are noise)
+          local _negex_unique_idents
+          _negex_unique_idents=$(printf '%s' "$_negex_idents" | sort -u | grep -E '.{3,}' || true)
+          [ -z "$_negex_unique_idents" ] && continue
+
+          # Cap at 5 identifiers per line to prevent pathological slowdown on
+          # lines with many tokens (e.g., a verbose description sentence).
+          local _negex_id_count=0
+          while IFS= read -r _negex_ident; do
+            [ -z "$_negex_ident" ] && continue
+            _negex_id_count=$((_negex_id_count + 1))
+            [ "$_negex_id_count" -gt 5 ] && break
+
+            # --- Stage 1: git grep (deterministic) ---
+            local _negex_hits
+            _negex_hits=$(git -C "$_negex_project_root" grep -Fnw "$_negex_ident" -- ':!*.md' 2>/dev/null || true)
+            [ -z "$_negex_hits" ] && continue
+
+            # --- Stage 2: triage validation (LLM) ---
+            # Pass only the first hit to the triage prompt (most representative location).
+            local _negex_first_hit
+            _negex_first_hit=$(printf '%s\n' "$_negex_hits" | head -1 || true)
+
+            local _negex_hit_file
+            _negex_hit_file=$(echo "$_negex_first_hit" | cut -d: -f1 || true)
+            local _negex_hit_lineno
+            _negex_hit_lineno=$(echo "$_negex_first_hit" | cut -d: -f2 || true)
+
+            local _negex_triage_prompt
+            # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (claim line, identifier, hit context, issue title)
+            _negex_triage_prompt=$(cat <<NEGEX_TRIAGE_EOF
+You are validating a negative-existence claim found in a software plan issue.
+
+Issue title: "${_negex_issue_title}"
+Claim line: "${_negex_bline}"
+Identifier under review: "${_negex_ident}"
+Repository hit: ${_negex_first_hit}
+
+Does the repository hit CONTRADICT the claim (the identifier exists in the repository in the same context as the claim asserts it absent), or is the hit CONSISTENT with the claim (e.g., the claim is scoped to a different layer, service, component, or migration step than what the repository hit covers)?
+
+Reply with exactly one word: CONTRADICTED or CONSISTENT.
+NEGEX_TRIAGE_EOF
+)
+
+            local _negex_verdict=""
+            local _negex_triage_rc=0
+            _negex_verdict=$(provider_run_prompt "$_negex_triage_prompt" "$_negex_triage_model" "false" 2>/dev/null </dev/null) \
+              || _negex_triage_rc=$?
+
+            # Normalize: extract the first CONTRADICTED or CONSISTENT token
+            local _negex_verdict_norm
+            _negex_verdict_norm=$(printf '%s' "$_negex_verdict" | tr '[:lower:]' '[:upper:]' | \
+              grep -oE 'CONTRADICTED|CONSISTENT' | head -1 || true)
+
+            if [ "$_negex_triage_rc" -ne 0 ] || [ -z "$_negex_verdict_norm" ]; then
+              # Provider unavailable or unexpected response: report unvalidated
+              print_warning "negex-lint: WARNING: negative-existence: '${_negex_ident}' claimed absent in '${_negex_issue_title}' but found at ${_negex_hit_file}:${_negex_hit_lineno} (unvalidated)" >&2
+            elif [ "$_negex_verdict_norm" = "CONTRADICTED" ]; then
+              print_warning "negex-lint: WARNING: negative-existence: '${_negex_ident}' claimed absent in '${_negex_issue_title}' but defined at ${_negex_hit_file}:${_negex_hit_lineno}" >&2
+            fi
+            # CONSISTENT verdict: drop silently (claim is scoped to a different context)
+          done <<< "$_negex_unique_idents"
+        done <<< "$_negex_issue_block"
+
+        _negex_issue_block=""
+      fi
+    fi
+  done < "$issues_file"
+
+  return 0
 }
 
 # =============================================================================

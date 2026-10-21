@@ -56,9 +56,16 @@ setup() {
   # We override the git function so git rev-parse calls in render_integration_branches return
   # STUB_ORIGIN_SHA (non-empty = ref exists; empty = ref absent).
   # The real behind_main_count is also stubbed above so no real git call needed there.
+  #
+  # Pattern matches rev-parse ... origin/ with any flags between, because the
+  # production probe is `rev-parse --verify --quiet "origin/$b"`. The stub's
+  # contract (SHA on exists, exit 1 on absent, nothing on stdout) is exactly
+  # --verify --quiet's contract; a bare rev-parse echoes the literal argument on
+  # a missing ref and would make every existence test here pass for the wrong
+  # reason. See tests/regression/rev-parse-verify-existence-checks.bats.
   git() {
     case "$*" in
-      *"rev-parse origin/"*)
+      *"rev-parse"*"origin/"*)
         if [ -n "${STUB_ORIGIN_SHA:-}" ]; then
           echo "$STUB_ORIGIN_SHA"
         else

@@ -218,7 +218,7 @@ _mid_run_rebase_onto_main() {
       print_warning "mid-run-rebase: push rejected after rebase — checking for foreign commits"
       if git fetch origin "$branch_name" 2>/dev/null; then
         local _mid_remote_head
-        _mid_remote_head=$(git rev-parse "origin/$branch_name" 2>/dev/null || true)
+        _mid_remote_head=$(git rev-parse --verify --quiet "origin/$branch_name" 2>/dev/null || true)
         local _mid_local_head
         _mid_local_head=$(git rev-parse HEAD 2>/dev/null || true)
 

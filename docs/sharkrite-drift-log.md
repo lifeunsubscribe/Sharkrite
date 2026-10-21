@@ -845,6 +845,15 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 `sanitize_generated_commands` is documented as stripping rtk-wrapped commands, but it now preserves meta-commands (`gain`, `discover`, `stats`, `init`, `read`) intact rather than stripping them.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1391 issue:1390 recorded:2026-10-21T19:22:44Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-negative-existence-lint.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md documents that `_lint_issues_strict` "runs last in the linter chain," but it now runs before `_lint_negative_existence_claims` (which runs last).
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1389 issue:1386 recorded:2026-10-21T20:01:57Z -->
 **Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
 **Implicated docs**:
