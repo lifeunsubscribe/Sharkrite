@@ -44,6 +44,15 @@
 
 
 
+
 ## DO
 - behavioral-design.md → DO NOT skip the assessment based on diff content
+
+
+## Created
+- behavioral-design.md → Follow-up Issue Context
+
+
+## Updated
+- behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
 
