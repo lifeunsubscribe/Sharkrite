@@ -875,3 +875,14 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 
 `_lint_issues_strict` description in `behavioral-design.md` omits Check 7's new derived-concurrent auto-chain, listing only "graph checks, dangling refs, verification paths, deferral citations (#353)".
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1396 issue:1387 recorded:2026-10-21T20:45:58Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The behavioral-design.md at line 1438 describes the auto-chain contract as "`After #N` added to the later issue's Dependencies line" without mentioning the dedup/skip behavior when a bare `#N` ref already exists — which is the exact behavior this PR changed.
+
+`behavioral-design.md` line 1438 claims auto-chain adds "`After #N`" unconditionally, but after PR #1396 the append is skipped when a bare `#N` already appears on the Dependencies line.
+<!-- /sharkrite-doc-drift -->
