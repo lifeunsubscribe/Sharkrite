@@ -1150,6 +1150,64 @@ EOF
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# _revalidate_parent_adoption <issue_number>
+#
+# Re-check an adopted parent PR before any PR work is done on its branch.
+#
+# Adoption is decided ONCE, at workflow start, from the parent PR's state at
+# that moment (detect_parent_pr_attachment). Nothing holds the parent still:
+# another process — a batch slot, a manual merge — can merge it mid-run, and
+# the parent's own cleanup then deletes the branch and removes the worktree out
+# from under this follow-up.
+#
+# Live: issue #1382 adopted PR #1379 at 22:29:40Z. #1379 merged at 22:33:45Z,
+# four minutes into the follow-up's run. At 22:36:31Z phase_create_pr died with
+# "Local review failed / create-pr.sh failed with exit code: 1" and the
+# follow-up's work was gone with the worktree. The adoption had been correct
+# when it was made; it was never re-checked.
+#
+# Returns 0 when there is nothing to do or the adoption still holds, or after
+# a clean detach (the follow-up continues and opens its own PR). Returns 1 only
+# when the parent is gone AND its worktree with it — there is nothing left to
+# detach onto, and the honest outcome is a clear message plus a re-run.
+# ---------------------------------------------------------------------------
+_revalidate_parent_adoption() {
+  local _rpa_issue="$1"
+
+  [ "${PARENT_ATTACHMENT_MODE:-none}" = "adopt" ] || return 0
+  [ -n "${PARENT_PR_NUMBER:-}" ] || return 0
+
+  local _rpa_state
+  _rpa_state=$(gh_safe pr view "$PARENT_PR_NUMBER" --json state --jq '.state' 2>/dev/null || true)
+  _rpa_state="${_rpa_state:-}"
+
+  # An unreadable state (API blip) is not evidence the parent died. Keep the
+  # adoption rather than fragment the PR on a transient failure.
+  [ -n "$_rpa_state" ] || return 0
+  [ "$_rpa_state" = "OPEN" ] && return 0
+
+  print_warning "Parent PR #$PARENT_PR_NUMBER is now $_rpa_state — it merged or closed during this run"
+  _diag "PARENT_ADOPTION_DROPPED issue=${_rpa_issue} parent_pr=${PARENT_PR_NUMBER} state=${_rpa_state}"
+
+  # Detach: forget the parent so create-pr opens a PR of this follow-up's own
+  # instead of pushing at a merged one.
+  PR_NUMBER=""
+  CURRENT_PR=""
+  export PR_NUMBER
+  PARENT_ATTACHMENT_MODE="ignore"
+
+  if [ -n "${WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_PATH" ]; then
+    print_info "Detaching from the parent PR — this follow-up will open its own PR"
+    return 0
+  fi
+
+  print_error "Parent PR #$PARENT_PR_NUMBER merged during this run and its worktree was removed"
+  print_info "The follow-up's work did not survive the parent's cleanup."
+  print_info "Re-run to start fresh from the target branch: rite ${_rpa_issue}"
+  return 1
+}
+
 phase_create_pr() {
   local issue_number="$1"
   local loop_mode="${2:-}"
@@ -1162,6 +1220,11 @@ phase_create_pr() {
   else
     print_header "Phase 2: Push Work and Wait for Review"
   fi
+
+  # An adopted parent PR can merge underneath a running follow-up (#1382).
+  # Re-check before touching the worktree; a dead parent means we detach and
+  # open our own PR, or fail clearly if the worktree went with it.
+  _revalidate_parent_adoption "$issue_number" || return 1
 
   cd "$WORKTREE_PATH"
 
