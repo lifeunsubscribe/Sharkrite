@@ -1258,7 +1258,7 @@ phase_create_pr() {
   # from the comparison — they don't change the PR's work scope.
   # Phase 4 (merge) handles divergence resolution separately.
   local local_head=$(git rev-parse HEAD 2>/dev/null || echo "")
-  local remote_head=$(git rev-parse "origin/$branch_name" 2>/dev/null || echo "")
+  local remote_head=$(git rev-parse --verify --quiet "origin/$branch_name" 2>/dev/null || echo "")
 
   if [ "$local_head" = "$remote_head" ]; then
     # All commits already pushed — check review currency using LOCAL commit time
@@ -3222,7 +3222,7 @@ run_workflow() {
     local review_is_current=false
     local _local_head=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null || echo "")
     local _pr_branch_name=$(git -C "$WORKTREE_PATH" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-    local _remote_head=$(git -C "$WORKTREE_PATH" rev-parse "origin/$_pr_branch_name" 2>/dev/null || echo "")
+    local _remote_head=$(git -C "$WORKTREE_PATH" rev-parse --verify --quiet "origin/$_pr_branch_name" 2>/dev/null || echo "")
 
     if [ "$_local_head" != "$_remote_head" ]; then
       # Unpushed commits exist — review is definitely stale
