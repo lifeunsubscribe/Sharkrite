@@ -5619,3 +5619,76 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# AC8a — bare-ref dedup: orrery round-6 reproduction.
+#
+# Authored Dependencies line already carries bare #8 as a dep ref.
+# Auto-chain should NOT append "After #8" — the bare ref already encodes the edge.
+# Before the fix, _transform_dep_line's Step 2 only checked for "After #N" form,
+# missing the bare ref, producing "After #8, After #3, #8" (two #8 references).
+# ---------------------------------------------------------------------------
+
+@test "AC8a: bare-ref dedup — authored 'After #3, #8' chained against #8 yields single #8 reference" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, #8" 8)
+
+  # Must contain exactly one occurrence of #8 (not followed by a digit)
+  local count
+  count=$(printf '%s\n' "$result" | grep -oE '#8([^0-9]|$)' | wc -l || true)
+  [ "$count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 #8 reference, got $count: $result" >&2
+    false
+  }
+
+  # Must NOT contain 'After #8, After #3' (the prepend-duplicate pattern)
+  printf '%s\n' "$result" | grep -q "After #8.*#8\|#8.*After #8" && {
+    echo "FAIL: result contains duplicate #8 references: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC8b — bare-ref dedup word-boundary: #80 must NOT suppress append of After #8.
+#
+# The presence check uses ([^0-9]|$) to prevent #8 from matching inside #80.
+# This test confirms the word-boundary is correct: a line with #80 must still
+# receive the appended After #8.
+# ---------------------------------------------------------------------------
+
+@test "AC8b: word-boundary — bare #80 does not suppress append of After #8" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, #80" 8)
+
+  # Must contain After #8 (appended because #80 is not a match for #8)
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended when line has #80 (not #8): $result" >&2
+    false
+  }
+
+  # Must still carry the original #80 reference
+  printf '%s\n' "$result" | grep -q '#80' || {
+    echo "FAIL: original #80 reference should be preserved: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC8c — existing After #N form still idempotent (pre-existing behavior).
+#
+# A line that already carries "After #8" in canonical form must not receive
+# a second "After #8" — this was the original idempotency contract.
+# ---------------------------------------------------------------------------
+
+@test "AC8c: existing After #N form still idempotent — no duplicate append" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, After #8" 8)
+
+  # Must contain exactly one After #8
+  local count
+  count=$(printf '%s\n' "$result" | grep -oE 'After #8([^0-9]|$)' | wc -l || true)
+  [ "$count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 'After #8', got $count: $result" >&2
+    false
+  }
+}

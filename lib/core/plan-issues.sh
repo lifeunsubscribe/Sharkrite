@@ -1582,7 +1582,7 @@ _strip_par_ref() {
 #   "(..., #N)"                                               → #N removed
 #   "(prose; can run in parallel with #N, ...)"               → #N removed, prose intact
 #
-# If After #N already present, the add step is skipped (idempotent).
+# If #N already present in any form (After #N or bare #N), the add step is skipped (idempotent).
 # Non-inline Dependencies lines (header-only, no ": ") are returned unchanged.
 # =============================================================================
 
@@ -1606,8 +1606,11 @@ _transform_dep_line() {
   _tdl_content=$(_strip_par_ref "$_tdl_content" "$_tdl_par_ref")
 
   # Step 2: add After #N if not already present.
-  # Use a word-boundary regex to avoid substring collision (#1 matching inside #12).
-  if ! echo "$_tdl_content" | grep -qE "After #${_tdl_after_num}([^0-9]|$)"; then
+  # Match any #N word-boundary occurrence — bare refs (#N without "After ") already
+  # encode the dep edge (Step 1 has removed #N from par annotations, so any survivor
+  # is a genuine dep). Matching only "After #N" missed bare refs and produced duplicates
+  # (orrery round 6: "After #8, ..., #8"). Suffix ([^0-9]|$) prevents #8 matching #80.
+  if ! echo "$_tdl_content" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
         # Replace "None" keyword with the After tag, preserving trailing content
