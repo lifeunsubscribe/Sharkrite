@@ -1434,15 +1434,40 @@ The original H5 planning proposal called for a self-critique LLM pass after issu
 | Verification path sanity | Verification commands reference paths in Files to Modify or the repo | WARNING (exit 0) |
 | Deferral citation | Each `⏭️` deferral entry cites evidence (`> text`, `file:line`, or quoted phrase) | WARNING (exit 0) |
 
-The complete four-linter chain (in call order within `generate_issues`):
+The complete linter chain (in call order within `generate_issues`):
 1. `_detect_unverified_integrations` — external dependency grounding (#351)
 2. `_dedup_issues` — title deduplication
 3. `_validate_coverage` — coverage checklist 1:1 invariant (#348)
 4. `_lint_issues` — service-layer anti-patterns
 5. `_lint_provenance_flags` — provenance table signal quality (#367)
-6. `_lint_issues_strict` — graph checks, dangling refs, verification paths, deferral citations (#353)
+6. `_lint_issues_strict` — graph checks, dangling refs, verification paths, deferral citations (#353); **zero-LLM contract**
+7. `_lint_negative_existence_claims` — two-stage negative-existence check (#1390); see below
 
-**If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match.
+**Fifth application — two-stage negative-existence claim lint (#1390, 2026-10):**
+
+Two orrery planning rounds were blocked by the planner asserting repo-state negatives that were false: round 3 ("no `adult_confirmed_at` migration" while the column existed at `init.sql:17`) and round 6 ("there is no `find_profile_by_username` function yet" while the function was defined at `init.sql:363`). Both were caught only by human review.
+
+`_lint_negative_existence_claims` in `lib/core/plan-issues.sh` addresses this with a two-stage design:
+
+**Stage 1 — deterministic gate (zero LLM):** for each body line matching a negative-existence phrase (`no <X> yet`, `does not exist` / `doesn't exist`, `no migration`, `no schema change`, `not in the schema`, `missing`), extract identifier-shaped tokens (backtick-quoted, snake_case, camelCase) and run `git grep -nw <ident> -- ':!*.md'` from `RITE_PROJECT_ROOT`. No hit → silent pass, no LLM call. This gate ensures the LLM is only invoked for raw hits — cost is zero on the common clean-plan path.
+
+**Stage 2 — triage validation (haiku, narrow binary):** each Stage 1 hit is classified by `provider_resolve_model triage` (the haiku role — narrow binary classification, not deep reasoning). The prompt gives the claim line, identifier, and the first hit's `file:line` context, and asks: `CONTRADICTED` or `CONSISTENT`?
+
+| Stage 2 verdict | Action |
+|---|---|
+| `CONTRADICTED` | `negex-lint: WARNING: negative-existence: '<ident>' claimed absent in '<title>' but defined at <file:line>` |
+| `CONSISTENT` | Drop silently (claim is scoped to a different layer/component) |
+| Provider unavailable / no parseable verdict | `negex-lint: WARNING: … (unvalidated)` — findings degrade, never disappear |
+
+The function is **separate from `_lint_issues_strict`** so its triage model call does not violate that function's zero-LLM contract. It is also **non-fatal** (always exits 0, warn-only) — the preview feedback loop owns the fix.
+
+**Suppression (per issue):**
+```
+<!-- sharkrite-plan-lint disable negative-existence - Reason: ... -->
+```
+`Reason:` field is required; a marker without `Reason:` is rejected and the check runs anyway.
+
+**If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match. The two-stage design above (`_lint_negative_existence_claims`) is the canonical example: Stage 1 is fully deterministic and gates LLM cost to the non-common case; Stage 2 uses only the triage role (haiku) for a narrow binary classification.
 
 **Suppression markers (inline per item, not env-var flags):**
 
