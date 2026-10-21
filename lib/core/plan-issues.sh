@@ -2812,7 +2812,7 @@ _lint_negative_existence_claims() {
 
   # Negative-existence phrases (ERE, case-insensitive).
   # Each alternative flags lines that assert a symbol does not exist.
-  local _NEGEX_RE='no [a-zA-Z_][a-zA-Z0-9_]* yet|does not exist|doesn'"'"'t exist|no migration|no schema change|not in the schema|missing'
+  local _NEGEX_RE='no [a-zA-Z_][a-zA-Z0-9_ ]* yet|does not exist|doesn'"'"'t exist|no .* migration|no schema change|not in the schema|missing'
 
   local _negex_in_issue=false
   local _negex_issue_block=""
@@ -2925,7 +2925,7 @@ _lint_negative_existence_claims() {
 
             # --- Stage 1: git grep (deterministic) ---
             local _negex_hits
-            _negex_hits=$(git -C "$_negex_project_root" grep -nw "$_negex_ident" -- ':!*.md' 2>/dev/null || true)
+            _negex_hits=$(git -C "$_negex_project_root" grep -Fnw "$_negex_ident" -- ':!*.md' 2>/dev/null || true)
             [ -z "$_negex_hits" ] && continue
 
             # --- Stage 2: triage validation (LLM) ---
@@ -2956,7 +2956,7 @@ NEGEX_TRIAGE_EOF
 
             local _negex_verdict=""
             local _negex_triage_rc=0
-            _negex_verdict=$(provider_run_prompt "$_negex_triage_prompt" "$_negex_triage_model" "false" 2>/dev/null) \
+            _negex_verdict=$(provider_run_prompt "$_negex_triage_prompt" "$_negex_triage_model" "false" 2>/dev/null </dev/null) \
               || _negex_triage_rc=$?
 
             # Normalize: extract the first CONTRADICTED or CONSISTENT token

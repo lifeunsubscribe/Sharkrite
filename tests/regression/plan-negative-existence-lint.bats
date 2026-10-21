@@ -189,8 +189,11 @@ ISSUE_EOF
 # ---------------------------------------------------------------------------
 
 @test "SC: scoped-consistent claim — triage returns CONSISTENT, no warning emitted" {
-  # Override provider stub: return CONSISTENT for this test
-  provider_run_prompt() { echo "CONSISTENT"; return 0; }
+  # Track provider calls via temp file — subshell increments are invisible to the parent shell
+  local _call_file
+  _call_file=$(mktemp)
+  printf '0' > "$_call_file"
+  provider_run_prompt() { printf '%s' "$(( $(cat "$_call_file") + 1 ))" > "$_call_file"; echo "CONSISTENT"; return 0; }
 
   local issues_file="$RITE_TEST_TMPDIR/issues-sc.txt"
   _write_issue_file "$issues_file" \
@@ -203,6 +206,16 @@ ISSUE_EOF
 
   [ "$exit_code" -eq 0 ] || {
     echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    return 1
+  }
+
+  # Stage 2 must have been called (Stage 1 found find_profile_by_username in fixture)
+  local _call_count
+  _call_count=$(cat "$_call_file")
+  rm -f "$_call_file"
+  [ "$_call_count" -ge 1 ] || {
+    echo "FAIL: expected >=1 provider call for CONSISTENT path, got $_call_count" >&2
     cat "$stderr_out" >&2
     return 1
   }
@@ -220,9 +233,11 @@ ISSUE_EOF
 # ---------------------------------------------------------------------------
 
 @test "CL: clean plan with no negative-existence phrases — zero provider calls, no warnings" {
-  # Track provider calls
-  local _call_count=0
-  provider_run_prompt() { _call_count=$((_call_count + 1)); echo "CONTRADICTED"; return 0; }
+  # Track provider calls via temp file — subshell increments are invisible to the parent shell
+  local _call_file
+  _call_file=$(mktemp)
+  printf '0' > "$_call_file"
+  provider_run_prompt() { printf '%s' "$(( $(cat "$_call_file") + 1 ))" > "$_call_file"; echo "CONTRADICTED"; return 0; }
 
   local issues_file="$RITE_TEST_TMPDIR/issues-cl.txt"
   _write_issue_file "$issues_file" \
@@ -240,6 +255,9 @@ ISSUE_EOF
   }
 
   # Zero Stage 2 calls (Stage 1 found nothing to check)
+  local _call_count
+  _call_count=$(cat "$_call_file")
+  rm -f "$_call_file"
   [ "$_call_count" -eq 0 ] || {
     echo "FAIL: expected 0 provider calls, got $_call_count" >&2
     cat "$stderr_out" >&2
