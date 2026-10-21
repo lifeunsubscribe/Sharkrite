@@ -897,3 +897,12 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 
 `_lint_issues_strict` Check 10 warns on titles over 50 chars but does not block issue creation; CLAUDE.md implies the cap is enforced, not advisory.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1400 issue:1399 recorded:2026-10-21T23:43:18Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `_normalize_issue_markers` in CLAUDE.md is described as only forcing markers onto their own lines, but it now also relocates `Split rationale:` lines from header position to after `BODY:`.
+<!-- /sharkrite-doc-drift -->

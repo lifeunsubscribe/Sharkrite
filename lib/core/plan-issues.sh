@@ -3388,17 +3388,27 @@ _lint_issues_sections() {
 }
 
 # =============================================================================
-# Force ---ISSUE--- / ---END--- markers onto their own lines
+# Force ---ISSUE--- / ---END--- markers onto their own lines; relocate any
+# Split rationale: line from header position to immediately after BODY:
 # =============================================================================
 # jq -rj (join mode) emits text chunks with no added newlines, so markers can be
 # concatenated with surrounding text ("...text---ISSUE---TITLE: ..."). Every
 # downstream parser keys on whole-line markers, so normalize before any parsing.
 # Idempotent enough for repeated calls is NOT guaranteed (re-splitting adds blank
 # lines), so call exactly once per generated file.
+#
+# A Split rationale: line between ---ISSUE--- and BODY: passes Check 9 (which
+# greps the whole issue block) but is silently dropped by create_issues (which
+# only captures lines after BODY: into current_body). Moving it to immediately
+# after BODY: ensures it reaches the created issue body. Only Split rationale:
+# is relocated — swallowing arbitrary unknown lines into the body would hide
+# format errors.
 _normalize_issue_markers() {
   local _f="$1"
   local _norm
   _norm=$(mktemp)
+
+  # Pass 1: Force ---ISSUE--- / ---END--- markers onto their own lines.
   sed \
     -e 's/---ISSUE---/\
 ---ISSUE---\
@@ -3407,7 +3417,38 @@ _normalize_issue_markers() {
 ---END---\
 /g' \
     "$_f" > "$_norm"
-  mv "$_norm" "$_f"
+
+  # Pass 2: Relocate a Split rationale: line from header position (before BODY:)
+  # to immediately after BODY:. Idempotent: a rationale already after BODY: is
+  # passed through unchanged because body_seen=1 when it is encountered.
+  local _norm2
+  _norm2=$(mktemp)
+  awk '
+    BEGIN { in_block=0; body_seen=0; saved_rat="" }
+    /^---ISSUE---$/ {
+      in_block=1; body_seen=0; saved_rat=""
+      print; next
+    }
+    /^---END---$/ {
+      if (saved_rat != "") { print saved_rat; saved_rat="" }
+      in_block=0; body_seen=0
+      print; next
+    }
+    in_block && !body_seen && tolower($0) ~ /^[*]*split rationale[*]*:/ {
+      saved_rat = (saved_rat == "") ? $0 : saved_rat "\n" $0
+      next
+    }
+    in_block && !body_seen && /^BODY:/ {
+      body_seen=1
+      print
+      if (saved_rat != "") { print saved_rat; saved_rat="" }
+      next
+    }
+    { print }
+    END { if (saved_rat != "") print saved_rat }
+  ' "$_norm" > "$_norm2"
+  mv "$_norm2" "$_f"
+  rm -f "$_norm"
 }
 
 # =============================================================================

@@ -41,6 +41,9 @@
 #   AC5 — spike-prepended slate → auto-chain uses non-spike ordinal in rewrite, exit 0
 #   AC6 — round-6 reproduction: unannotated concurrent pair (#4 After #2,#3 and #6 After #3) sharing auth.ts → auto-chained
 #   AC7 — fixpoint: A→B initial dep; B+C concurrent sharing file → C After #2 only; A+C sequential by transitivity (not re-chained)
+#   NRM1 — _normalize_issue_markers: header-position Split rationale: relocated to after BODY:
+#   NRM2 — _normalize_issue_markers: body-position Split rationale: left untouched (idempotent)
+#   NRM3 — round-trip: header-position Split rationale: survives into parsed current_body
 
 load '../helpers/setup.bash'
 
@@ -97,6 +100,22 @@ setup() {
       print; next
     }
   ' "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  # Extract _normalize_issue_markers separately — needed by the NRM fixtures.
+  local _nrm_fn
+  for _nrm_fn in _normalize_issue_markers; do
+    eval "$(awk -v target="^${_nrm_fn}[(][)]" '
+      $0 ~ target { in_fn=1; depth=0 }
+      in_fn {
+        for (i=1; i<=length($0); i++) {
+          c=substr($0,i,1)
+          if (c=="{") depth++
+          if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+        }
+        print; next
+      }
+    ' "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+  done
 }
 
 teardown() {
@@ -5986,4 +6005,168 @@ FIXTURE
   }
 
   rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture NRM1 — _normalize_issue_markers relocates header-position Split
+# rationale: to immediately after BODY:
+# ---------------------------------------------------------------------------
+
+@test "Fixture NRM1: header-position Split rationale: relocated to immediately after BODY:" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-nrm1.txt"
+
+  # Split rationale: appears between TIME: and BODY: — header position.
+  # The creation loop drops it there; normalization must move it into the body.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+Split rationale: GET list + POST share the same schema; splitting duplicates validation with no clean seam.
+BODY:
+**Description**: Add CRUD endpoints.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  _normalize_issue_markers "$issues_file"
+
+  # The Split rationale: line must appear somewhere after BODY: in the output.
+  local normalized
+  normalized=$(cat "$issues_file")
+
+  # Verify the line is still present (not dropped).
+  echo "$normalized" | grep -q "Split rationale:" || {
+    echo "FAIL: Split rationale: line was dropped by normalization" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+
+  # Verify the line appears after BODY: (not before it).
+  # awk prints the line number of BODY: and of Split rationale: then we compare.
+  local body_lineno rat_lineno
+  body_lineno=$(awk '/^BODY:/{print NR; exit}' "$issues_file")
+  rat_lineno=$(awk '/Split rationale:/{print NR; exit}' "$issues_file")
+
+  [ -n "$body_lineno" ] || {
+    echo "FAIL: BODY: line not found in normalized output" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+  [ -n "$rat_lineno" ] || {
+    echo "FAIL: Split rationale: line not found after normalization" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+  [ "$rat_lineno" -gt "$body_lineno" ] || {
+    echo "FAIL: Split rationale: (line $rat_lineno) is not after BODY: (line $body_lineno)" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+
+  # Verify it is immediately after BODY: (rat_lineno == body_lineno + 1).
+  [ "$rat_lineno" -eq $(( body_lineno + 1 )) ] || {
+    echo "FAIL: Split rationale: (line $rat_lineno) is not immediately after BODY: (line $body_lineno)" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture NRM2 — _normalize_issue_markers leaves a body-position Split
+# rationale: untouched (idempotent)
+# ---------------------------------------------------------------------------
+
+@test "Fixture NRM2: body-position Split rationale: remains after BODY: (idempotent)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-nrm2.txt"
+
+  # Split rationale: already in body position — normalization must not move it
+  # to before BODY: or drop it.  The whole-file content may gain blank lines
+  # around markers (known non-idempotency of the marker-splitting sed pass), so
+  # the check is on the relative position of the rationale to BODY:, not on
+  # exact file equality.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+BODY:
+**Description**: Add CRUD endpoints.
+
+Split rationale: GET list + POST share the same schema; splitting duplicates validation with no clean seam.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  _normalize_issue_markers "$issues_file"
+
+  # The rationale must still appear after BODY: after normalization.
+  local body_lineno rat_lineno
+  body_lineno=$(awk '/^BODY:/{print NR; exit}' "$issues_file")
+  rat_lineno=$(awk '/Split rationale:/{print NR; exit}' "$issues_file")
+
+  [ -n "$body_lineno" ] || {
+    echo "FAIL: BODY: line not found in normalized output" >&2
+    cat "$issues_file" >&2
+    false
+  }
+  [ -n "$rat_lineno" ] || {
+    echo "FAIL: Split rationale: line was dropped by normalization" >&2
+    cat "$issues_file" >&2
+    false
+  }
+  [ "$rat_lineno" -gt "$body_lineno" ] || {
+    echo "FAIL: Split rationale: (line $rat_lineno) moved before BODY: (line $body_lineno) — not idempotent" >&2
+    cat "$issues_file" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture NRM3 — round-trip: header-position Split rationale: survives into
+# the current_body the creation loop would ship
+# ---------------------------------------------------------------------------
+
+@test "Fixture NRM3: header-position Split rationale: survives into current_body after normalization" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-nrm3.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+Split rationale: GET list + POST share the same schema; splitting duplicates validation with no clean seam.
+BODY:
+**Description**: Add CRUD endpoints.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  _normalize_issue_markers "$issues_file"
+
+  # Simulate the create_issues body-capture loop: collect lines after BODY: into
+  # current_body and verify Split rationale: is present there.
+  local current_body="" in_body=false
+  while IFS= read -r line; do
+    if [ "$line" = "---ISSUE---" ] || [ "$line" = "---END---" ]; then
+      in_body=false
+    elif [ "${line#BODY:}" != "$line" ]; then
+      in_body=true
+      local after_body="${line#BODY:}"
+      after_body="${after_body# }"
+      [ -n "$after_body" ] && current_body="$after_body"$'\n'
+    elif [ "$in_body" = true ]; then
+      current_body+="$line"$'\n'
+    fi
+  done < "$issues_file"
+
+  echo "$current_body" | grep -q "Split rationale:" || {
+    echo "FAIL: Split rationale: not found in current_body after normalization" >&2
+    echo "current_body:" >&2
+    printf '%s\n' "$current_body" >&2
+    false
+  }
 }
