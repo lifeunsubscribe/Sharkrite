@@ -43,3 +43,7 @@
 
 
 
+
+## DO
+- behavioral-design.md → DO NOT skip the assessment based on diff content
+
