@@ -1433,6 +1433,9 @@ The original H5 planning proposal called for a self-critique LLM pass after issu
 | No dangling `#N` refs | Every dep ref resolves to a batch issue or existing open issue | ERROR (exit 1) |
 | Verification path sanity | Verification commands reference paths in Files to Modify or the repo | WARNING (exit 0) |
 | Deferral citation | Each `⏭️` deferral entry cites evidence (`> text`, `file:line`, or quoted phrase) | WARNING (exit 0) |
+| Concurrent file overlap (Check 7) | Derived-concurrent pairs sharing Files to Modify are auto-chained or warned | WARNING (exit 0) + auto-rewrite |
+
+**Check 7 Auto-Chain Contract (issue #1388, 2026-10-21):** Two issues are *derived-concurrent* when neither is reachable from the other via the `_rev_adj` adjacency already built by Check 2's Kahn pass — no parallel annotation is required for detection. For each derived-concurrent pair sharing a file in `Files to Modify`, Check 7 either auto-chains the later issue (lower non-spike ordinal → `After #N` added to the later issue's `Dependencies` line, both-way parallel annotations stripped) or warns when either side carries a `parallel-file-overlap` suppression marker (disjoint-functions escape hatch). The loop runs to fixpoint: after each auto-chain, `_rev_adj` is updated in memory and reachability is recomputed — this avoids re-chaining pairs already covered by earlier rewrites (e.g. once A→B and B→C are both in `_rev_adj`, A→C is transitively covered, so a direct A→C edge is not added if the pair is seen as sequential before it fires). Annotations in `_parallel_with` are consumed only for annotation-stripping, never for detection.
 
 The complete linter chain (in call order within `generate_issues`):
 1. `_detect_unverified_integrations` — external dependency grounding (#351)

@@ -2496,112 +2496,187 @@ _lint_issues_strict() {
     done
   done
 
-  # Check 7: Parallel-claim file overlap (visible WARNING)
+  # Check 7: Concurrent file overlap derived from the dep graph (visible WARNING + auto-chain)
   #
-  # Issues that declare themselves parallel via "(can run in parallel with #N)"
-  # annotations AND share files in their Files to Modify emit a print_warning
-  # so the human approving the plan sees it before creation.
-  # Same-file-different-function parallelism is legitimate (e.g. three draw
-  # functions in one .cpp), so this is a WARNING (not an error) — file-level
-  # overlap genuinely isn't always a conflict. Suppressed per-issue with
-  # <!-- sharkrite-plan-lint disable parallel-file-overlap - Reason: <text> -->.
-  local _pi=0
-  for _pi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
-    local _pi_title="${_titles[$_pi]}"
-    local _pi_modify="${_files_modify[$_pi]}"
-    local _pi_supps="${_suppressions[$_pi]}"
-    local _pi_parallel="${_parallel_with[$_pi]:-}"
+  # A pair (pi, pj) is "concurrent" when neither issue is an ancestor of the other
+  # via the dep edges already built in Check 2's _rev_adj arrays.  This catches both
+  # explicitly annotated-parallel pairs AND unannotated concurrent pairs — e.g. two
+  # issues that both depend on a common ancestor but have no dep edge between them
+  # (the orrery round-6 near-miss: #4 After #2,#3 and #6 After #3 both modified
+  # auth.ts/sign-in.tsx and Check 7 never fired because neither named the other).
+  #
+  # After each auto-chain, _rev_adj is updated in memory and reachability is
+  # recomputed so a chain added for one pair can make another pair sequential —
+  # preventing redundant over-chaining.  Runs to fixpoint (terminates because each
+  # iteration strictly reduces the number of concurrent pairs).
+  #
+  # _parallel_with annotations are no longer used for detection; they are consumed
+  # only for annotation-stripping after an auto-chain rewrite.
+  #
+  # Suppress (either side): <!-- sharkrite-plan-lint disable parallel-file-overlap - Reason: -->
+  # → warn-only (disjoint-functions escape hatch; both sides suppressed → skip silently).
 
-    if echo "$_pi_supps" | grep -qw "parallel-file-overlap"; then
-      continue
-    fi
+  local -a _ch7_desc
+  local _ch7_done=false
+  local _ch7_warned_pairs=""
+  while [ "$_ch7_done" = false ]; do
+    _ch7_done=true
 
-    [ -z "$_pi_parallel" ] && continue
-    [ -z "$_pi_modify" ] && continue
-
-    while IFS= read -r _pref; do
-      [ -z "$_pref" ] && continue
-      local _prefnum
-      _prefnum=$(echo "$_pref" | sed 's/^#//' || true)
-      [ -z "$_prefnum" ] && continue
-
-      # Only check batch-internal non-spike parallel refs (#N is a non-spike ordinal)
-      if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_nonspike_count" ] 2>/dev/null; then
-        local _pj="${_nonspike_to_arr[$((_prefnum - 1))]}"
-        # Fix 2: skip self-references (_pi == _pj) — an issue's parallel
-        # annotation that includes its own ordinal would always find a shared
-        # file and emit a spurious self-referential warning.
-        [ "$_pj" -eq "$_pi" ] && continue
-        # Fix 3: only report each (i,j) pair once for bidirectional annotations.
-        # When BOTH sides declare the parallel (A→B and B→A), the lower-ordinal
-        # issue is the canonical reporter (_pi < _pj).  When only the higher-ordinal
-        # side declares the parallel (unidirectional higher→lower, e.g. #2 parallel
-        # with #1 but #1 does not declare parallel with #2), there is no other
-        # reporter — suppress only if _pj also lists _pi's non-spike ordinal.
-        #
-        # Fix 3b: suppression on the canonical (lower-ordinal) reporter.
-        # If _pj (the lower-ordinal issue) has parallel-file-overlap suppressed,
-        # it was already skipped by the suppression guard at the top of the loop,
-        # so it will never emit.  In that case the higher-ordinal side (_pi) must
-        # NOT defer — it is the only possible emitter for this pair.
-        if [ "$_pi" -gt "$_pj" ]; then
-          local _pj_parallel="${_parallel_with[$_pj]:-}"
-          local _pj_supps_check="${_suppressions[$_pj]:-}"
-          local _pi_ns_ord="${_arr_to_nonspike[$_pi]:-0}"
-          if [ "$_pi_ns_ord" -gt 0 ] && echo "$_pj_parallel" | grep -qxF "#${_pi_ns_ord}" && \
-             ! echo "$_pj_supps_check" | grep -qw "parallel-file-overlap"; then
-            # Bidirectional: lower ordinal (_pj) will report this pair — skip here
-            continue
-          fi
-          # Either unidirectional or _pj is suppressed: no lower-ordinal reporter
-          # will emit, so fall through and emit from here.
+    # Compute transitive descendants: _ch7_desc[i] = pipe-surrounded list of all
+    # raw indices reachable from i following _rev_adj edges (BFS).  Includes self
+    # so case-match lookups use *"|N|"* uniformly.
+    _ch7_desc=()
+    local _ch7_i
+    for _ch7_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+      local _ch7_vis="|${_ch7_i}|"
+      local _ch7_q="$_ch7_i"
+      while [ -n "$_ch7_q" ]; do
+        local _ch7_cur="${_ch7_q%% *}"
+        if [ "$_ch7_q" = "$_ch7_cur" ]; then
+          _ch7_q=""
+        else
+          _ch7_q="${_ch7_q#* }"
         fi
-        local _pj_title="${_titles[$_pj]}"
-        local _pj_modify="${_files_modify[$_pj]}"
-        [ -z "$_pj_modify" ] && continue
+        local _ch7_adj="${_rev_adj[$_ch7_cur]:-}"
+        [ -z "$_ch7_adj" ] && continue
+        while IFS= read -r _ch7_nb; do
+          [ -z "$_ch7_nb" ] && continue
+          case "$_ch7_vis" in
+            *"|${_ch7_nb}|"*) continue ;;
+          esac
+          _ch7_vis="${_ch7_vis}${_ch7_nb}|"
+          _ch7_q="${_ch7_q:+${_ch7_q} }${_ch7_nb}"
+        done < <(printf '%s' "$_ch7_adj" | tr '|' '\n' || true)
+      done
+      _ch7_desc+=("$_ch7_vis")
+    done
 
-        # Find first shared path
-        local _par_shared=""
-        while IFS= read -r _ppA; do
-          [ -z "$_ppA" ] && continue
-          if echo "$_pj_modify" | grep -qxF "$_ppA"; then
-            _par_shared="$_ppA"
-            break
-          fi
-        done <<< "$_pi_modify"
+    # Scan all pairs (pi, pj) with pi < pj in raw-index space; both non-spikes
+    local _ch7_pi
+    for _ch7_pi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+      [ "${_arr_to_nonspike[$_ch7_pi]:-0}" -eq 0 ] && continue
+      local _ch7_pi_modify="${_files_modify[$_ch7_pi]}"
+      [ -z "$_ch7_pi_modify" ] && continue
 
-        if [ -n "$_par_shared" ]; then
-          local _after_num
-          if [ "$_pi" -lt "$_pj" ]; then
-            _after_num="${_arr_to_nonspike[$_pi]}"  # non-spike ordinal of _pi
-          else
-            _after_num="$_prefnum"  # non-spike ordinal of _pj (already)
-          fi
-          # Check whether the PEER issue (_pj) also carries a suppress marker.
-          # Either side suppressed → warn-only (disjoint-functions escape hatch).
-          # Neither side suppressed → deterministic auto-chain rewrite.
-          local _pj_supps_eff="${_suppressions[$_pj]:-}"
-          if echo "$_pj_supps_eff" | grep -qw "parallel-file-overlap"; then
-            # Peer (_pj) is suppressed — warn-only
-            print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
-            _warning_count=$((_warning_count + 1))
-          else
-            # Neither side suppressed — auto-chain: rewrite the later issue.
-            if [ "$_pi" -lt "$_pj" ]; then
-              # _pj is the later issue (higher ordinal)
-              _autochain_rewrite_deps "$issues_file" "$_pj_title" "$_after_num"
-              # Clean up _pi's stale parallel annotation referencing _pj (bidirectional case).
-              _autochain_remove_par_annotation "$issues_file" "$_pi_title" "$_prefnum"
-              print_info "[auto-chained] parallel-file-overlap: '$_pj_title' rewired After #${_after_num} ('$_pi_title'); both modify '${_par_shared}'" >&2
-            else
-              # _pi is the later issue (higher ordinal)
-              _autochain_rewrite_deps "$issues_file" "$_pi_title" "$_after_num"
-              print_info "[auto-chained] parallel-file-overlap: '$_pi_title' rewired After #${_after_num} ('$_pj_title'); both modify '${_par_shared}'" >&2
+      local _ch7_pj
+      for _ch7_pj in $([ "$((_ch7_pi + 1))" -le "$((_issue_count - 1))" ] && \
+                       seq "$((_ch7_pi + 1))" "$((_issue_count - 1))" || true); do
+        [ "${_arr_to_nonspike[$_ch7_pj]:-0}" -eq 0 ] && continue
+        local _ch7_pj_modify="${_files_modify[$_ch7_pj]}"
+        [ -z "$_ch7_pj_modify" ] && continue
+
+        # Skip if either is an ancestor of the other (sequential, not concurrent).
+        # Exception: if the later issue also carries a (can run in parallel with #ancestor)
+        # annotation, it is contradictory — emit a WARNING and strip the annotation before
+        # continuing.  Both issues sharing a file is required to avoid false positives on
+        # annotation-only deps with no actual overlap.
+        local _ch7_pi_desc="${_ch7_desc[$_ch7_pi]:-}"
+        local _ch7_pj_desc="${_ch7_desc[$_ch7_pj]:-}"
+        case "$_ch7_pi_desc" in *"|${_ch7_pj}|"*)
+          # pi is ancestor of pj; check if pj has a contradictory parallel annotation
+          local _ch7_pj_pars="${_parallel_with[$_ch7_pj]:-}"
+          local _ch7_pi_ord_s="${_arr_to_nonspike[$_ch7_pi]}"
+          if echo "$_ch7_pj_pars" | grep -qxF "#${_ch7_pi_ord_s}"; then
+            local _ch7_seq_shared=""
+            while IFS= read -r _ch7_pA; do
+              [ -z "$_ch7_pA" ] && continue
+              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+                _ch7_seq_shared="$_ch7_pA"
+                break
+              fi
+            done <<< "$_ch7_pi_modify"
+            if [ -n "$_ch7_seq_shared" ]; then
+              print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pi]}' and '${_titles[$_ch7_pj]}' have a dep edge (After #${_ch7_pi_ord_s}) but also declare (can run in parallel with #${_ch7_pi_ord_s}) — annotation is contradictory and After #${_ch7_pi_ord_s} takes precedence; both modify '${_ch7_seq_shared}'; stripping the parallel annotation" >&2
+              _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pj]}" "$_ch7_pi_ord_s"
+              _parallel_with[$_ch7_pj]=$(printf '%s\n' "${_parallel_with[$_ch7_pj]:-}" | grep -vxF "#${_ch7_pi_ord_s}" || true)
+              _warning_count=$((_warning_count + 1))
             fi
           fi
+          continue ;;
+        esac
+        case "$_ch7_pj_desc" in *"|${_ch7_pi}|"*)
+          # pj is ancestor of pi; check if pi has a contradictory parallel annotation
+          local _ch7_pi_pars="${_parallel_with[$_ch7_pi]:-}"
+          local _ch7_pj_ord_s="${_arr_to_nonspike[$_ch7_pj]}"
+          if echo "$_ch7_pi_pars" | grep -qxF "#${_ch7_pj_ord_s}"; then
+            local _ch7_sq2_shared=""
+            while IFS= read -r _ch7_pA; do
+              [ -z "$_ch7_pA" ] && continue
+              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+                _ch7_sq2_shared="$_ch7_pA"
+                break
+              fi
+            done <<< "$_ch7_pi_modify"
+            if [ -n "$_ch7_sq2_shared" ]; then
+              print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pj]}' and '${_titles[$_ch7_pi]}' have a dep edge (After #${_ch7_pj_ord_s}) but also declare (can run in parallel with #${_ch7_pj_ord_s}) — annotation is contradictory and After #${_ch7_pj_ord_s} takes precedence; both modify '${_ch7_sq2_shared}'; stripping the parallel annotation" >&2
+              _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pi]}" "$_ch7_pj_ord_s"
+              _parallel_with[$_ch7_pi]=$(printf '%s\n' "${_parallel_with[$_ch7_pi]:-}" | grep -vxF "#${_ch7_pj_ord_s}" || true)
+              _warning_count=$((_warning_count + 1))
+            fi
+          fi
+          continue ;;
+        esac
+
+        # Concurrent pair — find first shared path between their Files to Modify
+        local _ch7_shared=""
+        while IFS= read -r _ch7_pA; do
+          [ -z "$_ch7_pA" ] && continue
+          if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+            _ch7_shared="$_ch7_pA"
+            break
+          fi
+        done <<< "$_ch7_pi_modify"
+        [ -z "$_ch7_shared" ] && continue
+
+        # Determine earlier/later by non-spike ordinal.
+        # For standard (spike-prepended) plans raw-index order == ordinal order,
+        # but compare explicitly in case of non-standard orderings.
+        local _ch7_pi_ord="${_arr_to_nonspike[$_ch7_pi]}"
+        local _ch7_pj_ord="${_arr_to_nonspike[$_ch7_pj]}"
+        local _ch7_earlier _ch7_later _ch7_after_num _ch7_later_ord
+        if [ "$_ch7_pi_ord" -lt "$_ch7_pj_ord" ]; then
+          _ch7_earlier=$_ch7_pi; _ch7_later=$_ch7_pj
+          _ch7_after_num=$_ch7_pi_ord; _ch7_later_ord=$_ch7_pj_ord
+        else
+          _ch7_earlier=$_ch7_pj; _ch7_later=$_ch7_pi
+          _ch7_after_num=$_ch7_pj_ord; _ch7_later_ord=$_ch7_pi_ord
         fi
-      fi
-    done <<< "$_pi_parallel"
+        local _ch7_earlier_title="${_titles[$_ch7_earlier]}"
+        local _ch7_later_title="${_titles[$_ch7_later]}"
+        local _ch7_pi_supps="${_suppressions[$_ch7_pi]:-}"
+        local _ch7_pj_supps="${_suppressions[$_ch7_pj]:-}"
+
+        # Suppress logic (disjoint-functions escape hatch):
+        #   both sides suppressed → skip silently (mutual acknowledgement)
+        #   one side suppressed  → warn-only, deduped across fixpoint passes
+        if echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" && \
+           echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
+          : # both sides suppressed — skip silently
+        elif echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" || \
+             echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
+          local _ch7_pair_key="${_ch7_pi}_${_ch7_pj}"
+          case "$_ch7_warned_pairs" in *"|${_ch7_pair_key}|"*) : ;; *)
+            print_warning "strict-lint: WARNING: parallel-file-overlap: '${_ch7_earlier_title}' and '${_ch7_later_title}' are concurrent but both modify '${_ch7_shared}' — chain the later one (After #${_ch7_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
+            _warning_count=$((_warning_count + 1))
+            _ch7_warned_pairs="${_ch7_warned_pairs}|${_ch7_pair_key}|"
+          ;; esac
+        else
+          # Neither suppressed — auto-chain: rewrite later issue, strip annotations both ways
+          _autochain_rewrite_deps "$issues_file" "$_ch7_later_title" "$_ch7_after_num"
+          _autochain_remove_par_annotation "$issues_file" "$_ch7_earlier_title" "$_ch7_later_ord"
+          _parallel_with[$_ch7_earlier]=$(printf '%s\n' "${_parallel_with[$_ch7_earlier]:-}" | grep -vxF "#${_ch7_later_ord}" || true)
+          _autochain_remove_par_annotation "$issues_file" "$_ch7_later_title" "$_ch7_after_num"
+          _parallel_with[$_ch7_later]=$(printf '%s\n' "${_parallel_with[$_ch7_later]:-}" | grep -vxF "#${_ch7_after_num}" || true)
+          print_info "[auto-chained] parallel-file-overlap: '${_ch7_later_title}' rewired After #${_ch7_after_num} ('${_ch7_earlier_title}'); both modify '${_ch7_shared}'" >&2
+
+          # Update _rev_adj in memory so the next fixpoint pass sees this new edge
+          _rev_adj[$_ch7_earlier]="${_rev_adj[$_ch7_earlier]}${_ch7_later}|"
+
+          _ch7_done=false
+          break 2  # Restart fixpoint loop with updated reachability
+        fi
+      done
+    done
   done
 
   # Check 8: Duplicate verification commands across issues (WARNING)

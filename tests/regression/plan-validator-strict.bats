@@ -39,6 +39,8 @@
 #   AC1 — unsuppressed overlap → auto-chain INFO + file rewritten, no WARNING, exit 0
 #   AC4 — three-way transitive A←B←C → B gets After #1, C gets After #2, exit 0
 #   AC5 — spike-prepended slate → auto-chain uses non-spike ordinal in rewrite, exit 0
+#   AC6 — round-6 reproduction: unannotated concurrent pair (#4 After #2,#3 and #6 After #3) sharing auth.ts → auto-chained
+#   AC7 — fixpoint: A→B initial dep; B+C concurrent sharing file → C After #2 only; A+C sequential by transitivity (not re-chained)
 
 load '../helpers/setup.bash'
 
@@ -2304,8 +2306,9 @@ FIXTURE
   }
 
   # Must NOT emit a parallel-file-overlap WARNING — the parallel annotation lives in
-  # the Description body, not in the Dependencies section.
-  grep -q "parallel-file-overlap:" "$stderr_out" && {
+  # the Description body, not in the Dependencies section.  An auto-chain INFO line
+  # may appear (the genuinely concurrent pair gets chained) but that is not a WARNING.
+  grep -q "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" && {
     echo "FAIL: unexpected parallel-file-overlap WARNING from prose-body parallel mention" >&2
     cat "$stderr_out" >&2
     false
@@ -5322,6 +5325,297 @@ FIXTURE
     cat "$stderr_out" >&2
     false
   }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AC6 — round-6 reproduction: unannotated concurrent pair auto-chained
+#
+# Modelled after orrery round 6: two issues share a common ancestor (#3) but
+# have no dep edge between themselves and NO parallel annotation.  Both modify
+# auth.ts and sign-in.tsx.  Check 7 must detect the concurrency from the dep
+# graph and auto-chain the later one (higher non-spike ordinal).
+#
+# Graph: #2→#4 (4 After 2), #3→#4 (4 After 3), #3→#6 (6 After 3).
+# Neither #4 nor #6 is an ancestor of the other → concurrent.
+# No parallel annotations on any issue.
+# Expected: #6 (ordinal 6) gets After #4 (ordinal 4).
+# ---------------------------------------------------------------------------
+
+@test "AC6: unannotated concurrent pair sharing a file is auto-chained (round-6 reproduction)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac6.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Bootstrap Infrastructure
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Bootstrap step.
+
+**Claude Context**:
+Files to Modify:
+- src/bootstrap.ts
+
+**Done Definition**: Done when bootstrap runs.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Auth Config Setup
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Sets up auth configuration.
+
+**Claude Context**:
+Files to Modify:
+- src/auth-config.ts
+
+**Done Definition**: Done when auth config is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Base Session Layer
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Base session layer needed by auth and sign-in features.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Done Definition**: Done when session layer is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Feature Alpha Auth
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Implements the alpha authentication flow.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when alpha auth flow passes tests.
+
+**Dependencies**: After #2, After #3
+---END---
+---ISSUE---
+TITLE: Unrelated Logger
+LABELS: backend,priority-low
+TIME: 30min
+BODY:
+**Description**:
+Unrelated logging helper.
+
+**Claude Context**:
+Files to Modify:
+- src/logger.ts
+
+**Done Definition**: Done when logger works.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Feature Beta Auth
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Implements the beta authentication flow.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when beta auth flow passes tests.
+
+**Dependencies**: After #3
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 — this is a WARNING-class check with auto-chain rewrite
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit at least one auto-chain INFO for the concurrent pair
+  local info_count
+  info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
+  [ "$info_count" -ge 1 ] || {
+    echo "FAIL: expected at least 1 auto-chain INFO, got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The auto-chain must mention Feature Beta Auth (the later issue, ordinal 6)
+  grep "auto-chained.*parallel-file-overlap" "$stderr_out" | grep -q "Feature Beta Auth" || {
+    echo "FAIL: auto-chain INFO should name 'Feature Beta Auth' as the rewired issue" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The auto-chain must mention Feature Alpha Auth (the earlier issue, ordinal 4)
+  grep "auto-chained.*parallel-file-overlap" "$stderr_out" | grep -q "Feature Alpha Auth" || {
+    echo "FAIL: auto-chain INFO should name 'Feature Alpha Auth' as the anchor" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Feature Beta Auth must now have After #4 in its Dependencies line
+  sed -n '/^TITLE: Feature Beta Auth/,/^---END---$/p' "$issues_file" | \
+    grep -qE 'After #4' || {
+      echo "FAIL: Feature Beta Auth should have After #4 in its Dependencies" >&2
+      sed -n '/^TITLE: Feature Beta Auth/,/^---END---$/p' "$issues_file" >&2
+      false
+    }
+
+  # No WARNING emitted — both sides lack a suppression marker → auto-chain not warn
+  grep -q "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected WARNING for parallel-file-overlap (expected auto-chain)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AC7 — fixpoint: two auto-chains complete and the dep graph converges
+#
+# Initial state: Issue 2 already depends on Issue 1 (After #1).  Issue 3
+# has no deps.  Issues 2 and 3 both modify sign-in.tsx.  Issues 1 and 3
+# both modify auth.ts (shared file added to make the (1,3) pair non-vacuous).
+#
+# Pass 1: (1,2) sequential. (1,3) concurrent + share auth.ts → chain Issue 3
+# After #1.  _rev_adj updated in memory.
+# Pass 2 (fixpoint): (1,2) sequential. (1,3) sequential (After #1 added).
+# (2,3) concurrent + share sign-in.tsx → chain Issue 3 After #2.  _rev_adj
+# updated.
+# Pass 3: all pairs sequential. Done.
+#
+# Verifies: exactly two auto-chain INFOs; Issue 3 gets both After #1 and
+# After #2.  Falsifiable: with the _rev_adj update missing, pass 2 would
+# re-encounter (1,3) as concurrent (idempotent rewrite + another INFO),
+# causing info_count > 2 or a timeout.
+# ---------------------------------------------------------------------------
+
+@test "AC7: fixpoint terminates with exactly two auto-chains when both pairs share files" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac7.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Auth Config Module
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Creates the auth configuration and the auth.ts entry point.
+
+**Claude Context**:
+Files to Modify:
+- src/auth-config.ts
+- src/auth.ts
+
+**Done Definition**: Done when auth config module is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Sign-in Page
+LABELS: frontend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds the sign-in page, consuming auth.ts and producing sign-in.tsx.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when sign-in page renders.
+
+**Dependencies**: After #1
+---END---
+---ISSUE---
+TITLE: Sign-in Validation
+LABELS: frontend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Adds client-side validation to the sign-in form.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when validation is wired up.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly two auto-chain INFOs (Auth Config→Sign-in Validation pass 1,
+  # Sign-in Page→Sign-in Validation pass 2).  With a broken _rev_adj update,
+  # pass 2 would re-encounter the already-chained (1,3) pair and emit additional
+  # INFOs, causing info_count > 2.
+  local info_count
+  info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
+  [ "$info_count" -eq 2 ] || {
+    echo "FAIL: expected exactly 2 auto-chain INFOs (fixpoint convergence), got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Sign-in Validation must have After #1 (Auth Config Module — first auto-chain)
+  sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" | \
+    grep -qE 'After #1' || {
+      echo "FAIL: Sign-in Validation should have After #1 in its Dependencies" >&2
+      sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" >&2
+      false
+    }
+
+  # Sign-in Validation must have After #2 (Sign-in Page — second auto-chain)
+  sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" | \
+    grep -qE 'After #2' || {
+      echo "FAIL: Sign-in Validation should have After #2 in its Dependencies" >&2
+      sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" >&2
+      false
+    }
 
   rm -f "$stderr_out"
 }
