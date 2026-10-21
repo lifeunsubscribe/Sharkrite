@@ -2420,6 +2420,16 @@ bad paragraph and a wrong ADR edit is a wrong product. It gets its own pass.
    question is never asked twice.
 3. **Apply.** Changes are described narratively *and* stated explicitly, then
    applied, rejected, or iterated on through the same loop.
+4. **Restructure.** When the declared documentation is one oversized document
+   (this file, at the time of writing: 2,283 lines, 38 contract sections, the
+   ADR and every feature doc concatenated) — or when there is no ADR at all —
+   `align-docs` can propose **splitting it into an ADR plus feature docs**, and
+   **consolidating** that result with an existing ADR and feature docs:
+   merging overlapping sections, de-duplicating assertions, re-linking the ADR,
+   re-pointing `sharkrite-enforced-by` markers. Boundary scoping favors few
+   docs that stay comprehensive over many thin ones. It is a structural edit
+   to human documents, so it goes through the same propose/approve loop, and
+   it is the mechanism behind the measured-threshold split below.
 
 **Simplified mode** when no drift entries exist: deterministic reference and
 test checks run over every doc; the model pass runs **only** over docs whose
@@ -2428,6 +2438,30 @@ update recommendations from the reference checks are folded into this one
 round of approvals so the operator is not asked twice. Zero changes since last
 align → zero model calls.
 
+### Queryability: the docs map is the index, content is read by anchor
+
+No pass reads a whole document to find out whether something is in it.
+`lib/utils/docs-map.sh` already builds `.rite/state/docs-map.tsv` — every
+doc's headings with a per-file `last_verified_sha` ("catalog as map, not
+content") — and that map is the query layer for **every** pass here: Tier 1,
+Tier 2, `align-docs`, and `rite plan`. A pass consults the map to decide which
+files and which sections it needs, then reads only those sections by heading
+anchor. The byte cap bounds *content loaded per pass*; it never bounds *what
+is discoverable*. That `rite plan`'s 50 KB auto-discovery cap applied to
+discovery itself — so a 217 KB design doc was either loaded whole or not seen —
+is the oversight this corrects.
+
+The map must be rebuilt whenever a doc changes: on merge of any PR touching
+`docs/`, on the promote docs-PR, and as the final step of `align-docs`. Today
+only `rite docs` rebuilds it, and the live map was 64 commits and four doc
+changes stale when measured. The per-file SHA doubles as the ledger
+`align-docs` simplified mode uses to decide which docs' referenced code changed
+since the last alignment.
+
+The tag index (`tag-index-system.md`, still a proposal) is the router layer
+above this map — tag → heading pointer. This contract neither depends on it
+nor changes it.
+
 ### Keeping it lean over time
 
 - **Every model pass emits a diag**: `[diag] DOC_PASS kind=promote|align
@@ -2435,8 +2469,8 @@ align → zero model calls.
   The retired layer rotted for ~130 runs because nothing measured it.
 - **Oversized docs split.** When a pass's measured duration exceeds a
   configured threshold (order of a minute or two), the workflow suggests
-  `rite align-docs`, and the next alignment **proposes** splitting the doc into
-  focused files — a structural edit to a human document, so it goes through the
+  `rite align-docs`, and the next alignment **proposes** a restructure (step 4
+  above) — a structural edit to a human document, so it goes through the
   approval loop and updates the ADR's references in the same change. The
   trigger is the diag, never a feeling.
 
@@ -2466,6 +2500,9 @@ align → zero model calls.
 - **Associating individual issues with feature docs** — quota-driven bloat.
 - **An open-ended "review the architecture" prompt inside `align-docs`** —
   the unbounded input in a new costume. The rubric lives in the ADR.
+- **Whole-document loading under a byte cap as the discovery mechanism** —
+  what the cap should bound is content read, not content findable. Query the
+  map; read by anchor.
 
 **Enforcement:** to be pinned per issue as the set lands. Planned:
 `tests/regression/doc-drift-entry-schema.bats` (fields, per-doc/per-branch
@@ -2474,4 +2511,9 @@ path — structural grep plus a stubbed-provider run that must make zero calls),
 `promote-doc-gate-interactive.bats` (no `--auto` path reaches the merge without
 the prompt; reject does not block merge; accepted entries fold into the docs PR
 body), `align-docs-approval-history.bats`, and the `DOC_PASS` diag presence
-check. `sharkrite-enforced-by` marker parsing gets its own file.
+check. `sharkrite-enforced-by` marker parsing gets its own file. Queryability:
+`docs-map-rebuild-on-doc-change.bats` (merge of a docs-touching PR, promote
+docs-PR, and `align-docs` all leave the map at HEAD) and
+`plan-reads-docs-map.bats` (`rite plan` consults the map before loading any
+content; a section past the byte cap is still discoverable). Restructure:
+`align-docs-restructure-proposes-not-writes.bats`.
