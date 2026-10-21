@@ -87,6 +87,11 @@ if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f parse_tag_index >/dev/null 2>&1; t
   source "$RITE_LIB_DIR/utils/tag-index.sh"
 fi
 
+# Runbook title-length cap (imperative title rule: ≤50 chars).
+# Shared between _lint_issues_strict Check 10 and the spike-title truncation
+# in _detect_unverified_integrations (budget = _RITE_PLAN_TITLE_MAX_LEN - 26).
+_RITE_PLAN_TITLE_MAX_LEN=50
+
 # =============================================================================
 # _collect_auto_docs: auto-discover docs/**/*.md, ADRs, and README.md
 #
@@ -2838,6 +2843,32 @@ pytest"
     fi
   done
 
+  # Check 10: Title length cap — warn when title exceeds the runbook's ≤50-char limit
+  #
+  # Generated titles occasionally exceed _RITE_PLAN_TITLE_MAX_LEN when the planner
+  # doesn't respect prompt compliance. Warn-only (no auto-truncation: mangling a title
+  # deterministically is worse than surfacing it for manual correction at the preview
+  # feedback seam). Suppressed per-issue with:
+  #   <!-- sharkrite-plan-lint disable title-length - Reason: <text> -->
+  # Character counting uses bash ${#} which counts Unicode code points (not bytes)
+  # in bash 4+ with a UTF-8-capable locale (en_US.UTF-8 / C.UTF-8).
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _issue_title="${_titles[$_i]}"
+    local _issue_supps="${_suppressions[$_i]}"
+
+    if echo "$_issue_supps" | grep -qw "title-length"; then
+      continue
+    fi
+
+    [ -z "$_issue_title" ] && continue
+
+    local _title_len=${#_issue_title}
+    if [ "$_title_len" -gt "$_RITE_PLAN_TITLE_MAX_LEN" ]; then
+      print_warning "strict-lint: WARNING: title-length: '${_issue_title}' is ${_title_len} chars (cap ${_RITE_PLAN_TITLE_MAX_LEN})" >&2
+      _warning_count=$((_warning_count + 1))
+    fi
+  done
+
   # Summary
   if [ "$_error_count" -gt 0 ]; then
     print_warning "strict-lint: ${_error_count} error(s) found — fix before creating issues" >&2
@@ -4285,12 +4316,13 @@ _detect_unverified_integrations() {
     else
       _fixture_path="$_key"
     fi
-    # Truncate display name so the title stays within the ≤50-char runbook cap.
-    # Fixed chars: "Capture " (8) + " sample - fixtures" (18) = 26; name budget = 24.
+    # Truncate display name so the spike title stays within the _RITE_PLAN_TITLE_MAX_LEN cap.
+    # Fixed chars: "Capture " (8) + " sample - fixtures" (18) = 26; name budget = cap - 26.
+    local _spike_name_budget=$((_RITE_PLAN_TITLE_MAX_LEN - 26))
     local _display_name
     _display_name="$_name"
-    if [ "${#_name}" -gt 24 ]; then
-      _display_name="${_name:0:21}..."
+    if [ "${#_name}" -gt "$_spike_name_budget" ]; then
+      _display_name="${_name:0:$((_spike_name_budget - 3))}..."
     fi
 
     print_warning "unverified external integration: $_name${_orig:+ (from: $_orig)}" >&2

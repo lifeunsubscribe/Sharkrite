@@ -886,3 +886,14 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 
 `behavioral-design.md` line 1438 claims auto-chain adds "`After #N`" unconditionally, but after PR #1396 the append is skipped when a bare `#N` already appears on the Dependencies line.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1398 issue:1388 recorded:2026-10-21T22:47:15Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md documents that `rite plan` generates issues following the runbook title format with `≤50 chars`, but does not mention that `_lint_issues_strict` now emits a warning (not an error) for titles exceeding this cap — a user reading the docs would expect truncation or enforcement, not a warn-only Check 10 that requires manual correction at the preview seam.
+
+`_lint_issues_strict` Check 10 warns on titles over 50 chars but does not block issue creation; CLAUDE.md implies the cap is enforced, not advisory.
+<!-- /sharkrite-doc-drift -->

@@ -64,6 +64,10 @@ setup() {
   source "${RITE_REPO_ROOT}/lib/utils/markers.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
+  # Top-level constant from plan-issues.sh (line 93) — not inside any function,
+  # so not captured by the awk brace-depth extractor below. Must be set explicitly.
+  _RITE_PLAN_TITLE_MAX_LEN=50
+
   # Stub print_* functions so output goes cleanly without terminal setup.
   print_warning() { echo "WARNING: $*" >&2; }
   print_info()    { echo "INFO: $*" >&2; }
@@ -755,8 +759,11 @@ FIXTURE
   # The validator should use inline markers, not env-var flags.
   # It may reference RITE_PROJECT_ROOT (path config, not a behavior flag) — that is allowed.
   # Any RITE_* var that looks like a flag (boolean-style: RITE_PLAN_*) is not allowed.
+  # _RITE_PLAN_* (underscore-prefixed) are internal constants, not user-facing env vars — allowed.
+  # Strip _RITE_PLAN_* occurrences before the grep so the substring "RITE_PLAN_TITLE_MAX_LEN"
+  # inside "_RITE_PLAN_TITLE_MAX_LEN" does not produce a false positive.
   local new_rite_flags
-  new_rite_flags=$(echo "$fn_body" | grep -oE 'RITE_PLAN_[A-Z_]+' | sort -u || true)
+  new_rite_flags=$(echo "$fn_body" | sed 's/_RITE_PLAN_[A-Z_]*//g' | grep -oE 'RITE_PLAN_[A-Z_]+' | sort -u || true)
 
   [ -z "$new_rite_flags" ] || {
     echo "FAIL: _lint_issues_strict references RITE_PLAN_* env-var flags (violates no-env-var-escape-hatch policy):" >&2
@@ -5691,4 +5698,292 @@ FIXTURE
     echo "FAIL: expected exactly 1 'After #8', got $count: $result" >&2
     false
   }
+}
+
+# ---------------------------------------------------------------------------
+# T1 — title-length: 51-char title emits WARNING, exit 0
+#
+# "[Phase 1] Implement full authentication module now!" is 51 characters (ASCII).
+# Validator must emit strict-lint: WARNING: title-length and exit 0 (warn-only).
+# ---------------------------------------------------------------------------
+
+@test "T1: 51-char title — strict-lint WARNING title-length, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-t1.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full authentication module now!
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Add authentication module.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.py
+
+**Acceptance Criteria**:
+- [ ] Auth works: `pytest tests/test_auth.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_auth.py
+```
+
+**Done Definition**: Done when auth passes.
+
+**Scope Boundary**:
+- DO: add auth module
+- DO NOT: add other modules
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (title-length is warn-only, never fatal)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for title-length warning, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit WARNING mentioning title-length
+  grep -q "title-length" "$stderr_out" || {
+    echo "FAIL: expected title-length WARNING in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Warning must name the title and the char count
+  grep -q "Implement full authentication module now!" "$stderr_out" || {
+    echo "FAIL: expected issue title in title-length WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Warning must mention the cap (50)
+  grep -q "cap 50" "$stderr_out" || {
+    echo "FAIL: expected cap 50 in title-length WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# T2 — title-length: 50-char title is silent, exit 0
+#
+# "[Phase 1] Implement authentication module for now!" is exactly 50 characters.
+# Validator must NOT emit title-length WARNING (at cap, not over).
+# ---------------------------------------------------------------------------
+
+@test "T2: 50-char title — no title-length WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-t2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement authentication module for now!
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Add authentication module.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.py
+
+**Acceptance Criteria**:
+- [ ] Auth works: `pytest tests/test_auth.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_auth.py
+```
+
+**Done Definition**: Done when auth passes.
+
+**Scope Boundary**:
+- DO: add auth module
+- DO NOT: add other modules
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for 50-char title, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit title-length WARNING
+  grep -q "title-length" "$stderr_out" && {
+    echo "FAIL: unexpected title-length WARNING for 50-char title" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# T3 — title-length: 51-char title with suppression — no WARNING, suppressed logged, exit 0
+# ---------------------------------------------------------------------------
+
+@test "T3: 51-char title with title-length suppression — suppressed, no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-t3.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full authentication module now!
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Add authentication module.
+
+<!-- sharkrite-plan-lint disable title-length - Reason: ADR D2 mandates the full module name in the title for release tagging automation -->
+
+**Claude Context**:
+Files to Modify:
+- src/auth.py
+
+**Acceptance Criteria**:
+- [ ] Auth works: `pytest tests/test_auth.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_auth.py
+```
+
+**Done Definition**: Done when auth passes.
+
+**Scope Boundary**:
+- DO: add auth module
+- DO NOT: add other modules
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 with suppression, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit title-length WARNING (suppressed).
+  # Anchor to "WARNING: title-length" — the suppression itself logs
+  # "[suppressed] title-length: <reason>" which contains "title-length"
+  # but is not a WARNING. A bare grep would always match and fail this test.
+  grep -q "WARNING: title-length" "$stderr_out" && {
+    echo "FAIL: unexpected title-length WARNING — suppression should have fired" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must log the suppression ([suppressed] in output)
+  grep -q "\[suppressed\]" "$stderr_out" || {
+    echo "FAIL: expected [suppressed] log for title-length suppression" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# T4 — title-length: multi-byte accented title exactly at char cap — silent, exit 0
+#
+# "[Phase 2] Réfactor user endpoint - fix auth checks" is 50 Unicode characters
+# but 51 bytes (é is 2 bytes in UTF-8). A byte-counting implementation would
+# incorrectly warn; a character-counting implementation stays silent.
+# ---------------------------------------------------------------------------
+
+@test "T4: 50-char title with accented char (51 bytes) — no WARNING, exit 0 (char count not bytes)" {
+  # Pin locale: bash's ${#} counts code points only in a UTF-8-capable locale.
+  # Under LC_ALL=C (common on CI runners and launchd), ${#} counts bytes, so a
+  # 50-char/51-byte title would measure 51 > 50 and emit a spurious WARNING.
+  # en_US.UTF-8 is standard on macOS; C.UTF-8 is the portable Linux fallback.
+  if locale -a 2>/dev/null | grep -qxF 'en_US.UTF-8'; then
+    export LC_ALL=en_US.UTF-8
+  else
+    export LC_ALL=C.UTF-8
+  fi
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-t4.txt"
+
+  # This title is 50 Unicode characters, 51 UTF-8 bytes (é = U+00E9 = 2 bytes).
+  # A byte-counting implementation would wrongly emit title-length WARNING.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 2] Réfactor user endpoint - fix auth checks
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Refactor user endpoint.
+
+**Claude Context**:
+Files to Modify:
+- src/users.py
+
+**Acceptance Criteria**:
+- [ ] Endpoint works: `pytest tests/test_users.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_users.py
+```
+
+**Done Definition**: Done when endpoint passes.
+
+**Scope Boundary**:
+- DO: refactor user endpoint
+- DO NOT: add other endpoints
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for 50-char accented title, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit title-length WARNING (50 chars ≤ 50 cap)
+  grep -q "title-length" "$stderr_out" && {
+    echo "FAIL: unexpected title-length WARNING — title is 50 chars (51 bytes); must count chars not bytes" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
 }
