@@ -288,3 +288,11 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == 'initdb --auth=md5' ]]
 }
+
+@test "sanitize_generated_commands: rtk stats-collector stripped (hyphen-continued word is not a meta-command)" {
+  # Regression: [^[:alnum:]_-] boundary fix — a hyphen after 'rtk stats' must not
+  # cause 'rtk stats-collector' to be treated as a meta-command continuation.
+  run sanitize_generated_commands "$(printf 'rtk stats-collector --run')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'stats-collector --run' ]]
+}
