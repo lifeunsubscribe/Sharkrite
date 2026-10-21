@@ -864,3 +864,14 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 
 `CLAUDE.md` says Check 7 fires on issues that "declare themselves parallel via `(can run in parallel with #N)` annotations" — but it now fires on any dep-graph-concurrent pair regardless of annotation.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1389 issue:1386 recorded:2026-10-21T20:21:58Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: Now I see it. The Check 7 contract says it's part of `_lint_issues_strict` (item 6 in the chain). The description of `_lint_issues_strict` at line 1446 says "graph checks, dangling refs, verification paths, deferral citations (#353)" — it doesn't mention the new concurrent file overlap / auto-chain behavior that PR #1389 added. The `_lint_issues_strict` description omits the newly-added Check 7 concurrent-file-overlap auto-chain capability.
+
+`_lint_issues_strict` description in `behavioral-design.md` omits Check 7's new derived-concurrent auto-chain, listing only "graph checks, dangling refs, verification paths, deferral citations (#353)".
+<!-- /sharkrite-doc-drift -->
