@@ -1638,8 +1638,8 @@ _transform_dep_line() {
 #
 # Reads the file line-by-line, transforms the first **Dependencies**: line in
 # the block whose TITLE matches later_title, writes to a temp file, then
-# atomically replaces the original.  Idempotent: if After #N is already
-# present and the annotation already absent, the file is unchanged.
+# atomically replaces the original.  Idempotent: if #N appears in any form
+# (bare #N or After #N) and the annotation already absent, the file is unchanged.
 # =============================================================================
 
 _autochain_rewrite_deps() {

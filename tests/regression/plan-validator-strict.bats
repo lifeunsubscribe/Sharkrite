@@ -5642,10 +5642,10 @@ FIXTURE
   }
 
   # Must NOT contain 'After #8, After #3' (the prepend-duplicate pattern)
-  printf '%s\n' "$result" | grep -q "After #8.*#8\|#8.*After #8" && {
+  if printf '%s\n' "$result" | grep -q "After #8.*#8\|#8.*After #8"; then
     echo "FAIL: result contains duplicate #8 references: $result" >&2
     false
-  }
+  fi
 }
 
 # ---------------------------------------------------------------------------
