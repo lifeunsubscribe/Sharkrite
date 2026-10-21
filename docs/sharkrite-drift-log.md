@@ -844,3 +844,14 @@ Looking at the diff again more carefully — the behavioral-design.md Enforcemen
 
 `sanitize_generated_commands` is documented as stripping rtk-wrapped commands, but it now preserves meta-commands (`gain`, `discover`, `stats`, `init`, `read`) intact rather than stripping them.
 <!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1389 issue:1386 recorded:2026-10-21T20:01:57Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: Check 7 now derives concurrency from the dep graph (catching unannotated concurrent pairs) instead of relying solely on explicit `(can run in parallel with #N)` annotations.
+
+`CLAUDE.md` says Check 7 fires on issues that "declare themselves parallel via `(can run in parallel with #N)` annotations" — but it now fires on any dep-graph-concurrent pair regardless of annotation.
+<!-- /sharkrite-doc-drift -->
