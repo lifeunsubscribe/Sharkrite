@@ -3435,7 +3435,7 @@ _normalize_issue_markers() {
       print; next
     }
     in_block && !body_seen && tolower($0) ~ /^[*]*split rationale[*]*:/ {
-      saved_rat=$0
+      saved_rat = (saved_rat == "") ? $0 : saved_rat "\n" $0
       next
     }
     in_block && !body_seen && /^BODY:/ {
@@ -3445,6 +3445,7 @@ _normalize_issue_markers() {
       next
     }
     { print }
+    END { if (saved_rat != "") print saved_rat }
   ' "$_norm" > "$_norm2"
   mv "$_norm2" "$_f"
   rm -f "$_norm"
