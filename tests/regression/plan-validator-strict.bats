@@ -2306,8 +2306,9 @@ FIXTURE
   }
 
   # Must NOT emit a parallel-file-overlap WARNING — the parallel annotation lives in
-  # the Description body, not in the Dependencies section.
-  grep -q "parallel-file-overlap:" "$stderr_out" && {
+  # the Description body, not in the Dependencies section.  An auto-chain INFO line
+  # may appear (the genuinely concurrent pair gets chained) but that is not a WARNING.
+  grep -q "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" && {
     echo "FAIL: unexpected parallel-file-overlap WARNING from prose-body parallel mention" >&2
     cat "$stderr_out" >&2
     false
@@ -5500,22 +5501,26 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
-# Fixture AC7 — fixpoint: one auto-chain makes a second pair sequential
+# Fixture AC7 — fixpoint: two auto-chains complete and the dep graph converges
 #
 # Initial state: Issue 2 already depends on Issue 1 (After #1).  Issue 3
-# has no deps.  Issues 2 and 3 both modify sign-in.tsx.  Issues 1 and 3 do
-# NOT share a file.
+# has no deps.  Issues 2 and 3 both modify sign-in.tsx.  Issues 1 and 3
+# both modify auth.ts (shared file added to make the (1,3) pair non-vacuous).
 #
-# Pass 1: (1,2) sequential. (1,3) no shared file. (2,3) concurrent + share
-# sign-in.tsx → chain Issue 3 After #2.
-# Pass 2 (fixpoint): reachability recomputed — Issue 3 is now in desc(Issue 1)
-# via 1→2→3.  (1,3) sequential → NOT re-chained.  Done.
+# Pass 1: (1,2) sequential. (1,3) concurrent + share auth.ts → chain Issue 3
+# After #1.  _rev_adj updated in memory.
+# Pass 2 (fixpoint): (1,2) sequential. (1,3) sequential (After #1 added).
+# (2,3) concurrent + share sign-in.tsx → chain Issue 3 After #2.  _rev_adj
+# updated.
+# Pass 3: all pairs sequential. Done.
 #
-# Verifies: exactly one auto-chain INFO; Issue 3 gets After #2 but NOT After #1
-# (redundant over-chaining prevented by the fixpoint reachability recompute).
+# Verifies: exactly two auto-chain INFOs; Issue 3 gets both After #1 and
+# After #2.  Falsifiable: with the _rev_adj update missing, pass 2 would
+# re-encounter (1,3) as concurrent (idempotent rewrite + another INFO),
+# causing info_count > 2 or a timeout.
 # ---------------------------------------------------------------------------
 
-@test "AC7: fixpoint prevents redundant chain when first rewrite makes second pair sequential" {
+@test "AC7: fixpoint terminates with exactly two auto-chains when both pairs share files" {
   local issues_file="$RITE_TEST_TMPDIR/issues-ac7.txt"
 
   cat > "$issues_file" <<'FIXTURE'
@@ -5563,6 +5568,7 @@ Adds client-side validation to the sign-in form.
 
 **Claude Context**:
 Files to Modify:
+- src/auth.ts
 - src/sign-in.tsx
 
 **Done Definition**: Done when validation is wired up.
@@ -5583,28 +5589,30 @@ FIXTURE
     false
   }
 
-  # Must emit exactly one auto-chain INFO (the Sign-in Page / Sign-in Validation pair only)
+  # Must emit exactly two auto-chain INFOs (Auth Config→Sign-in Validation pass 1,
+  # Sign-in Page→Sign-in Validation pass 2).  With a broken _rev_adj update,
+  # pass 2 would re-encounter the already-chained (1,3) pair and emit additional
+  # INFOs, causing info_count > 2.
   local info_count
   info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
-  [ "$info_count" -eq 1 ] || {
-    echo "FAIL: expected exactly 1 auto-chain INFO (fixpoint prevents redundant chain), got $info_count" >&2
+  [ "$info_count" -eq 2 ] || {
+    echo "FAIL: expected exactly 2 auto-chain INFOs (fixpoint convergence), got $info_count" >&2
     cat "$stderr_out" >&2
     false
   }
 
-  # Sign-in Validation must have After #2 (Sign-in Page)
+  # Sign-in Validation must have After #1 (Auth Config Module — first auto-chain)
   sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" | \
-    grep -qE 'After #2' || {
-      echo "FAIL: Sign-in Validation should have After #2 in its Dependencies" >&2
+    grep -qE 'After #1' || {
+      echo "FAIL: Sign-in Validation should have After #1 in its Dependencies" >&2
       sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" >&2
       false
     }
 
-  # Sign-in Validation must NOT have After #1 — Auth Config Module and Sign-in Validation
-  # are sequential by transitivity (1→2→3) after the chain; no direct chain needed.
+  # Sign-in Validation must have After #2 (Sign-in Page — second auto-chain)
   sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" | \
-    grep -qE 'After #1' && {
-      echo "FAIL: Sign-in Validation should NOT have After #1 (covered by 1→2→3 transitivity)" >&2
+    grep -qE 'After #2' || {
+      echo "FAIL: Sign-in Validation should have After #2 in its Dependencies" >&2
       sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" >&2
       false
     }

@@ -2508,10 +2508,11 @@ _lint_issues_strict() {
   # only for annotation-stripping after an auto-chain rewrite.
   #
   # Suppress (either side): <!-- sharkrite-plan-lint disable parallel-file-overlap - Reason: -->
-  # → warn-only (disjoint-functions escape hatch; both sides suppressed → still warn-only).
+  # → warn-only (disjoint-functions escape hatch; both sides suppressed → skip silently).
 
   local -a _ch7_desc
   local _ch7_done=false
+  local _ch7_warned_pairs=""
   while [ "$_ch7_done" = false ]; do
     _ch7_done=true
 
@@ -2558,11 +2559,55 @@ _lint_issues_strict() {
         local _ch7_pj_modify="${_files_modify[$_ch7_pj]}"
         [ -z "$_ch7_pj_modify" ] && continue
 
-        # Skip if either is an ancestor of the other (sequential, not concurrent)
+        # Skip if either is an ancestor of the other (sequential, not concurrent).
+        # Exception: if the later issue also carries a (can run in parallel with #ancestor)
+        # annotation, it is contradictory — emit a WARNING and strip the annotation before
+        # continuing.  Both issues sharing a file is required to avoid false positives on
+        # annotation-only deps with no actual overlap.
         local _ch7_pi_desc="${_ch7_desc[$_ch7_pi]:-}"
         local _ch7_pj_desc="${_ch7_desc[$_ch7_pj]:-}"
-        case "$_ch7_pi_desc" in *"|${_ch7_pj}|"*) continue ;; esac
-        case "$_ch7_pj_desc" in *"|${_ch7_pi}|"*) continue ;; esac
+        case "$_ch7_pi_desc" in *"|${_ch7_pj}|"*)
+          # pi is ancestor of pj; check if pj has a contradictory parallel annotation
+          local _ch7_pj_pars="${_parallel_with[$_ch7_pj]:-}"
+          local _ch7_pi_ord_s="${_arr_to_nonspike[$_ch7_pi]}"
+          if echo "$_ch7_pj_pars" | grep -qxF "#${_ch7_pi_ord_s}"; then
+            local _ch7_seq_shared=""
+            while IFS= read -r _ch7_pA; do
+              [ -z "$_ch7_pA" ] && continue
+              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+                _ch7_seq_shared="$_ch7_pA"
+                break
+              fi
+            done <<< "$_ch7_pi_modify"
+            if [ -n "$_ch7_seq_shared" ]; then
+              print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pi]}' and '${_titles[$_ch7_pj]}' have a dep edge (After #${_ch7_pi_ord_s}) but also declare (can run in parallel with #${_ch7_pi_ord_s}) — annotation is contradictory and After #${_ch7_pi_ord_s} takes precedence; both modify '${_ch7_seq_shared}'; stripping the parallel annotation" >&2
+              _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pj]}" "$_ch7_pi_ord_s"
+              _warning_count=$((_warning_count + 1))
+            fi
+          fi
+          continue ;;
+        esac
+        case "$_ch7_pj_desc" in *"|${_ch7_pi}|"*)
+          # pj is ancestor of pi; check if pi has a contradictory parallel annotation
+          local _ch7_pi_pars="${_parallel_with[$_ch7_pi]:-}"
+          local _ch7_pj_ord_s="${_arr_to_nonspike[$_ch7_pj]}"
+          if echo "$_ch7_pi_pars" | grep -qxF "#${_ch7_pj_ord_s}"; then
+            local _ch7_sq2_shared=""
+            while IFS= read -r _ch7_pA; do
+              [ -z "$_ch7_pA" ] && continue
+              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+                _ch7_sq2_shared="$_ch7_pA"
+                break
+              fi
+            done <<< "$_ch7_pi_modify"
+            if [ -n "$_ch7_sq2_shared" ]; then
+              print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pj]}' and '${_titles[$_ch7_pi]}' have a dep edge (After #${_ch7_pj_ord_s}) but also declare (can run in parallel with #${_ch7_pj_ord_s}) — annotation is contradictory and After #${_ch7_pj_ord_s} takes precedence; both modify '${_ch7_sq2_shared}'; stripping the parallel annotation" >&2
+              _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pi]}" "$_ch7_pj_ord_s"
+              _warning_count=$((_warning_count + 1))
+            fi
+          fi
+          continue ;;
+        esac
 
         # Concurrent pair — find first shared path between their Files to Modify
         local _ch7_shared=""
@@ -2593,11 +2638,20 @@ _lint_issues_strict() {
         local _ch7_pi_supps="${_suppressions[$_ch7_pi]:-}"
         local _ch7_pj_supps="${_suppressions[$_ch7_pj]:-}"
 
-        # Either side suppressed → warn-only (disjoint-functions escape hatch)
-        if echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" || \
+        # Suppress logic (disjoint-functions escape hatch):
+        #   both sides suppressed → skip silently (mutual acknowledgement)
+        #   one side suppressed  → warn-only, deduped across fixpoint passes
+        if echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" && \
            echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
-          print_warning "strict-lint: WARNING: parallel-file-overlap: '${_ch7_earlier_title}' and '${_ch7_later_title}' are concurrent but both modify '${_ch7_shared}' — chain the later one (After #${_ch7_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
-          _warning_count=$((_warning_count + 1))
+          : # both sides suppressed — skip silently
+        elif echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" || \
+             echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
+          local _ch7_pair_key="${_ch7_pi}_${_ch7_pj}"
+          case "$_ch7_warned_pairs" in *"|${_ch7_pair_key}|"*) : ;; *)
+            print_warning "strict-lint: WARNING: parallel-file-overlap: '${_ch7_earlier_title}' and '${_ch7_later_title}' are concurrent but both modify '${_ch7_shared}' — chain the later one (After #${_ch7_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
+            _warning_count=$((_warning_count + 1))
+            _ch7_warned_pairs="${_ch7_warned_pairs}|${_ch7_pair_key}|"
+          ;; esac
         else
           # Neither suppressed — auto-chain: rewrite later issue, strip annotations both ways
           _autochain_rewrite_deps "$issues_file" "$_ch7_later_title" "$_ch7_after_num"
