@@ -302,22 +302,6 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# assess-documentation.sh untouched (scope boundary check)
-# ---------------------------------------------------------------------------
-
-@test "assess-documentation.sh is NOT modified by this issue (scope boundary)" {
-  # The Layer 2 gate is reused, not duplicated — assess-documentation.sh must
-  # be unchanged relative to origin/main.
-  run bash -c "
-    cd '$RITE_REPO_ROOT'
-    git diff origin/main --stat -- lib/core/assess-documentation.sh 2>/dev/null || true
-  "
-  [ "$status" -eq 0 ]
-  # Output should be empty (no changes to that file)
-  [ -z "$output" ]
-}
-
-# ---------------------------------------------------------------------------
 # config/project.conf.example: RITE_DOC_MODE documented
 # ---------------------------------------------------------------------------
 

@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # assess-documentation.sh - Multi-layer documentation assessment
-# Layer 1 (always): Update .rite/docs/ with machine-optimized internal docs
-# Layer 2 (premium): Update user project docs IF .rite/doc-sync.md exists
+# Layer 1 (always): conventions catalog + tag-index reconcile
+# Layer 2 (opt-in): update user project docs IF .rite/doc-sync.md exists, or
+#                   append a drift-log entry in changelog mode
 #
 # Usage:
 #   assess-documentation.sh <PR_NUMBER> [--auto]
@@ -35,7 +36,7 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
 fi
 
 # Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f assess_internal_changelog >/dev/null 2>&1; then
+if declare -f update_conventions_from_marker >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
@@ -51,10 +52,6 @@ source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_REVIEW_PROVIDER:-claude}"
-# generate_adr_for_ref lives in its own helper module so other callers
-# (bootstrap-docs.sh) can use it without sourcing this script's
-# top-level executable body. See lib/utils/adr-generator.sh.
-source "$RITE_LIB_DIR/utils/adr-generator.sh"
 source "$RITE_LIB_DIR/utils/tag-index.sh"
 source "$RITE_LIB_DIR/utils/docs-map.sh"
 source "$RITE_LIB_DIR/utils/drift-log.sh"
@@ -173,8 +170,9 @@ fi
 # would otherwise appear as input to loop N+1's doc assessment — wasted tokens
 # at best, feedback loop at worst (changelog entries getting recursively summarized).
 #
-# Paths filtered: .rite/docs/* (Layer 1 internal docs, tracked only in sharkrite
-# itself) and docs/* / *.md at repo root (typical Layer 2 user-doc targets).
+# Paths filtered: .rite/docs/* (the retired internal-docs layer, still tracked
+# in some older repos) and docs/* / *.md at repo root (typical Layer 2 user-doc
+# targets).
 # Filter is conservative: a project that puts code in docs/ would lose those hunks
 # from doc assessment, but doc assessment is supposed to reason about docs, not
 # code under docs/.
@@ -196,392 +194,15 @@ if [ "${_pr_diff_exit}" -ne 0 ]; then
   exit 0
 fi
 PR_DIFF="${PR_DIFF:-}"
-CHANGED_FILES=$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | head -30 || true)
 
 # =====================================================================
-# LAYER 1: INTERNAL DOCS (always runs)
+# LAYER 1: CATALOG MAINTENANCE (always runs)
 # =====================================================================
 
-# Track results for one-liner summary.
-# Functions run in parallel subshells, so use marker files instead of a shared array.
-INTERNAL_UPDATED=()
-_MARKER_DIR=$(mktemp -d 2>/dev/null) || {
-  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp -d failed (disk full or /tmp unavailable)"
-  exit 0
-}
-# Cleanup trap: remove _MARKER_DIR on any exit (normal, error, or signal)
-trap 'rm -rf "${_MARKER_DIR:-}"' EXIT
-_mark_updated() { touch "$_MARKER_DIR/$1"; }
-
-mkdir -p "${RITE_INTERNAL_DOCS_DIR}" "${RITE_INTERNAL_DOCS_DIR}/adr"
-
-# --- Internal doc helper functions ---
-
-assess_internal_changelog() {
-  local pr_number="$1"
-  local pr_title="$2"
-  local changed_files="$3"
-  local doc_file="${RITE_INTERNAL_DOCS_DIR}/changelog.md"
-
-  # Initialize if new
-  if [ ! -f "$doc_file" ]; then
-    echo "# Changelog" > "$doc_file"
-    echo "" >> "$doc_file"
-  fi
-
-  # Deduplication: skip if PR already present.
-  # Use an exact numeric match — "#${pr_number}" followed by a non-digit or end-of-line
-  # prevents false positives where a shorter number (e.g. #5) matches inside a longer
-  # one (e.g. #55).  The entry format is "… (#N) [files]" so ")" is the typical
-  # following character, but anchoring to [^0-9]|$ covers all valid positions.
-  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
-    return 0
-  fi
-
-  # Determine change type from title
-  local change_type="change"
-  if echo "$pr_title" | grep -qiE "^feat"; then change_type="feat"
-  elif echo "$pr_title" | grep -qiE "^fix"; then change_type="fix"
-  elif echo "$pr_title" | grep -qiE "^refactor"; then change_type="refactor"
-  elif echo "$pr_title" | grep -qiE "^docs"; then change_type="docs"
-  elif echo "$pr_title" | grep -qiE "^test"; then change_type="test"
-  elif echo "$pr_title" | grep -qiE "^chore"; then change_type="chore"
-  fi
-
-  # Build file list (compact)
-  local file_list=$(echo "$changed_files" | head -5 | tr '\n' ', ' | sed 's/,$//' || true)
-
-  # Prepend entry: newest date section at the top (Keep a Changelog convention)
-  local today=$(date +%Y-%m-%d)
-  local entry="- ${change_type}: ${pr_title} (#${pr_number}) [${file_list}]"
-
-  if grep -q "^## $today" "$doc_file" 2>/dev/null; then
-    # Date section exists — prepend the new entry directly after the date header.
-    # The section is already at the top (inserted there on first entry today),
-    # so we just need to inject the entry line after the header.
-    #
-    # Guard: mktemp failure (disk full, /tmp missing) must not abort the parent
-    # assess-documentation.sh process — changelog is a nice-to-have.
-    # Return 0 (graceful skip) so downstream assessments still run.
-    local tmp_file
-    tmp_file=$(mktemp 2>/dev/null) || {
-      print_warning "  changelog: mktemp failed — skipping entry for PR #${pr_number} (temp space issue?)"
-      return 0
-    }
-    awk -v date="## $today" -v entry="$entry" '
-      $0 == date { print; print entry; inserted=1; next }
-      { print }
-    ' "$doc_file" > "$tmp_file"
-    mv "$tmp_file" "$doc_file"
-  else
-    # Date section does not exist yet — prepend a new section immediately after
-    # the "# Changelog" header line so newest dates appear at the top of the file.
-    # Strategy: emit the new date+entry block right after the title line, then
-    # suppress the one blank separator line that follows the title (it will be
-    # re-emitted by the new block itself), then continue with the rest of the file.
-    #
-    # Guard: same isolation contract as the branch above — skip this entry
-    # gracefully when mktemp fails rather than aborting the parent process.
-    local tmp_file
-    tmp_file=$(mktemp 2>/dev/null) || {
-      print_warning "  changelog: mktemp failed — skipping entry for PR #${pr_number} (temp space issue?)"
-      return 0
-    }
-    awk -v date="## $today" -v entry="$entry" '
-      $0 == "# Changelog" && !done { print; print ""; print date; print entry; print ""; done=1; skip_blank=1; next }
-      skip_blank && /^$/ { skip_blank=0; next }
-      { print }
-      END { if (!done) { print ""; print date; print entry } }
-    ' "$doc_file" > "$tmp_file"
-    mv "$tmp_file" "$doc_file"
-  fi
-
-  _mark_updated "changelog"
-}
-
-assess_internal_security() {
-  local pr_number="$1"
-  local pr_diff="$2"
-  local changed_files="$3"
-  local pr_title="$4"
-  local doc_file="${RITE_INTERNAL_DOCS_DIR}/security.md"
-
-  # Check if diff touches security-relevant files
-  local auth_pattern="${BLOCKER_AUTH_PATHS:-auth/|Auth|authentication|authorization|cognito|oauth}"
-  local infra_pattern="${BLOCKER_INFRASTRUCTURE_PATHS:-infrastructure/|cdk/|terraform/|cloudformation/|\.github/workflows/|\.claude/}"
-
-  local has_security_files=false
-
-  if echo "$changed_files" | grep -qiE "$auth_pattern" 2>/dev/null; then
-    has_security_files=true
-  elif echo "$changed_files" | grep -qiE "$infra_pattern" 2>/dev/null; then
-    has_security_files=true
-  elif echo "$changed_files" | grep -qiE "credential|token|secret|encrypt|session|password|api.?key" 2>/dev/null; then
-    has_security_files=true
-  elif echo "$pr_diff" | grep -qiE "credential|token|secret|encrypt|session|password|api.?key" 2>/dev/null; then
-    has_security_files=true
-  fi
-
-  if [ "$has_security_files" = false ]; then
-    return 0
-  fi
-
-  # Initialize if new
-  if [ ! -f "$doc_file" ]; then
-    echo "# Security Findings" > "$doc_file"
-    echo "" >> "$doc_file"
-  fi
-
-  # Deduplication: exact numeric match (see changelog dedup comment for rationale)
-  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
-    return 0
-  fi
-
-  # Generate structured security findings via Claude
-  local prompt_file=$(mktemp)
-  cat > "$prompt_file" <<SECURITY_EOF
-Output ONLY structured reference data for machine consumption.
-No prose, no explanations, no markdown paragraphs.
-Format: file paths, patterns, one-line descriptions, tabular data.
-
-Analyze this PR diff for security-relevant patterns. Output in this exact format:
-
-## PR #${pr_number} - $(date +%Y-%m-%d)
-<CATEGORY>: <file_path>
-- <pattern description in one line>
-- <gap or concern in one line>
-
-Categories: AUTH_CHANGE, CRED_HANDLING, INFRA_CHANGE, SESSION_MGMT, INPUT_VALIDATION, ENCRYPTION
-
-Only include findings that exist. No empty categories.
-
-PR Title: ${pr_title}
-Changed files:
-${changed_files}
-
-Diff (truncated):
-${pr_diff}
-SECURITY_EOF
-
-  verbose_info "  Assessing security findings..."
-  local security_output
-  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
-  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
-  security_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-  rm -f "$prompt_file"
-
-  if [ -n "$security_output" ]; then
-    echo "" >> "$doc_file"
-    echo "$security_output" >> "$doc_file"
-    echo "" >> "$doc_file"
-    _mark_updated "security"
-    echo "partial_complete:security"
-  fi
-}
-
-assess_internal_architecture() {
-  local pr_number="$1"
-  local pr_diff="$2"
-  local changed_files="$3"
-  local doc_file="${RITE_INTERNAL_DOCS_DIR}/architecture.md"
-
-  # Check if diff touches architectural files (new/removed files, config, entry points)
-  local has_arch_changes=false
-
-  # New or removed files in core source dirs
-  if echo "$pr_diff" | grep -qE "^(diff --git a/|new file mode|deleted file mode)" 2>/dev/null; then
-    if echo "$changed_files" | grep -qiE "\.(sh|ts|js|py|go|rs|java)$" 2>/dev/null; then
-      has_arch_changes=true
-    fi
-  fi
-
-  # Config variable definitions
-  if echo "$pr_diff" | grep -qiE "^[\+\-].*(_CONFIG|_DIR|_PATH|_PATTERN|_MODE|export )" 2>/dev/null; then
-    has_arch_changes=true
-  fi
-
-  # Entry point / dispatch changes
-  if echo "$changed_files" | grep -qiE "(bin/|entrypoint|main\.|index\.|dispatch|router)" 2>/dev/null; then
-    has_arch_changes=true
-  fi
-
-  if [ "$has_arch_changes" = false ]; then
-    return 0
-  fi
-
-  # Initialize if new
-  if [ ! -f "$doc_file" ]; then
-    echo "# Architecture Reference" > "$doc_file"
-    echo "" >> "$doc_file"
-  fi
-
-  # Deduplication: exact numeric match (see changelog dedup comment for rationale)
-  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
-    return 0
-  fi
-
-  # Generate via Claude
-  local prompt_file=$(mktemp)
-  cat > "$prompt_file" <<ARCH_EOF
-Output ONLY structured reference data for machine consumption.
-No prose, no explanations, no markdown paragraphs.
-Format: file paths, patterns, one-line descriptions, tabular data.
-
-Analyze this PR for architectural changes. Output in this exact format:
-
-## PR #${pr_number} - $(date +%Y-%m-%d)
-ADDED: <file_path> — <one-line purpose>
-REMOVED: <file_path> — <was used for>
-MODIFIED: <file_path> — <what changed>
-CONFIG: <VAR_NAME>=<default> — <purpose>
-DEPENDENCY: <from> → <to> — <relationship>
-
-Only include categories with actual changes. No empty sections.
-
-Changed files:
-${changed_files}
-
-Diff (truncated):
-${pr_diff}
-ARCH_EOF
-
-  verbose_info "  Assessing architecture..."
-  local arch_output
-  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
-  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
-  arch_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-  rm -f "$prompt_file"
-
-  if [ -n "$arch_output" ]; then
-    # Truncation safety: architecture is append-only but verify output isn't garbage.
-    # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
-    # when the output has no trailing newline (wc -l counts newline characters).
-    local output_lines=$(printf '%s\n' "$arch_output" | wc -l | tr -d ' ')
-    if [ "$output_lines" -gt 1 ]; then
-      echo "" >> "$doc_file"
-      echo "$arch_output" >> "$doc_file"
-      echo "" >> "$doc_file"
-      _mark_updated "architecture"
-      echo "partial_complete:architecture"
-    fi
-  fi
-}
-
-assess_internal_api() {
-  local pr_number="$1"
-  local pr_diff="$2"
-  local changed_files="$3"
-  local doc_file="${RITE_INTERNAL_DOCS_DIR}/api.md"
-
-  # Check if diff modifies CLI flags, help text, config vars, exit codes, script interfaces
-  local has_api_changes=false
-
-  if echo "$pr_diff" | grep -qiE "(getopts|--[a-z]|usage:|exit [0-9]|print_error.*Usage)" 2>/dev/null; then
-    has_api_changes=true
-  elif echo "$pr_diff" | grep -qiE "^[\+\-].*RITE_" 2>/dev/null; then
-    has_api_changes=true
-  elif echo "$changed_files" | grep -qiE "(bin/|cli|help)" 2>/dev/null; then
-    has_api_changes=true
-  fi
-
-  if [ "$has_api_changes" = false ]; then
-    return 0
-  fi
-
-  # Initialize if new
-  if [ ! -f "$doc_file" ]; then
-    echo "# API Reference" > "$doc_file"
-    echo "" >> "$doc_file"
-  fi
-
-  # Deduplication: exact numeric match (see changelog dedup comment for rationale)
-  if grep -qE "#${pr_number}([^0-9]|$)" "$doc_file" 2>/dev/null; then
-    return 0
-  fi
-
-  # Generate via Claude
-  local prompt_file=$(mktemp)
-  cat > "$prompt_file" <<API_EOF
-Output ONLY structured reference data for machine consumption.
-No prose, no explanations, no markdown paragraphs.
-Format: file paths, patterns, one-line descriptions, tabular data.
-
-Analyze this PR for API/CLI interface changes. Output in this exact format:
-
-## PR #${pr_number} - $(date +%Y-%m-%d)
-FLAG: --flag-name — <description> (added|changed|removed)
-CONFIG: VAR_NAME=default — <description> (added|changed|removed)
-EXIT_CODE: N — <meaning> (added|changed)
-INTERFACE: script.sh <args> — <change description>
-
-Only include categories with actual changes. No empty sections.
-
-Changed files:
-${changed_files}
-
-Diff (truncated):
-${pr_diff}
-API_EOF
-
-  verbose_info "  Assessing API changes..."
-  local api_output
-  # Use doc_assessment model (sonnet): structured pattern matching, not deep reasoning.
-  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
-  api_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-  rm -f "$prompt_file"
-
-  if [ -n "$api_output" ]; then
-    # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
-    # when the output has no trailing newline (wc -l counts newline characters).
-    local output_lines=$(printf '%s\n' "$api_output" | wc -l | tr -d ' ')
-    if [ "$output_lines" -gt 1 ]; then
-      echo "" >> "$doc_file"
-      echo "$api_output" >> "$doc_file"
-      echo "" >> "$doc_file"
-      _mark_updated "api"
-      echo "partial_complete:api"
-    fi
-  fi
-}
-
-# generate_adr_for_ref is defined in lib/utils/adr-generator.sh and sourced
-# at the top of this file. It calls _mark_updated() (defined above) on success.
-
-assess_internal_adr() {
-  local pr_number="$1"
-  local pr_diff="$2"
-  local pr_body="$3"
-  local pr_title="$4"
-
-  # Check if diff introduces a pattern change (new category, rule type, phase, approach substitution)
-  local has_pattern_change=false
-
-  # New phases, categories, rule types
-  if echo "$pr_diff" | grep -qiE "^[\+].*(phase_|_CATEGORY|_RULE|_TYPE|_PATTERN).*=" 2>/dev/null; then
-    has_pattern_change=true
-  fi
-
-  # Significant structural additions (new functions, new case arms)
-  if echo "$pr_diff" | grep -cE "^\+.*(^[a-z_]+\(\)|case .* in)" 2>/dev/null | grep -qvE "^0$"; then
-    has_pattern_change=true
-  fi
-
-  # PR body explicitly mentions decision/tradeoff/alternative
-  if echo "$pr_body" | grep -qiE "(decision|tradeoff|trade-off|alternative|approach|instead of|replaced)" 2>/dev/null; then
-    has_pattern_change=true
-  fi
-
-  if [ "$has_pattern_change" = false ]; then
-    return 0
-  fi
-
-  # Call the refactored function. Capture the returned adr_file path (non-empty = success).
-  local adr_result
-  adr_result=$(generate_adr_for_ref "pr" "$pr_number" "$pr_title" "$pr_body" "$pr_diff" "${CHANGED_FILES:-}" 2>/dev/null) || true
-  if [ -n "$adr_result" ]; then
-    echo "partial_complete:adr"
-  fi
-}
+# The internal .rite/docs/ layer (changelog/security/architecture/api/ADR
+# sub-assessments, their reconcile pass and cross-doc validation) was retired
+# 2026-10-21: it cost ~5 min and ~100k tokens per merge to maintain files
+# nothing read. See behavioral-design.md → "Documentation Drift".
 
 update_conventions_from_marker() {
   # update_conventions_from_marker PR_NUMBER PR_BODY
@@ -898,7 +519,6 @@ EOF
         # Still update tag-index even when convention is a no-op: the pointer may
         # not exist yet (e.g. tag-index was bootstrapped after the first PR merged).
         update_tag_index_from_block "$_tags" "$_new_tags" "conventions.md" "$_title" "$pr_number"
-        _mark_updated "tag-index"
         _current_block=""
         continue
       fi
@@ -941,14 +561,12 @@ EOF
         if [ -s "$_refs_tmp" ] && [ "$_awk_exit" -eq 0 ]; then
           mv "$_refs_tmp" "$conventions_file"
           print_info "  conventions: updated references for '$_title' (added PR #${pr_number})"
-          _mark_updated "conventions"
         else
           rm -f "$_refs_tmp"
           print_warning "  conventions: could not append PR #${pr_number} to '$_title' — no References line found in entry (skipping)"
         fi
         # Update tag-index regardless of whether the References accumulation succeeded
         update_tag_index_from_block "$_tags" "$_new_tags" "conventions.md" "$_title" "$pr_number"
-        _mark_updated "tag-index"
         _current_block=""
         continue
       fi
@@ -1004,10 +622,8 @@ EOF
       } >> "$conventions_file"
 
       print_info "  conventions: appended '${_title}' (PR #${pr_number})"
-      _mark_updated "conventions"
       # Update tag-index with any tags declared in this new convention block
       update_tag_index_from_block "$_tags" "$_new_tags" "conventions.md" "$_title" "$pr_number"
-      _mark_updated "tag-index"
       _current_block=""
     else
       # Accumulate block lines
@@ -1455,7 +1071,7 @@ Related: #${pr_number}" 2>/dev/null; then
   return 0
 }
 
-# --- Run internal doc assessments ---
+# --- Run catalog maintenance ---
 
 # Conventions marker extraction is instant (no Claude call) — run inline
 update_conventions_from_marker "$PR_NUMBER" "$PR_BODY"
@@ -1467,308 +1083,11 @@ reconcile_tag_index "$PR_BODY" "$PR_NUMBER" || true
 # never aborts the assessment on failure.
 commit_catalog_files "$PR_NUMBER" || true
 
-# Changelog is instant (no Claude call) — run inline
-assess_internal_changelog "$PR_NUMBER" "$PR_TITLE" "$CHANGED_FILES"
-
-# Claude-calling assessments run in parallel (each writes to its own file)
-_assess_pids=()
-_assess_names=()
-assess_internal_security "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" "$PR_TITLE" &
-_assess_pids+=($!)
-_assess_names+=("security")
-assess_internal_architecture "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" &
-_assess_pids+=($!)
-_assess_names+=("architecture")
-assess_internal_api "$PR_NUMBER" "$PR_DIFF" "$CHANGED_FILES" &
-_assess_pids+=($!)
-_assess_names+=("api")
-assess_internal_adr "$PR_NUMBER" "$PR_DIFF" "$PR_BODY" "$PR_TITLE" &
-_assess_pids+=($!)
-_assess_names+=("adr")
-# Wait individually so we can report which assessments failed
-for _i in "${!_assess_pids[@]}"; do
-  _pid_exit=0
-  wait "${_assess_pids[$_i]}" 2>/dev/null || _pid_exit=$?
-  if [ "$_pid_exit" -ne 0 ]; then
-    print_warning "Internal doc assessment failed: ${_assess_names[$_i]} (exit $_pid_exit)" >&2
-  fi
-done
-unset _assess_pids _assess_names
-
-# Collect marker files into INTERNAL_UPDATED array
-for _marker in "$_MARKER_DIR"/*; do
-  [ -f "$_marker" ] && INTERNAL_UPDATED+=("$(basename "$_marker")")
-done
-
-# --- Reconciliation pass: fold PR deltas into baseline ---
-# Triggered when a doc accumulates 3+ PR sections. Merges append-only deltas
-# back into the baseline so stale top-level statements get corrected.
-
-reconcile_internal_doc() {
-  local doc_file="$1"
-  local doc_name="$2"
-
-  [ -f "$doc_file" ] || return 0
-
-  # Count PR delta sections (## PR #N headers)
-  local pr_section_count
-  pr_section_count=$(grep -c "^## PR #" "$doc_file" 2>/dev/null || true)
-
-  # Only reconcile when 3+ PR sections have accumulated
-  if [ "$pr_section_count" -lt 3 ]; then
-    return 0
-  fi
-
-  local current_content
-  current_content=$(cat "$doc_file")
-  local current_lines
-  # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
-  # when the file content has no trailing newline (wc -l counts newline characters).
-  current_lines=$(printf '%s\n' "$current_content" | wc -l | tr -d ' ')
-
-  local prompt_file
-  prompt_file=$(mktemp)
-  cat > "$prompt_file" <<RECONCILE_EOF
-Output ONLY the reconciled document. No explanations before or after.
-
-This ${doc_name} document has a baseline section followed by incremental PR delta sections.
-The PR deltas contain newer, more accurate information that may contradict the baseline.
-
-Your task: merge ALL PR delta information INTO the baseline sections, then REMOVE the PR delta
-sections. The result should be a single cohesive document with no "## PR #N" sections remaining.
-
-Rules:
-- When a PR delta contradicts the baseline, the PR delta is correct (it's newer)
-- Preserve all information from PR deltas — fold it into the appropriate baseline section
-- If the baseline says something like "No X found" but a PR delta documents X, UPDATE the baseline
-- Keep the same top-level structure and format as the baseline
-- Do NOT add prose, explanations, or summaries — maintain machine-formatted reference style
-- Do NOT lose any information from either baseline or deltas
-
-Current document:
-${current_content}
-RECONCILE_EOF
-
-  verbose_info "  Reconciling doc updates..."
-  local reconciled_output
-  # Use doc_assessment model (sonnet): structured merging of doc sections.
-  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
-  reconciled_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-  rm -f "$prompt_file"
-
-  if [ -z "$reconciled_output" ]; then
-    return 0
-  fi
-
-  # Truncation safety: reconciled doc should be at least 60% of original.
-  # printf '%s\n' ensures a trailing newline so wc -l counts the last line even
-  # when the output has no trailing newline (wc -l counts newline characters).
-  local new_lines
-  new_lines=$(printf '%s\n' "$reconciled_output" | wc -l | tr -d ' ')
-  local min_lines=$((current_lines * 60 / 100))
-
-  if [ "$new_lines" -lt "$min_lines" ]; then
-    print_warning "  Reconciliation of $doc_name skipped (output too short: ${new_lines} vs ${current_lines} lines)"
-    return 0
-  fi
-
-  # Verify PR sections were actually merged (no ## PR # headers should remain)
-  local remaining_pr_sections
-  remaining_pr_sections=$(echo "$reconciled_output" | grep -c "^## PR #" 2>/dev/null || true)
-  if [ "$remaining_pr_sections" -gt 0 ]; then
-    print_warning "  Reconciliation of $doc_name skipped (PR sections not merged)"
-    return 0
-  fi
-
-  echo "$reconciled_output" > "$doc_file"
-  _mark_updated "${doc_name}(reconciled)"
-}
-
-# Run reconciliation in parallel — each call writes to its own file, no shared state
-_reconcile_pids=()
-_reconcile_names=()
-reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/security.md" "security" &
-_reconcile_pids+=($!)
-_reconcile_names+=("security")
-reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/architecture.md" "architecture" &
-_reconcile_pids+=($!)
-_reconcile_names+=("architecture")
-reconcile_internal_doc "${RITE_INTERNAL_DOCS_DIR}/api.md" "api" &
-_reconcile_pids+=($!)
-_reconcile_names+=("api")
-# Wait individually so we can report which reconciliations failed
-for _i in "${!_reconcile_pids[@]}"; do
-  _pid_exit=0
-  wait "${_reconcile_pids[$_i]}" 2>/dev/null || _pid_exit=$?
-  if [ "$_pid_exit" -ne 0 ]; then
-    print_warning "Doc reconciliation failed: ${_reconcile_names[$_i]} (exit $_pid_exit)" >&2
-  fi
-done
-unset _reconcile_pids _reconcile_names
-
-# Re-collect markers after reconciliation
-for _marker in "$_MARKER_DIR"/*; do
-  [ -f "$_marker" ] || continue
-  _name="$(basename "$_marker")"
-  # Skip if already in array
-  # Empty-array safe idiom (bash 3.2 / set -u): "${arr[@]+"${arr[@]}"}" expands
-  # to nothing when the array is empty, avoiding "unbound variable" under set -u.
-  _found=false
-  for _existing in "${INTERNAL_UPDATED[@]+"${INTERNAL_UPDATED[@]}"}"; do
-    [ "$_existing" = "$_name" ] && { _found=true; break; }
-  done
-  [ "$_found" = false ] && INTERNAL_UPDATED+=("$_name")
-done
-
-# --- Cross-document consistency validation ---
-# Same logic as bootstrap-docs.sh but runs during assessment when a reconciliation
-# just happened (docs were rewritten, good time to catch cross-doc drift).
-
-_validate_cross_doc_consistency() {
-  local docs_dir="$1"
-  local arch_file="${docs_dir}/architecture.md"
-  local api_file="${docs_dir}/api.md"
-  local security_file="${docs_dir}/security.md"
-
-  # Need at least 2 docs
-  local doc_count=0
-  [ -f "$arch_file" ] && doc_count=$((doc_count + 1))
-  [ -f "$api_file" ] && doc_count=$((doc_count + 1))
-  [ -f "$security_file" ] && doc_count=$((doc_count + 1))
-  [ "$doc_count" -lt 2 ] && return 0
-
-  local arch_content="" api_content="" security_content=""
-  [ -f "$arch_file" ] && arch_content=$(cat "$arch_file")
-  [ -f "$api_file" ] && api_content=$(cat "$api_file")
-  [ -f "$security_file" ] && security_content=$(cat "$security_file")
-
-  local prompt_file=$(mktemp)
-  cat > "$prompt_file" <<VALIDATE_EOF
-You are validating consistency across multiple generated documentation files.
-Find CONTRADICTIONS between documents — places where two docs state different facts
-about the same thing (e.g., different default values, conflicting file lists, one doc
-says a feature exists while another says it doesn't).
-
-Output format — ONLY output contradictions found. If none, output exactly: NO_CONTRADICTIONS
-
-For each contradiction:
-CONTRADICTION: <brief description>
-FILE1: <filename> LINE: "<the contradicting text>"
-FILE2: <filename> LINE: "<the contradicting text>"
-CORRECTION: <which file is likely correct and what the fix is>
-
-Rules:
-- Only flag actual contradictions (same fact, different values)
-- Do NOT flag omissions (one doc has info the other lacks)
-- Do NOT flag stylistic differences
-- Focus on: default values, file paths, feature existence claims, configuration
-
---- architecture.md ---
-${arch_content}
-
---- api.md ---
-${api_content}
-
---- security.md ---
-${security_content}
-VALIDATE_EOF
-
-  local validation_output
-  # Use doc_assessment model (sonnet): cross-doc consistency check, structured comparison.
-  # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
-  validation_output=$(provider_run_prompt_with_timeout "$(cat "$prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-  rm -f "$prompt_file"
-
-  if [ -z "$validation_output" ] || echo "$validation_output" | grep -q "^NO_CONTRADICTIONS"; then
-    return 0
-  fi
-
-  # Apply corrections per file
-  for target_file in "$arch_file" "$api_file" "$security_file"; do
-    [ -f "$target_file" ] || continue
-    local target_name=$(basename "$target_file")
-    echo "$validation_output" | grep -q "$target_name" || continue
-
-    local current_content=$(cat "$target_file")
-    local fix_prompt_file=$(mktemp)
-    cat > "$fix_prompt_file" <<FIX_EOF
-Apply ONLY the corrections listed below to this document. Change nothing else.
-Output the COMPLETE corrected file.
-
-Corrections to apply:
-${validation_output}
-
-Current ${target_name}:
-${current_content}
-FIX_EOF
-
-    local fixed_output
-    # Use doc_assessment model (sonnet): applying targeted corrections to a doc file.
-    # Independent of RITE_REVIEW_MODEL — see docs/architecture/behavioral-design.md.
-    fixed_output=$(provider_run_prompt_with_timeout "$(cat "$fix_prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null) || true
-    rm -f "$fix_prompt_file"
-
-    if [ -n "$fixed_output" ]; then
-      # printf '%s\n' ensures a trailing newline so wc -l counts the last line
-      # even when output has no trailing newline (wc -l counts newline characters).
-      local orig_lines=$(printf '%s\n' "$current_content" | wc -l | tr -d ' ')
-      local fixed_lines=$(printf '%s\n' "$fixed_output" | wc -l | tr -d ' ')
-      local min_lines=$((orig_lines * 80 / 100))
-      if [ "$fixed_lines" -ge "$min_lines" ]; then
-        echo "$fixed_output" > "$target_file"
-        _mark_updated "${target_name}(consistency-fix)"
-      fi
-    fi
-  done
-}
-
-# Only run cross-doc validation when a reconciliation actually happened
-# (indicated by "(reconciled)" in INTERNAL_UPDATED)
-RECONCILED=false
-# Empty-array safe idiom (bash 3.2 / set -u): "${arr[@]+"${arr[@]}"}" expands
-# to nothing when the array is empty, avoiding "unbound variable" under set -u.
-for item in "${INTERNAL_UPDATED[@]+"${INTERNAL_UPDATED[@]}"}"; do
-  if echo "$item" | grep -q "reconciled"; then
-    RECONCILED=true
-    break
-  fi
-done
-
-if [ "$RECONCILED" = true ]; then
-  verbose_info "  Validating cross-doc consistency..."
-  _validate_cross_doc_consistency "${RITE_INTERNAL_DOCS_DIR}"
-fi
-
-# Internal docs (.rite/docs/) are gitignored in target projects — no commit needed.
-# The files are written directly to the local .rite/docs/ directory.
-
 # =====================================================================
 # COMBINED OUTPUT HEADER
 # =====================================================================
 
 print_header "📚 Documentation"
-
-# Final marker collection (picks up cross-doc consistency fixes)
-for _marker in "$_MARKER_DIR"/*; do
-  [ -f "$_marker" ] || continue
-  _name="$(basename "$_marker")"
-  _found=false
-  # Empty-array safe idiom (bash 3.2 / set -u): "${arr[@]+"${arr[@]}"}" expands
-  # to nothing when the array is empty, avoiding "unbound variable" under set -u.
-  for _existing in "${INTERNAL_UPDATED[@]+"${INTERNAL_UPDATED[@]}"}"; do
-    [ "$_existing" = "$_name" ] && { _found=true; break; }
-  done
-  [ "$_found" = false ] && INTERNAL_UPDATED+=("$_name")
-done
-rm -rf "$_MARKER_DIR"
-
-# Internal docs one-liner summary
-if [ ${#INTERNAL_UPDATED[@]} -gt 0 ]; then
-  INTERNAL_SUMMARY=$(printf '%s ✓  ' "${INTERNAL_UPDATED[@]}")
-  echo -e "${GREEN}    Internal: ${INTERNAL_SUMMARY% }${NC}"
-else
-  print_info "  Internal: up to date"
-fi
 
 # =====================================================================
 # LAYER 2: USER PROJECT DOCS (only if doc-sync.md exists)

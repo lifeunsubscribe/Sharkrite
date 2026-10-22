@@ -6,7 +6,7 @@ session-state/
 *.log
 .resume/
 
-# Sharkrite internal docs (machine-optimized, not for version control)
+# Retired internal docs layer (pre-2026-10-21 installs may still have .rite/docs/)
 docs/
 
 # Committed files (team shares these):
