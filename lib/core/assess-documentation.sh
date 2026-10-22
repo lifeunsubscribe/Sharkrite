@@ -2,8 +2,8 @@
 
 # assess-documentation.sh - Multi-layer documentation assessment
 # Layer 1 (always): conventions catalog + tag-index reconcile
-# Layer 2 (opt-in): update user project docs IF .rite/doc-sync.md exists, or
-#                   append a drift-log entry in changelog mode
+# Layer 2 (opt-in): append a drift-log entry when doc consent is recorded.
+#                   Never edits the user's docs.
 #
 # Usage:
 #   assess-documentation.sh <PR_NUMBER> [--auto]
@@ -115,9 +115,10 @@ else
   cd "${RITE_PROJECT_ROOT}"
 fi
 
-# Check provider CLI availability and authentication
+# Check provider CLI availability. No provider_validate_cli health check: it
+# sends a real prompt, and most merges now make no model call at all (the
+# drift entry and tag dedup are the only callers, and both degrade gracefully).
 provider_detect_cli || exit 1
-provider_validate_cli || exit 1
 
 # =====================================================================
 # SHARED DATA (computed once, used by both layers)
@@ -129,9 +130,7 @@ provider_validate_cli || exit 1
 # rather than letting set -e crash the script with a cryptic error.
 #
 # Idiom: `|| _pr_data_exit=$?` (not `if ! gh_safe`) because `pr view` output is
-# captured directly into PR_DATA via $().  For `pr diff` below we use temp file +
-# `if ! gh_safe` because that idiom avoids the PIPESTATUS-in-subshell problem
-# (see CLAUDE.md) when the output is written via redirection rather than $().
+# captured directly into PR_DATA via $().
 _pr_data_exit=0
 PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments) || _pr_data_exit=$?
 if [ "$_pr_data_exit" -ne 0 ]; then
@@ -141,59 +140,7 @@ if [ "$_pr_data_exit" -ne 0 ]; then
   exit 0
 fi
 PR_DATA="${PR_DATA:-"{}"}"
-PR_TITLE=$(echo "$PR_DATA" | jq -r '.title' || true)
 PR_BODY=$(echo "$PR_DATA" | jq -r '.body // ""' || true)
-
-# Fetch PR diff separately. gh pr diff is the call that triggered the live 5xx
-# ("this diff is temporarily unavailable due to heavy server load"). gh_safe
-# retries on 5xx automatically; on exhausted retries we exit 0 (see #62).
-#
-# Use a temp file for output and the `if !` idiom to capture the exit code.
-# `if` is exempt from set -e, so gh_safe's failure is captured correctly
-# without || true swallowing it. This avoids the PIPESTATUS-in-subshell
-# problem (see CLAUDE.md) without needing a second temp file.
-_diff_raw_file=$(mktemp 2>/dev/null) || {
-  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: mktemp failed (disk full or /tmp unavailable)"
-  exit 0
-}
-_pr_diff_exit=0
-# NOTE: `if !` negates the exit code, so _pr_diff_exit is always 1 on failure
-# (not the true gh_safe exit code). This is intentional — we only need to
-# distinguish success (0) from any failure (non-zero), not the specific code.
-if ! gh_safe pr diff "$PR_NUMBER" > "$_diff_raw_file"; then
-  _pr_diff_exit=1
-fi
-
-# Filter out hunks whose file path matches a documentation location, so this
-# assessment doesn't see its own prior commits in the diff on later fix-loop
-# iterations. The doc commit that lands on the feature branch during loop N
-# would otherwise appear as input to loop N+1's doc assessment — wasted tokens
-# at best, feedback loop at worst (changelog entries getting recursively summarized).
-#
-# Paths filtered: .rite/docs/* (the retired internal-docs layer, still tracked
-# in some older repos) and docs/* / *.md at repo root (typical Layer 2 user-doc
-# targets).
-# Filter is conservative: a project that puts code in docs/ would lose those hunks
-# from doc assessment, but doc assessment is supposed to reason about docs, not
-# code under docs/.
-_diff_filtered_file=$(mktemp 2>/dev/null) || _diff_filtered_file="$_diff_raw_file"
-if [ "$_diff_filtered_file" != "$_diff_raw_file" ]; then
-  awk '
-    /^diff --git a\/(\.rite\/docs|docs)\// { skip=1; next }
-    /^diff --git a\/[^\/]+\.md / { skip=1; next }
-    /^diff --git / { skip=0 }
-    !skip { print }
-  ' "$_diff_raw_file" > "$_diff_filtered_file"
-fi
-
-PR_DIFF=$(head -500 "$_diff_filtered_file" || true)
-rm -f "$_diff_raw_file"
-[ "$_diff_filtered_file" != "$_diff_raw_file" ] && rm -f "$_diff_filtered_file"
-if [ "${_pr_diff_exit}" -ne 0 ]; then
-  print_warning "Doc assessment skipped for PR #${PR_NUMBER}: GitHub API unavailable after ${RITE_GH_MAX_RETRIES:-3} attempts — re-run with \`bash lib/core/assess-documentation.sh ${PR_NUMBER} --auto\` later"
-  exit 0
-fi
-PR_DIFF="${PR_DIFF:-}"
 
 # =====================================================================
 # LAYER 1: CATALOG MAINTENANCE (always runs)
@@ -1090,15 +1037,14 @@ commit_catalog_files "$PR_NUMBER" || true
 print_header "📚 Documentation"
 
 # =====================================================================
-# LAYER 2: USER PROJECT DOCS (only if doc-sync.md exists)
+# LAYER 2: DRIFT RECORDING (only with recorded doc consent)
 # =====================================================================
 
 # ---------------------------------------------------------------------------
 # _append_doc_drift_entry PR_NUMBER PR_BODY CHANGED_FILES
 #
-# Changelog-mode helper: append one drift log entry for this PR and commit
-# + push the log only. Called when RITE_DOC_MODE=changelog AND doc-sync.md
-# is absent (the user has opted in to changelog mode but not sync mode).
+# Append one drift log entry for this PR and commit + push the log only.
+# Called when the repo has recorded doc consent (RITE_DOC_MODE=sync|changelog).
 #
 # Graceful-degradation contract: same as reconcile_tag_index (lines 1009-1012)
 # — every error path prints a warning and returns 0 so the doc-assessment pass
@@ -1299,388 +1245,17 @@ DRIFT_PROMPT_EOF
   fi
 }
 
-DOC_SYNC_FILE="${RITE_PROJECT_ROOT}/.rite/doc-sync.md"
-
-if [ ! -f "$DOC_SYNC_FILE" ]; then
-  # ------------------------------------------------------------------
-  # Changelog mode: doc-sync.md absent AND RITE_DOC_MODE=changelog.
-  # Append one drift entry instead of editing user docs; then exit 0.
-  # Default/unset mode: current behaviour byte-identical (exit 0, no-op).
-  # ------------------------------------------------------------------
-  if [ "${RITE_DOC_MODE:-}" = "changelog" ]; then
-    # Compute CHANGED_FILES_NO_DOCS here — the sync-mode path computes it
-    # at line 1785 (after this guard), so we must duplicate it for changelog.
-    _CHANGELOG_CHANGED_FILES_NO_DOCS="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' | head -20 || true)"
-    _append_doc_drift_entry "$PR_NUMBER" "$PR_BODY" "$_CHANGELOG_CHANGED_FILES_NO_DOCS" || true
-  fi
-  echo ""
-  exit 0
-fi
-
-# Read custom sync instructions
-DOC_SYNC_INSTRUCTIONS=$(cat "$DOC_SYNC_FILE")
-
-# --- Gather context (quiet — no output) ---
-
-# Look for Sharkrite review in formal reviews first, then comments
-_JQ_SHARKRITE_REVIEW_F="[.reviews[] | select(.body | contains(\"${RITE_MARKER_REVIEW}\") or contains(\"${RITE_MARKER_REVIEW_DATA}\"))] | .[-1] | .body // \"\""
-SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r "$_JQ_SHARKRITE_REVIEW_F" 2>/dev/null)
-
-if [ -z "$SHARKRITE_REVIEW" ] || [ "$SHARKRITE_REVIEW" = "null" ]; then
-  _JQ_SHARKRITE_REVIEW_C="[.comments[] | select(.body | contains(\"${RITE_MARKER_REVIEW}\") or contains(\"${RITE_MARKER_REVIEW_DATA}\"))] | .[-1] | .body // \"\""
-  SHARKRITE_REVIEW=$(echo "$PR_DATA" | jq -r "$_JQ_SHARKRITE_REVIEW_C" 2>/dev/null)
-fi
-
-# Extract documentation-related items from review
-DOC_ITEMS_FROM_REVIEW=""
-REVIEW_HAS_DOC_ITEMS=false
-
-if [ -n "$SHARKRITE_REVIEW" ] && [ "$SHARKRITE_REVIEW" != "null" ]; then
-  DOC_ITEMS_FROM_REVIEW=$(echo "$SHARKRITE_REVIEW" | grep -iE "(documentation|docs/|README|CLAUDE\.md|update.*doc|missing.*doc|add.*doc)" | head -20 || echo "")
-  if [ -n "$DOC_ITEMS_FROM_REVIEW" ]; then
-    REVIEW_HAS_DOC_ITEMS=true
-  fi
-fi
-
-# Get changed files (excluding docs/)
-CHANGED_FILES_NO_DOCS=$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' | head -20 || true)
-
-# Get commit messages for context
-COMMIT_MESSAGES=$(echo "$PR_DATA" | jq -r '.commits[]?.messageHeadline // empty' | head -10 || true)
-
-# Get current documentation structure
-DOC_FILES=$(find docs/ -name "*.md" 2>/dev/null | sort || echo "")
-
-# Get CLAUDE.md sections if it exists
-CLAUDE_MD_SECTIONS=""
-if [ -f "CLAUDE.md" ]; then
-  CLAUDE_MD_SECTIONS=$(grep "^##" CLAUDE.md | head -30 || true)
-fi
-
-# Get project README sections if available (configurable per project)
-README_SECTIONS=""
-if [ -n "${RITE_SCRIPTS_README:-}" ] && [ -f "$RITE_SCRIPTS_README" ]; then
-  README_SECTIONS=$(grep "^##" "$RITE_SCRIPTS_README" | head -20 || true)
-elif [ -f "README.md" ]; then
-  README_SECTIONS=$(grep "^##" README.md | head -20 || true)
-fi
-
-# Get table of contents from each major doc to understand coverage
-ARCHITECTURE_DOCS=""
-for doc in docs/architecture/*.md; do
-  if [ -f "$doc" ]; then
-    ARCHITECTURE_DOCS="$ARCHITECTURE_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-  fi
-done
-
-PROJECT_DOCS=""
-for doc in docs/project/*.md; do
-  if [ -f "$doc" ]; then
-    PROJECT_DOCS="$PROJECT_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-  fi
-done
-
-WORKFLOW_DOCS=""
-for doc in docs/workflows/*.md; do
-  if [ -f "$doc" ]; then
-    WORKFLOW_DOCS="$WORKFLOW_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-  fi
-done
-
-SECURITY_DOCS=""
-for doc in docs/security/*.md; do
-  if [ -f "$doc" ]; then
-    SECURITY_DOCS="$SECURITY_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-  fi
-done
-
-DEVELOPMENT_DOCS=""
-for doc in docs/development/*.md; do
-  if [ -f "$doc" ]; then
-    DEVELOPMENT_DOCS="$DEVELOPMENT_DOCS\n$(basename "$doc"): $( (grep "^#" "$doc" || true) | head -5 | sed 's/^/  /')"
-  fi
-done
-
-# --- Assessment ---
-
-# Build assessment prompt - include review context if available
-REVIEW_CONTEXT_SECTION=""
-if [ "$REVIEW_HAS_DOC_ITEMS" = true ]; then
-  REVIEW_CONTEXT_SECTION="
-**Documentation Items from Sharkrite Review:**
-The code review already identified these documentation-related items. Use these as your primary guide:
-\`\`\`
-$DOC_ITEMS_FROM_REVIEW
-\`\`\`
-
-Focus on addressing the specific items mentioned in the review.
-"
-fi
-
-# Pre-compute doc structure (avoid nested $() inside heredoc)
-CLAUDE_MD_INLINE=$(echo "$CLAUDE_MD_SECTIONS" | head -10 | tr '\n' ';' || true)
-README_INLINE=""
-if [ -n "$README_SECTIONS" ]; then
-  README_INLINE="- README.md (project overview): $(echo "$README_SECTIONS" | head -10 | tr '\n' ';')"
-fi
-
-# Build assessment prompt in temp file (heredoc inside $() is fragile —
-# PR body content can contain shell metacharacters that break parsing)
-ASSESS_PROMPT_FILE=$(mktemp)
-cat > "$ASSESS_PROMPT_FILE" <<ASSESS_PROMPT_EOF
-You are reviewing a pull request to assess if documentation needs updating.
-
-**Custom Instructions:**
-$DOC_SYNC_INSTRUCTIONS
-
-**PR Title:** $PR_TITLE
-
-**PR Description:**
-$PR_BODY
-$REVIEW_CONTEXT_SECTION
-**Changed Files (excluding docs/):**
-$CHANGED_FILES_NO_DOCS
-
-**Recent Commits:**
-$COMMIT_MESSAGES
-
-**Existing Documentation Structure:**
-
-Root-level docs:
-- CLAUDE.md (main architecture guide): $CLAUDE_MD_INLINE
-$README_INLINE
-
-docs/architecture/ (system design, infrastructure, database):
-$(echo -e "$ARCHITECTURE_DOCS")
-
-docs/project/ (business requirements, roadmap, pricing):
-$(echo -e "$PROJECT_DOCS")
-
-docs/workflows/ (CI/CD, automation, GitHub Actions):
-$(echo -e "$WORKFLOW_DOCS")
-
-docs/security/ (security patterns, vulnerabilities):
-$(echo -e "$SECURITY_DOCS")
-
-docs/development/ (dev guides, testing, setup):
-$(echo -e "$DEVELOPMENT_DOCS")
-
-**Your Task:**
-Assess whether ANY documentation needs to be updated based on these code changes.
-Use the Custom Instructions above to determine which docs to check and what rules to follow.
-
-**Response Format:**
-If documentation updates are needed, respond with:
-NEEDS_UPDATE: <file1.md>, <file2.md>, <file3.md>
-REASON: <Brief explanation of what needs updating>
-
-If no documentation updates needed, respond with:
-NO_UPDATE_NEEDED
-REASON: <Brief explanation>
-
-**Be strict:** Architectural changes, new patterns, new scripts, infrastructure changes ALWAYS need documentation.
-
-**Examples of what doesn't need docs:**
-- Bug fixes to existing code (no pattern change)
-- Updating existing tests (no new testing strategy)
-- Refactoring without behavior change
-- Minor version bumps
-- Comment improvements
-ASSESS_PROMPT_EOF
-
-echo "    Project docs: analyzing..."
-
-# Run assessment — sonnet handles this structured "does diff affect doc X?" task well.
-# Uses doc_assessment model, independent of RITE_REVIEW_MODEL.
-ASSESSMENT_OUTPUT=$(provider_run_prompt_with_timeout "$(cat "$ASSESS_PROMPT_FILE")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>&1)
-rm -f "$ASSESS_PROMPT_FILE"
-
-# --- Apply or report ---
-
-# Guard and extraction use the SAME anchor (^NEEDS_UPDATE: with colon). The old
-# colon-less guard let a malformed model line ("NEEDS_UPDATE" alone) enter the
-# branch while the colon-anchored extraction returned empty — read -ra of ""
-# then produced an empty FILES_ARRAY whose bare [@] crashes bash 3.2 under set -u.
-if echo "$ASSESSMENT_OUTPUT" | grep -q "^NEEDS_UPDATE:"; then
-  DOCS_TO_UPDATE=$(echo "$ASSESSMENT_OUTPUT" | grep "^NEEDS_UPDATE:" | sed 's/NEEDS_UPDATE: //' || true)
-  REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //' || true)
-
-  echo "    Project docs: $DOCS_TO_UPDATE"
-  echo "    Reason: $REASON"
-
-  # In supervised mode, confirm before applying
-  APPLY_UPDATES=true
-  if [ "${AUTO_MODE:-}" != "--auto" ]; then
-    echo ""
-    read -p "Apply documentation updates? (Y/n): " APPLY_DOCS
-    if [[ "$APPLY_DOCS" =~ ^[Nn]$ ]]; then
-      APPLY_UPDATES=false
-      read -p "Continue with merge without doc updates? (y/N): " CONTINUE
-      if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
-        print_info "Merge cancelled - update documentation first"
-        exit 2
-      fi
-    fi
-  fi
-
-  if [ "$APPLY_UPDATES" = true ]; then
-    IFS=',' read -ra FILES_ARRAY <<< "$DOCS_TO_UPDATE"
-    UPDATED_FILES=()
-    SKIPPED_FILES=()
-
-    # +idiom: "NEEDS_UPDATE:" with an empty file list still passes the guard
-    # above; read -ra of "" yields an empty array whose bare [@] crashes
-    # bash 3.2 under set -u.
-    for doc_file in "${FILES_ARRAY[@]+"${FILES_ARRAY[@]}"}"; do
-      doc_file=$(echo "$doc_file" | xargs)  # trim whitespace
-
-      if [ ! -f "$doc_file" ]; then
-        SKIPPED_FILES+=("$doc_file (not found)")
-        continue
-      fi
-
-      CURRENT_CONTENT=$(cat "$doc_file")
-
-      UPDATE_PROMPT_FILE=$(mktemp)
-      cat > "$UPDATE_PROMPT_FILE" <<UPDATE_PROMPT_EOF
-You are updating documentation to reflect code changes from a PR.
-
-**Documentation Update Rule:**
-- If pertinent topic exists: expand section as necessary with new information
-- If topic doesn't exist: add new section in appropriate location
-- Keep updates minimal and focused on the actual changes
-- Consider PR scope - don't over-document minor changes
-- Match existing documentation style and format
-
-**PR Context:**
-- PR #$PR_NUMBER: $PR_TITLE
-- Reason for doc update: $REASON
-
-**PR Changes (diff):**
-\`\`\`
-$PR_DIFF
-\`\`\`
-
-**Current Documentation Content:**
-\`\`\`markdown
-$CURRENT_CONTENT
-\`\`\`
-
-**Your Task:**
-Update this documentation file to reflect the PR changes. Output the COMPLETE updated file.
-
-**Guidelines:**
-- Maintain all existing content unless it contradicts new changes
-- Add new sections only if substantive new functionality was added
-- Expand existing sections if the topic is already covered
-- Use consistent markdown formatting
-- Keep the same structure and organization
-- Update timestamps if present (format: YYYY-MM-DD)
-
-Output ONLY the complete updated markdown file, nothing else.
-UPDATE_PROMPT_EOF
-
-      # Retry loop for transient empty Claude CLI responses (exit 0 + empty stdout).
-      # Same pattern as local-review.sh: max 2 attempts, 3s delay.
-      MAX_DOC_ATTEMPTS=2
-      DOC_ATTEMPT=0
-      CLAUDE_EXIT=0
-      UPDATED_CONTENT=""
-      while [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ] && [ -z "$UPDATED_CONTENT" ]; do
-        DOC_ATTEMPT=$((DOC_ATTEMPT + 1))
-        CLAUDE_EXIT=0
-        # Use doc_assessment model (sonnet) for applying the doc update.
-        UPDATED_CONTENT=$(provider_run_prompt_with_timeout "$(cat "$UPDATE_PROMPT_FILE")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>&1) || CLAUDE_EXIT=$?
-        if [ $CLAUDE_EXIT -eq 0 ] && [ -z "$UPDATED_CONTENT" ] && [ $DOC_ATTEMPT -lt $MAX_DOC_ATTEMPTS ]; then
-          print_warning "Claude returned empty doc update (attempt $DOC_ATTEMPT/$MAX_DOC_ATTEMPTS) — retrying in 3s..."
-          sleep 3
-        fi
-      done
-      rm -f "$UPDATE_PROMPT_FILE"
-
-      if [ $CLAUDE_EXIT -eq 0 ] && [ -n "$UPDATED_CONTENT" ]; then
-        # Verify update looks reasonable (not truncated).
-        # printf '%s\n' ensures a trailing newline so wc -l counts the last line
-        # even when content has no trailing newline (wc -l counts newline characters).
-        ORIGINAL_SIZE=$(printf '%s\n' "$CURRENT_CONTENT" | wc -l)
-        NEW_SIZE=$(printf '%s\n' "$UPDATED_CONTENT" | wc -l)
-        MIN_SIZE=$((ORIGINAL_SIZE * 80 / 100))
-
-        if [ "$NEW_SIZE" -lt "$MIN_SIZE" ]; then
-          SKIPPED_FILES+=("$doc_file (truncated output)")
-          continue
-        fi
-
-        # Backup original
-        cp "$doc_file" "${doc_file}.backup-$(date +%s)"
-
-        # Apply update
-        echo "$UPDATED_CONTENT" > "$doc_file"
-        UPDATED_FILES+=("$doc_file")
-      else
-        SKIPPED_FILES+=("$doc_file (generation failed)")
-      fi
-    done
-
-    if [ ${#UPDATED_FILES[@]} -gt 0 ]; then
-      # Git add and commit
-      git add "${UPDATED_FILES[@]}"
-
-      COMMIT_MSG="docs: update documentation for PR #$PR_NUMBER
-
-Auto-updated by doc assessment:
-- Files: ${UPDATED_FILES[*]}
-- Reason: $REASON
-
-Related: #$PR_NUMBER"
-
-      if git commit -m "$COMMIT_MSG" 2>/dev/null; then
-        if git push 2>/dev/null; then
-          echo -e "${GREEN}    Project docs: updated ${#UPDATED_FILES[@]} file(s) and pushed${NC}"
-        else
-          echo "    Project docs: updated ${#UPDATED_FILES[@]} file(s) (push failed — local only)"
-        fi
-      else
-        echo "    Project docs: no changes to commit"
-      fi
-
-      # Send Slack notification
-      if [ -n "${SLACK_WEBHOOK:-}" ]; then
-        # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
-        SLACK_MESSAGE=$(cat <<EOF
-{
-  "text": "📚 *Documentation Auto-Updated*",
-  "blocks": [
-    {
-      "type": "section",
-      "text": {
-        "type": "mrkdwn",
-        "text": "*PR #$PR_NUMBER*: $PR_TITLE\\n\\n*Files updated:* \\\`${UPDATED_FILES[*]}\\\`\\n\\n*Reason:* $REASON\\n\\nDocumentation committed and merge proceeding."
-      }
-    }
-  ]
-}
-EOF
-)
-        curl -X POST "$SLACK_WEBHOOK" \
-          -H "Content-Type: application/json" \
-          -d "$SLACK_MESSAGE" \
-          --silent --output /dev/null
-      fi
-    else
-      echo "    Project docs: 0 files updated"
-    fi
-
-    if [ ${#SKIPPED_FILES[@]} -gt 0 ]; then
-      for f in "${SKIPPED_FILES[@]}"; do
-        print_warning "  Skipped: $f"
-      done
-    fi
-  fi
-else
-  REASON=$(echo "$ASSESSMENT_OUTPUT" | grep "^REASON:" | sed 's/REASON: //' || echo "Documentation is current")
-  echo -e "${GREEN}    Project docs: up to date ($REASON)${NC}"
-fi
-
+# Drift recording: one entry per merge when the repo has recorded doc
+# consent (RITE_DOC_MODE=sync|changelog). Nothing in the user's docs is ever
+# edited here — the per-merge doc-sync rewrite was retired 2026-10-21 after it
+# committed raw model output (CLI warnings, narration, a wrapping code fence)
+# into orrery's README. Corrections go through `rite docs`' approval loop.
+# No recorded consent → no recording (opt-in; see doc-consent.sh).
+case "${RITE_DOC_MODE:-}" in
+  sync|changelog)
+    _CHANGED_FILES_NO_DOCS="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' | head -20 || true)"
+    _append_doc_drift_entry "$PR_NUMBER" "$PR_BODY" "$_CHANGED_FILES_NO_DOCS" || true
+    ;;
+esac
 echo ""
 exit 0

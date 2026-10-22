@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/core/workflow-runner.sh, bin/rite, lib/utils/config.sh
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/core/workflow-runner.sh, bin/rite, lib/utils/config.sh, lib/utils/doc-consent.sh, lib/core/docs-command.sh
 #
 # The internal .rite/docs/ layer is retired (2026-10-21).
 #
@@ -14,8 +14,13 @@
 #     backgrounded sub-assessments survived and kept spending tokens.
 # Nothing read the output. See behavioral-design.md → "Documentation Drift".
 #
-# What survives in Layer 1: conventions catalog, tag-index reconcile, catalog
-# commit — all deterministic. Layer 2 (doc-sync / changelog drift) is untouched.
+# The per-merge doc-sync rewrite (.rite/doc-sync.md) followed the same day: it
+# committed raw model output — CLI permission warnings with local paths, the
+# model's narration, a fence around the whole file — into orrery's README
+# (PRs #14/#15/#17). Nothing edits a user's docs automatically any more.
+#
+# What survives: conventions catalog, tag-index reconcile, catalog commit, and
+# a drift entry per merge only when doc consent is recorded (sync|changelog).
 
 load '../helpers/setup.bash'
 
@@ -48,7 +53,10 @@ _make_project() {
   cat > "$RITE_TEST_TMPDIR/bin/claude" <<'STUB'
 #!/bin/bash
 { printf '=== call:'; cat; printf '\n'; } >> "$CLAUDE_CALL_LOG"
-echo "ok"
+# Answer like a model that wants README.md changed, at a length that clears
+# the old truncation guard: the retired doc-sync step wrote this into README.md.
+echo "NEEDS_UPDATE: README.md"
+for i in 1 2 3 4 5 6 7 8; do echo "model narration line $i"; done
 STUB
   cat > "$RITE_TEST_TMPDIR/bin/gh" <<'STUB'
 #!/bin/bash
@@ -121,7 +129,14 @@ BODY
   [ "$output" -ge 1 ]
 }
 
-@test "behavioral: a merge updates the conventions catalog, writes no .rite/docs, and makes no model call beyond the CLI health check" {
+@test "doc-sync is retired: no template, no reader of .rite/doc-sync.md" {
+  [ ! -e "$RITE_REPO_ROOT/templates/doc-sync.md.example" ]
+  # Only comments may still mention the file (history); no code reads it.
+  run bash -c "grep -rn 'doc-sync\.md' '$RITE_REPO_ROOT/lib' '$RITE_REPO_ROOT/bin' | grep -vE ':[0-9]+:[[:space:]]*#'"
+  [ "$status" -eq 1 ]
+}
+
+@test "behavioral: with no doc consent a merge updates the conventions catalog, writes no .rite/docs, and makes zero model calls" {
   _make_project
   local root="$PROJ"
 
@@ -132,10 +147,31 @@ BODY
 
   grep -q '^## retired-layer-smoke$' "$root/docs/architecture/conventions.md"
   [ ! -e "$root/.rite/docs" ]
+  [ ! -e "$root/docs/sharkrite-drift-log.md" ]
 
-  # provider_validate_cli pipes "test" once; nothing else may reach the CLI.
+  # No health-check prompt, no drift prompt: nothing reaches the CLI.
   local calls
   calls=$(grep -c '^=== call:' "$CLAUDE_CALL_LOG" || true)
-  [ "$calls" -eq 1 ]
-  grep -q '^=== call:test$' "$CLAUDE_CALL_LOG"
+  [ "$calls" -eq 0 ]
+}
+
+@test "behavioral: sync mode with a leftover .rite/doc-sync.md never edits the user's docs" {
+  _make_project
+  local root="$PROJ"
+  printf '# App\n\nOriginal README.\n' > "$root/README.md"
+  printf 'Keep README current.\n' > "$root/.rite/doc-sync.md"
+  git -C "$root" add README.md
+  git -C "$root" commit -qm readme
+  local before
+  before=$(git -C "$root" rev-parse HEAD:README.md)
+
+  run env PATH="$RITE_TEST_TMPDIR/bin:$PATH" RITE_PROJECT_ROOT="$root" \
+    RITE_LIB_DIR="$RITE_REPO_ROOT/lib" RITE_DOC_MODE="sync" \
+    bash "$ASSESS_DOC" 7 --auto --worktree "$root"
+  [ "$status" -eq 0 ]
+
+  [ "$(cat "$root/README.md")" = "$(printf '# App\n\nOriginal README.')" ]
+  [ "$(git -C "$root" rev-parse HEAD:README.md)" = "$before" ]
+  run git -C "$root" log --format=%s
+  [[ "$output" != *"docs: update documentation"* ]]
 }

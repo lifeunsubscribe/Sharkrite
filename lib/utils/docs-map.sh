@@ -21,7 +21,7 @@
 # they still appear in the inventory.
 #
 # No LLM involvement: the builder is fully deterministic.
-# No consent-mode gating: builds regardless of .rite/doc-sync.md or RITE_DOC_MODE.
+# No consent-mode gating: builds regardless of RITE_DOC_MODE.
 #
 # Public API:
 #   docs_map_path    — echoes the absolute path to the TSV map file

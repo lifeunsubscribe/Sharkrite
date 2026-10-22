@@ -47,7 +47,7 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
 fi
 
 # Source all library modules
-# doc-consent.sh: ensure_doc_mode (consent gate for cluster-B doc-sync features)
+# doc-consent.sh: ensure_doc_mode (opt-in consent for doc drift tracking)
 source "$RITE_LIB_DIR/utils/doc-consent.sh"
 source "$RITE_LIB_DIR/utils/notifications.sh"
 source "$RITE_LIB_DIR/utils/blocker-rules.sh"

@@ -42,9 +42,9 @@ lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/integration-ledger.sh   # Integration branch ledger (issue↔SHA record, append/entries/mark_promoted)
-lib/utils/doc-consent.sh          # Doc-mode consent helpers (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog)
+lib/utils/doc-consent.sh          # Doc-drift opt-in (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; unset = never asked, records nothing)
 lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → .rite/state/docs-map.tsv)
-lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — changelog mode)
+lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — written per merge only with recorded consent)
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
@@ -556,16 +556,16 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
-rite docs                  # Doc consent/audit: enable doc-sync or audit drift on demand;
+rite docs                  # Doc consent/audit: turn on drift tracking or audit drift on demand;
                            # after consent, if drift entries exist, offers to reconcile them
                            # via the same per-entry preview loop (zero entries → no-op)
 rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file creations;
                            # per-proposal preview → (y)approve / (n)skip / (f)eedback loop;
                            # approved changes applied as a dedicated docs PR on
                            # ${RITE_TARGET_BRANCH:-main} — NO auto-merge (human review required).
-                           # Works in both doc-sync and changelog consent modes — explicit
-                           # command + preview approval IS consent (Layer 2 gate not checked
-                           # on the approved-apply path). Can CREATE new docs (e.g. ADRs).
+                           # Works in any consent mode — explicit command + preview approval
+                           # IS consent. Can CREATE new docs (e.g. ADRs). Nothing in sharkrite
+                           # edits docs without this approval loop (per-merge doc-sync retired).
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)

@@ -3,16 +3,23 @@
 #
 # Doc-mode consent helpers.
 #
-# Tracks whether the user has consented to sharkrite updating files in docs/
-# when code changes make them inaccurate.  Records the decision as
-# RITE_DOC_MODE="sync|changelog" in .rite/config.
+# Tracks whether the user has opted in to doc-drift tracking. Records the
+# decision as RITE_DOC_MODE in .rite/config. No mode ever edits docs/ on its
+# own — corrections go through `rite docs`' propose/approve loop.
 #
-# Two activation modes (recorded in RITE_DOC_MODE):
-#   sync      — yes consent; .rite/doc-sync.md is scaffolded (Layer 2 switch)
-#   changelog — no consent; only drift changelog writes (cluster-B follow-on)
+# Modes (recorded in RITE_DOC_MODE):
+#   sync      — opted in: each merge records a drift entry; `rite docs`
+#               offers to reconcile entries interactively
+#   changelog — legacy opt-in: each merge records a drift entry
+#   off       — asked and declined: nothing is recorded
+#   (unset)   — never asked: nothing is recorded; a supervised run or
+#               `rite docs` asks
+#
+# The per-merge doc-sync rewrite that `sync` used to switch on (.rite/doc-sync.md)
+# was retired 2026-10-21 — it committed raw model output into orrery's README.
 #
 # Public API:
-#   record_doc_mode <sync|changelog>   — write to .rite/config + export
+#   record_doc_mode <sync|changelog|off> — write to .rite/config + export
 #   ensure_doc_mode                    — ask once in supervised non-batch TTY
 #                                        runs; no-op when already recorded
 
@@ -40,7 +47,7 @@ if ! declare -f portable_sed_i >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# record_doc_mode <sync|changelog>
+# record_doc_mode <sync|changelog|off>
 #
 # Write RITE_DOC_MODE to .rite/config (idempotent) and export in this process.
 #
@@ -56,9 +63,9 @@ record_doc_mode() {
 
   # Validate mode argument
   case "$mode" in
-    sync|changelog) ;;
+    sync|changelog|off) ;;
     *)
-      echo "record_doc_mode: invalid mode '$mode' (must be sync or changelog)" >&2
+      echo "record_doc_mode: invalid mode '$mode' (must be sync, changelog or off)" >&2
       return 1
       ;;
   esac
@@ -86,10 +93,13 @@ record_doc_mode() {
 #
 # Behaviour:
 #   - No-op when RITE_DOC_MODE is already set (recorded at init or by env).
-#   - In supervised non-batch TTY runs: ask the consent question once and
-#     record the answer.  Consent-yes also scaffolds .rite/doc-sync.md.
-#   - In all other contexts (unsupervised, batch, non-TTY): set session-only
-#     RITE_DOC_MODE=changelog and print ONE info line.  Never write config.
+#   - In supervised non-batch TTY runs: ask once (default no) and record
+#     sync on yes, off on no.
+#   - In all other contexts (unsupervised, batch, non-TTY): do nothing. Doc
+#     tracking is opt-in; an unattended run must not opt the repo in. (It used
+#     to default the session to changelog, which recorded a drift entry — and
+#     made a model call — on every merge without consent: 74 unreviewed
+#     entries in sharkrite's own drift log by 2026-10-21.)
 #
 # Map building is NOT this hook's job — docs_map_ensure (#1032) self-heals
 # missing maps when consumers need them.
@@ -100,52 +110,33 @@ ensure_doc_mode() {
     return 0
   fi
 
-  local config_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/config"
-  local doc_sync_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md"
-  local doc_sync_example="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md.example"
-
-  # Supervised + non-batch + TTY → ask once and record
-  if [ "${WORKFLOW_MODE:-supervised}" = "supervised" ] \
-     && [ "${BATCH_MODE:-false}" != "true" ] \
-     && [ -t 0 ]; then
-
-    echo ""
-    echo "  Sharkrite can update files in docs/ when code changes make them inaccurate."
-    read -p "  May sharkrite update files in docs/ when code changes make them inaccurate? [Y/n] " -n 1 -r
-    echo
-
-    if [[ ! ${REPLY:-Y} =~ ^[Nn]$ ]]; then
-      # Yes: scaffold .rite/doc-sync.md if absent, record sync
-      if [ ! -f "$doc_sync_file" ]; then
-        if [ -f "$doc_sync_example" ]; then
-          cp "$doc_sync_example" "$doc_sync_file"
-        fi
-      fi
-      record_doc_mode "sync"
-      if declare -f print_success >/dev/null 2>&1; then
-        print_success "Doc mode: sync (docs/ will be kept accurate after merges)"
-      else
-        echo "  Doc mode recorded: sync"
-      fi
-    else
-      # No: record changelog, no .rite/doc-sync.md scaffolded
-      record_doc_mode "changelog"
-      if declare -f print_info >/dev/null 2>&1; then
-        print_info "Doc mode: changelog (drift notes only; re-run rite --init to change)"
-      else
-        echo "  Doc mode recorded: changelog"
-      fi
-    fi
-
+  # Only a supervised, non-batch, interactive run may ask
+  if [ "${WORKFLOW_MODE:-supervised}" != "supervised" ] \
+     || [ "${BATCH_MODE:-false}" = "true" ] \
+     || [ ! -t 0 ]; then
     return 0
   fi
 
-  # All other contexts (unsupervised, batch, non-TTY): session-only default.
-  # Never write config — a later supervised run must still ask.
-  export RITE_DOC_MODE=changelog
-  if declare -f print_info >/dev/null 2>&1; then
-    print_info "No docs consent recorded — using changelog mode this run; answer via rite --init or a supervised run"
+  echo ""
+  echo "  Sharkrite can track which docs a merge may have made inaccurate, and"
+  echo "  'rite docs' then proposes fixes for your approval. Docs are never edited"
+  echo "  automatically."
+  read -p "  Track doc drift for this repo? [y/N] " -n 1 -r
+  echo
+
+  if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
+    record_doc_mode "sync"
+    if declare -f print_success >/dev/null 2>&1; then
+      print_success "Doc drift tracking on (review with 'rite docs')"
+    else
+      echo "  Doc mode recorded: sync"
+    fi
   else
-    echo "No docs consent recorded — using changelog mode this run; answer via rite --init or a supervised run" >&2
+    record_doc_mode "off"
+    if declare -f print_info >/dev/null 2>&1; then
+      print_info "Doc drift tracking off (run 'rite docs' to turn it on)"
+    else
+      echo "  Doc mode recorded: off"
+    fi
   fi
 }

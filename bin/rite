@@ -338,7 +338,7 @@ while [[ $# -gt 0 ]]; do
       echo "  rite plan docs/phases.md   # Generate issues from doc"
       echo "  rite plan \"phases 2-4\"     # Natural language filtering"
       echo "  rite plan --preview        # Preview without creating"
-      echo "  rite docs                  # Enable doc-sync or audit drift (first-time: consent flow)"
+      echo "  rite docs                  # Turn on doc drift tracking or audit drift (first-time: consent flow)"
       echo "  rite docs \"update arch\"    # Directed doc update (engine lands in #1049)"
       echo "  rite --status              # Repo-wide status overview"
       echo "  rite --status --by-label   # Status grouped by label"
@@ -1089,58 +1089,33 @@ if [ "$MODE" = "init" ]; then
     print_info ".rite/issue-template.md already exists, skipping"
   fi
 
-  # doc-sync.md.example — inactive starter for Layer 2 doc maintenance
-  # Users opt in by copying this to .rite/doc-sync.md (see README)
-  if [ ! -f "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md.example" ]; then
-    cp "$RITE_INSTALL_DIR/templates/doc-sync.md.example" "$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md.example"
-    print_success "Created .rite/doc-sync.md.example (inactive — copy to .rite/doc-sync.md to enable)"
-  else
-    print_info ".rite/doc-sync.md.example already exists, skipping"
-  fi
-
   # ─────────────────────────────────────────────────────────────────
-  # Doc-mode consent (Layer 2 activation)
+  # Doc drift consent (opt-in; nothing edits docs/ automatically)
   # ─────────────────────────────────────────────────────────────────
   _config_file_for_doc_mode="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"
-  _doc_sync_active="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md"
-  _doc_sync_example="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/doc-sync.md.example"
 
   # Source doc-consent helpers (provides record_doc_mode)
   source "$RITE_LIB_DIR/utils/doc-consent.sh"
   # Also ensure docs-map builder is available for both branches below
   source "$RITE_LIB_DIR/utils/docs-map.sh"
 
-  # Determine consent state and act accordingly
-  _doc_mode_already_recorded=false
   if grep -qE '^RITE_DOC_MODE=' "$_config_file_for_doc_mode" 2>/dev/null; then
-    _doc_mode_already_recorded=true
-  fi
-
-  if [ "$_doc_mode_already_recorded" = "true" ]; then
     # Already recorded — load and announce
     _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
     print_info "Doc mode already configured: ${_recorded_mode:-sync}"
-  elif [ -f "$_doc_sync_active" ]; then
-    # .rite/doc-sync.md already exists (manual opt-in) — manual opt-in IS consent
-    record_doc_mode "sync"
-    print_success "Doc mode: sync (detected existing .rite/doc-sync.md — manual opt-in recorded)"
-    # Build docs map (sync branch)
-    docs_map_build
   else
-    # Ask the consent question
     echo ""
-    read -p "  May sharkrite update files in docs/ when code changes make them inaccurate? [Y/n] " -n 1 -r
+    echo "  Sharkrite can track which docs a merge may have made inaccurate, and"
+    echo "  'rite docs' then proposes fixes for your approval. Docs are never edited"
+    echo "  automatically."
+    read -p "  Track doc drift for this repo? [y/N] " -n 1 -r
     echo
-    if [[ ! ${REPLY:-Y} =~ ^[Nn]$ ]]; then
-      # Yes: scaffold .rite/doc-sync.md from template + record sync
-      cp "$_doc_sync_example" "$_doc_sync_active"
-      print_success "Created .rite/doc-sync.md (Layer 2 doc sync enabled)"
+    if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
       record_doc_mode "sync"
-      print_success "Doc mode: sync (docs/ will be kept accurate after merges)"
+      print_success "Doc drift tracking on (review with 'rite docs')"
     else
-      # No: record changelog only
-      record_doc_mode "changelog"
-      print_info "Doc mode: changelog (drift notes only; re-run rite --init to change)"
+      record_doc_mode "off"
+      print_info "Doc drift tracking off (run 'rite docs' to turn it on)"
     fi
     # Build docs map (both branches)
     docs_map_build
