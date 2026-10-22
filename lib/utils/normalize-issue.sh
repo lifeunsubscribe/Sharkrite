@@ -141,7 +141,9 @@ Rules:
     print_info "Generating structured issue from description..." >&2
 
     local claude_output
-    claude_output=$(provider_run_prompt "$(cat "$prompt_file")" "" false 2>/dev/null) || true
+    # Issue generation is the plan role (behavioral-design.md → "Model Selection
+    # Per Task"); a bare "" here silently rode the review model.
+    claude_output=$(provider_run_prompt "$(cat "$prompt_file")" "$(provider_resolve_model plan)" false 2>/dev/null) || true
     rm -f "$prompt_file"
 
     if [ -n "$claude_output" ]; then

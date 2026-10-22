@@ -625,17 +625,15 @@ When `claude --print` hits the user's spending cap mid-session, it emits a messa
 
 **Why this matters — 2026-06-04:** the spend cap fired at the start of issue #321 in a batch of 8. Six subsequent issues (#321, #324, #328, #330, #331, #333) each cascaded through ~35-50s of dev-session startup before hitting the cap and failing. That's ~4 minutes of wasted dev-startup time + 6 false "failed" entries in the batch summary. The cap was already wired in 9 other paths (conflict resolver, divergence handler, fix-review push divergence, merge-time divergence, stale-branch handler) — the plain dev-session path was the gap.
 
-### ADR generation helper lives in lib/utils/, not lib/core/
+### A file that is both a library and a script needs a mode guard
 
-`generate_adr_for_ref` is in [lib/utils/adr-generator.sh](../../lib/utils/adr-generator.sh). Two callers source it: `lib/core/assess-documentation.sh` (post-merge doc assessment) and `lib/core/bootstrap-docs.sh` (one-time bootstrap of internal docs). The helper has no side effects on source — it only defines the function plus an `ADR_GENERATOR_TIMEOUT` default.
-
-**Why it's not inline in assess-documentation.sh anymore:** `assess-documentation.sh` is a script with top-level executable code (it parses `$1` as `PR_NUMBER`, calls `gh pr view`, runs through the full post-merge assessment, and ends with `exit 0`). Anything that sources it runs that entire flow as a side effect — and the `exit 0` terminates the *parent* shell.
+`assess-documentation.sh` is a script with top-level executable code (it parses `$1` as `PR_NUMBER`, calls `gh pr view`, runs the whole assessment, and ends with `exit 0`). Anything that sources it runs that entire flow as a side effect — and the `exit 0` terminates the *parent* shell.
 
 **Live regression — 2026-06-04, finance-glance batch `rite 1 2 3 4 5 6 7`:** `bootstrap-docs.sh` used to `source assess-documentation.sh` just to use `generate_adr_for_ref`. On a fresh repo (no PRs), the sourced top-level called `gh pr view $1` (with `$1`= issue number), got back JSON missing `.files` and `.commits`, hit `jq: error (at <stdin>:1): Cannot iterate over null (null)`, continued into the post-merge documentation summary, then hit `exit 0`. That terminated workflow-runner.sh with status 0. The batch reporter saw exit 0 and logged `✅ Issue #1 → PR #1 (167s)` — except issue #1 was still open, no branch existed, no PR existed.
 
 **Pattern lesson:** Same class of bug as [Test stubs MUST NOT live in production paths](#test-stubs-must-not-live-in-production-paths-critical) below: a file that's BOTH a library (defines functions other code wants) AND a script (runs top-level code on source/execute) without a guard separating the two modes. Sharkrite's options for handling this:
 
-1. **Extract the function** to its own file in `lib/utils/` (or another helpers location). The library file has no top-level executable code. *This is what was done for `generate_adr_for_ref`.*
+1. **Extract the function** to its own file in `lib/utils/` (or another helpers location). The library file has no top-level executable code. *This is what was done for `generate_adr_for_ref` (since retired with the internal-docs layer, 2026-10-21).*
 2. Use `RITE_SOURCE_FUNCTIONS_ONLY=1` guard pattern (see `lib/core/local-review.sh` as the in-repo example) — caller sets the env var before sourcing; the script's executable body checks it and returns early.
 
 Option 1 is preferred when the function is reusable. Option 2 fits when the script is dominated by a single workflow that doesn't decompose cleanly.
@@ -751,30 +749,29 @@ The necessity bar governs *non-essential* findings; the **SCOPE BAR** (added #79
 
 ---
 
-## Doc Assessment Fan-out / Fan-in (assess-documentation.sh, merge-pr.sh)
+## Doc Assessment (assess-documentation.sh, workflow-runner.sh)
 
-Post-merge doc assessment runs as a background subprocess launched by `merge-pr.sh`. Within that subprocess, `assess-documentation.sh` makes multiple Claude provider calls. The sub-assessments are structured as a fan-out / fan-in: four calls run in parallel, then dependent calls run sequentially.
+`workflow-runner.sh` spawns `assess-documentation.sh` in the background during
+the fix loop (`phase_spawn_doc_assessment`) and waits for it before merge
+(`phase_wait_doc_assessment`). Two layers:
 
-### Independent sub-assessments (fan-out)
+1. **Catalog maintenance (always)** — `update_conventions_from_marker`,
+   `reconcile_tag_index`, `commit_catalog_files`. Deterministic, except the
+   tag-dedup similarity/coverage checks in `reconcile_tag_index`, which call the
+   `doc_assessment` model only when a PR declares new tags.
+2. **User project docs (opt-in)** — with `.rite/doc-sync.md`, one assessment
+   call then one update call per doc needing changes, committed to the feature
+   branch so they ride the squash merge. In changelog mode
+   (`RITE_DOC_MODE=changelog`, no doc-sync.md) it appends one drift-log entry
+   instead.
 
-These four sub-assessments each evaluate the **same diff** against a **different internal doc**. They have no data dependency on each other:
-
-| Sub-assessment | Output doc | What it captures |
-|---|---|---|
-| `assess_internal_security` | `.rite/docs/security.md` | Auth, credential, infra changes in the diff |
-| `assess_internal_architecture` | `.rite/docs/architecture.md` | New/removed files, config vars, entry points |
-| `assess_internal_api` | `.rite/docs/api.md` | CLI flag, config var, exit code changes |
-| `assess_internal_adr` | `.rite/docs/adr/*.md` | Architectural decisions worth recording |
-
-Implementation: all four are launched via `&` and collected into `_assess_pids`. A `wait` loop then collects exit codes individually — a failing sub-assessment logs a warning but does NOT prevent the others from completing or the reconcile step from running.
-
-### Dependent steps (fan-in / sequential)
-
-These run after the fan-out wait completes, because they consume the sub-assessment outputs:
-
-1. **Reconcile** (`reconcile_internal_doc`) — when a doc accumulates 3+ PR delta sections, merges incremental deltas back into the baseline. Runs in parallel per-doc (each doc is independent), but after the fan-out wait. Each reconcile call is one Claude provider call.
-2. **Cross-doc consistency validation** (`_validate_cross_doc_consistency`) — only fires when a reconciliation actually happened. Makes one Claude provider call to find contradictions across security/arch/api docs, then one provider call per file that needs a correction.
-3. **Layer 2 (user project docs)** — if `.rite/doc-sync.md` exists, runs one assessment call then one update call per doc needing changes. Sequential because the assessment's output drives the update calls.
+**Retired 2026-10-21:** the internal `.rite/docs/` layer — four parallel
+sub-assessments (changelog/security/architecture/api) plus keyword-triggered
+ADRs, a reconcile pass, cross-doc validation, and the `bootstrap-docs.sh`
+first-run bootstrap. Nothing read its output, and it cost ~5 min and ~100k
+tokens per merge plus a 5–6 min bootstrap on a repo's first issue. See
+"Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On Demand"
+below.
 
 ### Model Selection Per Task
 
@@ -785,7 +782,7 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 | Code review (`local-review.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
 | Finding assessment (`assess-review-issues.sh`) | Classifying each review finding into ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED | `RITE_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Three-state classification of already-structured findings — not the reasoning that generated them. Before #1187 it inherited the review model from the review marker, so pinning review to fable-5 silently ran every assessment (the highest-count LLM call in the loop) on fable too |
 | Issue planning (`plan-issues.sh`) | Generating GitHub issues from ADRs / architectural docs | `RITE_PLAN_MODEL` (default: `claude-opus-4-8`) | Highest-stakes reasoning stage — it must honor ADRs and never hallucinate fixtures. Kept on opus, but with its OWN var so it can't silently ride (or downgrade with) review |
-| Doc assessment (`assess-documentation.sh`) | "Did this diff change API surface X? Update api.md accordingly." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
+| Doc assessment (`assess-documentation.sh` Layer 2, `rite docs`, tag dedup) | "Did this diff change what doc X says? Propose the edit." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
 | Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
 | Triage / classify (`triage-classify.sh`, doc auto-discovery in `bin/rite`) | Trivial-vs-substantive diff; doc categorization | `RITE_TRIAGE_MODEL` (default: `claude-haiku-4-5`) | Narrow bucket classification — haiku's job, not opus's |
 
@@ -810,34 +807,11 @@ Note `plan` defaults to the same model as `review` (opus) *today*, but the point
 
 **New tasks must pick a role explicitly.** Never pass `""` as the model arg to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on provider defaults — defaults may change, and an empty model silently resolves to the `review` model. Use the provider-agnostic **`provider_resolve_model <role>`** — code in `lib/core`/`lib/utils` must not call the claude-prefixed `claude_provider_resolve_model` directly (enforced by Rule 32, `DIRECT_PROVIDER_CALL`). Pick the role by nature: doc-like (pattern matching, summarization) → `doc_assessment`; bug-detection or nuanced reasoning → `review`; classifying review findings (NOW/LATER/DISMISSED or similar structured verdicts on existing findings) → `assessment`; issue generation → `plan`; bucket classification → `triage`.
 
-### Wall-clock impact
+### Wait timeout
 
-Before parallelization (if it were sequential): `t_sec + t_arch + t_api + t_adr + t_reconcile` ≈ 80-120s with sonnet; ≈ 200-360s with opus.
-
-After parallelization + sonnet default: `max(t_sec, t_arch, t_api, t_adr) + t_reconcile` ≈ 20-30s + 20-30s ≈ 40-60s. Typical end-to-end: ~90-120s.
-
-### Merge-tail timeout watchdog
-
-`merge-pr.sh` starts the doc assessment background subprocess before cleanup, then waits for it after cleanup. The wait is bounded by `RITE_DOC_ASSESSMENT_TIMEOUT` (default 300s):
-
-```
-( sleep $timeout && kill -TERM $DOC_PID ) &   # watchdog
-watchdog_pid=$!
-
-wait $DOC_PID || doc_exit=$?
-
-kill -TERM $watchdog_pid                        # cancel watchdog if doc finished first
-wait $watchdog_pid
-
-if doc_exit == 143 (SIGTERM) or 137 (SIGKILL):
-    harvest partial_complete: lines from _DOC_LOG
-    print warning with count of completed sub-assessments
-    continue (exit 0 from merge-pr.sh)
-```
-
-On timeout: completed sub-assessments are preserved (their doc files were already written to disk before the kill). The warning message distinguishes "N sub-assessments preserved" from "no progress to preserve". Workflow exits 0 regardless — doc assessment results are not a merge blocker.
-
-**Why 300s default:** With sonnet, fan-out wall-clock is ~20-30s; reconcile ~20-30s; validate ~20-30s. Typical total: ~90-120s. 300s gives 2.5× headroom for big diffs and slow API responses without firing on normal runs. Previous default was 180s (set when opus was the model — that's why it fired regularly).
+`phase_wait_doc_assessment` bounds the wait with `RITE_DOC_ASSESSMENT_TIMEOUT`
+(default 300s): a watchdog sends SIGTERM, the workflow warns and continues.
+Doc assessment is never a merge blocker.
 
 ### DO NOT skip the assessment based on diff content
 
@@ -1177,9 +1151,9 @@ Tried extracting significant words from feature names and matching against the d
 Generalizes the deferral-detection lesson into a project-wide rule. **Sharkrite must never use keyword/substring matching to decide whether a piece of text qualifies for some downstream behavior.** This pattern has bitten us repeatedly:
 
 - **Deferral detection** (above) — words vary, semantic match needed
-- **ADR auto-creation** (`assess-documentation.sh:470-471`) — matched on `"decision\|tradeoff\|alternative"`. Captures issue bodies that mention these words conversationally and misses architectural decisions that don't use the vocabulary
+- **ADR auto-creation** (`assess-documentation.sh`, retired 2026-10-21) — matched on `"decision\|tradeoff\|alternative"`. Captures issue bodies that mention these words conversationally and misses architectural decisions that don't use the vocabulary
 - **Parent-PR marker detection** (`batch-process-issues.sh:327`, fixed in `206f2be`) — matched on `"sharkrite-parent-pr:"` without anchoring on digits. Issue #34's body documented the marker format as an example and tripped the guard, killing the batch silently
-- **ADR backfill** (`bootstrap-docs.sh`) — matches commit messages on `"refactor\|feat\|breaking\|migrate"` to decide ADR-worthiness. Same class of false positives and false negatives
+- **ADR backfill** (`bootstrap-docs.sh`, retired 2026-10-21) — matched commit messages on `"refactor\|feat\|breaking\|migrate\|switch\|drop"` to decide ADR-worthiness. Same class of false positives and false negatives (last live case: orrery's first batch turned "Rename the switch and tab" — a UI toggle — into an ADR)
 - **Severity grep** in review/assessment (`merge-pr.sh:227`, fixed in milestone #28) — matched on bare `"CRITICAL\|HIGH\|MEDIUM"` and got triggered by phrases like "no critical issues found"
 
 **Why keyword matching fails for this tool specifically:**
@@ -1212,9 +1186,6 @@ Sharkrite maintains three docs in `docs/architecture/`, each with a single purpo
 
 Existing automation continues unchanged:
 
-- `.rite/docs/changelog.md` — per-PR one-line entries on every merge
-- `.rite/docs/architecture.md` — auto-summarized internal architecture overview (different from this file; meant for in-issue context not narrative)
-- `.rite/docs/adr/` — ADRs created when a PR opts in via `<!-- sharkrite-adr -->` marker (replaces the current keyword-matching auto-creation)
 - `docs/architecture/exit-codes.md` — auto-maintained from script comments
 
 **Loading order at workflow start:** every Claude dev session loads in this order: `CLAUDE.md` → `behavioral-design.md` → `conventions.md` → `encountered-issues.md` → issue-specific context. The first three together constitute "what every Claude session must know about this codebase."
@@ -1307,57 +1278,6 @@ When only a single bash 4+ feature is used, it is simpler and more portable to r
 ### Lint enforcement
 
 Rule 21 (`BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT`) in `tools/sharkrite-lint.sh` scans all `#!/bin/bash` scripts in `lib/`, `bin/`, and `tools/` for `mapfile`, `readarray`, and `declare -A` without a `BASH_VERSINFO` guard. The rule fires on the first violation line and points to the portable alternatives. Suppression is available via `# sharkrite-lint disable BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT - reason: <text>` on the preceding line.
-
----
-
-## ADR Backfill (bootstrap-docs.sh)
-
-### Backfill Behavior
-
-When `rite --init` runs, bootstrap searches git history for architectural commits (refactor, feat, breaking, migrate, etc.) and generates ADRs for them. This ensures new repos start with decision records for major historical changes, not just future PRs.
-
-**Default:** Backfill up to 5 ADRs from the last 50 commits matching the pattern.
-
-**CLI Flags:**
-- `--no-backfill-adrs` — Skip backfill entirely (prints skip message)
-- `--backfill-count N` — Generate up to N ADRs (default: 5)
-
-**Environment Variables:**
-- `RITE_NO_BACKFILL_ADRS=true` — Skip backfill
-- `RITE_BACKFILL_ADR_COUNT=N` — Set backfill limit
-
-### Metadata Format
-
-ADRs generated from commits use `**Commit:** <sha>` metadata instead of `**PR:** #N`.
-
-**Example:**
-```markdown
-# ADR-001: Provider Abstraction
-
-**Date:** 2026-05-26
-**Commit:** bd61485
-**Files:** lib/providers/provider-interface.sh, lib/providers/claude.sh
-**Context:** ...
-**Decision:** ...
-**Tradeoffs:** ...
-```
-
-### Deduplication
-
-The `generate_adr_for_ref()` function checks for existing ADRs by searching for:
-- `PR: #<number>` (for PR-based ADRs)
-- `Commit: <sha>` (for commit-based ADRs)
-
-Re-running bootstrap is idempotent — existing ADRs are preserved, only commits without an ADR get one.
-
-### Empty Responses
-
-When Claude judges a commit NOT architecturally significant, it returns empty output. Bootstrap prints:
-```
-- Skipped <sha> — Claude judged not ADR-worthy
-```
-
-No file is created for that commit. This prevents cluttering `.rite/docs/adr/` with trivial decisions.
 
 ---
 
@@ -2314,10 +2234,9 @@ rtk and the project's tracked files reference it).
 ## Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On Demand
 
 **Status:** design locked 2026-10-21; implementation planned as an issue set.
-Supersedes "Doc Assessment Fan-out / Fan-in", "Decision: How Sharkrite
-Maintains Its Own Docs" and "ADR Backfill" above, which describe the layer this
-retires. Those sections stay until the retirement issue lands so the history is
-legible.
+The retirement landed first (2026-10-21): the internal `.rite/docs/` layer and
+its first-run bootstrap are gone, and "Doc Assessment" above now describes only
+what remains.
 
 **What this replaces, and the evidence.** The merge-phase documentation
 assessment (`assess-documentation.sh`) maintained four sharkrite-internal files
@@ -2504,13 +2423,15 @@ nor changes it.
 
 ### Retirement and migration
 
-- `assess-documentation.sh`'s internal layer, `bootstrap-docs.sh`, and
-  `.rite/docs/` are retired. `changelog.md` is kept only if someone will read
-  it; otherwise it folds into the drift entries.
+- **Done 2026-10-21:** `assess-documentation.sh`'s internal layer,
+  `bootstrap-docs.sh`, `lib/utils/adr-generator.sh` and the `--no-backfill-adrs`
+  / `--backfill-count` flags are deleted; nothing writes `.rite/docs/` any more.
+  Existing `.rite/docs/` directories are inert and can be deleted by hand.
+  The interim `RITE_DOC_ASSESSMENT_TIMEOUT=1` did not stop the work — it killed
+  only the parent script, and the backgrounded sub-assessments kept running and
+  spending tokens — which is why retirement went first.
 - `docs/sharkrite-drift-log.md` (global, free-form) converts to per-doc,
   per-branch entries with the schema above on the first `align-docs`.
-- Interim: `RITE_DOC_ASSESSMENT_TIMEOUT=1` in `.rite/config` neutralizes the
-  old layer until retirement lands.
 
 ### Rejected approaches
 

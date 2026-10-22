@@ -58,6 +58,32 @@ foo() {
   [[ "$output" == *"- PROVIDER_MODEL_FALLTHROUGH:"* ]]
 }
 
+@test "Rule 31 fires: \"\" after a first arg with nested quotes (\"\$(cat \"\$f\")\")" {
+  # The old regex required a quote-free first arg, so this shape escaped it —
+  # live in bootstrap-docs.sh (x6) and normalize-issue.sh until 2026-10-21.
+  _run_lint_with_fixture "bad-nested-quotes" '#!/bin/bash
+foo() {
+  OUT=$(provider_run_prompt "$(cat "$prompt_file")" "" true 2>/dev/null) || true
+}'
+  [[ "$output" == *"bad-nested-quotes.sh:3 - PROVIDER_MODEL_FALLTHROUGH:"* ]]
+}
+
+@test "Rule 31 passes: nested-quote first arg with an explicit role" {
+  _run_lint_with_fixture "good-nested-quotes" '#!/bin/bash
+foo() {
+  OUT=$(provider_run_prompt "$(cat "$prompt_file")" "$(provider_resolve_model plan)" true) || true
+}'
+  [[ "$output" != *"- PROVIDER_MODEL_FALLTHROUGH:"* ]]
+}
+
+@test "Rule 31 passes: \"\" as a later positional is not the model arg" {
+  _run_lint_with_fixture "good-later-empty" '#!/bin/bash
+foo() {
+  OUT=$(provider_run_prompt_with_timeout "$(cat "$f")" "$(provider_resolve_model triage)" "" 60) || true
+}'
+  [[ "$output" != *"- PROVIDER_MODEL_FALLTHROUGH:"* ]]
+}
+
 @test "Rule 31 passes: explicit role via provider_resolve_model" {
   _run_lint_with_fixture "good-explicit" '#!/bin/bash
 foo() {

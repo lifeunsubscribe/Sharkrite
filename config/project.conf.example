@@ -263,13 +263,11 @@
 # Documentation
 # =============================================================================
 
-# Sharkrite maintains internal docs at .rite/docs/ automatically.
-# No configuration needed for internal docs.
-
 # To enable project doc sync, run `rite docs` — it walks through the consent
 # flow and scaffolds .rite/doc-sync.md from templates/doc-sync.md.example.
 # You can also create .rite/doc-sync.md manually; see the template for the
-# format. If .rite/doc-sync.md does not exist, only internal docs are maintained.
+# format. Without .rite/doc-sync.md, merges only update the conventions and
+# tag-index catalogs (and append drift-log entries in changelog mode).
 
 # Docs map auto-rebuild (default: true).
 # When true, docs_map_ensure() automatically rebuilds .rite/state/docs-map.tsv

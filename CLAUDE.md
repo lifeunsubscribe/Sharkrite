@@ -38,7 +38,6 @@ lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + 
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
-lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution

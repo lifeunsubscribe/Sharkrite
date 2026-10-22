@@ -129,7 +129,7 @@ cleanup_on_interrupt() {
 
   # Kill any in-flight doc assessment before saving state. We don't want to wait
   # the 300s watchdog on a clean Ctrl-C, and the subprocess might be mid-write
-  # to .rite/docs/*.md — letting the process group SIGKILL it later could
+  # to a catalog or user doc — letting the process group SIGKILL it later could
   # corrupt a doc file mid-flush.
   if declare -f phase_kill_doc_assessment >/dev/null 2>&1; then
     phase_kill_doc_assessment
@@ -570,8 +570,8 @@ phase_spawn_doc_assessment() {
   local worktree_path="$2"
 
   # Skip if a prior subprocess is still running. We serialize doc assessments
-  # per workflow (one in flight at a time) so two concurrent writes to
-  # .rite/docs/*.md or the feature branch can't race.
+  # per workflow (one in flight at a time) so two concurrent writes to the
+  # catalog files or the feature branch can't race.
   if [ -n "$_RITE_DOC_PID" ] && kill -0 "$_RITE_DOC_PID" 2>/dev/null; then
     return 0
   fi
@@ -620,18 +620,7 @@ phase_wait_doc_assessment() {
 
   if [ "$doc_exit" -eq 143 ] || [ "$doc_exit" -eq 137 ]; then
     # 143 = SIGTERM (128+15), 137 = SIGKILL (128+9) — timed out.
-    # Harvest any sub-assessments that completed before the kill (each emits
-    # "partial_complete:<name>" as soon as it writes its doc update).
-    local completed=0
-    if [ -s "${_RITE_DOC_LOG:-}" ]; then
-      completed=$(grep -c "^partial_complete:" "$_RITE_DOC_LOG" 2>/dev/null || true)
-    fi
-    if [ "$completed" -gt 0 ]; then
-      print_warning "Documentation assessment timed out after ${timeout}s — preserving $completed completed sub-assessment(s)" >&2
-      grep "^partial_complete:" "$_RITE_DOC_LOG" 2>/dev/null | sed 's/^partial_complete:/  ✓ /' >&2 || true
-    else
-      print_warning "Documentation assessment timed out after ${timeout}s — no sub-assessments completed" >&2
-    fi
+    print_warning "Documentation assessment timed out after ${timeout}s" >&2
   elif [ "$doc_exit" -ne 0 ] && [ "$doc_exit" -ne 2 ]; then
     print_warning "Documentation assessment failed (exit $doc_exit)" >&2
     if [ -s "${_RITE_DOC_LOG:-}" ]; then
@@ -640,8 +629,7 @@ phase_wait_doc_assessment() {
       echo "---" >&2
     fi
   elif [ -s "${_RITE_DOC_LOG:-}" ]; then
-    # Success: filter Layer B coordination markers; surface the summary.
-    grep -v '^partial_complete:' "$_RITE_DOC_LOG" || true
+    cat "$_RITE_DOC_LOG"
   fi
 
   rm -f "${_RITE_DOC_LOG:-}"
@@ -702,19 +690,6 @@ phase_kill_doc_assessment() {
 
 phase_pre_start_checks() {
   local issue_number="$1"
-
-  # Bootstrap internal docs if any required file is missing
-  RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-${RITE_PROJECT_ROOT}/.rite/docs}"
-  local _needs_bootstrap=false
-  for _required_doc in architecture.md api.md security.md changelog.md; do
-    if [ ! -f "${RITE_INTERNAL_DOCS_DIR}/${_required_doc}" ]; then
-      _needs_bootstrap=true
-      break
-    fi
-  done
-  if [ "$_needs_bootstrap" = true ]; then
-    source "$RITE_LIB_DIR/core/bootstrap-docs.sh"
-  fi
 
   # Check credentials (blocker handler will print header if needed)
   if ! check_blockers "pre-start"; then
@@ -1706,9 +1681,9 @@ phase_assess_and_resolve() {
     _gate_pid=$!
 
     # Spawn doc assessment in parallel with the gate + review regeneration.
-    # The doc subprocess runs against the fix commit's HEAD, writes Layer 1 to
-    # .rite/docs/ (via the worktree's symlink to the main worktree), and commits
-    # Layer 2 user-doc changes to THIS feature branch. We wait for it at the next
+    # The doc subprocess runs against the fix commit's HEAD, updates the Layer 1
+    # catalogs in the main worktree, and commits Layer 2 user-doc changes to
+    # THIS feature branch. We wait for it at the next
     # phase_wait_doc_assessment call (start of next iteration's fix, or
     # phase_merge_pr entry).
     phase_spawn_doc_assessment "$pr_number" "$WORKTREE_PATH"
@@ -1724,7 +1699,7 @@ phase_assess_and_resolve() {
       wait_pid_with_timeout "$_gate_pid" 15 >/dev/null 2>&1 || true
       rm -f "${_gate_output_file:-}"
       # Doc assessment may also still be running — kill it so it doesn't
-      # outlive the workflow as a zombie writing to .rite/docs/ after we fail.
+      # outlive the workflow as a zombie writing docs after we fail.
       phase_kill_doc_assessment
       if [ $_loop_create_pr_rc -eq 5 ]; then
         print_warning "Usage cap reached during fix-loop review regeneration — aborting batch"
