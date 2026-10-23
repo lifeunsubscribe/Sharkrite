@@ -2243,7 +2243,10 @@ rtk and the project's tracked files reference it).
 
 ## Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On Demand
 
-**Status:** design locked 2026-10-21; implementation planned as an issue set.
+**Status:** design locked 2026-10-21, amended 2026-10-22 (on/off via
+`align-docs`, `rite docs` as the `main` path, code-first promote, editing
+rules, per-type rubrics, docs map as a committed navigation document);
+implementation planned as an issue set.
 The retirement landed first (2026-10-21): the internal `.rite/docs/` layer and
 its first-run bootstrap are gone, and "Doc Assessment" above now describes only
 what remains.
@@ -2276,13 +2279,18 @@ violating it.
   related issue set and the unit of documentation correction. Individual issues
   are never associated with a feature doc — that is how a doc bloats with
   one-off entries from pigeon-holed issues filling a documentation quota.
+- **Work that goes straight to `main` has no branch.** Its drift entries carry
+  `branch=main` and are corrected through `rite docs`, which runs the same
+  Tier 2 pass promote runs. This is the common case: all of the last 40 merged
+  sharkrite PRs targeted `main` (measured 2026-10-22), so promote alone would
+  almost never fire.
 - **Feature doc association is declared, never inferred.** `--branch X --doc
   docs/features/foo.md` (or an equivalent plan-log line) names the doc.
   Absence is a warning, not a block. Inference is the fuzzy-targeting failure
   the test gate already taught us.
 - **The ADR→feature-doc map is parsed from the ADR's own links**, which is
-  deterministic, and used for a *just-in-case* pass at promote (below). The ADR
-  is never the declared doc of a branch.
+  deterministic, and used for the *just-in-case* pass (below). The ADR is
+  never the declared doc of a branch.
 - **Tests are the bridge for everything else.** A feature doc declares the
   tests that enforce it (`<!-- sharkrite-enforced-by: tests/regression/a.bats,
   tests/regression/b.bats -->`; the existing `Enforcement:` lines in this file
@@ -2290,9 +2298,32 @@ violating it.
   doc is the human artifact, and the human decides what counts as enforcement.
   This is `sharkrite-test-covers` pointed the other way.
 
+### On, off, and what each state does
+
+`rite align-docs` is the switch. It replaces the consent prompts in
+`rite docs`, `rite --init` and supervised runs.
+
+- **First run** (never enabled): asks whether to turn doc tracking on, and says
+  plainly that the audit runs either way. Then runs the restructure assessment
+  and the assertion audit — there are no drift entries yet. When the repo has no
+  clear doc structure, it offers to scaffold one; the scaffolder is the
+  separately designed ground-up bootstrap (test suites → feature docs → ADR).
+  Until that exists the offer is omitted, not improvised.
+- **`rite align-docs --disable`** turns tracking off. The next plain run asks
+  again, as on the first run.
+- **On:** Tier 1 records entries on every merge; promote and `rite docs`
+  correct them.
+- **Off or never enabled:** nothing is recorded and nothing runs
+  automatically — so nothing piles up. `rite align-docs` and directed
+  `rite docs "<instructions>"` still work: they check docs against the code
+  directly and need no entries.
+- **Unattended runs never turn tracking on.** (Before 2026-10-21 they silently
+  did: 74 unreviewed entries, each with a model call, in sharkrite's own log.)
+
 ### Tier 1 — detection, per merge, deterministic, zero model calls
 
-Runs on every PR merge, whether or not the issue is on a branch.
+Runs on every PR merge while tracking is on, whether or not the issue is on a
+branch.
 
 Triggers: the PR's changed files intersect a feature doc's enforcing test set,
 or intersect code those tests exercise, or the PR is on a branch with a
@@ -2305,7 +2336,7 @@ fields — prose is for human review, fields are for consolidation:
 |---|---|
 | `doc` | the feature doc implicated |
 | `branch` | integration branch, or `main` |
-| `pr`, `issue` | provenance |
+| `pr`, `issue` | provenance (a list, see below) |
 | `assertion` | the doc assertion whose referenced code/test changed, when identifiable |
 | `kind` | `addition` \| `refinement` \| `contradiction` \| `test-scope` \| `reference-missing` |
 | `evidence` | changed paths, test names, the grep that fired |
@@ -2318,117 +2349,158 @@ territory. **Whether an assertion is still *true* is a judgement and belongs to
 Tier 2.** Letting "still true" into Tier 1 reintroduces a model call per merge,
 which is the failure mode this design exists to end.
 
-### Tier 2 — correction, per promote, one bounded model pass, always interactive
+Entries stay bounded:
 
-`rite --promote` is **always interactive. There is no unsupervised promote.**
-After the promotion assessment (Phase 5b) and before the merge, the operator is
-shown a documentation writeup and prompted accept / reject / feedback, using the
-same loop `rite docs` already has for directed updates (propose → preview →
-approve → dedicated docs PR). Promote does not grow a second doc-editing UX.
+- **Accumulate in place.** One entry per (doc, assertion); a repeat hit appends
+  its PR to that entry — the conventions catalog's rule. Volume tracks affected
+  assertions, not merges.
+- **Consumed or cleared.** Tier 2 consumes the entries it corrects;
+  `align-docs` clears every entry for a doc it audits, because it just
+  re-verified that doc against the code.
+- **Visible.** A batch that leaves entries ends with one line —
+  `N drift entries pending across M docs — run 'rite docs'` — and never waits.
 
-The pass is one model call on the promote model (`RITE_PROMOTE_MODEL`) with
-**bounded input**: the declared feature doc, the ADR's section that references
-it, this branch's drift entries for this doc, and a diff summary. Its output is
-two things presented together: a **narrative writeup** of what changed and why
-the doc should change, and the **explicit list of proposed edits**. Both are
-required; narrative alone is not reviewable and a diff alone is not readable.
+### Tier 2 — correction: one bounded model pass, human-approved
+
+One pass, two entry points:
+
+- **Promote** (`rite --promote`). Everything up to and including the merge runs
+  automatically — review, gate, assessment, merge. **The code merges first.**
+  Then the doc pass runs and waits for the operator: accept / reject /
+  feedback. With no terminal attached it saves the proposal and prints the
+  exact resume command (`rite docs --resume <branch>`). Docs never gate the
+  merge, and no doc change lands without a human.
+- **`rite docs`** for work on `main`: the same pass over `branch=main` entries.
+
+Both use the loop `rite docs` already has for directed updates (propose →
+preview → approve → dedicated docs PR); there is no second doc-editing UX.
+
+**Bounded input:** the declared feature doc's affected sections (located
+through the docs map, read by anchor), the ADR section that references the
+doc, the entries, and a diff summary. **Output:** a narrative of what changed
+and why the doc should change, *and* the explicit list of proposed edits. Both
+are required; narrative alone is not reviewable and a diff alone is not
+readable.
 
 Contract:
 
 - **Propose, never write.** Accepted edits land through the docs-PR path.
-- **Doc rejection never blocks the merge.** Code review already passed. On
-  reject, the code lands, the entries persist, and `rite align-docs` sees them
-  later. Coupling them makes docs a merge gate, and a merge gate gets accepted
-  to unblock — which is the opposite of human ownership.
+- **Doc rejection never blocks anything.** The code already merged. On reject,
+  the entries persist and `align-docs` sees them later.
 - **One update per branch promotion.** The feature doc changes at most once per
-  promote. Accepted entries are **folded into the docs PR body**, which is the
-  permanent record of why the doc changed; they are then removed from the
-  per-branch entry store. Entries are consumed, not deleted into nothing.
-- **Just-in-case pass.** The branch's diff is intersected with every *other*
-  feature doc's enforcing tests and referenced files (set intersection first;
-  model only for the residue). Hits produce drift entries for those docs —
-  never edits. `align-docs` handles them.
+  promote. Accepted entries are **folded into the docs PR body**, the permanent
+  record of why the doc changed, then removed from the entry store. Entries are
+  consumed, not deleted into nothing.
+- **Just-in-case pass.** The diff is intersected with every *other* feature
+  doc's enforcing tests and referenced files (set intersection first; model only
+  for the residue). Hits produce drift entries for those docs — never edits.
 - **Nondeterministic assertions are flagged, not fixed.** When the pass cannot
   verify an assertion deterministically ("the sync experience is smooth"), it
   records a `refinement` entry proposing enforceable wording. Each accepted
   rewording makes the next pass cheaper.
 
+### Editing rules — every pass that proposes doc text
+
+- **Model.** A dedicated `doc_update` role (`RITE_DOC_UPDATE_MODEL`), defaulting
+  to the deepest-reasoning model (fable where available). It is separate from
+  `doc_assessment`, which stays classification-grade for tag dedup and audit
+  triage — a doc edit is read by a human as the product's description; a tag
+  merge is not.
+- **Length-neutral by default.** Improving prose must not grow the section.
+  Each proposed edit carries its computed size change; an edit that grows a
+  section past a threshold (order of 15%) must state why in the preview — new
+  behavior, new constraint, a real addition. Computed, not trusted to the model.
+- **Only the shipped product.** No deadlines, temporary setbacks, company
+  decisions, people, or anything else that stops being true without the code
+  changing. A prompt rule, plus a flag-only check that highlights dates and git
+  committer names in proposed text. The human decides; the check never
+  auto-rejects (keyword matching may flag, never decide).
+
+### Rubrics — every doc is checked twice
+
+1. **Accuracy, every doc including the ADR:** each assertion matches the code.
+2. **Role, by doc type:**
+   - *Feature doc* — stays within one feature; every assertion names an
+     enforcing test or is flagged; no overlap with sibling feature docs.
+   - *ADR* — links every feature doc; no feature doc contradicts it; no area of
+     the code is covered by zero feature docs; its decisions still hold.
+
+Sharkrite ships a default rubric per type; a repo overrides it in the docs
+map. The ADR is audited no less than any other doc — its role check is simply
+the one that compares *across* docs.
+
 ### The ADR: never edited at promote
 
-Observations about the ADR — a feature that contradicts it, a reference it
-lacks, scope it no longer matches — go to a **separate ADR drift log**. The ADR
-is the document that says what the software *is*; a wrong feature-doc edit is a
-bad paragraph and a wrong ADR edit is a wrong product. It gets its own pass.
+Promote sees one branch's slice; the ADR describes the whole product, so an
+ADR edit needs the whole picture, which only `align-docs` has. Promote's
+observations about the ADR — a feature that contradicts it, a reference it
+lacks, scope it no longer matches — go to a **separate ADR drift log**. A wrong
+feature-doc edit is a bad paragraph; a wrong ADR edit is a wrong product.
 
-### `rite align-docs` — the dedicated ADR pass, on demand
+### `rite align-docs` — the full audit, on demand
 
-1. **Consistency check.** Is the ADR current, internally coherent, and well
-   scoped to the feature docs it links? The rubric is **declared in the ADR
-   itself** as a short list of review dimensions; the pass checks only those.
-   The human owns the rubric the same way they own the doc. Quality-of-vision
-   judgements (philosophy, budget vs scale, security posture, complexity vs
-   reliability) are deliberately *out* of this pass — a contradiction in them
-   may be surfaced, a resolution may not be proposed. A separate, curated
-   analysis command is the home for that and is a later design.
-2. **Reconcile against the ADR drift log.** Compare step 1 with the proposed
-   ADR changes; find contradictions, pre-existing or proposed; each resolution
-   is approved by the operator. An **approval history** (question, decision,
-   date, rationale; human-editable) is injected so the same architectural
-   question is never asked twice.
-3. **Apply.** Changes are described narratively *and* stated explicitly, then
-   applied, rejected, or iterated on through the same loop.
-4. **Restructure.** When the declared documentation is one oversized document
-   (this file, at the time of writing: 2,283 lines, 38 contract sections, the
-   ADR and every feature doc concatenated) — or when there is no ADR at all —
-   `align-docs` can propose **splitting it into an ADR plus feature docs**, and
-   **consolidating** that result with an existing ADR and feature docs:
-   merging overlapping sections, de-duplicating assertions, re-linking the ADR,
-   re-pointing `sharkrite-enforced-by` markers. Boundary scoping favors few
-   docs that stay comprehensive over many thin ones. It is a structural edit
-   to human documents, so it goes through the same propose/approve loop, and
-   it is the mechanism behind the measured-threshold split below.
+There is no cheap mode: the per-change path is Tier 2.
 
-**Simplified mode** when no drift entries exist: deterministic reference and
-test checks run over every doc; the model pass runs **only** over docs whose
-referenced code changed since the last `align-docs` (a ledger timestamp). Doc
-update recommendations from the reference checks are folded into this one
-round of approvals so the operator is not asked twice. Zero changes since last
-align → zero model calls.
+- **Scope.** `rite align-docs [doc ...]` takes doc names with or without the
+  extension (`behavioral-design`, `behavioral-design.md`). No names → every doc.
+- **Restructure assessment first.** Should any doc split, merge, or
+  consolidate? An oversized doc can split into an ADR plus feature docs (this
+  file, at the time of writing: ~2,550 lines and 37 top-level sections, the ADR
+  and every feature doc concatenated), and the result can be consolidated with
+  an existing ADR and feature docs — merging overlapping sections,
+  de-duplicating assertions, re-linking the ADR, re-pointing
+  `sharkrite-enforced-by` markers. Few comprehensive docs beat many thin ones.
+  **Stable by rule:** every restructure decision, accepted or rejected, goes in
+  the approval history, and the same proposal returns only if the doc has grown
+  materially since (order of +25%).
+- **Assertion audit.** Every assertion in every in-scope doc against the code,
+  plus each doc's role rubric. Chunked by docs-map section: one call per
+  section, reading that section and the code it references. Before running it
+  shows the section and call count and asks.
+- **ADR drift log reconcile**, with an **approval history** (question,
+  decision, date, rationale; human-editable) injected so the same architectural
+  question is never asked twice.
+- **Apply** through the same propose/approve loop, narrative and explicit.
+  Then clear drift entries for the audited docs and rebuild the docs map.
 
-### Queryability: the docs map is the index, content is read by anchor
+Quality-of-vision judgements (philosophy, budget vs scale, security posture,
+complexity vs reliability) are out of scope: a contradiction may be surfaced, a
+resolution may not be proposed. A separate, curated analysis command is their
+home and is a later design.
 
-No pass reads a whole document to find out whether something is in it.
-`lib/utils/docs-map.sh` already builds `.rite/state/docs-map.tsv` — every
-doc's headings with a per-file `last_verified_sha` ("catalog as map, not
-content") — and that map is the query layer for **every** pass here: Tier 1,
-Tier 2, `align-docs`, and `rite plan`. A pass consults the map to decide which
-files and which sections it needs, then reads only those sections by heading
-anchor. The byte cap bounds *content loaded per pass*; it never bounds *what
-is discoverable*. That `rite plan`'s 50 KB auto-discovery cap applied to
-discovery itself — so a 217 KB design doc was either loaded whole or not seen —
-is the oversight this corrects.
+### The docs map — sharkrite's navigation document
 
-The map must be rebuilt whenever a doc changes: on merge of any PR touching
-`docs/`, on the promote docs-PR, and as the final step of `align-docs`. Today
-only `rite docs` rebuilds it, and the live map was 64 commits and four doc
-changes stale when measured. The per-file SHA doubles as the ledger
-`align-docs` simplified mode uses to decide which docs' referenced code changed
-since the last alignment.
+A sharkrite-maintained file, **committed** to the repo (the team uses it, and
+its tags and notes cost model calls to regenerate). It is the index every pass
+queries — Tier 1, Tier 2, `align-docs`, `rite plan`:
 
-The tag index (`tag-index-system.md`, still a proposal) is the router layer
-above this map — tag → heading pointer. This contract neither depends on it
-nor changes it.
+- **Every doc and section, with a per-section content fingerprint.** Sections
+  without headings are addressed by content fingerprint, not line numbers
+  (which shift on every edit). Users' docs never need headers or markers added.
+- **Tags and short notes per section** — the context that would be clutter in
+  the docs themselves. It absorbs the tag index (`tag-index.md`): one
+  navigation file, not two.
+- **Doc type (ADR / feature doc) and rubric overrides.**
+- **Self-checking on every doc edit.** Structure — files, sections,
+  fingerprints — refreshes deterministically; tags and notes regenerate only
+  for sections whose fingerprint changed.
+
+No pass reads a whole document to learn whether something is in it: it
+consults the map, then reads only the sections it needs, by anchor. A byte cap
+bounds *content loaded per pass*, never *what is discoverable* — `rite plan`'s
+50 KB auto-discovery cap applying to discovery itself (a 240 KB design doc
+loaded whole or not seen) is the oversight this corrects. Today's
+`.rite/state/docs-map.tsv` (headings + one per-file SHA, rebuilt only by
+`rite docs`, measured 64 commits stale) is the starting point.
 
 ### Keeping it lean over time
 
-- **Every model pass emits a diag**: `[diag] DOC_PASS kind=promote|align
+- **Every model pass emits a diag**: `[diag] DOC_PASS kind=promote|docs|align
   doc=<path> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`.
   The retired layer rotted for ~130 runs because nothing measured it.
 - **Oversized docs split.** When a pass's measured duration exceeds a
   configured threshold (order of a minute or two), the workflow suggests
-  `rite align-docs`, and the next alignment **proposes** a restructure (step 4
-  above) — a structural edit to a human document, so it goes through the
-  approval loop and updates the ADR's references in the same change. The
+  `rite align-docs <doc>`, whose restructure assessment proposes the split. The
   trigger is the diag, never a feeling.
 
 ### Retirement and migration
@@ -2452,32 +2524,45 @@ nor changes it.
 
 - **Per-merge model reconcile over the whole doc** — the ratchet described
   above. Unbounded input, all-or-nothing write-back, no reader.
+- **Per-merge edits to user docs** — the retired doc-sync rewrite committed raw
+  model output into orrery's README (CLI warnings with local paths, narration,
+  a wrapping fence). Detection may be automatic; edits never are.
 - **Inferring which doc a branch or issue relates to** — fuzzy targeting; the
   test gate's lesson, relearned. Declared or nothing.
 - **Tests declaring their doc** — scatters doc references across test files
   and moves the enforcement decision away from the human artifact.
 - **Auto-writing accepted docs** — violates propose-never-write; the human
   approves a diff, not a fait accompli.
-- **Docs as a merge gate** — gets accepted to unblock.
-- **Unsupervised promote** — promote is the one place the human reads the
-  feature's story; removing the human removes the point.
+- **Docs as a merge gate** — gets accepted to unblock. That includes making
+  promote wait for doc feedback *before* merging: the code merges first.
+- **Unsupervised doc correction** — promote and `rite docs` are where the human
+  reads the feature's story; removing the human removes the point.
+- **Unattended runs opting a repo in** — consent recorded by default is not
+  consent; it produced 74 unreviewed entries.
+- **A cheap mode for `align-docs`** — the cheap path is Tier 2. Two cheap paths
+  drift apart.
 - **Associating individual issues with feature docs** — quota-driven bloat.
 - **An open-ended "review the architecture" prompt inside `align-docs`** —
-  the unbounded input in a new costume. The rubric lives in the ADR.
+  the unbounded input in a new costume. The rubric is per doc type, in the map.
 - **Whole-document loading under a byte cap as the discovery mechanism** —
   what the cap should bound is content read, not content findable. Query the
   map; read by anchor.
+- **Line-number section anchors** — they move on every edit above them.
 
 **Enforcement:** to be pinned per issue as the set lands. Planned:
-`tests/regression/doc-drift-entry-schema.bats` (fields, per-doc/per-branch
-layout), `doc-drift-tier1-deterministic.bats` (no provider call on the merge
-path — structural grep plus a stubbed-provider run that must make zero calls),
-`promote-doc-gate-interactive.bats` (no `--auto` path reaches the merge without
-the prompt; reject does not block merge; accepted entries fold into the docs PR
-body), `align-docs-approval-history.bats`, and the `DOC_PASS` diag presence
-check. `sharkrite-enforced-by` marker parsing gets its own file. Queryability:
-`docs-map-rebuild-on-doc-change.bats` (merge of a docs-touching PR, promote
-docs-PR, and `align-docs` all leave the map at HEAD) and
-`plan-reads-docs-map.bats` (`rite plan` consults the map before loading any
-content; a section past the byte cap is still discoverable). Restructure:
-`align-docs-restructure-proposes-not-writes.bats`.
+`doc-drift-entry-schema.bats` (fields, per-doc/per-branch layout,
+accumulate-in-place), `doc-drift-tier1-deterministic.bats` (no provider call on
+the merge path — structural grep plus a stubbed-provider run that must make zero
+calls), `doc-tracking-off-records-nothing.bats`,
+`promote-docs-after-merge.bats` (the code merges before the doc prompt; no TTY
+saves the proposal and prints the resume command; reject never blocks;
+accepted entries fold into the docs PR body), `rite-docs-main-entries.bats`,
+`doc-edit-length-delta.bats`, `doc-update-model-role.bats`,
+`align-docs-scope-by-name.bats`, `align-docs-restructure-stability.bats`,
+`align-docs-approval-history.bats`, `align-docs-restructure-proposes-not-writes.bats`,
+the `DOC_PASS` diag presence check, and `sharkrite-enforced-by` marker parsing.
+Docs map: `docs-map-section-fingerprints.bats` (headingless sections addressed
+by fingerprint; tags regenerate only for changed sections),
+`docs-map-rebuild-on-doc-change.bats`, and `plan-reads-docs-map.bats` (`rite
+plan` consults the map before loading any content; a section past the byte cap
+is still discoverable).
