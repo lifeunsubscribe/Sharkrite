@@ -324,14 +324,15 @@ EOF
 @test "15. remaining-issues loop includes deferred_for_dep and blocked but excludes success" {
   # Pins the case-statement inclusion logic in the exit-5 remaining-issues loop.
   # A silent regression back to checking only empty-status ("") would drop
-  # deferred_for_dep and blocked issues from the resume manifest, leaving tests
-  # 1–14 all green while the manifest silently undercounts remaining work.
+  # deferred_for_dep, deferred_for_parent, and blocked issues from the resume
+  # manifest, leaving tests 1–14 all green while the manifest silently undercounts
+  # remaining work.
   grep -q 'case "${ISSUE_STATUS\[' "$BATCH_PROCESSOR" || {
     echo "FAIL: remaining-issues case statement not found in $BATCH_PROCESSOR" >&2
     return 1
   }
-  grep -q '"" | deferred_for_dep | blocked)' "$BATCH_PROCESSOR" || {
-    echo 'FAIL: expected inclusion of "" | deferred_for_dep | blocked in remaining-issues case' >&2
+  grep -q '"" | deferred_for_dep | deferred_for_parent | blocked)' "$BATCH_PROCESSOR" || {
+    echo 'FAIL: expected inclusion of "" | deferred_for_dep | deferred_for_parent | blocked in remaining-issues case' >&2
     return 1
   }
 }
