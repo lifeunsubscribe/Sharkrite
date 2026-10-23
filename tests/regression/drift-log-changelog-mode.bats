@@ -243,23 +243,16 @@ teardown() {
     "$PROJECT_ROOT/lib/core/assess-documentation.sh"
 }
 
-@test "assess-documentation.sh: changelog-mode branch checks for 'changelog' value" {
-  grep -q '"changelog"' \
-    "$PROJECT_ROOT/lib/core/assess-documentation.sh"
-}
-
-# ---------------------------------------------------------------------------
-# 6. Sync mode guard: drift entry call is inside no-doc-sync-md branch (structural)
-# ---------------------------------------------------------------------------
-
-@test "assess-documentation.sh: _append_doc_drift_entry call is inside no-doc-sync-md branch" {
-  # Extract the block from "if [ ! -f \"$DOC_SYNC_FILE\" ]" to its matching "fi"
-  # and verify _append_doc_drift_entry appears within it.
-  _block=$(awk '/if \[ ! -f "\$DOC_SYNC_FILE" \]/,/^fi$/' \
+@test "assess-documentation.sh: drift entry is recorded only under recorded consent (sync|changelog)" {
+  # The per-merge doc-sync rewrite (.rite/doc-sync.md) was retired 2026-10-21;
+  # recording is now gated on RITE_DOC_MODE alone, and unset/off records nothing.
+  _block=$(awk '/^case "\$\{RITE_DOC_MODE:-\}" in/,/^esac$/' \
     "$PROJECT_ROOT/lib/core/assess-documentation.sh" 2>/dev/null || true)
   [ -n "$_block" ]
-  # Must contain the drift entry call
-  echo "$_block" | grep -q '_append_doc_drift_entry'
+  echo "$_block" | grep -qE '^[[:space:]]+sync\|changelog\)'
+  echo "$_block" | grep -q '_append_doc_drift_entry "'
+  # ...and that is the only call site
+  [ "$(grep -c '_append_doc_drift_entry "' "$PROJECT_ROOT/lib/core/assess-documentation.sh")" -eq 1 ]
 }
 
 @test "assess-documentation.sh: _append_doc_drift_entry is defined as a function" {

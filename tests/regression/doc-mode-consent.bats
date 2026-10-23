@@ -100,6 +100,23 @@ teardown() {
   [[ "$output" == *"1"* ]]
 }
 
+@test "record_doc_mode off writes RITE_DOC_MODE=off; an unknown mode is rejected" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    record_doc_mode off
+    grep '^RITE_DOC_MODE=' '$RITE_PROJECT_ROOT/.rite/config'
+    record_doc_mode bogus || echo rejected
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'RITE_DOC_MODE="off"'* ]]
+  [[ "$output" == *"rejected"* ]]
+}
+
 @test "record_doc_mode is idempotent: two calls leave exactly one RITE_DOC_MODE= line" {
   run bash -c "
     set -euo pipefail
@@ -162,7 +179,7 @@ teardown() {
     export RITE_DOC_MODE=sync
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
     ensure_doc_mode
-    echo \"mode=\$RITE_DOC_MODE\"
+    echo \"mode=\${RITE_DOC_MODE:-}\"
   "
   [ "$status" -eq 0 ]
   [[ "$output" == *"mode=sync"* ]]
@@ -174,7 +191,7 @@ teardown() {
 # ensure_doc_mode: non-TTY context → session-only changelog, no config write
 # ---------------------------------------------------------------------------
 
-@test "ensure_doc_mode in non-TTY uses session-only changelog and does not write config" {
+@test "ensure_doc_mode in non-TTY records nothing and leaves the repo opted out" {
   # Redirect stdin from /dev/null to make [ -t 0 ] return false (no TTY)
   run bash -c "
     set -euo pipefail
@@ -186,15 +203,19 @@ teardown() {
     export BATCH_MODE=false
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
     ensure_doc_mode
-    echo \"mode=\$RITE_DOC_MODE\"
+    echo \"mode=\${RITE_DOC_MODE:-}\"
   " < /dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" == *"mode=changelog"* ]]
+  # Opt-in: an unattended run must not opt the repo in (it used to default the
+  # session to changelog, which recorded a drift entry on every merge).
+  [[ "$output" == *"mode="* ]]
+  [[ "$output" != *"mode=changelog"* ]]
+  [[ "$output" != *"mode=sync"* ]]
   # Config must NOT have a RITE_DOC_MODE= line written (session-only)
   [ "$(grep -c '^RITE_DOC_MODE=' "$RITE_PROJECT_ROOT/.rite/config" || true)" -eq 0 ]
 }
 
-@test "ensure_doc_mode in batch (BATCH_MODE=true) uses session-only changelog and does not write config" {
+@test "ensure_doc_mode in batch (BATCH_MODE=true) records nothing and leaves the repo opted out" {
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
@@ -205,14 +226,18 @@ teardown() {
     export BATCH_MODE=true
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
     ensure_doc_mode
-    echo \"mode=\$RITE_DOC_MODE\"
+    echo \"mode=\${RITE_DOC_MODE:-}\"
   " < /dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" == *"mode=changelog"* ]]
+  # Opt-in: an unattended run must not opt the repo in (it used to default the
+  # session to changelog, which recorded a drift entry on every merge).
+  [[ "$output" == *"mode="* ]]
+  [[ "$output" != *"mode=changelog"* ]]
+  [[ "$output" != *"mode=sync"* ]]
   [ "$(grep -c '^RITE_DOC_MODE=' "$RITE_PROJECT_ROOT/.rite/config" || true)" -eq 0 ]
 }
 
-@test "ensure_doc_mode in unsupervised mode uses session-only changelog and does not write config" {
+@test "ensure_doc_mode in unsupervised mode records nothing and leaves the repo opted out" {
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
@@ -223,10 +248,14 @@ teardown() {
     export BATCH_MODE=false
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
     ensure_doc_mode
-    echo \"mode=\$RITE_DOC_MODE\"
+    echo \"mode=\${RITE_DOC_MODE:-}\"
   " < /dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" == *"mode=changelog"* ]]
+  # Opt-in: an unattended run must not opt the repo in (it used to default the
+  # session to changelog, which recorded a drift entry on every merge).
+  [[ "$output" == *"mode="* ]]
+  [[ "$output" != *"mode=changelog"* ]]
+  [[ "$output" != *"mode=sync"* ]]
   [ "$(grep -c '^RITE_DOC_MODE=' "$RITE_PROJECT_ROOT/.rite/config" || true)" -eq 0 ]
 }
 
@@ -236,9 +265,12 @@ teardown() {
 
 @test "bin/rite init block contains the consent question text" {
   # Structural: exact question wording is an invariant (acceptance criteria)
-  count=$(grep -c "May sharkrite update files in docs/ when code changes make them inaccurate" \
+  count=$(grep -c "Track doc drift for this repo? \[y/N\]" \
     "$RITE_REPO_ROOT/bin/rite" || true)
   [ "$count" -ge 1 ]
+  # Docs are never edited automatically — the prompt must not promise it
+  run grep -c "May sharkrite update files in docs/" "$RITE_REPO_ROOT/bin/rite"
+  [ "$output" = "0" ]
 }
 
 @test "bin/rite init block calls docs_map_build" {

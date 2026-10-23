@@ -759,19 +759,29 @@ the fix loop (`phase_spawn_doc_assessment`) and waits for it before merge
    `reconcile_tag_index`, `commit_catalog_files`. Deterministic, except the
    tag-dedup similarity/coverage checks in `reconcile_tag_index`, which call the
    `doc_assessment` model only when a PR declares new tags.
-2. **User project docs (opt-in)** — with `.rite/doc-sync.md`, one assessment
-   call then one update call per doc needing changes, committed to the feature
-   branch so they ride the squash merge. In changelog mode
-   (`RITE_DOC_MODE=changelog`, no doc-sync.md) it appends one drift-log entry
-   instead.
+2. **Drift recording (opt-in)** — when doc consent is recorded
+   (`RITE_DOC_MODE=sync|changelog`), one drift-log entry per merge. Never edits
+   the user's docs. Unset or `off` records nothing; unattended runs never opt a
+   repo in (`ensure_doc_mode` only asks in supervised interactive runs).
 
 **Retired 2026-10-21:** the internal `.rite/docs/` layer — four parallel
 sub-assessments (changelog/security/architecture/api) plus keyword-triggered
 ADRs, a reconcile pass, cross-doc validation, and the `bootstrap-docs.sh`
 first-run bootstrap. Nothing read its output, and it cost ~5 min and ~100k
-tokens per merge plus a 5–6 min bootstrap on a repo's first issue. See
-"Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On Demand"
-below.
+tokens per merge plus a 5–6 min bootstrap on a repo's first issue.
+
+**Retired 2026-10-21, same day:** the per-merge doc-sync rewrite
+(`.rite/doc-sync.md`). It edited the user's docs on every merge with no approval
+step, and saved the model's full response — stderr included — as the file. In
+orrery (PRs #14/#15/#17) that put Claude CLI permission warnings with local
+paths, the model's narration and a wrapping ```` ```markdown ```` fence into the
+README on main. Also gone with it: the `gh pr diff` fetch (its only consumer)
+and the per-merge `provider_validate_cli` health prompt. And the unattended
+fallback that defaulted an unconsented repo to changelog mode — it had recorded
+74 unreviewed entries, each with a model call, in sharkrite's own drift log.
+
+See "Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On
+Demand" below.
 
 ### Model Selection Per Task
 
@@ -782,7 +792,7 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 | Code review (`local-review.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
 | Finding assessment (`assess-review-issues.sh`) | Classifying each review finding into ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED | `RITE_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Three-state classification of already-structured findings — not the reasoning that generated them. Before #1187 it inherited the review model from the review marker, so pinning review to fable-5 silently ran every assessment (the highest-count LLM call in the loop) on fable too |
 | Issue planning (`plan-issues.sh`) | Generating GitHub issues from ADRs / architectural docs | `RITE_PLAN_MODEL` (default: `claude-opus-4-8`) | Highest-stakes reasoning stage — it must honor ADRs and never hallucinate fixtures. Kept on opus, but with its OWN var so it can't silently ride (or downgrade with) review |
-| Doc assessment (`assess-documentation.sh` Layer 2, `rite docs`, tag dedup) | "Did this diff change what doc X says? Propose the edit." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
+| Doc assessment (`assess-documentation.sh` drift entries, `rite docs`, tag dedup) | "Did this diff change what doc X says? Propose the edit." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
 | Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
 | Triage / classify (`triage-classify.sh`, doc auto-discovery in `bin/rite`) | Trivial-vs-substantive diff; doc categorization | `RITE_TRIAGE_MODEL` (default: `claude-haiku-4-5`) | Narrow bucket classification — haiku's job, not opus's |
 
@@ -2430,6 +2440,11 @@ nor changes it.
   The interim `RITE_DOC_ASSESSMENT_TIMEOUT=1` did not stop the work — it killed
   only the parent script, and the backgrounded sub-assessments kept running and
   spending tokens — which is why retirement went first.
+- **Done 2026-10-21:** the per-merge doc-sync rewrite (`.rite/doc-sync.md`,
+  `templates/doc-sync.md.example`) is deleted; `RITE_DOC_MODE` no longer depends
+  on that file and gains `off`. No-consent now records nothing. Interim meaning
+  until `align-docs` owns enable/disable: `sync` = record drift per merge and
+  reconcile through `rite docs`; `changelog` = legacy, record only.
 - `docs/sharkrite-drift-log.md` (global, free-form) converts to per-doc,
   per-branch entries with the schema above on the first `align-docs`.
 

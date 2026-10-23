@@ -126,7 +126,7 @@ teardown() {
 # _docs_resolve_state unit tests — state logic only, no LLM calls
 # ---------------------------------------------------------------------------
 
-@test "_docs_resolve_state: no doc-sync.md and no RITE_DOC_MODE → never-run" {
+@test "_docs_resolve_state: no RITE_DOC_MODE → never-run" {
   run bash -c "
     set -euo pipefail
     export RITE_LIB_DIR='$PROJECT_ROOT/lib'
@@ -140,18 +140,33 @@ teardown() {
   [ "$output" = "never-run" ]
 }
 
-@test "_docs_resolve_state: .rite/doc-sync.md present → sync" {
+@test "_docs_resolve_state: a leftover .rite/doc-sync.md is ignored (retired switch)" {
   touch "$FAKE_PROJECT/.rite/doc-sync.md"
   run bash -c "
     set -euo pipefail
     export RITE_LIB_DIR='$PROJECT_ROOT/lib'
     export RITE_PROJECT_ROOT='$FAKE_PROJECT'
     export RITE_DATA_DIR='.rite'
+    unset RITE_DOC_MODE 2>/dev/null || true
     source '$PROJECT_ROOT/lib/core/docs-command.sh'
     _docs_resolve_state
   "
   [ "$status" -eq 0 ]
-  [ "$output" = "sync" ]
+  [ "$output" = "never-run" ]
+}
+
+@test "_docs_resolve_state: RITE_DOC_MODE=off → never-run (asks again, like first time)" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='$PROJECT_ROOT/lib'
+    export RITE_PROJECT_ROOT='$FAKE_PROJECT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_DOC_MODE='off'
+    source '$PROJECT_ROOT/lib/core/docs-command.sh'
+    _docs_resolve_state
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "never-run" ]
 }
 
 @test "_docs_resolve_state: RITE_DOC_MODE=changelog and no file → changelog" {
@@ -168,7 +183,7 @@ teardown() {
   [ "$output" = "changelog" ]
 }
 
-@test "_docs_resolve_state: RITE_DOC_MODE=sync but no file → mismatch" {
+@test "_docs_resolve_state: RITE_DOC_MODE=sync → sync (no doc-sync.md needed)" {
   run bash -c "
     set -euo pipefail
     export RITE_LIB_DIR='$PROJECT_ROOT/lib'
@@ -179,7 +194,7 @@ teardown() {
     _docs_resolve_state
   "
   [ "$status" -eq 0 ]
-  [ "$output" = "mismatch" ]
+  [ "$output" = "sync" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -187,7 +202,7 @@ teardown() {
 # All tests run with < /dev/null so prompts take the default-no branch.
 # ---------------------------------------------------------------------------
 
-@test "never-run + non-TTY (consent-no branch) records changelog mode" {
+@test "never-run + non-TTY (consent-no branch) records off" {
   # Explicitly clear RITE_DOC_MODE: the gate runs bats in a shell that may have
   # RITE_DOC_MODE=changelog exported (set by ensure_doc_mode in workflow-runner),
   # which would redirect to the audit path and never call record_doc_mode.
@@ -200,7 +215,7 @@ teardown() {
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]
   [ -f "$FAKE_PROJECT/.rite/state/recorded-mode.log" ]
-  grep -q "changelog" "$FAKE_PROJECT/.rite/state/recorded-mode.log"
+  grep -qx "off" "$FAKE_PROJECT/.rite/state/recorded-mode.log"
 }
 
 @test "never-run + non-TTY consent-no branch builds docs map" {
@@ -286,18 +301,6 @@ teardown() {
     RITE_DATA_DIR=".rite" \
     RITE_DOC_MODE="changelog" \
     RITE_DOCS_MAP_AUTO="false" \
-    RITE_LOG_AUTO=false \
-    bash "$_DOCS_HELPER" < /dev/null 2>&1
-  [ "$status" -ne 0 ]
-}
-
-@test "self-heal: RITE_DOC_MODE=sync + no doc-sync.md + non-TTY exits 1" {
-  # Mismatch state: mode=sync but file absent; non-TTY declines the re-scaffold prompt
-  run env \
-    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
-    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
-    RITE_DATA_DIR=".rite" \
-    RITE_DOC_MODE="sync" \
     RITE_LOG_AUTO=false \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -ne 0 ]

@@ -153,38 +153,15 @@ See [config/project.conf.example](config/project.conf.example) for all options, 
 
 ---
 
-## Keeping your project docs in sync
+## Keeping your project docs accurate
 
-After each merge, Sharkrite runs a post-merge doc assessment (Layer 2). By default this phase is a no-op — it only activates when `.rite/doc-sync.md` exists in your repo.
+Sharkrite never edits your docs on its own. Doc drift tracking is opt-in:
 
-### What Layer 2 does
+- **Turn it on** with `rite docs` (or answer `y` at `rite --init`). Each merge then records a drift entry naming the docs the change may have made inaccurate.
+- **Review it** with `rite docs`: it audits drift and proposes fixes one at a time — approve, skip, or give feedback. Approved edits land as a docs PR for human review.
+- **Directed updates:** `rite docs "<instructions>"` proposes specific edits or new docs through the same approval loop.
 
-When `.rite/doc-sync.md` is present, Sharkrite reads it as free-form instructions and passes them to Claude alongside the PR diff. Claude then decides which of your project's docs (README, CHANGELOG, API reference, etc.) need updating and applies them. Without the file, the phase exits silently.
-
-### Opt in
-
-1. Run `rite --init` — this places an inactive example at `.rite/doc-sync.md.example`
-2. Copy it to activate:
-   ```bash
-   cp .rite/doc-sync.md.example .rite/doc-sync.md
-   ```
-3. Edit `.rite/doc-sync.md` to match your project's conventions
-
-### Example rules
-
-```markdown
-## Routing / API surface
-When a file under routers/ changes, update the README API section.
-
-## Breaking changes
-When a public function is removed or renamed, append a dated entry
-to CHANGELOG.md under the [Unreleased] heading.
-
-## What to skip
-Do not update docs/architecture/ — maintained by hand.
-```
-
-The file is free-form markdown. Write it as instructions to a developer who knows your codebase. The more specific the rules, the more accurate the updates.
+Merges always update sharkrite's own catalogs (`docs/architecture/conventions.md`, `tag-index.md`) from PR-body markers; that needs no consent.
 
 ---
 
