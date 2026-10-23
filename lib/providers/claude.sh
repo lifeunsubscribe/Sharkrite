@@ -182,6 +182,26 @@ claude_provider_run_agentic_session() {
     rm -f "$_prompt_file"
   fi
 
+  # Terminate the session's last line.
+  #
+  # Both stream filters use `jq -j` (join, emit NO newlines) so that the model's
+  # text chunks concatenate into continuous prose instead of one line per chunk.
+  # The cost is that the final chunk leaves the cursor mid-line, and every
+  # workflow message printed after the session — "❌ Conflict markers remain
+  # in: …", "❌ Claude usage cap reached during fix session — aborting batch",
+  # phase headers — starts flush against the session's own text, e.g.
+  #   ...do a final read-through of all modified files.❌ Claude usage cap reached
+  # Emit the missing newline here, once, at the single point where every agentic
+  # session ends. All five call sites stream to the terminal (none capture this
+  # function's stdout), so this is display-only.
+  #
+  # Guarded on an assistant event rather than emitted unconditionally: the
+  # colored filter renders ONLY assistant text and tool names, so a capture with
+  # no assistant event produced no visible output and needs no terminator.
+  if grep -q '"type"[[:space:]]*:[[:space:]]*"assistant"' "$_stdout_capture" 2>/dev/null; then
+    printf '\n'
+  fi
+
   # Detect usage-cap exhaustion in stdout or stderr. Live phrasings observed:
   #   - "Spending cap reached resets 11:20pm"      (claude --print on stdout)
   #   - "5-hour limit reached"                     (rate-limit variant)
@@ -192,23 +212,53 @@ claude_provider_run_agentic_session() {
   # rest of the batch instead of cascading the cap across the remaining
   # issues at ~40s wasted per issue. See: lib/core/batch-process-issues.sh
   # exit-5 handler.
-  if [ "$_exit_code" -ne 0 ] && \
-     grep -qiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|hit your (session|usage|weekly) limit|session limit reached" \
-       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
-    _exit_code=5
-  # Exit-0 cap (issue #1121, live 2026-10-11): in --print --output-format
-  # stream-json mode the CLI prints the session-limit notice and exits 0, so
-  # the nonzero guard above never fires and the cap cascades across the batch
-  # as generic no-change failures (the exact outcome #1108 was built to stop).
-  # Convert 0 -> 5 ONLY on a line-anchored bare-line match: every legitimate
-  # transcript line in stream-json is a JSON object starting with "{", so a
-  # cap phrase at column 0 can only be the CLI's own out-of-envelope notice.
-  # A substring match here would false-abort any dev session whose transcript
-  # merely CONTAINS the phrase (e.g. sessions editing this detection or its
-  # tests, which embed the literal string).
-  elif [ "$_exit_code" -eq 0 ] && \
-     grep -qiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" \
-       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+  #
+  # The scan is PER CHANNEL, because the two channels admit different evidence:
+  #
+  #   stdout is stream-json. Every legitimate line is a JSON object starting
+  #   with "{", so the CLI's cap notice can only appear OUT of the envelope at
+  #   column 0 — hence the line anchor. A substring scan of stdout matches the
+  #   phrase anywhere INSIDE the envelope too, including tool_use inputs and
+  #   tool_result bodies, which the colored stream filter never renders. Seven
+  #   files in this repo contain these phrases (cap-resume-manifest.bats,
+  #   batch-auth-halt.bats, this file, claude-workflow.sh, date-helpers.sh,
+  #   docs/troubleshooting.md, behavioral-design.md), so a session that merely
+  #   READS one of them smuggles the phrase into the capture.
+  #
+  #   stderr is plain text — CLI diagnostics only, never model prose or tool
+  #   results — so a substring match there is the CLI speaking. The exit-0
+  #   case still requires the anchor (the #1121 contract, unchanged).
+  #
+  # Live false positive this closes: issue #1169, run rite-1169-20261020-131813.
+  # The fix session was blocked from filing an issue (deny hook), exited
+  # non-zero, and the unanchored stdout scan converted that into exit 5. The
+  # batch aborted reporting a usage cap while the log contained no cap notice
+  # at all — and the conversion was silent, so there was nothing to inspect.
+  # Declared separately from the assignments below: SC2155 is enforced, and a
+  # `local x=$(cmd)` masks cmd's exit status under set -e.
+  local _cap_re_anchored _cap_re_text _cap_src _cap_hit
+  _cap_re_anchored="^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)"
+  _cap_re_text="spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|hit your (session|usage|weekly) limit|session limit reached"
+  _cap_src=""
+  _cap_hit=$(grep -ioEm1 "$_cap_re_anchored" "$_stdout_capture" 2>/dev/null || true)
+  [ -n "$_cap_hit" ] && _cap_src="stdout"
+  if [ -z "$_cap_hit" ] && [ -s "$stderr_file" ]; then
+    if [ "$_exit_code" -ne 0 ]; then
+      _cap_hit=$(grep -ioEm1 "$_cap_re_text" "$stderr_file" 2>/dev/null || true)
+    else
+      _cap_hit=$(grep -ioEm1 "$_cap_re_anchored" "$stderr_file" 2>/dev/null || true)
+    fi
+    [ -n "$_cap_hit" ] && _cap_src="stderr"
+  fi
+
+  if [ -n "$_cap_hit" ]; then
+    # Record WHAT matched and WHERE. The conversion used to be silent, which is
+    # why #1169 took a log forensics pass to even suspect: the matched text
+    # lived in a temp file the log never saw, so a false positive and a real cap
+    # were indistinguishable after the fact.
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "CAP_DETECTED source=${_cap_src} exit=${_exit_code} phrase=${_cap_hit}"
+    fi
     _exit_code=5
   # Detect provider auth failure in stdout or stderr. Live phrasings observed
   # (Pilot 2026-07-05/06, rite-855-871-872 batch):
