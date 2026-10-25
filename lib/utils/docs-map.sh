@@ -39,6 +39,9 @@
 #                                full rebuild would clobber those audit records)
 #   docs_map_enforcing_tests   — parse <!-- sharkrite-enforced-by: ... --> markers from a doc
 #                                file; echo each declared test path on its own line
+#   docs_map_adr_links         — extract inline markdown links from an ADR, resolve relative
+#                                paths against the ADR's directory, and emit the subset that
+#                                appears in the docs map — one per line, deduplicated
 #
 # Configuration:
 #   RITE_DOCS_MAP_AUTO  (default: true) — set to "false" to suppress auto-rebuild
@@ -504,5 +507,82 @@ docs_map_enforcing_tests() {
       esac
     done < <(printf '%s\n' "$_value" | tr ',' '\n' || true)
   done < <(grep -E "<!--[[:space:]]*${_marker}:[^>]*[^[:space:]]+\.bats[^>]*-->" "$doc_path" 2>/dev/null || true)
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# docs_map_adr_links ADR_PATH
+#
+# Extract inline markdown links ([text](url)) from ADR_PATH, resolve relative
+# paths against the ADR's directory, and emit the subset whose resolved paths
+# appear as file_path entries in the docs map — one per line, deduplicated.
+#
+# External URLs (http/https/ftp/mailto), anchor-only links (#...), and links
+# that resolve to files not in the map (code files, unknown paths) are excluded.
+# URL fragments are stripped before resolution (foo.md#section → foo.md).
+# Links inside fenced code blocks (``` ... ```) are excluded.
+#
+# ADR_PATH may be absolute or project-relative. Returns 0 with empty output
+# when the ADR has no in-map links, the ADR file does not exist, or the
+# docs map is absent. No LLM calls.
+# ---------------------------------------------------------------------------
+docs_map_adr_links() {
+  local adr_path="$1"
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+
+  case "$adr_path" in
+    /*) ;;
+    *) adr_path="${project_root}/${adr_path}" ;;
+  esac
+
+  [ -f "$adr_path" ] || return 0
+
+  local adr_dir
+  adr_dir="$(dirname "$adr_path")"
+
+  local map_file
+  map_file="$(docs_map_path)"
+  [ -f "$map_file" ] || return 0
+
+  # Read all in-map file paths once (skip the comment header line, first col only).
+  local _map_paths
+  _map_paths="$(awk -F'\t' 'NR>1{print $1}' "$map_file" 2>/dev/null || true)"
+
+  local _raw _link_no_frag _resolved _abs_dir _rel_path _emitted=""
+  while IFS= read -r _raw; do
+    # Skip external URLs and anchor-only links — not in-map by definition.
+    case "$_raw" in
+      http://* | https://* | ftp://* | mailto:* | '//'* | '#'*) continue ;;
+    esac
+
+    # Strip URL fragment (e.g. docs/foo.md#section → docs/foo.md).
+    _link_no_frag="${_raw%%#*}"
+    [ -n "$_link_no_frag" ] || continue
+
+    # Resolve to absolute path.
+    case "$_link_no_frag" in
+      /*) _resolved="${project_root}${_link_no_frag}" ;;
+      *)  _resolved="${adr_dir}/${_link_no_frag}" ;;
+    esac
+
+    # Normalize via cd/pwd to resolve ../ and ./ components.
+    _abs_dir="$(cd "$(dirname "$_resolved")" 2>/dev/null && pwd)" || continue
+    _resolved="${_abs_dir}/$(basename "$_resolved")"
+
+    # Convert to project-relative path.
+    _rel_path="${_resolved#"${project_root}/"}"
+
+    # Emit only if in the docs map and not already emitted (dedup).
+    if printf '%s\n' "$_map_paths" | grep -qxF "$_rel_path" 2>/dev/null; then
+      if ! printf '%s\n' "$_emitted" | grep -qxF "$_rel_path" 2>/dev/null; then
+        printf '%s\n' "$_rel_path"
+        _emitted="${_emitted}${_rel_path}
+"
+      fi
+    fi
+  done < <(awk '/^```/{skip=!skip; next} !skip' "$adr_path" 2>/dev/null | \
+           grep -oE '\[[^]]*\]\([^)]+\)' 2>/dev/null | \
+           sed 's/^.*](//;s/)$//' 2>/dev/null || true)
+
   return 0
 }
