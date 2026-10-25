@@ -242,6 +242,7 @@ teardown() {
   verify_post_merge() { return 0; }
 
   # ── Run sync_issue_branch ─────────────────────────────────────────────────
+  export RITE_LOG_FILE="$BATS_TEST_TMPDIR/diag.log"
   local _rc=0
   sync_issue_branch "888" || _rc=$?
 
@@ -256,6 +257,9 @@ teardown() {
 
   # conflicting-file.txt MUST appear (was scoped-staged via _RITE_RESOLVER_CONFLICT_PATHS)
   [[ "$_last_commit_files" == *"conflicting-file.txt"* ]]
+
+  # Diag must be emitted for the resolver-resolved path (the issue's core deliverable)
+  grep -q "SYNC_ISSUE.*outcome=resolved" "$RITE_LOG_FILE"
 }
 
 # ---------------------------------------------------------------------------
