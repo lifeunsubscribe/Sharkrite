@@ -60,3 +60,11 @@
 
 
 
+
+## DO
+- conventions.md → Lint-rule bats tests must scope to their rule
+- conventions.md → Variable-sentinel re-source guards for lib files that export -f
+- conventions.md → grep-c-output-vs-exit-code
+- conventions.md → structured-header-matching
+- conventions.md → defensive-sourcing-must-be-idempotent
+
