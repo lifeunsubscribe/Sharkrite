@@ -563,8 +563,16 @@ run_test_gate() {
     # Note: RITE_TEST_GATE_SKIP_TRIGGERS is consumed by the gate itself BEFORE
     # the bats invocation (selection phase); scrubbing it from the child env
     # does not change gate-selection behavior.
+    # Batch session identity (SESSION_STATE_FILE, RITE_BATCH_ID, BATCH_MODE,
+    # SESSION_START_TIME) is scrubbed too: a test that runs batch-process-issues.sh
+    # inherited the live batch's RITE_BATCH_ID, re-derived the live session file,
+    # reset it in init_session, and deleted it in the _cleanup_batch_session EXIT
+    # trap. Live: batch 1338 (2026-10-24) — #1333's gate ran the batch tests and
+    # the batch's overall clock restarted mid-run ("Duration: 3s", mode flipped
+    # to supervised, ~26 min of cumulative work lost from the session-hours cap).
     # Applied by _bats_sandbox below; also dynamic-scoped into _gate_flake_retry_pass.
     local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
+      -u SESSION_STATE_FILE -u RITE_BATCH_ID -u BATCH_MODE -u SESSION_START_TIME \
       -u RITE_TARGET_BRANCH -u RITE_TEST_GATE_SKIP_TRIGGERS \
       -u RITE_STALE_BRANCH_THRESHOLD -u RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
       -u RITE_ACCEPT_RED_MAIN \
