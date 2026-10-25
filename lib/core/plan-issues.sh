@@ -1611,11 +1611,14 @@ _transform_dep_line() {
   _tdl_content=$(_strip_par_ref "$_tdl_content" "$_tdl_par_ref")
 
   # Step 2: add After #N if not already present.
-  # Match any #N word-boundary occurrence — bare refs (#N without "After ") already
-  # encode the dep edge (Step 1 has removed #N from par annotations, so any survivor
-  # is a genuine dep). Matching only "After #N" missed bare refs and produced duplicates
-  # (orrery round 6: "After #8, ..., #8"). Suffix ([^0-9]|$) prevents #8 matching #80.
-  if ! echo "$_tdl_content" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
+  # Strip all parenthetical groups before the presence check — a #N token inside
+  # any paren group (canonical "can run in parallel with #N" that Step 1 missed,
+  # or non-canonical "parallel with #N", "(note: #N)", etc.) is a scheduling
+  # annotation, not a dep edge.  Genuine dep edges (After #N, bare #N) always
+  # appear outside parens.  Suffix ([^0-9]|$) prevents #8 matching #80.
+  local _tdl_check
+  _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*)//g' || true)
+  if ! echo "$_tdl_check" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
         # Replace "None" keyword with the After tag, preserving trailing content
