@@ -4093,6 +4093,141 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Check 8 H8f — 4-of-4 distinctive duplicate: a command shared by ALL 4 issues
+# on a 4-issue slate reaches freq=4 (≥ _VERIF_UNIV_THRESHOLD=3) AND
+# _issue_count=4 (≥ _VERIF_UNIV_MIN_SLATE=4), so the frequency exemption fires
+# silently — NO duplicate-verification WARNING.  This is the deliberate boundary:
+# the min-slate floor protects slates ≤3; on slates ≥4 freq==slate-size is
+# accepted as a universal CI gate.  This test pins that boundary so future
+# reviewers have a record of the deliberate decision rather than re-opening it
+# as an unfixed sibling of the 3-of-3 case.
+# ---------------------------------------------------------------------------
+
+@test "Check 8 H8f: distinctive command shared by all 4 issues on a 4-issue slate — no warning (deliberate boundary)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-4of4-distinctive.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Migrate widget A to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget A to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_a.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget A migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget B to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget B to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_b.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget B migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget C to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget C to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_c.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget C migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget D to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget D to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_d.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget D migration passes validation.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # All 4 issues share a distinctive command — freq=4 ≥ threshold=3 AND
+  # slate=4 ≥ min_slate=4, so the frequency exemption fires.  No warning expected.
+  if grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out"; then
+    echo "FAIL: unexpected duplicate-verification WARNING for 4-of-4 on a 4-issue slate (freq exemption should fire)" >&2
+    cat "$stderr_out" >&2
+    false
+  fi
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Regression: Check 4 receives single-token backtick paths from acceptance criteria
 #
 # A single-token backtick entry (no space) in acceptance criteria — e.g.
