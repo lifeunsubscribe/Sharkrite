@@ -5743,9 +5743,11 @@ FIXTURE
     false
   }
 
-  # Must contain exactly one #8 reference outside the original paren group
-  # (the added After #8 is outside parens; the original annotation may remain
-  # since _autochain_remove_par_annotation handles annotation cleanup separately)
+  # Must contain exactly one #8 reference outside paren groups.
+  # Step 2 strips only parallel-worded parens before the presence check, so
+  # a non-canonical annotation like "(parallel with #8)" is excluded from the
+  # presence check but NOT removed from the output — only the canonical
+  # "can run in parallel with" phrase is cleaned by _strip_par_ref in Step 1.
   local after_count
   after_count=$(printf '%s\n' "$result" | grep -oE 'After #8([^0-9]|$)' | wc -l || true)
   [ "$after_count" -eq 1 ] || {
