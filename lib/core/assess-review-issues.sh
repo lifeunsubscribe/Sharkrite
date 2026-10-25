@@ -58,6 +58,7 @@ source "$RITE_LIB_DIR/utils/labels.sh"
 source "$RITE_LIB_DIR/utils/sanitize-output.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
+source "$RITE_LIB_DIR/utils/review-helper.sh"
 # issue-lock.sh: provides derive_followup_finding_key and write_followup_evidence
 # used to seed the local-evidence oracle (Source 1) for each ACTIONABLE_LATER finding.
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
@@ -158,121 +159,9 @@ ASSESSMENT_JSON_SCHEMA='{
   "required": ["items"]
 }'
 
-# =============================================================================
-# PRIOR DECISIONS LEDGER: Build context of prior assessment decisions for this PR
-# =============================================================================
-# Fetches all previous sharkrite-assessment comments for the PR and extracts
-# DISMISSED and ACTIONABLE_LATER items. Passed to the assessor so it can
-# inherit prior decisions rather than re-litigating stable findings.
-#
-# Deduplication: processes oldest-to-newest; most recent classification wins.
-# The assessor's instruction requires active justification (specific code change
-# in the relevant area) to override a prior DISMISSED decision.
-
-build_prior_decisions_ledger() {
-  local pr_number="$1"
-
-  # Fetch all sharkrite assessment comments, newest first
-  # (newest-first + skip-if-seen = latest classification wins, no declare -A needed)
-  local assessments_json _jq_all_assessments
-  _jq_all_assessments="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse"
-  assessments_json=$(gh_safe pr view "$pr_number" --json comments \
-    --jq "$_jq_all_assessments" || true)
-  assessments_json="${assessments_json:-[]}"
-
-  local count
-  count=$(echo "$assessments_json" | jq 'length' 2>/dev/null || echo "0")
-  [ "$count" -eq 0 ] && echo "" && return 0
-
-  local ledger=""
-  local seen_titles=""  # newline-separated list of titles already recorded
-  local i comment_body timestamp assessment_content changed_files
-  local _cur_title _cur_state _cur_reason
-
-  for i in $(seq 0 $((count - 1))); do
-    comment_body=$(echo "$assessments_json" | jq -r ".[$i].body" 2>/dev/null || echo "")
-    timestamp=$(echo "$assessments_json" | jq -r ".[$i].createdAt" 2>/dev/null || echo "")
-
-    # Assessment content lives after the '---' separator in the comment body
-    assessment_content=$(echo "$comment_body" | sed -n '/^---$/,$p' | tail -n +2 || true)
-    [ -z "$assessment_content" ] && continue
-
-    # Files changed since this assessment (informational — lets assessor judge relevance)
-    changed_files=""
-    if [ -n "$timestamp" ]; then
-      changed_files=$(git log --name-only --pretty=format: --after="$timestamp" HEAD 2>/dev/null \
-        | sort -u | grep -v '^$' | head -20 | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g' || true)
-    fi
-
-    # Parse DISMISSED and ACTIONABLE_LATER items via awk with structured prefix output
-    # (avoids pipe-in-data issues with IFS splitting)
-    while IFS= read -r line; do
-      case "$line" in
-        ITEM_TITLE:*) _cur_title="${line#ITEM_TITLE:}" ;;
-        ITEM_STATE:*) _cur_state="${line#ITEM_STATE:}" ;;
-        ITEM_REASON:*) _cur_reason="${line#ITEM_REASON:}" ;;
-        ITEM_END)
-          if [ -n "${_cur_title:-}" ]; then
-            # Skip if we already recorded this title (newest-first means first-seen = latest)
-            if ! printf '%s\n' "$seen_titles" | grep -qxF "$_cur_title"; then
-              seen_titles="${seen_titles}
-${_cur_title}"
-              local entry
-              entry="### ${_cur_title} - ${_cur_state}
-**Reasoning:** ${_cur_reason}
-**Classified:** ${timestamp}"
-              if [ -n "$changed_files" ]; then
-                entry="${entry}
-**Files changed since:** ${changed_files}"
-              fi
-              ledger="${ledger}${entry}
-
-"
-            fi
-          fi
-          _cur_title="" _cur_state="" _cur_reason=""
-          ;;
-      esac
-    done < <(echo "$assessment_content" | awk '
-      /^### .* - DISMISSED$/ || /^### .* - ACTIONABLE_LATER$/ {
-        if (title != "") {
-          print "ITEM_TITLE:" title
-          print "ITEM_STATE:" item_state
-          print "ITEM_REASON:" reasoning
-          print "ITEM_END"
-        }
-        line = $0; gsub(/^### /, "", line)
-        item_state = line; gsub(/^.* - /, "", item_state)
-        title = line; gsub(/ - [A-Z_]+$/, "", title)
-        reasoning = ""
-        next
-      }
-      /^### / {
-        if (title != "") {
-          print "ITEM_TITLE:" title
-          print "ITEM_STATE:" item_state
-          print "ITEM_REASON:" reasoning
-          print "ITEM_END"
-          title = ""; reasoning = ""; item_state = ""
-        }
-        next
-      }
-      title != "" && /^\*\*Reasoning:\*\*/ {
-        reasoning = $0; gsub(/^\*\*Reasoning:\*\* /, "", reasoning)
-      }
-      END {
-        if (title != "") {
-          print "ITEM_TITLE:" title
-          print "ITEM_STATE:" item_state
-          print "ITEM_REASON:" reasoning
-          print "ITEM_END"
-        }
-      }
-    ')
-  done
-
-  echo "$ledger"
-}
+# build_prior_decisions_ledger (prior DISMISSED / ACTIONABLE_LATER decisions
+# with reasoning) lives in lib/utils/review-helper.sh so local-review.sh can
+# hand the same ledger to the reviewer on fix-review passes.
 
 # =============================================================================
 # PRIOR NOW LEDGER: Build list of ACTIONABLE_NOW items from the most recent

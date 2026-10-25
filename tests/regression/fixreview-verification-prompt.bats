@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/local-review.sh
+# sharkrite-test-covers: lib/core/local-review.sh, lib/utils/review-helper.sh::build_prior_decisions_ledger
 #
 # Regression tests for issue #910 — fix-loop re-reviews were byte-identical fresh
 # audits, causing NOW count to grow instead of converge (live: PR #905, 2026-07-05).
@@ -173,4 +173,35 @@ teardown() {
       false
     }
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Prior assessment decisions reach the reviewer on fix-review passes.
+# Before: only the assessor inherited DISMISSED / ACTIONABLE_LATER decisions
+# (build_prior_decisions_ledger); the reviewer re-raised them every round and
+# the assessor re-dismissed them — a review mention plus an assessment per
+# round that converged on nothing.
+# ---------------------------------------------------------------------------
+
+@test "local-review.sh: fixreview block hands the prior-decisions ledger to the reviewer" {
+  local block
+  block=$(awk '/_prior_review_count:-0}" -ge 1 \]/{f=1} f{print} f && /^fi$/{exit}' "$LOCAL_REVIEW_SCRIPT")
+  [ -n "$block" ]
+  [[ "$block" == *'build_prior_decisions_ledger "$PR_NUMBER"'* ]]
+  # ...and only there: the first-pass prompt never fetches assessments
+  [ "$(grep -c 'build_prior_decisions_ledger' "$LOCAL_REVIEW_SCRIPT")" -eq 1 ]
+}
+
+@test "local-review.sh: fixreview prompt frames settled findings as do-not-re-raise, keyed to the fix diff" {
+  grep -q '## Prior Assessment Decisions (settled — do not re-raise)' "$LOCAL_REVIEW_SCRIPT"
+  grep -q 'do NOT re-raise them unless the fix-commit diff touches the code they concern' "$LOCAL_REVIEW_SCRIPT"
+  grep -q 'unless the$' "$LOCAL_REVIEW_SCRIPT" || grep -q 'Do NOT re-raise a DISMISSED or ACTIONABLE_LATER finding' "$LOCAL_REVIEW_SCRIPT"
+}
+
+@test "local-review.sh: the decisions section is part of FIXREVIEW_CONTEXT_SECTION and empty when there is no ledger" {
+  local block
+  block=$(awk '/FIXREVIEW_CONTEXT_SECTION="$/{f=1} f{print} f && /^\$\{_prior_decisions_section\}"$/{exit}' "$LOCAL_REVIEW_SCRIPT")
+  [ -n "$block" ]
+  [[ "$block" == *'${_prior_decisions_section}'* ]]
+  grep -q '^  _prior_decisions_section=""$' "$LOCAL_REVIEW_SCRIPT"
 }
