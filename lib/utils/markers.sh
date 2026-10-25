@@ -128,6 +128,14 @@ RITE_MARKER_TEST_COVERS="sharkrite-test-covers"
 # See: lib/utils/test-gate.sh::_bats_file_is_serial, behavioral-design.md → "Serial Gate Hint".
 RITE_MARKER_GATE_SERIAL="sharkrite-gate-serial"
 
+# Doc enforcing-tests marker — a feature doc declares which bats test files enforce it.
+# This is sharkrite-test-covers pointed the other way: the doc is the authority, not
+# the test file. The marker is the deterministic bridge for Tier 1 drift detection.
+# Format in doc: <!-- sharkrite-enforced-by: tests/regression/a.bats, tests/regression/b.bats -->
+# Multiple markers per doc are allowed. Parsed by docs_map_enforcing_tests() in docs-map.sh.
+# See: docs/architecture/behavioral-design.md → "Tests are the bridge for everything else".
+RITE_MARKER_ENFORCED_BY="sharkrite-enforced-by"
+
 # ---------------------------------------------------------------------------
 # Doc drift log marker (changelog mode — issue #1035)
 # ---------------------------------------------------------------------------

@@ -31,12 +31,14 @@
 # No consent-mode gating: builds regardless of RITE_DOC_MODE.
 #
 # Public API:
-#   docs_map_path    — echoes the absolute path to the TSV map file
-#   docs_map_build   — full rebuild; atomic write via temp file + mv;
-#                      migrates legacy .rite/state/docs-map.tsv on first run
-#   docs_map_ensure  — rebuilds when map is missing or is pre-v3 format; no-op on SHA mismatch —
-#                      cluster-B issues update last_verified_sha per-file and a
-#                      full rebuild would clobber those audit records)
+#   docs_map_path              — echoes the absolute path to the TSV map file
+#   docs_map_build             — full rebuild; atomic write via temp file + mv;
+#                                migrates legacy .rite/state/docs-map.tsv on first run
+#   docs_map_ensure            — rebuilds when map is missing or is pre-v3 format; no-op on SHA mismatch —
+#                                cluster-B issues update last_verified_sha per-file and a
+#                                full rebuild would clobber those audit records)
+#   docs_map_enforcing_tests   — parse <!-- sharkrite-enforced-by: ... --> markers from a doc
+#                                file; echo each declared test path on its own line
 #
 # Configuration:
 #   RITE_DOCS_MAP_AUTO  (default: true) — set to "false" to suppress auto-rebuild
@@ -58,6 +60,14 @@ fi
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _DOCS_MAP_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_DOCS_MAP_SELF_DIR/config.sh"
+fi
+
+# Ensure markers.sh is loaded for RITE_MARKER_ENFORCED_BY (used by docs_map_enforcing_tests).
+# Use BASH_SOURCE-relative path so this works regardless of RITE_LIB_DIR.
+if ! declare -f rite_markers_loaded >/dev/null 2>&1; then
+  _DOCS_MAP_MARKERS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  source "${_DOCS_MAP_MARKERS_DIR}/markers.sh"
+  unset _DOCS_MAP_MARKERS_DIR
 fi
 
 # ---------------------------------------------------------------------------
@@ -444,4 +454,55 @@ docs_map_ensure() {
     fi
     docs_map_build
   fi
+}
+
+# ---------------------------------------------------------------------------
+# docs_map_enforcing_tests DOC_PATH
+#
+# Parse <!-- sharkrite-enforced-by: path/a.bats, path/b.bats --> markers
+# from DOC_PATH and echo each declared test path on its own line.
+# Empty output when the doc has no markers or no path-shaped .bats tokens.
+#
+# DOC_PATH may be absolute or project-relative (resolved against RITE_PROJECT_ROOT).
+# Multiple markers per doc are accumulated; multiple comma-separated paths per
+# marker are each emitted on their own line.
+#
+# The grep is format-anchored: requires at least one [^[:space:]]+.bats token so
+# a doc that merely *documents* the marker format (no real test path) produces no
+# output. This is the #90 bare-prefix guard applied to doc-file parsing.
+# ---------------------------------------------------------------------------
+docs_map_enforcing_tests() {
+  local doc_path="$1"
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Resolve to absolute path
+  case "$doc_path" in
+    /*) ;;
+    *) doc_path="${project_root}/${doc_path}" ;;
+  esac
+
+  [ -f "$doc_path" ] || return 0
+
+  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_ENFORCED_BY is a marker constant defined in markers.sh, not a user config var; RITE_MARKER_* is the canonical prefix convention for marker constants (see markers.sh); _RITE_ prefix cannot be used; ledger is frozen per 2026-07-14 rule
+  local _marker="${RITE_MARKER_ENFORCED_BY}"
+
+  # Format-anchored grep: requires at least one [^[:space:]]+.bats token AND closing -->.
+  # Requiring --> also rejects line-wrapped markers (multi-line comments where the
+  # marker name and --> are on different lines). Per-entry case filter below rejects
+  # non-.bats tokens (e.g. N/A) that share a line with a real .bats path.
+  # The #90 bare-prefix guard applied to doc-file parsing.
+  local _matched_line _value _entry
+  while IFS= read -r _matched_line; do
+    # Extract the value between "${_marker}:" and "-->"
+    _value="${_matched_line#*${_marker}:}"
+    _value="${_value%%-->*}"
+    # Split comma-separated paths; default IFS strips leading/trailing whitespace;
+    # case filter rejects non-.bats entries (e.g. N/A, empty trailing comma slot).
+    while read -r _entry; do
+      case "$_entry" in
+        *.bats) printf '%s\n' "$_entry" ;;
+      esac
+    done < <(printf '%s\n' "$_value" | tr ',' '\n' || true)
+  done < <(grep -E "<!--[[:space:]]*${_marker}:[^>]*[^[:space:]]+\.bats[^>]*-->" "$doc_path" 2>/dev/null || true)
+  return 0
 }
