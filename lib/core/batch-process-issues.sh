@@ -561,6 +561,53 @@ _ftm_file_overlap() {
 }
 
 # ---------------------------------------------------------------------------
+# _apply_overlap_defer_or_warn
+#
+# Apply the defer-or-warn decision after _ftm_file_overlap has populated
+# _OVERLAP_FILES/_OVERLAP_WT.  When _OVERLAP_FILES is empty, returns 0
+# immediately (no overlap detected, caller proceeds).
+#
+# When overlap is detected:
+#   Below cap  → increments _DEFER_COUNT[$ISSUE_NUM], re-appends $ISSUE_NUM to
+#                ISSUE_LIST, sets ISSUE_STATUS[ISSUE_NUM]="deferred_for_overlap",
+#                prints a warning, and returns 1 (caller must `continue` the loop).
+#   Cap reached → prints a warn-in-place warning and returns 0 (caller proceeds).
+#
+# Returns:
+#   0 → no overlap, or cap exhausted → caller runs the issue in place
+#   1 → issue deferred → caller must `continue` the batch loop
+#
+# Globals read:  _OVERLAP_FILES, _OVERLAP_WT, ISSUE_NUM, _DEFER_COUNT,
+#                _UNIQUE_ISSUE_COUNT, ISSUE_LIST
+# Globals written: _DEFER_COUNT, ISSUE_LIST, ISSUE_STATUS
+# Extracted so tests can source and call it directly rather than duplicating
+# the cap comparison and ISSUE_LIST re-append logic in a heredoc fixture.
+# ---------------------------------------------------------------------------
+_apply_overlap_defer_or_warn() {
+  [ -n "${_OVERLAP_FILES:-}" ] || return 0
+
+  local _overlap_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
+  local _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+
+  if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
+    _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
+    print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+    ISSUE_LIST+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT")"
+    fi
+    return 1
+  else
+    print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT") cap_exhausted=true"
+    fi
+    return 0
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency
@@ -1373,26 +1420,11 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   _OVERLAP_FILES=""
   _OVERLAP_WT=""
   _ftm_file_overlap "$ISSUE_BODY"
-  if [ -n "${_OVERLAP_FILES:-}" ]; then
-    _overlap_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
-    _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
-    if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
-      _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
-      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
-      ISSUE_LIST+=("$ISSUE_NUM")
-      ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
-      if declare -f _diag >/dev/null 2>&1; then
-        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT")"
-      fi
-      echo ""
-      _gate_consec_count=0; _gate_consec_sig=""
-      continue
-    else
-      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
-      if declare -f _diag >/dev/null 2>&1; then
-        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT") cap_exhausted=true"
-      fi
-    fi
+  _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=$?
+  if [ "$_overlap_action_rc" -ne 0 ]; then
+    echo ""
+    _gate_consec_count=0; _gate_consec_sig=""
+    continue
   fi
 
   # Check if issue is actively being worked on (worktree exists with a running rite/claude process)
