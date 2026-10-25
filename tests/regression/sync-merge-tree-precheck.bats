@@ -84,7 +84,8 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "sync_issue_branch: behind-but-clean branch → outcome=current, HEAD unchanged" {
   # Skip if git does not support merge-tree --write-tree (requires git ≥ 2.38).
-  git merge-tree --write-tree HEAD HEAD >/dev/null 2>&1 || skip "git merge-tree --write-tree not supported"
+  # Must probe inside a real git repo — a bare tmpdir exits 128 regardless of version.
+  git -C "$RITE_REPO_ROOT" merge-tree --write-tree HEAD HEAD >/dev/null 2>&1 || skip "git merge-tree --write-tree not supported"
 
   # ── Set up local git fixture ──────────────────────────────────────────────
   local BARE_REMOTE FIXTURE_REPO
@@ -171,7 +172,8 @@ teardown() {
 # file, leaving the untracked bystander.txt out of the commit.
 # ---------------------------------------------------------------------------
 @test "sync_issue_branch: conflict resolver invoked in parent shell, bystander not committed, outcome=synced" {
-  git merge-tree --write-tree HEAD HEAD >/dev/null 2>&1 || skip "git merge-tree --write-tree not supported"
+  # Must probe inside a real git repo — a bare tmpdir exits 128 regardless of version.
+  git -C "$RITE_REPO_ROOT" merge-tree --write-tree HEAD HEAD >/dev/null 2>&1 || skip "git merge-tree --write-tree not supported"
 
   # ── Set up local git fixture ──────────────────────────────────────────────
   local BARE_REMOTE FIXTURE_REPO
