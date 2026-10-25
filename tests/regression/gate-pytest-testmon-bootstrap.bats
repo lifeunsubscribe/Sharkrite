@@ -142,3 +142,16 @@ _make_venv_stub() {
 
   [ -z "$_RITE_PYTEST_VENV_PYTHON" ]
 }
+
+@test "fresh install (pip exit 0) exposes venv python path in _RITE_PYTEST_VENV_PYTHON" {
+  # Fresh-install re-probe path (gate-runners.sh:535): venv exists but testmon
+  # not yet installed; pip succeeds; re-probe confirms importable.
+  # Uses a direct call (not run) so _RITE_PYTEST_VENV_PYTHON mutation is visible.
+  _make_venv_stub "$FIXTURE_DIR" ".venv" 0
+  # No marker pre-created — first probe will fail, triggering pip install.
+  _RITE_PYTEST_VENV_PYTHON=""
+
+  _provision_pytest_testmon "$FIXTURE_DIR" /dev/null
+
+  [ "$_RITE_PYTEST_VENV_PYTHON" = "$FIXTURE_DIR/.venv/bin/python" ]
+}
