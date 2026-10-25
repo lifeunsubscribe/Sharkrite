@@ -1,6 +1,9 @@
-# Tag Index System (PROPOSAL)
+# Tag Index System
 
-**Status:** design — not yet implemented.
+**Status:** partially implemented — tags/note columns live in `docs/docs-map.tsv` (the single tag store);
+`docs/architecture/tag-index.md` is a generated view rendered from the map by `docs_map_render_tag_index`.
+See `lib/utils/docs-map.sh` for the map format and `lib/core/assess-documentation.sh::reconcile_tag_index`
+for how coverage-check writes flow through the map.
 
 ## Purpose
 
