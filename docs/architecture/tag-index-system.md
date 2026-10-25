@@ -1,7 +1,9 @@
 # Tag Index System
 
-**Status:** partially implemented — tags/note columns live in `docs/docs-map.tsv` (the single tag store);
-`docs/architecture/tag-index.md` is a generated view rendered from the map by `docs_map_render_tag_index`.
+**Status:** partially implemented — tags/note columns live in `docs/docs-map.tsv` as the primary store;
+`docs/architecture/tag-index.md` is updated by `docs_map_render_tag_index` via an additive merge (new
+entries from the map are added; existing entries are preserved and never pruned). `update_tag_index_from_block`
+still writes directly to `tag-index.md` for convention-block entries that predate map absorption.
 See `lib/utils/docs-map.sh` for the map format and `lib/core/assess-documentation.sh::reconcile_tag_index`
 for how coverage-check writes flow through the map.
 

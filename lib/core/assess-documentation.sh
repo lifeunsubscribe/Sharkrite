@@ -910,8 +910,12 @@ COVERAGE_EOF
             # Absorption: write tag data into the map (single store) rather than
             # directly into tag-index.md. docs_map_render_tag_index renders
             # tag-index.md from the map after all coverage writes complete.
-            docs_map_tag_section_by_pointer "$_cov_target" "$_cov_tag" || true
-            tag_index_log_history added "$pr_number" "$_cov_tag" "$_cov_file" "$_cov_heading"
+            # Only log history when the pointer was actually written; return 1
+            # means no matching row was found (map absent or no match) — the
+            # pointer is silently skipped and the audit trail is not falsified.
+            if docs_map_tag_section_by_pointer "$_cov_target" "$_cov_tag"; then
+              tag_index_log_history added "$pr_number" "$_cov_tag" "$_cov_file" "$_cov_heading"
+            fi
           done <<< "$_pointers"
         fi
       fi

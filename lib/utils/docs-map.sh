@@ -13,7 +13,7 @@ fi
 # sections with content fingerprints and the HEAD SHA they were captured at.
 #
 # TSV format:
-#   Line 1 (comment header): # docs-map v3 sha=<HEAD sha> built=<ISO-8601 UTC>
+#   Line 1 (comment header): # docs-map v4 sha=<HEAD sha> built=<ISO-8601 UTC>
 #   Remaining rows:           file_path<TAB>last_verified_sha<TAB>adr_flag<TAB>heading_level<TAB>heading_text<TAB>fingerprint<TAB>type<TAB>rubric<TAB>tags<TAB>note
 #
 # Columns:
@@ -264,6 +264,9 @@ docs_map_build() {
   # Lookup: awk -v rp=X -v ht=Y searches by (rel_path, heading_text).
   # -------------------------------------------------------------------------
   local _cache_file=""
+  local tmp_file=""
+  # RETURN trap: clean up temp files on early exit or error
+  trap '[ -n "$_cache_file" ] && rm -f "$_cache_file" || true; [ -n "$tmp_file" ] && rm -f "$tmp_file" || true' RETURN
   if [ -f "$map_file" ]; then
     _cache_file="$(mktemp "${docs_dir}/docs-map-cache.XXXXXX" 2>/dev/null || true)"
     if [ -n "$_cache_file" ]; then
@@ -276,14 +279,10 @@ docs_map_build() {
   fi
 
   # Write to temp file for atomic replace
-  local tmp_file
   tmp_file="$(mktemp "${docs_dir}/docs-map.tsv.XXXXXX")"
-  # Ensure cleanup if we exit unexpectedly before mv
-  # (not using EXIT trap per test-runbook Rule 4 — this function is not a @test body;
-  #  the trap is fine in a library function but we use a local var for simplicity)
 
   # Line 1: comment header
-  printf '# docs-map v3 sha=%s built=%s\n' "$head_sha" "$built_ts" > "$tmp_file"
+  printf '# docs-map v4 sha=%s built=%s\n' "$head_sha" "$built_ts" > "$tmp_file"
 
   # -------------------------------------------------------------------------
   # Collect inventory: docs/**/*.md + README.md + CLAUDE.md
@@ -462,6 +461,7 @@ ${raw_line}"
 
   # Atomic replace
   mv "$tmp_file" "$map_file"
+  tmp_file=""  # already moved; prevent RETURN trap from attempting removal
 
   # Migrate: remove legacy .rite/state/docs-map.tsv if it still exists.
   # The file moved to docs/docs-map.tsv (committed path); the old location
@@ -502,13 +502,13 @@ docs_map_ensure() {
     local _header
     _header="$(head -1 "$map_file" 2>/dev/null || true)"
     case "$_header" in
-      "# docs-map v3"*) ;;  # current format — no rebuild needed
+      "# docs-map v4"*) ;;  # current format — no rebuild needed
       *) _needs_rebuild=1 ;; # v1, v2, or other old format
     esac
   fi
   if [ "$_needs_rebuild" -eq 1 ]; then
     if declare -f verbose_info >/dev/null 2>&1; then
-      verbose_info "docs-map: rebuilding missing/pre-v3 map → $(basename "$map_file")"
+      verbose_info "docs-map: rebuilding missing/pre-v4 map → $(basename "$map_file")"
     fi
     docs_map_build
   fi
@@ -544,15 +544,19 @@ docs_map_populate_tags() {
 
   local _map_dir
   _map_dir="$(dirname "$map_file")"
-  local _tmp
+  local _tmp=""
   _tmp="$(mktemp "${_map_dir}/docs-map.tsv.XXXXXX" 2>/dev/null)" || return 0
+  trap '[ -n "$_tmp" ] && rm -f "$_tmp" || true' RETURN
 
   # Copy comment header unchanged
   head -1 "$map_file" > "$_tmp"
 
   local _changes=0
   local _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note
-  while IFS=$'\t' read -r _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note; do
+  # Use IFS=$'\001' (SOH, non-whitespace) with awk preprocessing to avoid bash's
+  # IFS-whitespace tab-collapsing, which corrupts rows with consecutive empty fields
+  # (e.g. preamble/headingless rows where heading_level and heading_text are both empty).
+  while IFS=$'\001' read -r _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note; do
     # fingerprint-gate: only enrich rows where tags is "-" or absent
     if [ "${_tags:-}" != "-" ] && [ -n "${_tags:-}" ]; then
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -580,25 +584,32 @@ Heading: ${_ht:-<untitled>}"
 
     local _new_tags="-" _new_note="-"
     if [ -n "$_result" ] && command -v jq >/dev/null 2>&1; then
-      _new_tags="$(printf '%s' "$_result" | jq -r '(.tags // []) | map(select(. != "")) | join(", ")' 2>/dev/null || true)"
-      _new_note="$(printf '%s' "$_result" | jq -r '(.note // "-") | gsub("\t"; " ")' 2>/dev/null || true)"
+      # Strip fenced JSON (models frequently wrap output in ```json ... ``` fences;
+      # jq fails on fenced input, causing tags to stay "-" and re-triggering LLM on every run)
+      local _result_clean
+      _result_clean="$(printf '%s' "$_result" | sed 's/^```[a-zA-Z]*$//' | sed 's/^```$//' || true)"
+      [ -z "$_result_clean" ] && _result_clean="$_result"
+      _new_tags="$(printf '%s' "$_result_clean" | jq -r '(.tags // []) | map(select(. != "")) | join(", ")' 2>/dev/null || true)"
+      _new_note="$(printf '%s' "$_result_clean" | jq -r '(.note // "-") | gsub("\t"; " ")' 2>/dev/null || true)"
       [ -z "$_new_tags" ] && _new_tags="-"
       [ -z "$_new_note" ] && _new_note="-"
-      # Sanitize: strip tabs (would corrupt TSV columns)
-      _new_tags="$(printf '%s' "$_new_tags" | tr '\t' ' ')"
-      _new_note="$(printf '%s' "$_new_note" | tr '\t' ' ')"
+      # Sanitize: strip tabs and newlines (both corrupt TSV columns)
+      _new_tags="$(printf '%s' "$_new_tags" | tr '\t\n' '  ')"
+      _new_note="$(printf '%s' "$_new_note" | tr '\t\n' '  ')"
     fi
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$_f" "$_sha" "${_adr:--}" "${_hl:-}" "${_ht:-}" "$_fp" \
       "${_dtype:-other}" "${_rubric:--}" "$_new_tags" "$_new_note" >> "$_tmp"
     [ "$_new_tags" != "-" ] && _changes=$((_changes + 1))
-  done < <(grep -v '^#' "$map_file" || true)
+  done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$map_file" || true)
 
   if [ "$_changes" -gt 0 ]; then
     mv "$_tmp" "$map_file"
+    _tmp=""  # already moved; prevent RETURN trap from attempting removal
   else
     rm -f "$_tmp"
+    _tmp=""
   fi
   return 0
 }
@@ -638,18 +649,23 @@ docs_map_tag_section_by_pointer() {
 
   local _map_dir
   _map_dir="$(dirname "$map_file")"
-  local _tmp
+  local _tmp=""
   _tmp="$(mktemp "${_map_dir}/docs-map.tsv.XXXXXX" 2>/dev/null)" || return 0
+  trap '[ -n "$_tmp" ] && rm -f "$_tmp" || true' RETURN
 
   # Copy comment header unchanged
   head -1 "$map_file" > "$_tmp"
 
+  local _matched=0
   local _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note
-  while IFS=$'\t' read -r _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note; do
+  # Use IFS=$'\001' (SOH, non-whitespace) with awk preprocessing to avoid bash's
+  # IFS-whitespace tab-collapsing corruption for rows with consecutive empty fields.
+  while IFS=$'\001' read -r _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note; do
     # Match by file basename and heading text
     local _bname
     _bname="$(basename "$_f")"
     if [ "$_bname" = "$_file" ] && [ "$_ht" = "$_heading" ]; then
+      _matched=1
       # Add tag if not already present
       if [ "${_tags:-}" = "-" ] || [ -z "${_tags:-}" ]; then
         _tags="$_tag"
@@ -669,9 +685,11 @@ docs_map_tag_section_by_pointer() {
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$_f" "$_sha" "${_adr:--}" "${_hl:-}" "${_ht:-}" "$_fp" \
       "${_dtype:-other}" "${_rubric:--}" "${_tags:--}" "${_note:--}" >> "$_tmp"
-  done < <(grep -v '^#' "$map_file" || true)
+  done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$map_file" || true)
 
   mv "$_tmp" "$map_file"
+  _tmp=""  # already moved; prevent RETURN trap from attempting removal
+  [ "$_matched" -eq 1 ] || return 1
   return 0
 }
 
@@ -710,7 +728,9 @@ docs_map_render_tag_index() {
   fi
 
   local _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note
-  while IFS=$'\t' read -r _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note; do
+  # Use IFS=$'\001' (SOH, non-whitespace) with awk preprocessing to avoid bash's
+  # IFS-whitespace tab-collapsing corruption for rows with consecutive empty fields.
+  while IFS=$'\001' read -r _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note; do
     # Skip rows with no tags or sentinel tags
     [ "${_tags:-}" = "-" ] || [ -z "${_tags:-}" ] && continue
     # Skip rows with no heading text (preamble or headingless sections)
@@ -719,8 +739,10 @@ docs_map_render_tag_index() {
     local _short
     _short="$(basename "$_f")"
 
-    # Split tags on ", " and add each to the index
-    # portable split: use tr + while-read
+    # Split tags on ", " and add each to the index.
+    # printf '%s\n' ensures a trailing newline so while-read processes the last tag
+    # (printf '%s' without a trailing newline causes read to return non-zero on the
+    # final token, skipping it — critical for single-tag rows).
     local _tag
     while IFS= read -r _tag; do
       _tag="${_tag# }"  # ltrim space (from "tag1, tag2" split)
@@ -728,8 +750,8 @@ docs_map_render_tag_index() {
       [ -z "$_tag" ] || [ "$_tag" = "-" ] && continue
       tag_index_ensure_heading "$_tag" 2>/dev/null || true
       tag_index_add_pointer "$_tag" "$_short" "$_ht" 2>/dev/null || true
-    done < <(printf '%s' "$_tags" | tr ',' '\n' || true)
-  done < <(grep -v '^#' "$map_file" || true)
+    done < <(printf '%s\n' "$_tags" | tr ',' '\n' || true)
+  done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$map_file" || true)
 
   return 0
 }
