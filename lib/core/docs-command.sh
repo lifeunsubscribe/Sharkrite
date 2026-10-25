@@ -264,13 +264,9 @@ _docs_apply_approved() {
     fi
   fi
 
-  # Rebuild the docs map in the worktree so the PR includes the updated
-  # navigation index alongside the doc content changes.
-  # docs_map_build is deterministic (zero provider calls).
-  ( export RITE_PROJECT_ROOT="$_aa_wt_path"; unset RITE_STATE_DIR 2>/dev/null || true
-    docs_map_build ) || true
-
-  # Stage everything (includes rebuilt docs/docs-map.tsv)
+  # Stage proposals first (without the map), then check for meaningful changes.
+  # Rebuilding the map before this check causes a spurious docs PR on no-op runs
+  # because the header's built=<timestamp> changes every invocation.
   git -C "$_aa_wt_path" add . 2>/dev/null || true
 
   if git -C "$_aa_wt_path" diff --cached --quiet 2>/dev/null; then
@@ -278,6 +274,13 @@ _docs_apply_approved() {
     git -C "$RITE_PROJECT_ROOT" worktree remove "$_aa_wt_path" --force 2>/dev/null || true
     return 0
   fi
+
+  # Rebuild the docs map in the worktree so the PR includes the updated
+  # navigation index alongside the doc content changes.
+  # docs_map_build is deterministic (zero provider calls).
+  ( export RITE_PROJECT_ROOT="$_aa_wt_path"; unset RITE_STATE_DIR 2>/dev/null || true
+    docs_map_build ) || true
+  git -C "$_aa_wt_path" add docs/docs-map.tsv 2>/dev/null || true
 
   # Commit message (72-char cap)
   local _aa_commit_msg

@@ -247,7 +247,7 @@
 # tracking is opt-in (RITE_DOC_MODE below); nothing edits docs/ automatically.
 
 # Docs map auto-rebuild (default: true).
-# When true, docs_map_ensure() automatically rebuilds .rite/state/docs-map.tsv
+# When true, docs_map_ensure() automatically rebuilds docs/docs-map.tsv
 # when the file is missing. The map inventories README.md, CLAUDE.md, and
 # docs/**/*.md with headings and ADR flags for use by cluster-B doc features.
 # Set to "false" to suppress auto-rebuild (e.g. when the map is managed externally).

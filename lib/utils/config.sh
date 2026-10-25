@@ -360,7 +360,7 @@ RITE_PLAN_FIXTURE_GLOB="${RITE_PLAN_FIXTURE_GLOB:-}"
 RITE_PLAN_SKIP_INTEGRATION_CHECK="${RITE_PLAN_SKIP_INTEGRATION_CHECK:-0}"
 
 # Docs map: auto-rebuild control.
-# When true (default), docs_map_ensure() rebuilds .rite/state/docs-map.tsv when
+# When true (default), docs_map_ensure() rebuilds docs/docs-map.tsv when
 # the file is missing.  Set to "false" to suppress auto-rebuild (e.g. in tests
 # or when the map is managed externally).  Does not affect docs_map_build(), which
 # always rebuilds unconditionally.

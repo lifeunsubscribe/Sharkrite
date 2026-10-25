@@ -23,3 +23,6 @@ lib/test-fixtures-temp/
 backend/node_modules
 .venv
 backend/.venv
+
+# docs-map temp files (docs_map_build atomic-write pattern — mktemp in tracked docs/)
+docs/docs-map.tsv.*
