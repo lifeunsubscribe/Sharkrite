@@ -1090,6 +1090,38 @@ if [ "$MODE" = "init" ]; then
   fi
 
   # ─────────────────────────────────────────────────────────────────
+  # git rerere (reuse recorded resolution)
+  # ─────────────────────────────────────────────────────────────────
+  # Sharkrite rebases feature branches onto a fast-moving base over and over
+  # (--sync, mid-run drift, stale-branch resume). A branch that has already
+  # merged the base re-litigates every previously-resolved conflict on the next
+  # rebase, because rebase drops the merge commits that banked those
+  # resolutions. rerere records each resolution and replays it automatically, so
+  # a given conflict is resolved once per repo instead of once per rebase — and
+  # the LLM conflict resolver (attempt_claude_merge_resolution) is not paid to
+  # solve the same conflict twice. The rr-cache lives in the git common dir, so
+  # one resolution is shared by every worktree.
+  #
+  # Only set when unset: an explicit `false` is a deliberate operator choice.
+  _rerere_current=$(git -C "$RITE_PROJECT_ROOT" config --get rerere.enabled 2>/dev/null || true)
+  if [ -z "${_rerere_current:-}" ]; then
+    if git -C "$RITE_PROJECT_ROOT" config rerere.enabled true 2>/dev/null; then
+      print_success "Enabled git rerere (replays past conflict resolutions)"
+    else
+      print_info "Could not enable git rerere — set it with: git config rerere.enabled true"
+    fi
+  else
+    print_info "git rerere already configured: $_rerere_current"
+  fi
+
+  # autoupdate stages a replayed resolution so an unattended rebase can carry on
+  # without a manual `git add`. Same only-when-unset rule.
+  _rerere_autoupdate=$(git -C "$RITE_PROJECT_ROOT" config --get rerere.autoupdate 2>/dev/null || true)
+  if [ -z "${_rerere_autoupdate:-}" ]; then
+    git -C "$RITE_PROJECT_ROOT" config rerere.autoupdate true 2>/dev/null || true
+  fi
+
+  # ─────────────────────────────────────────────────────────────────
   # Doc drift consent (opt-in; nothing edits docs/ automatically)
   # ─────────────────────────────────────────────────────────────────
   _config_file_for_doc_mode="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"

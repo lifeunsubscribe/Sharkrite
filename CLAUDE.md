@@ -791,6 +791,18 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 
 - **No co-author lines.** Do not add `Co-Authored-By` to commit messages.
 
+- **`git rerere` is enabled by `rite --init`.** Sharkrite rebases feature branches
+  onto a fast-moving base repeatedly (`--sync`, mid-run drift, stale-branch resume),
+  and `git rebase` drops the merge commits that banked a branch's earlier conflict
+  resolutions — so the same conflict is re-asked on every rebase. rerere records each
+  resolution and replays it automatically, which also stops the LLM conflict resolver
+  (`attempt_claude_merge_resolution`) from being paid twice for the same conflict. The
+  `rr-cache` lives in the git **common** dir, so one resolution is shared by every
+  worktree — a resolution in any batch slot serves all the others. Init only sets it
+  when unset; an explicit `rerere.enabled=false` is a deliberate operator choice and is
+  left alone. Existing repos are not retrofitted automatically:
+  `git -C <repo> config rerere.enabled true && git -C <repo> config rerere.autoupdate true`.
+
 ## Common Pitfalls
 
 - **Subshell variable loss**: Variables set inside `while read | pipe` are lost. Use process substitution or temp files.
