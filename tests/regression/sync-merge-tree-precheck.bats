@@ -236,6 +236,11 @@ teardown() {
     return 0
   }
 
+  # Stub verify_post_merge: returns pass so the test focuses on the resolver
+  # parent-shell invariant and scoped-staging contract. A separate structural
+  # test (below) pins that verify_post_merge is called before the push.
+  verify_post_merge() { return 0; }
+
   # ── Run sync_issue_branch ─────────────────────────────────────────────────
   local _rc=0
   sync_issue_branch "888" || _rc=$?
@@ -251,4 +256,119 @@ teardown() {
 
   # conflicting-file.txt MUST appear (was scoped-staged via _RITE_RESOLVER_CONFLICT_PATHS)
   [[ "$_last_commit_files" == *"conflicting-file.txt"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Structural: verify_post_merge is called inside sync_issue_branch after
+# commit_resolved_conflicts — matches the --sync <branch> parity contract.
+# ---------------------------------------------------------------------------
+@test "sync_issue_branch calls verify_post_merge after commit_resolved_conflicts" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  sed -n '/^sync_issue_branch()/,/^}/p' "$_lib" | grep -q 'verify_post_merge'
+}
+
+# ---------------------------------------------------------------------------
+# Structural: verify_post_merge appears AFTER commit_resolved_conflicts in
+# the sync_issue_branch body (order matters for the correctness guarantee).
+# ---------------------------------------------------------------------------
+@test "sync_issue_branch: verify_post_merge appears after commit_resolved_conflicts" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  local _body
+  _body=$(sed -n '/^sync_issue_branch()/,/^}/p' "$_lib")
+  local _commit_line _verify_line
+  _commit_line=$(echo "$_body" | grep -vE '^\s*#' | grep -n 'commit_resolved_conflicts' | head -1 | cut -d: -f1 || true)
+  _verify_line=$(echo "$_body" | grep -vE '^\s*#' | grep -n 'verify_post_merge' | head -1 | cut -d: -f1 || true)
+  [ -n "$_commit_line" ]
+  [ -n "$_verify_line" ]
+  [ "$_verify_line" -gt "$_commit_line" ]
+}
+
+# ---------------------------------------------------------------------------
+# Behavioral: when verify_post_merge fails after conflict resolution, the
+# resolution commit is rolled back (no unverified commit left on the branch),
+# outcome=conflict, and exit 0 (composable).
+#
+# Fixture shape: same as the resolver test above — main and feature have
+# conflicting edits to conflicting-file.txt. The resolver stub succeeds,
+# but verify_post_merge returns 1 (simulating a test failure).
+# After sync_issue_branch returns, HEAD must equal the pre-resolver HEAD
+# (the rollback fired), outcome=conflict, exit=0.
+# ---------------------------------------------------------------------------
+@test "sync_issue_branch: verify_post_merge failure rolls back resolution commit, outcome=conflict" {
+  git -C "$RITE_REPO_ROOT" merge-tree --write-tree HEAD HEAD >/dev/null 2>&1 || skip "git merge-tree --write-tree not supported"
+
+  local BARE_REMOTE FIXTURE_REPO
+  BARE_REMOTE=$(create_bare_remote "origin")
+  FIXTURE_REPO=$(create_fixture_repo "$BARE_REMOTE")
+
+  export RITE_PROJECT_ROOT="$FIXTURE_REPO"
+  export RITE_WORKTREE_DIR="$FIXTURE_REPO/.rite/worktrees"
+  mkdir -p "$RITE_WORKTREE_DIR"
+
+  cd "$FIXTURE_REPO" || return 1
+
+  # Advance main with a conflicting change
+  git checkout main >/dev/null 2>&1
+  echo "base version" > conflicting-file.txt
+  git add conflicting-file.txt
+  git commit -m "Base: set conflicting-file" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  local _base_sha
+  _base_sha=$(git rev-parse HEAD~1)
+  git checkout -b feat/issue-777 "$_base_sha" >/dev/null 2>&1
+  echo "feature version" > conflicting-file.txt
+  git add conflicting-file.txt
+  git commit -m "Feature: conflicting-file" >/dev/null 2>&1
+  git push -u origin feat/issue-777 >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
+
+  local _wt="$RITE_WORKTREE_DIR/issue-777"
+  git worktree add "$_wt" feat/issue-777 >/dev/null 2>&1
+
+  # Capture HEAD before resolver runs — rollback target
+  local _head_before
+  _head_before=$(git -C "$_wt" rev-parse HEAD)
+
+  # Remote ref before sync — must be unchanged after failed verify
+  local _remote_ref_before
+  _remote_ref_before=$(git -C "$_wt" rev-parse "origin/feat/issue-777" 2>/dev/null || true)
+
+  mkdir -p "$RITE_LOCK_DIR/issue-777.lock"
+  echo "$_wt" > "$RITE_LOCK_DIR/issue-777.lock/cwd"
+
+  source "$RITE_LIB_DIR/utils/integration-sync.sh"
+  set +u; set +o pipefail
+
+  # Stubs defined AFTER source (function-sentinel guard: declare -f sync_integration_branch)
+  get_locked_issue_numbers() { echo ""; }
+  detect_pr_for_issue()      { return 1; }
+  resolve_target_branch()    { echo "main"; }
+
+  attempt_claude_merge_resolution() {
+    echo "resolved by claude" > "$_wt/conflicting-file.txt"
+    _RITE_RESOLVER_CONFLICT_PATHS="conflicting-file.txt"
+    return 0
+  }
+
+  # verify_post_merge returns failure — simulates failing tests after resolution
+  verify_post_merge() { return 1; }
+
+  local _rc=0
+  sync_issue_branch "777" || _rc=$?
+
+  [ "$_rc" -eq 0 ]
+  [ "${_SYNC_ISSUE_OUTCOME:-}" = "conflict" ]
+
+  # HEAD must be rolled back to pre-resolver state (resolution commit removed)
+  local _head_after
+  _head_after=$(git -C "$_wt" rev-parse HEAD)
+  [ "$_head_after" = "$_head_before" ]
+
+  # Remote ref must be unchanged — no force-push occurred
+  local _remote_ref_after
+  _remote_ref_after=$(git -C "$_wt" rev-parse "origin/feat/issue-777" 2>/dev/null || true)
+  [ "$_remote_ref_after" = "$_remote_ref_before" ]
 }

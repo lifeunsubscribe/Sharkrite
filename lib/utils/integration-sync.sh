@@ -427,6 +427,9 @@ sync_issue_branch() {
   local _conflict_resolved=false
   if [ "$_rebase_rc" -ne 0 ]; then
     git -C "$_wt_path" rebase --abort 2>/dev/null || true
+    # Capture HEAD after abort so both failure paths below can roll back to it.
+    local _pre_sync_head
+    _pre_sync_head=$(git -C "$_wt_path" rev-parse HEAD || true)
 
     # Attempt Claude-assisted resolution before bailing to manual.
     # Guard: declare -f only — matches integration-sync.sh:198 (--sync <branch> path).
@@ -450,11 +453,22 @@ sync_issue_branch() {
       if [ "$_resolver_rc" -eq 0 ]; then
         if ! commit_resolved_conflicts "$_wt_path"; then
           print_error "Issue #${_issue_n}: failed to commit resolved conflicts"
+          # Mirrors the --sync <branch> merge-abort path: reset to pre-resolver state.
+          git -C "$_wt_path" reset --hard "$_pre_sync_head" 2>/dev/null || true
           _SYNC_ISSUE_OUTCOME="conflict"
           _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
           return 0
         fi
         _conflict_resolved=true
+        if ! verify_post_merge "$_wt_path" "origin/$_base"; then
+          print_warning "Issue #${_issue_n}: conflict resolution succeeded at git level but tests fail"
+          print_error "Issue #${_issue_n}: post-resolution verification failed — cannot push"
+          # Roll back the resolution commit so the unverified state cannot be pushed later.
+          git -C "$_wt_path" reset --hard "$_pre_sync_head" 2>/dev/null || true
+          _SYNC_ISSUE_OUTCOME="conflict"
+          _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
+          return 0
+        fi
       fi
     fi
 
