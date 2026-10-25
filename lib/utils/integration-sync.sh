@@ -366,19 +366,11 @@ sync_issue_branch() {
     return 1
   fi
 
-  # ── Rail 3: staleness threshold ──────────────────────────────────────────────
-  # Branches at/above the threshold need a close-and-restart, not a rebase.
-  # Defer to the workflow's own stale-branch path (check_stale_branch).
+  # ── Resolve staleness count ──────────────────────────────────────────────────
+  # Needed by Rails 3–4 and the merge-tree precheck.
   get_commits_behind_main "$_wt_path" "$_base"
   local _behind="$COMMITS_BEHIND_MAIN"
   local _threshold="${RITE_STALE_BRANCH_THRESHOLD:-10}"
-  if [ "$_behind" -ge "$_threshold" ]; then
-    print_warning "Issue #${_issue_n}: SKIP — ${_behind} commits behind origin/${_base} (threshold: ${_threshold})"
-    print_info "  Next step: needs close-and-restart — the next 'rite ${_issue_n}' handles this via the stale-branch path"
-    _SYNC_ISSUE_OUTCOME="skipped-threshold"
-    _diag "SYNC_ISSUE issue=${_issue_n} outcome=skipped-threshold"
-    return 0
-  fi
 
   # ── Rail 4: already current ──────────────────────────────────────────────────
   if [ "$_behind" -eq 0 ]; then
@@ -388,22 +380,91 @@ sync_issue_branch() {
     return 0
   fi
 
-  # ── Rebase onto origin/<base> ────────────────────────────────────────────────
   local _branch_name
   _branch_name=$(git -C "$_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 
+  # ── merge-tree precheck ───────────────────────────────────────────────────────
+  # A clean in-memory merge means the PR will merge as-is in Phase 4 regardless
+  # of commit distance — no rebase needed, no stale-review triggered.
+  # Runs BEFORE Rail 3 so cleanly-mergeable branches are never told to
+  # close-and-restart solely because they exceed the staleness threshold.
+  # Exit codes: 0=clean, 1=conflict, ≥2=unavailable/error.
+  local _mt_rc=0
+  git -C "$_wt_path" merge-tree --write-tree --no-messages "origin/$_base" HEAD \
+    >/dev/null 2>&1 || _mt_rc=$?
+
+  if [ "$_mt_rc" -eq 0 ]; then
+    print_info "Issue #${_issue_n}: ${_behind} commit(s) behind origin/${_base} but merges cleanly — no rebase needed"
+    _SYNC_ISSUE_OUTCOME="current"
+    _diag "SYNC_ISSUE issue=${_issue_n} outcome=current"
+    return 0
+  elif [ "$_mt_rc" -ge 2 ]; then
+    # merge-tree unavailable or unexpected error — fail open and proceed with rebase.
+    print_warning "Issue #${_issue_n}: merge-tree check unavailable (rc=${_mt_rc}) — attempting rebase"
+  fi
+
+  # _mt_rc == 1 (or unavailable): genuine conflict.
+
+  # ── Rail 3: staleness threshold ──────────────────────────────────────────────
+  # Applies only when the branch is BOTH behind AND not cleanly mergeable.
+  # Cleanly-mergeable branches exit above at the precheck, regardless of distance.
+  if [ "$_behind" -ge "$_threshold" ]; then
+    print_warning "Issue #${_issue_n}: SKIP — ${_behind} commits behind origin/${_base} (threshold: ${_threshold})"
+    print_info "  Next step: needs close-and-restart — the next 'rite ${_issue_n}' handles this via the stale-branch path"
+    _SYNC_ISSUE_OUTCOME="skipped-threshold"
+    _diag "SYNC_ISSUE issue=${_issue_n} outcome=skipped-threshold"
+    return 0
+  fi
+
+  # Genuine conflict, below threshold — attempt rebase.
+
+  # ── Rebase onto origin/<base> ─────────────────────────────────────────────────
   print_status "Issue #${_issue_n}: rebasing ${_branch_name:-<unknown>} onto origin/${_base} (${_behind} commit(s) behind)..."
 
   local _rebase_rc=0
   ( cd "$_wt_path" && git rebase "origin/$_base" ) || _rebase_rc=$?
 
+  local _conflict_resolved=false
   if [ "$_rebase_rc" -ne 0 ]; then
     git -C "$_wt_path" rebase --abort 2>/dev/null || true
-    print_error "Issue #${_issue_n}: rebase conflict — aborted"
-    print_info "  Next step: resolve manually: cd '${_wt_path}' && git rebase origin/${_base}; then re-run 'rite --sync ${_issue_n}'"
-    _SYNC_ISSUE_OUTCOME="conflict"
-    _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
-    return 0  # skip — composability requires exit 0 for non-operational outcomes
+
+    # Attempt Claude-assisted resolution before bailing to manual.
+    # Guard: declare -f only — matches integration-sync.sh:198 (--sync <branch> path).
+    if declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+      print_status "Issue #${_issue_n}: attempting Claude-assisted conflict resolution..."
+      local _resolver_rc=0
+      # Call the resolver in the parent shell (not a subshell) so that
+      # _RITE_RESOLVER_CONFLICT_PATHS propagates to commit_resolved_conflicts.
+      # A subshell loses the variable, causing git add -A to sweep untracked
+      # files — including secrets — into the resolution commit (#871 pattern).
+      local _sync_issue_saved_cwd="$PWD"
+      cd "$_wt_path" || _resolver_rc=$?
+      if [ "$_resolver_rc" -eq 0 ]; then
+        attempt_claude_merge_resolution \
+          --branch-name "${_branch_name:-}" \
+          --issue-number "$_issue_n" \
+          --merge-target "origin/$_base" || _resolver_rc=$?
+      fi
+      cd "$_sync_issue_saved_cwd" 2>/dev/null || true
+
+      if [ "$_resolver_rc" -eq 0 ]; then
+        if ! commit_resolved_conflicts "$_wt_path"; then
+          print_error "Issue #${_issue_n}: failed to commit resolved conflicts"
+          _SYNC_ISSUE_OUTCOME="conflict"
+          _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
+          return 0
+        fi
+        _conflict_resolved=true
+      fi
+    fi
+
+    if [ "$_conflict_resolved" = false ]; then
+      print_error "Issue #${_issue_n}: rebase conflict — aborted"
+      print_info "  Next step: resolve manually: cd '${_wt_path}' && git rebase origin/${_base}; then re-run 'rite --sync ${_issue_n}'"
+      _SYNC_ISSUE_OUTCOME="conflict"
+      _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
+      return 0  # skip — composability requires exit 0 for non-operational outcomes
+    fi
   fi
 
   # ── Push with --force-with-lease ─────────────────────────────────────────────
@@ -419,7 +480,11 @@ sync_issue_branch() {
     return 1  # operational failure — not composable
   fi
 
-  print_success "Issue #${_issue_n}: synced — rebased ${_branch_name:-HEAD} onto origin/${_base}"
+  if [ "$_conflict_resolved" = true ]; then
+    print_success "Issue #${_issue_n}: synced — resolved conflicts with origin/${_base}"
+  else
+    print_success "Issue #${_issue_n}: synced — rebased ${_branch_name:-HEAD} onto origin/${_base}"
+  fi
   _SYNC_ISSUE_OUTCOME="synced"
   _diag "SYNC_ISSUE issue=${_issue_n} outcome=synced"
   return 0
