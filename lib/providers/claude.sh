@@ -166,6 +166,11 @@ claude_provider_run_agentic_session() {
       tee "$_stdout_capture" | \
       _claude_stream_filter_colored
     _exit_code=${PIPESTATUS[0]}
+    # Terminate the last printed line: jq -j never appends a trailing newline,
+    # so without this the next workflow message runs flush against session output.
+    if grep -q '"type":"assistant"' "$_stdout_capture" 2>/dev/null; then
+      printf '\n'
+    fi
   else
     # Supervised mode: prompt via stdin because --disallowedTools is variadic
     # and eats positional args after it.
@@ -179,6 +184,9 @@ claude_provider_run_agentic_session() {
       tee "$_stdout_capture" | \
       _claude_stream_filter_colored
     _exit_code=${PIPESTATUS[0]}
+    if grep -q '"type":"assistant"' "$_stdout_capture" 2>/dev/null; then
+      printf '\n'
+    fi
     rm -f "$_prompt_file"
   fi
 
@@ -192,9 +200,29 @@ claude_provider_run_agentic_session() {
   # rest of the batch instead of cascading the cap across the remaining
   # issues at ~40s wasted per issue. See: lib/core/batch-process-issues.sh
   # exit-5 handler.
-  if [ "$_exit_code" -ne 0 ] && \
-     grep -qiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|hit your (session|usage|weekly) limit|session limit reached" \
-       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+  #
+  # stdout: line-anchored — every legitimate stream-json line starts with '{',
+  # so a cap phrase at column 0 can only be the CLI's own out-of-envelope
+  # notice. A substring match would false-abort any session that merely
+  # CONTAINS the phrase (e.g. a session editing this detection, which embeds
+  # the literal string inside a JSON transcript line — live: issue #1169).
+  # stderr: unanchored for non-zero exit — stderr from the CLI is always the
+  # CLI's own output, never the streamed transcript.
+  local _cap_stdout_phrase="" _cap_stderr_phrase=""
+  if [ "$_exit_code" -ne 0 ]; then
+    _cap_stdout_phrase=$(grep -oiE "^(spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached)" "$_stdout_capture" 2>/dev/null | head -1 || true)
+    if [ -z "$_cap_stdout_phrase" ]; then
+      _cap_stderr_phrase=$(grep -oiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached" "$stderr_file" 2>/dev/null | head -1 || true)
+    fi
+  fi
+  if [ "$_exit_code" -ne 0 ] && { [ -n "$_cap_stdout_phrase" ] || [ -n "$_cap_stderr_phrase" ]; }; then
+    local _cap_ch="" _cap_ph=""
+    if [ -n "$_cap_stdout_phrase" ]; then
+      _cap_ch="stdout"; _cap_ph="$_cap_stdout_phrase"
+    else
+      _cap_ch="stderr"; _cap_ph="$_cap_stderr_phrase"
+    fi
+    { _diag "CAP_DETECTED channel=${_cap_ch} phrase=${_cap_ph}"; } 2>/dev/null || true
     _exit_code=5
   # Exit-0 cap (issue #1121, live 2026-10-11): in --print --output-format
   # stream-json mode the CLI prints the session-limit notice and exits 0, so
@@ -209,6 +237,9 @@ claude_provider_run_agentic_session() {
   elif [ "$_exit_code" -eq 0 ] && \
      grep -qiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" \
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+    local _cap_ph0=""
+    _cap_ph0=$(grep -oiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" "$_stdout_capture" "$stderr_file" 2>/dev/null | head -1 || true)
+    { _diag "CAP_DETECTED channel=stdout phrase=${_cap_ph0}"; } 2>/dev/null || true
     _exit_code=5
   # Detect provider auth failure in stdout or stderr. Live phrasings observed
   # (Pilot 2026-07-05/06, rite-855-871-872 batch):
