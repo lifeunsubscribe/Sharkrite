@@ -649,12 +649,16 @@ generate_issues() {
   local available_tags=""
   available_tags=$(_build_available_tags_context || true)
 
+  # Per-generation unique end token prevents content containing ---END--- from
+  # being mistaken for the issue block delimiter (same fix as docs-command.sh, issue #1233).
+  local _plan_end_token="---END-${RANDOM}${RANDOM}---"
+
   local prompt
   # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
   prompt=$(cat <<PROMPT_EOF
 You are generating GitHub issues for a software project, following the Sharkrite issue runbook.
 
-**OUTPUT CONSTRAINT:** You will output the coverage checklist exactly once, then each issue exactly once. After the final ---END--- marker, you MUST stop generating. Do not review, summarize, or regenerate any issues. Any issue title that appears more than once is a waste of tokens. This constraint is non-negotiable.
+**OUTPUT CONSTRAINT:** You will output the coverage checklist exactly once, then each issue exactly once. After the final ${_plan_end_token} marker, you MUST stop generating. Do not review, summarize, or regenerate any issues. Any issue title that appears more than once is a waste of tokens. This constraint is non-negotiable.
 
 **Project Context (from CLAUDE.md):**
 ${project_context:-No project CLAUDE.md found — infer conventions from the architectural doc.}
@@ -945,11 +949,11 @@ echo "<!-- ${RITE_MARKER_ISSUE_TAGS} -->"
 echo "tags: <comma-separated tags selected from the Available tags list — see rule Q>"
 echo "<!-- /${RITE_MARKER_ISSUE_TAGS} -->"
 fi)
----END---
+${_plan_end_token}
 
-Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ---END---.
+Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ${_plan_end_token}.
 
-**The issue blocks are the required deliverable.** The COVERAGE checklist and any WARNING flags are an audit preface, NOT the output. A response that contains the checklist (or a closing summary) but no ---ISSUE--- blocks is incomplete and will be rejected. After the checklist, immediately emit one complete ---ISSUE--- ... ---END--- block for every ✅ entry.
+**The issue blocks are the required deliverable.** The COVERAGE checklist and any WARNING flags are an audit preface, NOT the output. A response that contains the checklist (or a closing summary) but no ---ISSUE--- blocks is incomplete and will be rejected. After the checklist, immediately emit one complete ---ISSUE--- ... ${_plan_end_token} block for every ✅ entry.
 PROMPT_EOF
 )
 
@@ -997,9 +1001,9 @@ PROMPT_EOF
     # Use streaming prompt for real-time output visibility.
     # Explicit "plan" role (opus) — never "" (which falls through to the review model).
     provider_run_streaming_prompt "$_active_prompt" "$(provider_resolve_model plan)" 2>"$claude_stderr" \
-      | awk '
+      | awk -v end_tok="$_plan_end_token" '
           # Truncate output on first duplicate issue (Claude sometimes regenerates the full set).
-          # Buffer each ---ISSUE--- block; only emit on ---END--- if title is new.
+          # Buffer each ---ISSUE--- block; only emit (normalized to ---END---) on end_tok if title is new.
           /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
           in_issue {
             buf = buf $0 "\n"
@@ -1008,7 +1012,10 @@ PROMPT_EOF
               if (title in seen) { exit }
               seen[title] = 1
             }
-            if ($0 == "---END---") { in_issue = 0; printf "%s", buf; buf = "" }
+            if ($0 == end_tok) {
+              gsub(end_tok, "---END---", buf)
+              in_issue = 0; printf "%s", buf; buf = ""
+            }
             next
           }
           { print }
@@ -1082,7 +1089,7 @@ PROMPT_EOF
 **RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE.** Your COVERAGE checklist listed issues for which you never emitted an ---ISSUE--- block. These planned issues are MISSING their block:
 ${_missing_list}
 
-You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one complete ---ISSUE--- ... ---END--- block for EVERY ✅ entry — including the missing ones listed above. Do not stop after the checklist or any summary. Emit every issue block, then STOP after the final ---END---."
+You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one complete ---ISSUE--- ... ${_plan_end_token} block for EVERY ✅ entry — including the missing ones listed above. Do not stop after the checklist or any summary. Emit every issue block, then STOP after the final ${_plan_end_token}."
           sleep 3
           continue
         fi
@@ -1124,7 +1131,7 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
   # mode that reproducibly drops the final block of a full-slate generation.
   # No-op when the checklist is fully covered or when 0 blocks were emitted
   # (the zero-emission guard in _validate_coverage owns that case).
-  _request_missing_blocks "$temp_file" "$prompt"
+  _request_missing_blocks "$temp_file" "$prompt" "$_plan_end_token"
 
   # Structural markers were already forced onto their own lines in-loop via
   # _normalize_issue_markers (needed there for the completeness comparison), so
@@ -3602,6 +3609,7 @@ _coverage_missing_titles() {
 _request_missing_blocks() {
   local issues_file="$1"
   local base_prompt="$2"
+  local _end_token="${3:-"---END---"}"
 
   local _missing
   _missing=$(_coverage_missing_titles "$issues_file" || true)
@@ -3645,7 +3653,7 @@ $([ -n "$_emitted_blocks" ] && printf 'The full content of the already-emitted b
 The following planned issue(s) from that response's COVERAGE checklist are MISSING their block:
 ${_missing_list}
 
-Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue listed above, in the established format. Use the EXACT title text listed above in the TITLE: field. Ordinal dependency references (After #N) refer to the already-emitted issues numbered above. Do NOT re-emit the coverage checklist, any commentary, or any already-emitted issue. Start with ---ISSUE--- and stop after the final ---END---."
+Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing issue listed above, in the established format. Use the EXACT title text listed above in the TITLE: field. Ordinal dependency references (After #N) refer to the already-emitted issues numbered above. Do NOT re-emit the coverage checklist, any commentary, or any already-emitted issue. Start with ---ISSUE--- and stop after the final ${_end_token}."
 
   local _completion_file _completion_stderr
   _completion_file=$(mktemp)
@@ -3671,12 +3679,16 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
 
   # Append ONLY well-formed ---ISSUE---...---END--- blocks — any surrounding
   # prose or a re-emitted checklist must not leak into the slate.
+  # Normalise _end_token → ---END--- so downstream parsers see the canonical marker.
   local _blocks
-  _blocks=$(awk '
+  _blocks=$(awk -v end_tok="$_end_token" '
     /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; next }
     in_issue {
       buf = buf $0 "\n"
-      if ($0 == "---END---") { in_issue = 0; printf "%s", buf; buf = "" }
+      if ($0 == end_tok) {
+        gsub(end_tok, "---END---", buf)
+        in_issue = 0; printf "%s", buf; buf = ""
+      }
       next
     }
   ' "$_completion_file" || true)
