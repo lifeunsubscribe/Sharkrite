@@ -76,34 +76,10 @@ _docs_ensure_map() {
     return 0
   fi
 
-  # Guard: if the map is tracked in git, a pull/checkout will restore it.
-  # Building here would create an untracked file that blocks git pull --ff-only.
-  local _em_root="${RITE_PROJECT_ROOT:-.}"
-  local _em_rel="${map_file#${_em_root}/}"
-  if git -C "$_em_root" ls-files --error-unmatch "$_em_rel" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  local auto_enabled="${RITE_DOCS_MAP_AUTO:-true}"
-  if [ "$auto_enabled" = "false" ] || [ "$auto_enabled" = "0" ]; then
-    local reply_val="N"
-    if [ -t 0 ]; then
-      echo "" >&2
-      read -p "  Docs map missing and auto-rebuild disabled — rebuild now? [y/N] " -n 1 -r
-      echo
-      reply_val="${REPLY:-N}"
-    fi
-    if [[ "$reply_val" =~ ^[Yy]$ ]]; then
-      docs_map_build
-      return 0
-    fi
-    print_warning "Docs map missing. To rebuild: RITE_DOCS_MAP_AUTO=true rite docs"
-    echo "  Or set RITE_DOCS_MAP_AUTO=true in .rite/config" >&2
-    return 1
-  fi
-
-  # Auto-rebuild enabled: silent rebuild
-  docs_map_build
+  # Map is absent — skip. Building here creates an untracked file that blocks
+  # git pull --ff-only in the main checkout (whether never committed or deleted).
+  # Map creation is delegated to _docs_apply_approved where it is committed.
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -948,18 +924,11 @@ _docs_enable_flow() {
       docs_directed_update "$instructions" || true
     fi
   else
-    # No: record off + build map on first run (skip when already committed in git —
-    # building a committed-but-missing map creates an untracked file that blocks
-    # git pull --ff-only in the main checkout)
+    # No: record off. Map creation is delegated to _docs_apply_approved (the
+    # docs-PR worktree path) — never eager-build here, as that creates an
+    # untracked file that blocks git pull --ff-only in the main checkout.
     record_doc_mode "off"
     print_info "Doc drift tracking off — run 'rite docs' again to turn it on"
-    local _cno_map_file
-    _cno_map_file="$(docs_map_path)"
-    local _cno_map_rel="${_cno_map_file#${RITE_PROJECT_ROOT:-.}/}"
-    if [ ! -f "$_cno_map_file" ] && ! git -C "${RITE_PROJECT_ROOT:-.}" ls-files --error-unmatch "$_cno_map_rel" >/dev/null 2>&1; then
-      docs_map_build || true
-    fi
-    print_info "Docs map built"
 
     if [ -n "$instructions" ]; then
       echo ""

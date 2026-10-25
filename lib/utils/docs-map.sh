@@ -442,14 +442,12 @@ docs_map_ensure() {
   # Rebuild when the map is missing OR is a pre-v3 format (missing type/rubric columns).
   local _needs_rebuild=0
   if [ ! -f "$map_file" ]; then
-    # Guard: if the map is tracked in git, a pull/checkout will restore it.
-    # Building here would create an untracked file that blocks git pull --ff-only.
-    local _me_root="${RITE_PROJECT_ROOT:-.}"
-    local _me_rel="${map_file#${_me_root}/}"
-    if git -C "$_me_root" ls-files --error-unmatch "$_me_rel" >/dev/null 2>&1; then
-      return 0
-    fi
-    _needs_rebuild=1
+    # Map is absent — skip. Building here creates an untracked file that blocks
+    # git pull --ff-only in the main checkout, whether the map has never been
+    # committed (ls-files guard would not fire) or was committed and then deleted
+    # (git operations will restore it). Map creation is delegated to
+    # _docs_apply_approved (the docs-PR worktree path) where it is committed.
+    return 0
   else
     local _header
     _header="$(head -1 "$map_file" 2>/dev/null || true)"
