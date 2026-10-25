@@ -663,6 +663,13 @@ claude_provider_resolve_model() {
     # haiku's job. Decoupled from every other var. See: "Triage Gate" in
     # docs/architecture/behavioral-design.md.
     triage)         echo "${RITE_TRIAGE_MODEL:-claude-haiku-4-5}" ;;
+    # full_suite_report interprets overnight run failure data (counts, persistent/cleared
+    # classification, assertion lines) and produces a short markdown diagnosis.
+    # Mostly templating pre-computed facts with a thin interpretive tail — sonnet's job.
+    # Decoupled from RITE_REVIEW_MODEL so moving review off opus never silently touches
+    # the overnight report path. See: "Model Selection Per Task" in
+    # docs/architecture/behavioral-design.md.
+    full_suite_report) echo "${RITE_FULL_SUITE_REPORT_MODEL:-claude-sonnet-4-6}" ;;
     *)              echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
 }

@@ -45,6 +45,13 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 RITE_VERBOSE=false
 export RITE_VERBOSE
 
+# Parse flags — only --investigate is recognised; unknown flags are silently
+# ignored so callers can pass additional env vars without breaking the script.
+_investigate=false
+for _arg in "$@"; do
+  case "$_arg" in --investigate) _investigate=true ;; esac
+done
+
 # ---------------------------------------------------------------------------
 # Resolve project root and state paths
 # ---------------------------------------------------------------------------
@@ -91,7 +98,11 @@ export RITE_LOG_FILE="$_LOG_FILE"
 _lint_raw=""
 _lint_raw_stripped=""
 _tests_raw=""
-trap 'rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}"' EXIT
+_serial_results_raw=""
+_invest_dir=""
+_interp_prompt_file=""
+_issue_body_file=""
+trap 'rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
 
 exec > >(tee >(strip_ansi >> "$_LOG_FILE"))
 exec 2>&1
@@ -271,5 +282,404 @@ else
   print_success "Full suite passed in ${_duration}s (lint: 0 violations, tests: $_total_bats files)"
 fi
 
-rm -f "${_lint_raw:-}" "${_tests_raw:-}"
+# ---------------------------------------------------------------------------
+# Investigation mode (--investigate, only when run produced failures)
+# ---------------------------------------------------------------------------
+# Runs the failing bats files serially to separate genuine failures from
+# parallel-starvation timeouts, writes a dated investigation report to
+# .rite/reports/, and files one deduped, runbook-conforming remediation issue
+# for persistent failures. Cleared-on-serial-rerun failures are reported as
+# flake — no issue is filed for them.
+if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
+  _REPORTS_DIR="$_PROJECT_ROOT/$_DATA_DIR/reports"
+  mkdir -p "$_REPORTS_DIR" 2>/dev/null || true
+  _REPORT_FILE="$_REPORTS_DIR/full-suite-${_TODAY_COMPACT}.md"
+
+  print_step "Investigating failures (serial re-run to classify persistent vs flake)..."
+
+  # --- Create a scratch directory for investigation data ---
+  _invest_dir=$(mktemp -d "${TMPDIR:-/tmp}/rite_fs_inv_$$_XXXXXX")
+
+  # TSV files: each non-empty line is one entry
+  # persistent.tsv: test_name TAB bats_file TAB assertion_line
+  # cleared.tsv:    test_name TAB bats_file
+  # unmapped.tsv:   test_name (no file found via grep)
+  _persistent_tsv="${_invest_dir}/persistent.tsv"
+  _cleared_tsv="${_invest_dir}/cleared.tsv"
+  _unmapped_tsv="${_invest_dir}/unmapped.tsv"
+  touch "$_persistent_tsv" "$_cleared_tsv" "$_unmapped_tsv"
+
+  # --- Extract failing test names from the parallel run ---
+  _failing_names_file="${_invest_dir}/failing_names.txt"
+  touch "$_failing_names_file"
+  if [ "$_tests_exit" -ne 0 ] && [ -s "${_tests_raw:-/dev/null}" ]; then
+    grep "^not ok [0-9]* " "$_tests_raw" 2>/dev/null \
+      | sed 's/^not ok [0-9]* //' > "$_failing_names_file" || true
+  fi
+
+  # --- Map each failing test name to its source .bats file ---
+  # Collect a deduplicated list of .bats files that contain failing tests.
+  _failing_bats_file="${_invest_dir}/failing_bats_files.txt"
+  touch "$_failing_bats_file"
+  while IFS= read -r _t_name; do
+    [ -z "$_t_name" ] && continue
+    # Search for @test "name" (double-quote variant first, then single-quote).
+    # grep -F treats the pattern as a literal string — safe for any test name.
+    _t_src=$(grep -rlF "@test \"${_t_name}\"" "$_PROJECT_ROOT/tests/" 2>/dev/null | head -1 || true)
+    if [ -z "$_t_src" ]; then
+      _t_src=$(grep -rlF "@test '${_t_name}'" "$_PROJECT_ROOT/tests/" 2>/dev/null | head -1 || true)
+    fi
+    if [ -n "$_t_src" ]; then
+      # Dedup: only add file if not already present
+      if ! grep -qF "$_t_src" "$_failing_bats_file" 2>/dev/null; then
+        echo "$_t_src" >> "$_failing_bats_file"
+      fi
+    else
+      # Could not locate source file — log as unmapped
+      echo "$_t_name" >> "$_unmapped_tsv"
+    fi
+  done < "$_failing_names_file"
+
+  # --- Serial re-run each failing .bats file ---
+  _serial_results_raw=$(mktemp "${TMPDIR:-/tmp}/rite_fs_serial_$$_XXXXXX")
+
+  while IFS= read -r _bats_file; do
+    [ -z "$_bats_file" ] && continue
+    print_info "  Serial re-run: ${_bats_file#"$_PROJECT_ROOT/"}"
+    set +e
+    (cd "$_PROJECT_ROOT" && bats "$_bats_file") > "$_serial_results_raw" 2>&1
+    _serial_file_exit=$?
+    set -e
+
+    # For each originally-failing test from this file, classify persistent vs cleared
+    while IFS= read -r _t_name; do
+      [ -z "$_t_name" ] && continue
+      # Skip if this test's file isn't the current file
+      _t_canonical_src=$(grep -rlF "@test \"${_t_name}\"" "$_bats_file" 2>/dev/null | head -1 || true)
+      if [ -z "$_t_canonical_src" ]; then
+        _t_canonical_src=$(grep -rlF "@test '${_t_name}'" "$_bats_file" 2>/dev/null | head -1 || true)
+      fi
+      [ -z "$_t_canonical_src" ] && continue
+
+      # Check whether this test still fails in serial run
+      if grep -qF "not ok" "$_serial_results_raw" 2>/dev/null && \
+         grep -qF "$_t_name" "$_serial_results_raw" 2>/dev/null; then
+        # Persistent: extract first # line after the not-ok for this test
+        _assert_line=$(grep -A4 "not ok.*${_t_name}" "$_serial_results_raw" 2>/dev/null \
+          | grep "^#" | head -1 | sed 's/^# *//' || true)
+        printf '%s\t%s\t%s\n' "$_t_name" "$_bats_file" "${_assert_line:-}" >> "$_persistent_tsv"
+      else
+        # Cleared on serial re-run — parallel-starvation flake
+        printf '%s\t%s\n' "$_t_name" "$_bats_file" >> "$_cleared_tsv"
+      fi
+    done < "$_failing_names_file"
+  done < "$_failing_bats_file"
+
+  # --- Count results ---
+  _persistent_count=$(grep -c "." "$_persistent_tsv" || true)
+  _cleared_count=$(grep -c "." "$_cleared_tsv" || true)
+  _unmapped_count=$(grep -c "." "$_unmapped_tsv" || true)
+  # Lint violations are always persistent (deterministic, no parallelism involved)
+  _lint_persistent_count="${_lint_count:-0}"
+
+  print_info "  Results: ${_persistent_count} persistent, ${_cleared_count} cleared (flake), ${_unmapped_count} unmapped"
+
+  # --- LLM interpretation (non-blocking: falls back to empty on any failure) ---
+  _interpretation=""
+  # shellcheck disable=SC1090
+  if source "$RITE_LIB_DIR/providers/provider-interface.sh" 2>/dev/null && \
+     load_provider "${RITE_UTILITY_PROVIDER:-claude}" 2>/dev/null && \
+     provider_detect_cli 2>/dev/null; then
+    _interp_prompt_file=$(mktemp "${TMPDIR:-/tmp}/rite_fs_prompt_$$_XXXXXX")
+
+    # Build prompt content — write to file (not heredoc-in-cmdsubst)
+    {
+      cat << 'PROMPT_HDR'
+You are analyzing a Sharkrite full-suite test run failure investigation.
+Summarize in 3-6 markdown bullet points for a developer reviewing the overnight results.
+State whether the failures are primarily a parallelism problem, a genuine regression, a lint
+issue, or a mix. For persistent failures name the test file(s) and suggest the likely root cause
+from the assertion lines. For cleared tests confirm they are parallelism artifacts. If lint
+violations exist, name the files/rules. End with a one-line recommended action.
+Output ONLY the bullet list, no preamble or trailing text.
+
+PROMPT_HDR
+      echo "Date: ${_TODAY}"
+      echo "Branch: ${_BRANCH}"
+      echo "Lint violations: ${_lint_count:-0}"
+      echo "Bats failures (parallel): ${_tests_count}"
+      echo "Persistent (still fails serially): ${_persistent_count}"
+      echo "Cleared on serial re-run (flake): ${_cleared_count}"
+      echo "Unmapped (no source file found): ${_unmapped_count}"
+      echo ""
+      echo "--- Persistent failing tests ---"
+      if [ -s "$_persistent_tsv" ]; then
+        while IFS=$'\t' read -r _pn _pf _pa; do
+          echo "  name: ${_pn}"
+          echo "  file: ${_pf#"$_PROJECT_ROOT/"}"
+          [ -n "${_pa:-}" ] && echo "  assertion: ${_pa}"
+        done < "$_persistent_tsv"
+      else
+        echo "  (none)"
+      fi
+      echo ""
+      echo "--- Lint violations (first 10) ---"
+      if [ -s "${_lint_raw_stripped:-/dev/null}" ]; then
+        grep -E '^[^:]+:[0-9]+' "${_lint_raw_stripped}" 2>/dev/null | head -10 || echo "  (none)"
+      else
+        echo "  (none)"
+      fi
+      echo ""
+      echo "--- Cleared on serial re-run ---"
+      if [ -s "$_cleared_tsv" ]; then
+        while IFS=$'\t' read -r _cn _cf; do
+          echo "  name: ${_cn}  file: ${_cf#"$_PROJECT_ROOT/"}"
+        done < "$_cleared_tsv"
+      else
+        echo "  (none)"
+      fi
+    } > "$_interp_prompt_file"
+
+    _fs_report_model=$(provider_resolve_model "full_suite_report")
+    _interpretation=$(provider_run_prompt "$(cat "$_interp_prompt_file")" "$_fs_report_model" true 2>/dev/null) || true
+    rm -f "${_interp_prompt_file:-}"
+    _interp_prompt_file=""
+  fi
+
+  # --- Write investigation report ---
+  {
+    echo "# Full-Suite Failure Investigation — ${_TODAY}"
+    echo ""
+    echo "**Branch:** \`${_BRANCH}\`  **Host:** ${_HOSTNAME}"
+    echo "**Log:** \`${_LOG_FILE}\`"
+    echo ""
+    echo "## Summary"
+    echo ""
+    echo "| Category | Count |"
+    echo "|----------|-------|"
+    echo "| Lint violations | ${_lint_count:-0} |"
+    echo "| Bats failures (parallel run) | ${_tests_count} |"
+    echo "| Persistent (serial re-run confirms) | ${_persistent_count} |"
+    echo "| Cleared on serial re-run (flake) | ${_cleared_count} |"
+    echo "| Unmapped (source file not found) | ${_unmapped_count} |"
+    echo ""
+    if [ -n "${_interpretation:-}" ]; then
+      echo "## Interpretation"
+      echo ""
+      echo "${_interpretation}"
+      echo ""
+    fi
+    if [ "${_persistent_count:-0}" -gt 0 ]; then
+      echo "## Persistent Failures"
+      echo ""
+      echo "These tests failed in both the parallel run and the serial re-run."
+      echo ""
+      while IFS=$'\t' read -r _pn _pf _pa; do
+        [ -z "$_pn" ] && continue
+        echo "### \`${_pn}\`"
+        echo "- **File:** \`${_pf#"$_PROJECT_ROOT/"}\`"
+        [ -n "${_pa:-}" ] && echo "- **Assertion:** ${_pa}"
+        echo ""
+      done < "$_persistent_tsv"
+    fi
+    if [ "${_lint_count:-0}" -gt 0 ]; then
+      echo "## Lint Violations (${_lint_count})"
+      echo ""
+      if [ -s "${_lint_raw_stripped:-/dev/null}" ]; then
+        grep -E '^[^:]+:[0-9]+' "${_lint_raw_stripped}" 2>/dev/null | head -20 | \
+          while IFS= read -r _ll; do echo "- \`${_ll}\`"; done || true
+      fi
+      echo ""
+    fi
+    if [ "${_cleared_count:-0}" -gt 0 ]; then
+      echo "## Cleared on Serial Re-run (Parallel-Starvation Flake)"
+      echo ""
+      echo "These failed in the parallel run but passed when re-run serially — likely parallel-starvation timeouts, not genuine regressions."
+      echo ""
+      while IFS=$'\t' read -r _cn _cf; do
+        [ -z "$_cn" ] && continue
+        echo "- \`${_cn}\` (\`${_cf#"$_PROJECT_ROOT/"}\`)"
+      done < "$_cleared_tsv"
+      echo ""
+    fi
+    if [ "${_unmapped_count:-0}" -gt 0 ]; then
+      echo "## Unmapped Failures (source file not found)"
+      echo ""
+      while IFS= read -r _un; do
+        [ -z "$_un" ] && continue
+        echo "- \`${_un}\`"
+      done < "$_unmapped_tsv"
+      echo ""
+    fi
+    echo "---"
+    echo "*Generated by \`rite --full-suite --investigate\` on ${_TODAY} $(date '+%H:%M:%S')*"
+  } > "$_REPORT_FILE"
+
+  print_success "Investigation report: $_REPORT_FILE"
+
+  # --- Remediation issue (persistent failures only) ---
+  # Flake-only runs (all cleared) get no issue — just the report.
+  # shellcheck disable=SC1090
+  source "$RITE_LIB_DIR/utils/markers.sh" 2>/dev/null || true
+  # shellcheck disable=SC1090
+  source "$RITE_LIB_DIR/utils/gh-retry.sh" 2>/dev/null || true
+  if [ "${_persistent_count:-0}" -gt 0 ] || [ "${_lint_persistent_count:-0}" -gt 0 ]; then
+
+    # Compute a deterministic hash from the sorted set of persistent items.
+    # cksum is POSIX and available on macOS + Linux; take only the decimal checksum.
+    _hash_lines_file="${_invest_dir}/hash_lines.txt"
+    [ "${_lint_persistent_count:-0}" -gt 0 ] && printf 'lint:%s\n' "${_lint_count}" > "$_hash_lines_file" || touch "$_hash_lines_file"
+    if [ -s "$_persistent_tsv" ]; then
+      while IFS=$'\t' read -r _pn _pf _pa; do
+        [ -z "$_pn" ] && continue
+        echo "$_pn" >> "$_hash_lines_file"
+      done < "$_persistent_tsv"
+    fi
+    _hash=$(sort "$_hash_lines_file" | cksum | awk '{print $1}' || true)
+    _hash="${_hash:-0}"
+
+    # Dedup check: search for an open issue already carrying this marker.
+    # Guard anchors on the hash (not the bare prefix) per bare-prefix-grep rule.
+    _existing_remediation=""
+    _existing_remediation=$(gh_safe issue list --state open \
+      --search "${RITE_MARKER_FULL_SUITE_REMEDIATION:-}:${_hash}" \
+      --json number --jq '.[0].number' 2>/dev/null || true)
+
+    if [ -n "${_existing_remediation:-}" ] && [ "${_existing_remediation}" != "null" ]; then
+      print_info "Remediation issue #${_existing_remediation} already exists for this failure set — skipping duplicate."
+    else
+      # Build runbook-conforming issue body (write to temp file — no heredoc-in-cmdsubst)
+      _issue_body_file=$(mktemp "${TMPDIR:-/tmp}/rite_fs_issue_$$_XXXXXX")
+
+      # Collect verified file paths for Claude Context (Files to Read)
+      _ctx_files_block=""
+      if [ -s "$_persistent_tsv" ]; then
+        while IFS=$'\t' read -r _pn _pf _pa; do
+          [ -z "$_pn" ] && continue
+          _ctx_files_block="${_ctx_files_block}- \`${_pf#"$_PROJECT_ROOT/"}\`"$'\n'
+        done < "$_persistent_tsv"
+      fi
+      _ctx_files_block="${_ctx_files_block:-- _No persistent test failures found_}"
+
+      # Build acceptance criteria (one per persistent failing test + one for lint)
+      _ac_block=""
+      if [ -s "$_persistent_tsv" ]; then
+        while IFS=$'\t' read -r _pn _pf _pa; do
+          [ -z "$_pn" ] && continue
+          _ac_block="${_ac_block}- [ ] \`${_pn}\` passes: \`bats '${_pf#"$_PROJECT_ROOT/"}'\`"$'\n'
+        done < "$_persistent_tsv"
+      fi
+      if [ "${_lint_persistent_count:-0}" -gt 0 ]; then
+        _ac_block="${_ac_block}- [ ] Lint check clean: \`make check\`"$'\n'
+      fi
+      _ac_block="${_ac_block:-- [ ] All failures resolved}"
+
+      # Build verification commands block
+      _verify_block="make check"
+      if [ -s "$_persistent_tsv" ]; then
+        while IFS=$'\t' read -r _pn _pf _pa; do
+          [ -z "$_pn" ] && continue
+          _verify_block="${_verify_block}"$'\n'"bats '${_pf#"$_PROJECT_ROOT/"}'"
+        done < "$_persistent_tsv"
+      fi
+      _verify_block="${_verify_block}"$'\n'"rite --full-suite    # confirm full safety net passes"
+
+      {
+        echo "<!-- ${RITE_MARKER_FULL_SUITE_REMEDIATION:-}:${_hash} -->"
+        echo ""
+        echo "## Description"
+        echo ""
+        echo "Overnight full-suite run on ${_TODAY} found ${_persistent_count} persistent test failure(s) and ${_lint_persistent_count} lint violation(s) that survived serial re-run. All cleared-on-serial failures are excluded from this issue (those are parallelism artifacts, not regressions). Fix the persistent failures before the next scheduled run."
+        echo ""
+        echo "**Report:** \`${_REPORT_FILE}\`"
+        echo "**Branch:** \`${_BRANCH}\`"
+        echo "**Log:** \`${_LOG_FILE}\`"
+        echo ""
+        echo "## Time Estimate"
+        echo ""
+        echo "1hr"
+        echo ""
+        echo "## Claude Context"
+        echo ""
+        echo "Files to Read:"
+        printf '%s' "${_ctx_files_block}"
+        echo ""
+        echo "Files to Modify:"
+        echo "- _Determine from the failing assertion lines in the report above_"
+        echo ""
+        echo "Related Issues: None"
+        echo ""
+        echo "## Acceptance Criteria"
+        echo ""
+        printf '%s' "${_ac_block}"
+        echo ""
+        echo "## Verification Commands"
+        echo ""
+        echo '```bash'
+        printf '%s\n' "${_verify_block}"
+        echo '```'
+        echo ""
+        echo "## Done Definition"
+        echo ""
+        echo "Done when all persistent failures listed above pass on a fresh \`rite --full-suite\` run."
+        echo ""
+        echo "## Scope Boundary"
+        echo ""
+        echo "DO: Fix the code or tests causing the persistent failures listed above."
+        echo "DO NOT: Fix cleared-on-serial (flake) tests, refactor unrelated code, or change the full-suite runner itself."
+        echo ""
+        echo "**Dependencies**: None"
+        echo ""
+        echo "## Documentation Impact"
+        echo ""
+        echo "Verified \`CLAUDE.md\` → Full-Suite Safety Net section — this fix adds no new flags or config vars; no update needed."
+        echo ""
+        echo "## Bug Class Analysis"
+        echo ""
+        echo "Investigation report: \`${_REPORT_FILE}\`"
+        echo "Full-suite log: \`${_LOG_FILE}\`"
+        echo "Persistent failures: ${_persistent_count}, lint violations: ${_lint_persistent_count}"
+      } > "$_issue_body_file"
+
+      _issue_title="Fix full-suite failures - ${_TODAY}"
+      _new_issue_url=""
+      if _new_issue_url=$(gh_safe issue create \
+          --title "$_issue_title" \
+          --body-file "$_issue_body_file" \
+          --label "tech-debt,priority-high" 2>/dev/null); then
+        rm -f "${_issue_body_file:-}"
+        _issue_body_file=""
+        _new_issue_num=$(echo "$_new_issue_url" | grep -oE '[0-9]+$' || true)
+        print_success "Remediation issue filed: #${_new_issue_num:-?} — ${_new_issue_url}"
+        _diag "FULL_SUITE_REMEDIATION_CREATED issue=${_new_issue_num:-unknown} hash=${_hash} persistent=${_persistent_count} lint=${_lint_persistent_count}"
+      else
+        # gh issue create failed — save orphan artifact so findings are not lost
+        _orphan_file="${_PROJECT_ROOT}/${_DATA_DIR}/orphaned-followup-items.md"
+        mkdir -p "${_PROJECT_ROOT}/${_DATA_DIR}" 2>/dev/null || true
+        {
+          echo "---"
+          echo "# Orphaned Full-Suite Remediation Issue"
+          echo "# Generated: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo "# Branch: ${_BRANCH}"
+          echo "# Report: ${_REPORT_FILE}"
+          echo "# Intended title: ${_issue_title}"
+          echo "# Re-run: rite --full-suite --investigate  (after resolving gh API issue)"
+          echo ""
+          cat "$_issue_body_file" 2>/dev/null || echo "(body file unavailable)"
+        } >> "$_orphan_file" || true
+        rm -f "${_issue_body_file:-}"
+        _issue_body_file=""
+        print_warning "Could not create remediation issue — saved to orphan artifact: ${_orphan_file}"
+        _diag "FULL_SUITE_REMEDIATION_ORPHANED hash=${_hash} persistent=${_persistent_count} lint=${_lint_persistent_count}"
+      fi
+    fi
+  else
+    print_info "All bats failures cleared on serial re-run — parallel-starvation flake only. No remediation issue filed."
+  fi
+
+  rm -rf "${_invest_dir:-}" 2>/dev/null || true
+  _invest_dir=""
+fi
+
+rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" 2>/dev/null || true
 exit "$_overall_exit"
