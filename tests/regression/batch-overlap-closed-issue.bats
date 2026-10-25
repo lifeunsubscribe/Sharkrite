@@ -26,18 +26,23 @@
 #   STRUCTURAL (guard 1 — parent-PR):
 #    1. CLOSED-state gate exists before the parent-PR grep check
 #    2. CLOSED-state gate exists before _extract_dep_issues_from_body
+#    3. drift: waiting_for_parent assignment is inside the CLOSED-state gate
+#    4. drift: dep_failed assignment is inside the CLOSED-state gate
 #   STRUCTURAL (guard 3 — overlap):
-#    3. Closed-issue guard exists before the _ftm_file_overlap call
-#    4. Guard comment references the parity contract ("do NOT short-circuit")
+#    5. Closed-issue guard exists before the _ftm_file_overlap call
+#    6. Guard comment references the parity contract ("do NOT short-circuit")
 #   BEHAVIORAL (guard 3 — overlap):
-#    5. CLOSED issue with pre-populated _OVERLAP_FILES → proceeds (no defer)
-#    6. OPEN issue with pre-populated _OVERLAP_FILES → deferred (guard fires)
-#    7. CLOSED: ISSUE_LIST length is unchanged after the guard (no re-append)
-#   BEHAVIORAL (guards 1+2 — parent-PR + dep):
-#    8. CLOSED issue with parent-PR marker → proceeds (waiting_for_parent never set)
-#    9. OPEN issue with parent-PR marker → skipped (waiting_for_parent set)
-#   10. CLOSED issue with failed dep → proceeds (dep_failed never set)
-#   11. OPEN issue with failed dep → skipped (dep_failed set)
+#    7. CLOSED issue with pre-populated _OVERLAP_FILES → proceeds (no defer)
+#    8. OPEN issue with pre-populated _OVERLAP_FILES → deferred (guard fires)
+#    9. CLOSED: ISSUE_LIST length is unchanged after the guard (no re-append)
+#   BEHAVIORAL (guards 1+2 — parent-PR + dep, replica-based):
+#   10. CLOSED issue with parent-PR marker → proceeds (waiting_for_parent never set)
+#   11. OPEN issue with parent-PR marker → skipped (waiting_for_parent set)
+#   12. CLOSED issue with failed dep → proceeds (dep_failed never set)
+#   13. OPEN issue with failed dep → skipped (dep_failed set)
+#   Note: tests 10-13 exercise a self-contained replica of the gate logic. Tests
+#   3-4 (drift) are the production-side backstop: they verify the key status
+#   assignments remain inside the CLOSED-state gate in the real source file.
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -95,6 +100,53 @@ setup() {
   }
   [ "$_guard_line" -lt "$_dep_guard_line" ] || {
     echo "FAIL: guard (line $_guard_line) must come BEFORE dep guard call site (line $_dep_guard_line)" >&2
+    return 1
+  }
+}
+
+@test "drift: waiting_for_parent assignment is inside the CLOSED-state gate in production" {
+  # Prevents silent divergence between the replica in _build_parent_pr_guard_script
+  # and the production gate. The behavioral tests (8-9) test the replica, not
+  # production — a control-flow regression (e.g. re-adding a continue for CLOSED
+  # inside the gate) would pass those tests unchanged. This drift check is the
+  # production-side backstop: the waiting_for_parent status assignment must appear
+  # BEFORE the annotated fi that closes the CLOSED-state gate.
+  local _gate_close_line _waiting_line
+  _gate_close_line=$(grep -n 'fi  # \[ "\$ISSUE_STATE" != "CLOSED" \].*parent-PR + dep guards' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+  _waiting_line=$(grep -n 'ISSUE_STATUS\["$ISSUE_NUM"\]="waiting_for_parent"' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_gate_close_line" ] || {
+    echo "FAIL: annotated closing fi for CLOSED-state gate not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ -n "$_waiting_line" ] || {
+    echo "FAIL: waiting_for_parent status assignment not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ "$_waiting_line" -lt "$_gate_close_line" ] || {
+    echo "FAIL: waiting_for_parent assignment (line $_waiting_line) must be INSIDE the CLOSED gate (closes at line $_gate_close_line)" >&2
+    return 1
+  }
+}
+
+@test "drift: dep_failed assignment is inside the CLOSED-state gate in production" {
+  # Same backstop for the dep guard. If the dep_failed status assignment is moved
+  # outside the CLOSED-state gate (or the gate is removed), this test catches it
+  # even though the behavioral tests (10-11) test only the replica.
+  local _gate_close_line _dep_failed_line
+  _gate_close_line=$(grep -n 'fi  # \[ "\$ISSUE_STATE" != "CLOSED" \].*parent-PR + dep guards' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+  _dep_failed_line=$(grep -n 'ISSUE_STATUS\["$ISSUE_NUM"\]="dep_failed"' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_gate_close_line" ] || {
+    echo "FAIL: annotated closing fi for CLOSED-state gate not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ -n "$_dep_failed_line" ] || {
+    echo "FAIL: dep_failed status assignment not found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ "$_dep_failed_line" -lt "$_gate_close_line" ] || {
+    echo "FAIL: dep_failed assignment (line $_dep_failed_line) must be INSIDE the CLOSED gate (closes at line $_gate_close_line)" >&2
     return 1
   }
 }
