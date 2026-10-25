@@ -1174,6 +1174,10 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
   # paths, and deferral citations. Runs last in the deterministic linter chain.
   # Errors (cycles, unresolved refs) are fatal; warnings are non-fatal.
   # Pass existing_issues so dangling-ref check can validate against open issues.
+  # Self-references in an issue's own Dependencies are meaningless; rewrite
+  # them first so they can't masquerade as a cycle (see _strip_self_dep_refs).
+  _strip_self_dep_refs "$temp_file"
+
   _strict_lint_rc=0
   _lint_issues_strict "$temp_file" "$existing_issues" || _strict_lint_rc=$?
   if [ "$_strict_lint_rc" -ne 0 ]; then
@@ -1499,6 +1503,76 @@ _title_is_spike() {
   local _t="$1"
   [[ "$_t" =~ ^Capture\ (.+)\ sample\ -\ fixtures$ ]] || \
   [[ "$_t" =~ ^spike:\ capture\ (.+)\ sample\ for\ grounding$ ]]
+}
+
+# =============================================================================
+# _strip_self_dep_refs — rewrite an issue's reference to its own ordinal.
+#
+# An issue cannot depend on itself, so a #K in issue K's own Dependencies
+# section carries no scheduling meaning — but left in place it reads as a
+# one-node cycle and _lint_issues_strict aborts the whole generation (live:
+# 2026-10-24, doc-drift plan, 25 issues on fable discarded because issue #16
+# wrote "After #16's prerequisites — After #2, #13"). Had it reached GitHub,
+# the ordinal→issue-number rewrite would have made the issue block on itself
+# in the batch dep-guard forever.
+#
+# Rewrites the self-ref to "this issue" ("After this issue's prerequisites")
+# so the line still reads naturally and carries only the real edges. Scoped
+# exactly like _lint_issues_strict's dep harvest: the **Dependencies**: header
+# line and following lines until the next **/## header or ---END---. Ordinals
+# are non-spike positions (spikes have none), matching the lint's numbering.
+# Real multi-issue cycles are untouched and still fail the lint.
+#
+# Usage: _strip_self_dep_refs <issues_file>   (rewrites in place; always 0)
+# =============================================================================
+_strip_self_dep_refs() {
+  local _sd_file="$1"
+  [ -s "$_sd_file" ] || return 0
+  local _sd_out
+  _sd_out=$(mktemp) || return 0
+  local _sd_line _sd_title="" _sd_ord=0 _sd_self="" _sd_in_issue=false _sd_in_deps=false
+  local _sd_changed=0
+  while IFS= read -r _sd_line || [ -n "$_sd_line" ]; do
+    if [ "$_sd_line" = "---ISSUE---" ]; then
+      _sd_in_issue=true; _sd_in_deps=false; _sd_title=""; _sd_self=""
+    elif [ "$_sd_in_issue" = true ]; then
+      case "$_sd_line" in
+        "TITLE: "*)
+          _sd_title="${_sd_line#TITLE: }"
+          if ! _title_is_spike "$_sd_title"; then
+            _sd_ord=$((_sd_ord + 1))
+            _sd_self="$_sd_ord"
+          fi
+          ;;
+        "---END---")
+          _sd_in_issue=false; _sd_in_deps=false
+          ;;
+        *)
+          if [[ "$_sd_line" =~ ^(\*\*)?Dependencies(\*\*)?[[:space:]]*: ]]; then
+            _sd_in_deps=true
+          elif [ "$_sd_in_deps" = true ]; then
+            case "$_sd_line" in "**"*|"##"*) _sd_in_deps=false ;; esac
+          fi
+          if [ "$_sd_in_deps" = true ] && [ -n "$_sd_self" ] \
+             && [[ "$_sd_line" =~ \#${_sd_self}([^0-9]|$) ]]; then
+            local _sd_new
+            _sd_new=$(printf '%s\n' "$_sd_line" | sed -E "s/#${_sd_self}([^0-9]|$)/this issue\1/g" || true)
+            if [ "$_sd_new" != "$_sd_line" ]; then
+              print_info "plan: dropped self-reference #${_sd_self} from the Dependencies of '${_sd_title}' (an issue cannot depend on itself)" >&2
+              _sd_line="$_sd_new"
+              _sd_changed=$((_sd_changed + 1))
+            fi
+          fi
+          ;;
+      esac
+    fi
+    printf '%s\n' "$_sd_line" >> "$_sd_out"
+  done < "$_sd_file"
+  if [ "$_sd_changed" -gt 0 ]; then
+    cat "$_sd_out" > "$_sd_file"
+  fi
+  rm -f "$_sd_out"
+  return 0
 }
 
 # =============================================================================
