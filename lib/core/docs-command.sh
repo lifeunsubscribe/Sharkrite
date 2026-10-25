@@ -76,6 +76,14 @@ _docs_ensure_map() {
     return 0
   fi
 
+  # Guard: if the map is tracked in git, a pull/checkout will restore it.
+  # Building here would create an untracked file that blocks git pull --ff-only.
+  local _em_root="${RITE_PROJECT_ROOT:-.}"
+  local _em_rel="${map_file#${_em_root}/}"
+  if git -C "$_em_root" ls-files --error-unmatch "$_em_rel" >/dev/null 2>&1; then
+    return 0
+  fi
+
   local auto_enabled="${RITE_DOCS_MAP_AUTO:-true}"
   if [ "$auto_enabled" = "false" ] || [ "$auto_enabled" = "0" ]; then
     local reply_val="N"
@@ -940,10 +948,17 @@ _docs_enable_flow() {
       docs_directed_update "$instructions" || true
     fi
   else
-    # No: record off + ensure map exists (same guard: don't overwrite a committed map)
+    # No: record off + build map on first run (skip when already committed in git —
+    # building a committed-but-missing map creates an untracked file that blocks
+    # git pull --ff-only in the main checkout)
     record_doc_mode "off"
     print_info "Doc drift tracking off — run 'rite docs' again to turn it on"
-    docs_map_ensure || true
+    local _cno_map_file
+    _cno_map_file="$(docs_map_path)"
+    local _cno_map_rel="${_cno_map_file#${RITE_PROJECT_ROOT:-.}/}"
+    if [ ! -f "$_cno_map_file" ] && ! git -C "${RITE_PROJECT_ROOT:-.}" ls-files --error-unmatch "$_cno_map_rel" >/dev/null 2>&1; then
+      docs_map_build || true
+    fi
     print_info "Docs map built"
 
     if [ -n "$instructions" ]; then
