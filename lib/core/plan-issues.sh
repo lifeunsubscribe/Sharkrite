@@ -1587,7 +1587,9 @@ _strip_par_ref() {
 #   "(..., #N)"                                               → #N removed
 #   "(prose; can run in parallel with #N, ...)"               → #N removed, prose intact
 #
-# If #N already present in any form (After #N or bare #N), the add step is skipped (idempotent).
+# If #N already present outside parallel-worded parens (After #N or bare #N outside such groups),
+# the add step is skipped (idempotent).  A #N inside a "(parallel ...)" annotation does NOT count
+# as present — Step 1 should have removed it; if it remains the dep edge is still added.
 # Non-inline Dependencies lines (header-only, no ": ") are returned unchanged.
 # =============================================================================
 
@@ -1611,11 +1613,16 @@ _transform_dep_line() {
   _tdl_content=$(_strip_par_ref "$_tdl_content" "$_tdl_par_ref")
 
   # Step 2: add After #N if not already present.
-  # Match any #N word-boundary occurrence — bare refs (#N without "After ") already
-  # encode the dep edge (Step 1 has removed #N from par annotations, so any survivor
-  # is a genuine dep). Matching only "After #N" missed bare refs and produced duplicates
-  # (orrery round 6: "After #8, ..., #8"). Suffix ([^0-9]|$) prevents #8 matching #80.
-  if ! echo "$_tdl_content" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
+  # Strip parallel-worded parenthetical groups before the presence check — a #N
+  # token inside a "parallel" paren group (canonical "can run in parallel with #N"
+  # that Step 1 missed, or non-canonical "parallel with #N", "(parallel: #N)",
+  # etc.) is a scheduling annotation, not a dep edge.  Non-parallel paren groups
+  # like "(and #N)" DO carry genuine dep refs and must remain visible for the
+  # presence check.  Genuine dep edges (After #N, bare #N) always appear outside
+  # parens.  Suffix ([^0-9]|$) prevents #8 matching #80.
+  local _tdl_check
+  _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*[Pp]arallel[^)]*)//g' || true)
+  if ! echo "$_tdl_check" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
         # Replace "None" keyword with the After tag, preserving trailing content
@@ -1643,8 +1650,10 @@ _transform_dep_line() {
 #
 # Reads the file line-by-line, transforms the first **Dependencies**: line in
 # the block whose TITLE matches later_title, writes to a temp file, then
-# atomically replaces the original.  Idempotent: if #N appears in any form
-# (bare #N or After #N) and the annotation already absent, the file is unchanged.
+# atomically replaces the original.  Idempotent: if #N appears outside
+# parallel-worded paren groups (bare #N or After #N) and the annotation is
+# already absent, the file is unchanged.  A #N inside a "(parallel ...)" group
+# does not count — the dep edge is still added in that case.
 # =============================================================================
 
 _autochain_rewrite_deps() {

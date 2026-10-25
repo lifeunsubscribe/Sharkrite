@@ -5855,6 +5855,67 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# AC8d — non-canonical parallel annotation: dep edge must still be added.
+#
+# A Dependencies line carrying a non-canonical parallel annotation like
+# "(parallel with #8)" (missing "can run in") leaves a bare #8 token that
+# Step 1 (_strip_par_ref) does not remove.  Before the fix, Step 2's presence
+# check saw #8 inside the paren group and skipped the append — producing a
+# false "[auto-chained]" log with no edge written.
+#
+# After the fix, Step 2 strips paren groups before the presence check, so #8
+# inside "(parallel with #8)" is invisible to the check, and "After #8" is
+# correctly appended.
+# ---------------------------------------------------------------------------
+
+@test "AC8d: non-canonical parallel annotation does not suppress dep-edge append" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: (parallel with #8)" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+
+  # Must contain exactly one #8 reference outside paren groups.
+  # Step 2 strips only parallel-worded parens before the presence check, so
+  # a non-canonical annotation like "(parallel with #8)" is excluded from the
+  # presence check but NOT removed from the output — only the canonical
+  # "can run in parallel with" phrase is cleaned by _strip_par_ref in Step 1.
+  local after_count
+  after_count=$(printf '%s\n' "$result" | grep -oE 'After #8([^0-9]|$)' | wc -l || true)
+  [ "$after_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 'After #8', got $after_count: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC8e — non-canonical parallel annotation with other deps: dep edge appended.
+#
+# When the line already has deps but only a non-canonical parallel annotation
+# references #8 (not an actual dep edge), "After #8" must still be prepended.
+# ---------------------------------------------------------------------------
+
+@test "AC8e: non-canonical parallel annotation plus other deps — After #N prepended" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, (parallel with #8)" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+
+  # Must still contain After #3
+  printf '%s\n' "$result" | grep -q 'After #3' || {
+    echo "FAIL: original After #3 should be preserved; got: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
 # T1 — title-length: 51-char title emits WARNING, exit 0
 #
 # "[Phase 1] Implement full authentication module now!" is 51 characters (ASCII).
