@@ -62,7 +62,7 @@ _docs_resolve_state() {
 # ---------------------------------------------------------------------------
 # _docs_ensure_map
 #
-# Ensure .rite/state/docs-map.tsv exists, respecting RITE_DOCS_MAP_AUTO.
+# Ensure docs/docs-map.tsv exists, respecting RITE_DOCS_MAP_AUTO.
 # When auto-rebuild is disabled and the map is missing, prompt interactively
 # (default-no, non-TTY takes the "no" branch — never hangs).
 #
@@ -262,6 +262,12 @@ _docs_apply_approved() {
     if [ -n "$_aa_wt_drift" ] && [ -f "$_aa_wt_drift" ]; then
       _docs_burn_drift_entries "$_aa_wt_drift" "$_aa_all_drift_refs"
     fi
+  fi
+
+  # Rebuild docs map in the worktree so docs/docs-map.tsv is included in the PR.
+  # Zero provider calls — docs_map_build is fully deterministic.
+  if declare -f docs_map_build >/dev/null 2>&1; then
+    ( export RITE_PROJECT_ROOT="$_aa_wt_path"; docs_map_build 2>/dev/null ) || true
   fi
 
   # Stage everything
