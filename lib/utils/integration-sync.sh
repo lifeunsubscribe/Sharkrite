@@ -366,19 +366,11 @@ sync_issue_branch() {
     return 1
   fi
 
-  # ── Rail 3: staleness threshold ──────────────────────────────────────────────
-  # Branches at/above the threshold need a close-and-restart, not a rebase.
-  # Defer to the workflow's own stale-branch path (check_stale_branch).
+  # ── Resolve staleness count ──────────────────────────────────────────────────
+  # Needed by Rails 3–4 and the merge-tree precheck.
   get_commits_behind_main "$_wt_path" "$_base"
   local _behind="$COMMITS_BEHIND_MAIN"
   local _threshold="${RITE_STALE_BRANCH_THRESHOLD:-10}"
-  if [ "$_behind" -ge "$_threshold" ]; then
-    print_warning "Issue #${_issue_n}: SKIP — ${_behind} commits behind origin/${_base} (threshold: ${_threshold})"
-    print_info "  Next step: needs close-and-restart — the next 'rite ${_issue_n}' handles this via the stale-branch path"
-    _SYNC_ISSUE_OUTCOME="skipped-threshold"
-    _diag "SYNC_ISSUE issue=${_issue_n} outcome=skipped-threshold"
-    return 0
-  fi
 
   # ── Rail 4: already current ──────────────────────────────────────────────────
   if [ "$_behind" -eq 0 ]; then
@@ -392,8 +384,10 @@ sync_issue_branch() {
   _branch_name=$(git -C "$_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 
   # ── merge-tree precheck ───────────────────────────────────────────────────────
-  # Mirrors mid-run-rebase.sh:128-148: a clean in-memory merge means the PR will
-  # merge as-is in Phase 4 regardless of distance; no rebase needed, no stale-review.
+  # A clean in-memory merge means the PR will merge as-is in Phase 4 regardless
+  # of commit distance — no rebase needed, no stale-review triggered.
+  # Runs BEFORE Rail 3 so cleanly-mergeable branches are never told to
+  # close-and-restart solely because they exceed the staleness threshold.
   # Exit codes: 0=clean, 1=conflict, ≥2=unavailable/error.
   local _mt_rc=0
   git -C "$_wt_path" merge-tree --write-tree --no-messages "origin/$_base" HEAD \
@@ -409,7 +403,20 @@ sync_issue_branch() {
     print_warning "Issue #${_issue_n}: merge-tree check unavailable (rc=${_mt_rc}) — attempting rebase"
   fi
 
-  # _mt_rc == 1 (or unavailable): proceed with rebase attempt.
+  # _mt_rc == 1 (or unavailable): genuine conflict.
+
+  # ── Rail 3: staleness threshold ──────────────────────────────────────────────
+  # Applies only when the branch is BOTH behind AND not cleanly mergeable.
+  # Cleanly-mergeable branches exit above at the precheck, regardless of distance.
+  if [ "$_behind" -ge "$_threshold" ]; then
+    print_warning "Issue #${_issue_n}: SKIP — ${_behind} commits behind origin/${_base} (threshold: ${_threshold})"
+    print_info "  Next step: needs close-and-restart — the next 'rite ${_issue_n}' handles this via the stale-branch path"
+    _SYNC_ISSUE_OUTCOME="skipped-threshold"
+    _diag "SYNC_ISSUE issue=${_issue_n} outcome=skipped-threshold"
+    return 0
+  fi
+
+  # Genuine conflict, below threshold — attempt rebase.
 
   # ── Rebase onto origin/<base> ─────────────────────────────────────────────────
   print_status "Issue #${_issue_n}: rebasing ${_branch_name:-<unknown>} onto origin/${_base} (${_behind} commit(s) behind)..."
@@ -417,21 +424,28 @@ sync_issue_branch() {
   local _rebase_rc=0
   ( cd "$_wt_path" && git rebase "origin/$_base" ) || _rebase_rc=$?
 
+  local _conflict_resolved=false
   if [ "$_rebase_rc" -ne 0 ]; then
     git -C "$_wt_path" rebase --abort 2>/dev/null || true
 
     # Attempt Claude-assisted resolution before bailing to manual.
     # Guard: declare -f only — matches integration-sync.sh:198 (--sync <branch> path).
-    local _conflict_resolved=false
     if declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
       print_status "Issue #${_issue_n}: attempting Claude-assisted conflict resolution..."
       local _resolver_rc=0
-      # cd into the worktree: resolver uses bare git calls that act on cwd.
-      # Mirrors integration-sync.sh:206-211 (--sync <branch> conflict path cd pattern).
-      ( cd "$_wt_path" && attempt_claude_merge_resolution \
-        --branch-name "${_branch_name:-}" \
-        --issue-number "$_issue_n" \
-        --merge-target "origin/$_base" ) || _resolver_rc=$?
+      # Call the resolver in the parent shell (not a subshell) so that
+      # _RITE_RESOLVER_CONFLICT_PATHS propagates to commit_resolved_conflicts.
+      # A subshell loses the variable, causing git add -A to sweep untracked
+      # files — including secrets — into the resolution commit (#871 pattern).
+      local _sync_issue_saved_cwd="$PWD"
+      cd "$_wt_path" || _resolver_rc=$?
+      if [ "$_resolver_rc" -eq 0 ]; then
+        attempt_claude_merge_resolution \
+          --branch-name "${_branch_name:-}" \
+          --issue-number "$_issue_n" \
+          --merge-target "origin/$_base" || _resolver_rc=$?
+      fi
+      cd "$_sync_issue_saved_cwd" 2>/dev/null || true
 
       if [ "$_resolver_rc" -eq 0 ]; then
         if ! commit_resolved_conflicts "$_wt_path"; then
@@ -466,7 +480,11 @@ sync_issue_branch() {
     return 1  # operational failure — not composable
   fi
 
-  print_success "Issue #${_issue_n}: synced — rebased ${_branch_name:-HEAD} onto origin/${_base}"
+  if [ "$_conflict_resolved" = true ]; then
+    print_success "Issue #${_issue_n}: synced — resolved conflicts with origin/${_base}"
+  else
+    print_success "Issue #${_issue_n}: synced — rebased ${_branch_name:-HEAD} onto origin/${_base}"
+  fi
   _SYNC_ISSUE_OUTCOME="synced"
   _diag "SYNC_ISSUE issue=${_issue_n} outcome=synced"
   return 0

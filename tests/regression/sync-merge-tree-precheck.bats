@@ -153,3 +153,98 @@ teardown() {
   _head_after=$(git -C "$_wt" rev-parse HEAD)
   [ "$_head_after" = "$_head_before" ]
 }
+
+# ---------------------------------------------------------------------------
+# Behavioral: a rebase conflict invokes attempt_claude_merge_resolution in the
+# parent shell so _RITE_RESOLVER_CONFLICT_PATHS propagates to
+# commit_resolved_conflicts.  Scoped staging must NOT sweep untracked bystander
+# files; _SYNC_ISSUE_OUTCOME must be "synced".
+#
+# Fixture shape:
+#   main: A (README) → B (conflicting-file.txt = "base version")
+#                \
+#   feature:      C (conflicting-file.txt = "feature version")
+#
+# merge-tree B←C exits 1 (conflict), so the rebase path executes.
+# The resolver stub writes the resolved content and exports
+# _RITE_RESOLVER_CONFLICT_PATHS so commit_resolved_conflicts stages only that
+# file, leaving the untracked bystander.txt out of the commit.
+# ---------------------------------------------------------------------------
+@test "sync_issue_branch: conflict resolver invoked in parent shell, bystander not committed, outcome=synced" {
+  git merge-tree --write-tree HEAD HEAD >/dev/null 2>&1 || skip "git merge-tree --write-tree not supported"
+
+  # ── Set up local git fixture ──────────────────────────────────────────────
+  local BARE_REMOTE FIXTURE_REPO
+  BARE_REMOTE=$(create_bare_remote "origin")
+  FIXTURE_REPO=$(create_fixture_repo "$BARE_REMOTE")
+
+  export RITE_PROJECT_ROOT="$FIXTURE_REPO"
+  export RITE_WORKTREE_DIR="$FIXTURE_REPO/.rite/worktrees"
+  mkdir -p "$RITE_WORKTREE_DIR"
+
+  cd "$FIXTURE_REPO" || return 1
+
+  # Advance main with a conflicting change to conflicting-file.txt
+  git checkout main >/dev/null 2>&1
+  echo "base version" > conflicting-file.txt
+  git add conflicting-file.txt
+  git commit -m "Base: set conflicting-file" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  # Create feature branch from before the advance, with a conflicting edit
+  local _base_sha
+  _base_sha=$(git rev-parse HEAD~1)
+  git checkout -b feat/issue-888 "$_base_sha" >/dev/null 2>&1
+  echo "feature version" > conflicting-file.txt
+  git add conflicting-file.txt
+  git commit -m "Feature: set conflicting-file differently" >/dev/null 2>&1
+  git push -u origin feat/issue-888 >/dev/null 2>&1
+
+  # Create worktree for the feature branch
+  local _wt="$RITE_WORKTREE_DIR/issue-888"
+  git worktree add "$_wt" feat/issue-888 >/dev/null 2>&1
+
+  # Add an untracked bystander file — must NOT end up in the resolution commit
+  echo "bystander content" > "$_wt/bystander.txt"
+
+  # Write lock-dir cwd so sync_issue_branch finds the worktree
+  mkdir -p "$RITE_LOCK_DIR/issue-888.lock"
+  echo "$_wt" > "$RITE_LOCK_DIR/issue-888.lock/cwd"
+
+  # ── Source integration-sync.sh (also sources conflict-resolver.sh for
+  #    commit_resolved_conflicts, since attempt_claude_merge_resolution is
+  #    not yet defined when the source guard runs) ───────────────────────────
+  source "$RITE_LIB_DIR/utils/integration-sync.sh"
+  set +u; set +o pipefail
+
+  # Stubs defined AFTER source (function-sentinel guard: declare -f sync_integration_branch)
+  get_locked_issue_numbers() { echo ""; }
+  detect_pr_for_issue()      { return 1; }
+  resolve_target_branch()    { echo "main"; }
+
+  # Stub attempt_claude_merge_resolution: simulate the resolver fixing the
+  # conflict file and exporting the conflict paths for commit_resolved_conflicts.
+  # Defined in the parent shell (not a subshell) so _RITE_RESOLVER_CONFLICT_PATHS
+  # propagates — this is the invariant the fix guarantees.
+  attempt_claude_merge_resolution() {
+    echo "resolved by claude" > "$RITE_WORKTREE_DIR/issue-888/conflicting-file.txt"
+    _RITE_RESOLVER_CONFLICT_PATHS="conflicting-file.txt"
+    return 0
+  }
+
+  # ── Run sync_issue_branch ─────────────────────────────────────────────────
+  local _rc=0
+  sync_issue_branch "888" || _rc=$?
+
+  # ── Assertions ────────────────────────────────────────────────────────────
+  [ "$_rc" -eq 0 ]
+  [ "${_SYNC_ISSUE_OUTCOME:-}" = "synced" ]
+
+  # bystander.txt must NOT appear in the resolution commit
+  local _last_commit_files
+  _last_commit_files=$(git -C "$_wt" show --name-only --format="" HEAD 2>/dev/null || true)
+  [[ "$_last_commit_files" != *"bystander.txt"* ]]
+
+  # conflicting-file.txt MUST appear (was scoped-staged via _RITE_RESOLVER_CONFLICT_PATHS)
+  [[ "$_last_commit_files" == *"conflicting-file.txt"* ]]
+}
