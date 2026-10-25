@@ -1171,6 +1171,20 @@ send_notification_all "🚀 *Batch Processing Started*
 # from feeding a wrong reset_epoch if this batch also caps.
 rm -f "${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/cap-reset-line.txt" 2>/dev/null || true
 
+# Age-based reclamation for per-batch state files (cap-reset-line-*.txt and
+# cap-resume-*.json).  The per-batch naming introduced by PR #1352 means files
+# are never overwritten — a batch that caps without auto-resume leaves its
+# manifest and reset-line as permanent orphans.  Delete files older than 7 days.
+#
+# Unlike the fixed-name cleanup above (which must NOT use a glob — a concurrent
+# live batch's file could match the pattern), age-gated deletion is safe with a
+# glob: any file 7+ days old predates the current run by definition, and
+# RITE_BATCH_ID was generated at the top of this file (epoch+PID+RANDOM), so the
+# current batch's own files are at most a few seconds old.
+_cap_state_dir="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}"
+find "$_cap_state_dir" -maxdepth 1 -name 'cap-reset-line-*.txt' -mtime +7 -delete 2>/dev/null || true
+find "$_cap_state_dir" -maxdepth 1 -name 'cap-resume-*.json'    -mtime +7 -delete 2>/dev/null || true
+
 # Process each issue
 # Use a while-index loop instead of `for x in "${arr[@]}"` so that appending a
 # deferred issue to ISSUE_LIST (DEP_IN_QUEUE path below) is visible to
