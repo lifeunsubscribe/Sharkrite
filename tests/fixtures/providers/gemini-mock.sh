@@ -202,6 +202,11 @@ gemini_mock_provider_resolve_model() {
 # Display Name
 # =============================================================================
 
+gemini_mock_provider_healthcheck() {
+  # Mock always reports workspace as trusted (no trust-dialog requirement for mock).
+  return 0
+}
+
 gemini_mock_provider_name() {
   echo "gemini-mock"
 }

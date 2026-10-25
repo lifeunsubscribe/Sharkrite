@@ -643,22 +643,22 @@ _apply_overlap_defer_or_warn() {
 # never start provider sessions and the trust requirement is irrelevant.
 # ---------------------------------------------------------------------------
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
-load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+load_provider "${RITE_DEV_PROVIDER:-claude}"
 _trust_preflight_exit=0
 provider_healthcheck "${RITE_PROJECT_ROOT:-$(pwd)}" || _trust_preflight_exit=$?
 if [ "$_trust_preflight_exit" -ne 0 ]; then
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   print_error "Provider preflight failed — workspace not trusted (aborting batch)"
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
+  echo "" >&2
   print_error "Claude CLI ≥2.1.284 requires the project to be trusted before"
   print_error "non-interactive sessions can use permissions.allow entries."
-  echo ""
+  echo "" >&2
   print_info "Fix: accept the trust dialog by running claude interactively once, OR"
   print_info "set the trust flag manually in ~/.claude.json:"
-  echo ""
-  echo "  projects[\"${RITE_PROJECT_ROOT:-$(pwd)}\"].hasTrustDialogAccepted: true"
-  echo ""
+  echo "" >&2
+  echo "  projects[\"${RITE_PROJECT_ROOT:-$(pwd)}\"].hasTrustDialogAccepted: true" >&2
+  echo "" >&2
   print_info "Then re-run this batch."
   exit 1
 fi

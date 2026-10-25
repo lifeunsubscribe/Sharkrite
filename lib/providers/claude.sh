@@ -86,7 +86,13 @@ claude_provider_validate_cli() {
 # Args: [project_root]  (default: $RITE_PROJECT_ROOT or pwd)
 claude_provider_healthcheck() {
   local _project_root="${1:-${RITE_PROJECT_ROOT:-$(pwd)}}"
-  local _cfg="${HOME:-$HOME}/.claude.json"
+
+  # Guard against stripped environments (launchd, cron) where HOME may be unset.
+  if [ -z "${HOME:-}" ]; then
+    { _diag "PROVIDER_PREFLIGHT outcome=trusted reason=no_home_var" 2>/dev/null || true; }
+    return 0
+  fi
+  local _cfg="$HOME/.claude.json"
 
   # No config file → pre-2.1.284 CLI or pristine CI install: no trust requirement.
   if [ ! -f "$_cfg" ]; then
@@ -101,9 +107,17 @@ claude_provider_healthcheck() {
     return 0
   fi
 
+  # Claude CLI ≥2.1.284 keys trust by session cwd. The preflight runs before any
+  # worktree is created, so cwd is typically the project root — but when the repo
+  # has 1,000+ worktree entries (each trusted as its own cwd) and the project root
+  # entry was never set, checking only $_project_root produces a false-abort.
+  # Accept if EITHER the passed root OR the current cwd is marked trusted.
+  local _cwd
+  _cwd="$(pwd)"
   local _trusted
-  _trusted=$(jq -r --arg p "$_project_root" \
-    '.projects[$p].hasTrustDialogAccepted // false' "$_cfg" 2>/dev/null || echo "false")
+  _trusted=$(jq -r --arg p "$_project_root" --arg c "$_cwd" \
+    '((.projects[$p].hasTrustDialogAccepted // false) or (.projects[$c].hasTrustDialogAccepted // false)) | tostring' \
+    "$_cfg" 2>/dev/null || echo "false")
 
   if [ "$_trusted" = "true" ]; then
     { _diag "PROVIDER_PREFLIGHT outcome=trusted" 2>/dev/null || true; }

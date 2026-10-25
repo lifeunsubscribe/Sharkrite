@@ -32,15 +32,20 @@
 #    13.  PROVIDER_PREFLIGHT diag emitted on success (outcome=trusted)
 #    14.  PROVIDER_PREFLIGHT diag emitted on failure (outcome=untrusted_workspace)
 #
+#   BEHAVIORAL-EXEC (executed abort and pass paths through provider interface):
+#    15.  load_provider + provider_healthcheck returns 1 on untrusted workspace
+#    16.  load_provider + provider_healthcheck returns 0 on trusted workspace
+#
 #   BEHAVIORAL (abort message content):
-#    15.  Abort message contains 'hasTrustDialogAccepted' (fix command)
-#    16.  Abort message contains the project root path
-#    17.  Healthy provider passes preflight with zero issues processed
+#    17.  Abort message contains 'hasTrustDialogAccepted' (fix command)
+#    18.  Abort message contains the project root path
+#    19.  Healthy provider passes preflight with zero issues processed
 #
 #   PROPAGATION (batch-process-issues.sh structural checks):
-#    18.  batch-process-issues.sh sources provider-interface.sh in preflight block
-#    19.  batch-process-issues.sh calls load_provider in preflight block
-#    20.  batch-process-issues.sh exits 1 on healthcheck failure (not continue/skip)
+#    20.  batch-process-issues.sh sources provider-interface.sh in preflight block
+#    21.  batch-process-issues.sh calls load_provider in preflight block
+#    22.  batch-process-issues.sh exits 1 on healthcheck failure (not continue/skip)
+#    23.  batch-process-issues.sh uses RITE_DEV_PROVIDER (not RITE_UTILITY_PROVIDER)
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 CLAUDE_PROVIDER="$REPO_ROOT/lib/providers/claude.sh"
@@ -240,6 +245,45 @@ JSON
 }
 
 # =============================================================================
+# BEHAVIORAL-EXEC: executed abort and pass paths through provider interface
+# =============================================================================
+
+# Helper: load provider-interface.sh on top of an already-initialized _load_healthcheck
+# environment so that provider_healthcheck() is available as the alias wrapper.
+_load_provider_chain() {
+  _load_healthcheck
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: provider-interface.sh uses a function-sentinel guard (declare -f load_provider); _diag() pre-source stub is preserved.
+  source "$PROVIDER_INTERFACE"
+  set +u; set +o pipefail
+}
+
+@test "behavioral-exec: abort-path: provider_healthcheck returns 1 for untrusted workspace" {
+  _load_provider_chain
+  cat > "$HOME/.claude.json" <<JSON
+{
+  "projects": {}
+}
+JSON
+  load_provider "claude"
+  ! provider_healthcheck "$RITE_PROJECT_ROOT"
+}
+
+@test "behavioral-exec: pass-path: provider_healthcheck returns 0 for trusted workspace" {
+  _load_provider_chain
+  cat > "$HOME/.claude.json" <<JSON
+{
+  "projects": {
+    "${RITE_PROJECT_ROOT}": {
+      "hasTrustDialogAccepted": true
+    }
+  }
+}
+JSON
+  load_provider "claude"
+  provider_healthcheck "$RITE_PROJECT_ROOT"
+}
+
+# =============================================================================
 # BEHAVIORAL: abort message content
 # =============================================================================
 
@@ -297,4 +341,20 @@ JSON
     echo "      Trust failure must abort the batch (not continue or skip)" >&2
     return 1
   }
+}
+
+@test "propagation: batch-process-issues.sh uses RITE_DEV_PROVIDER not RITE_UTILITY_PROVIDER" {
+  # The sessions that burned 38 min were dev/fix sessions (RITE_DEV_PROVIDER).
+  # Using RITE_UTILITY_PROVIDER in the preflight healthchecks the wrong provider.
+  _preflight=$(awk '/Preflight.*provider.*trust/,/Preflight dep/' "$BATCH_PROCESSOR" || true)
+  echo "$_preflight" | grep -q 'RITE_DEV_PROVIDER' || {
+    echo "FAIL: 'RITE_DEV_PROVIDER' not found in provider trust preflight block" >&2
+    echo "      Preflight must check the same provider as dev/fix sessions" >&2
+    return 1
+  }
+  if echo "$_preflight" | grep -q 'RITE_UTILITY_PROVIDER'; then
+    echo "FAIL: 'RITE_UTILITY_PROVIDER' still appears in provider trust preflight block" >&2
+    echo "      Replace with RITE_DEV_PROVIDER to check the correct provider" >&2
+    return 1
+  fi
 }

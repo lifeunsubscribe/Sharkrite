@@ -3876,11 +3876,11 @@ main() {
     if [ "$_wf_trust_exit" -ne 0 ]; then
       print_error "Provider preflight failed — workspace not trusted"
       print_error "Claude CLI ≥2.1.284: non-interactive sessions ignore permissions.allow entries."
-      echo ""
+      echo "" >&2
       print_info "Fix: run claude interactively once (trust dialog), or set in ~/.claude.json:"
-      echo ""
-      echo "  projects[\"${RITE_PROJECT_ROOT:-$(pwd)}\"].hasTrustDialogAccepted: true"
-      echo ""
+      echo "" >&2
+      echo "  projects[\"${RITE_PROJECT_ROOT:-$(pwd)}\"].hasTrustDialogAccepted: true" >&2
+      echo "" >&2
       exit 1
     fi
   fi
