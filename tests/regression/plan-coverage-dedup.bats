@@ -64,6 +64,7 @@ setup() {
   # _coverage_missing_titles is a dependency of _validate_coverage (residual
   # reconciliation), so it must be extracted too.
   eval "$(awk '
+    /^_canon_title[(][)]/ { in_fn=1; depth=0 }
     /^_validate_coverage[(][)]/ { in_fn=1; depth=0 }
     /^_coverage_missing_titles[(][)]/ { in_fn=1; depth=0 }
     /^_dedup_issues[(][)]/ { in_fn=1; depth=0 }
@@ -799,4 +800,33 @@ FIXTURE
     echo "FAIL: prompt no longer states the issue blocks are the required deliverable" >&2
     false
   }
+}
+
+# ---------------------------------------------------------------------------
+# _canon_title: unit tests for the shared canonicalization helper
+# (setup() already extracts _canon_title via awk; call it directly here)
+# ---------------------------------------------------------------------------
+
+@test "_canon_title: trims leading and trailing whitespace" {
+  run bash -c "$(declare -f _canon_title); echo '  hello world  ' | _canon_title"
+  [ "$status" -eq 0 ]
+  [ "$output" = "hello world" ]
+}
+
+@test "_canon_title: lowercases uppercase input" {
+  run bash -c "$(declare -f _canon_title); echo 'Implement Budget Tracking' | _canon_title"
+  [ "$status" -eq 0 ]
+  [ "$output" = "implement budget tracking" ]
+}
+
+@test "_canon_title: trims and lowercases combined" {
+  run bash -c "$(declare -f _canon_title); printf '%s' '  Add Auth Layer  ' | _canon_title"
+  [ "$status" -eq 0 ]
+  [ "$output" = "add auth layer" ]
+}
+
+@test "_canon_title: empty input produces empty output" {
+  run bash -c "$(declare -f _canon_title); printf '' | _canon_title"
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
 }

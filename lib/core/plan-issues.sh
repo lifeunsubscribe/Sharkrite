@@ -3538,6 +3538,17 @@ _normalize_issue_markers() {
 }
 
 # =============================================================================
+# _canon_title: canonical title normalisation (trim whitespace + lowercase)
+#
+# Shared by _coverage_missing_titles, _request_missing_blocks, and _dedup_issues
+# for case- and whitespace-insensitive title comparison. Reads from stdin,
+# writes to stdout.
+# =============================================================================
+_canon_title() {
+  sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
+}
+
+# =============================================================================
 # Coverage checklist ↔ emitted issues: which planned titles have no block?
 # =============================================================================
 # Returns the checklist ✅ titles (raw form) that have NO matching ---ISSUE---
@@ -3559,14 +3570,14 @@ _coverage_missing_titles() {
   local _canon_index=""
   while IFS= read -r _raw_title; do
     local _canon
-    _canon=$(echo "$_raw_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    _canon=$(echo "$_raw_title" | _canon_title || true)
     [ -n "$_canon" ] && _canon_index="${_canon_index}${_canon}"$'\n'
   done < <(grep "^TITLE:" "$issues_file" | sed 's/^TITLE: //' || true)
 
   while IFS= read -r _ref_title; do
     [ -z "$_ref_title" ] && continue
     local _ref_canon
-    _ref_canon=$(echo "$_ref_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    _ref_canon=$(echo "$_ref_title" | _canon_title || true)
     [ -z "$_ref_canon" ] && continue
     # -x (whole-line) match: a checklist title that is a substring of an emitted
     # title must not be falsely treated as matched.
@@ -3686,7 +3697,7 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
   while IFS= read -r _m; do
     [ -z "$_m" ] && continue
     local _mc
-    _mc=$(printf '%s' "$_m" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+    _mc=$(printf '%s' "$_m" | _canon_title || true)
     [ -n "$_mc" ] && _missing_canon="${_missing_canon}${_mc}"$'\n'
   done <<< "$_missing"
 
@@ -3705,7 +3716,7 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
         local _blk_title
         _blk_title=$(printf '%s' "$_blk_buf" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
         local _blk_canon
-        _blk_canon=$(printf '%s' "$_blk_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+        _blk_canon=$(printf '%s' "$_blk_title" | _canon_title || true)
         if [ -n "$_blk_canon" ] && printf '%s' "$_missing_canon" | grep -qxF "$_blk_canon"; then
           _filtered_blocks="${_filtered_blocks}${_blk_buf}"
         else
@@ -4663,7 +4674,7 @@ _dedup_issues() {
       if [[ "$line" =~ ^TITLE:\ (.+) ]]; then
         # Normalize: trim whitespace, lowercase for comparison
         current_title="${BASH_REMATCH[1]}"
-        current_title=$(echo "$current_title" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]' || true)
+        current_title=$(echo "$current_title" | _canon_title || true)
       fi
 
       if [[ "$line" == "---END---" ]]; then
