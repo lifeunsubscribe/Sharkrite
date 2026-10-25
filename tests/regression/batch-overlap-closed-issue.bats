@@ -57,9 +57,11 @@ setup() {
 
 @test "structural: guard comment references the parity contract" {
   # The closing comment block must explain WHY closed issues are skipped and
-  # tie back to the "do NOT short-circuit here" parity contract.
-  grep -qE "do NOT short-circuit|handle_closed_issue|parity" "$BATCH_PROCESSOR" || {
-    echo "FAIL: guard block must reference parity contract" >&2
+  # tie back to the parity contract. Use unique text from the new guard block
+  # (lines around the 'if [ "$ISSUE_STATE" != "CLOSED" ]' site) so this test
+  # does not pass by matching the pre-existing comment at ~line 1239.
+  grep -qE "Skipped for CLOSED issues|Deferring a closed issue only" "$BATCH_PROCESSOR" || {
+    echo "FAIL: guard block must reference parity contract (unique text not found)" >&2
     return 1
   }
 }
@@ -71,8 +73,8 @@ setup() {
 # _build_guard_script ISSUE_STATE
 #
 # Builds a self-contained bash script that:
-#  1. Extracts batch_suffix_matches_issue + _apply_overlap_defer_or_warn from
-#     the production source (not duplicated logic).
+#  1. Extracts _apply_overlap_defer_or_warn from the production source
+#     (not duplicated logic).
 #  2. Pre-populates _OVERLAP_FILES to simulate an overlap being found.
 #  3. Runs the ISSUE_STATE guard exactly as the batch loop does.
 #  4. Prints OVERLAP_DEFERRED or PROCEEDED with metadata for assertions.
@@ -82,13 +84,6 @@ _build_guard_script() {
   local _state="$1"
   local _script="$BATS_TEST_TMPDIR/guard-test-$$.sh"
 
-  local _fn0_tmp="$BATS_TEST_TMPDIR/fn0-$$.sh"
-  awk '
-    /^batch_suffix_matches_issue[(][)]/ { in_fn=1 }
-    in_fn { print }
-    in_fn && /^}$/ { exit }
-  ' "$BATCH_PROCESSOR" > "$_fn0_tmp" 2>/dev/null
-
   local _fn2_tmp="$BATS_TEST_TMPDIR/fn2-$$.sh"
   awk '
     /^_apply_overlap_defer_or_warn[(][)]/ { in_fn=1 }
@@ -96,17 +91,12 @@ _build_guard_script() {
     in_fn && /^}$/ { exit }
   ' "$BATCH_PROCESSOR" > "$_fn2_tmp" 2>/dev/null
 
-  grep -q "batch_suffix_matches_issue" "$_fn0_tmp" 2>/dev/null || {
-    echo "ERROR: could not extract batch_suffix_matches_issue from $BATCH_PROCESSOR" >&2
-    return 1
-  }
   grep -q "_apply_overlap_defer_or_warn" "$_fn2_tmp" 2>/dev/null || {
     echo "ERROR: could not extract _apply_overlap_defer_or_warn from $BATCH_PROCESSOR" >&2
     return 1
   }
 
-  local _fn0_body _fn2_body
-  _fn0_body=$(cat "$_fn0_tmp" || true)
+  local _fn2_body
   _fn2_body=$(cat "$_fn2_tmp" || true)
 
   # Use printf to avoid heredoc @test-line bats rewriting
@@ -116,8 +106,6 @@ _build_guard_script() {
     '' \
     'print_warning() { printf "WARNING: %s\n" "$*" >&2; }' \
     '_diag() { true; }' \
-    '' \
-    "${_fn0_body}" \
     '' \
     "${_fn2_body}" \
     '' \
