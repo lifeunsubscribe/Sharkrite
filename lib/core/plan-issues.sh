@@ -2794,7 +2794,10 @@ pytest"
         # not per-issue deliverables (checked before the allowlist so project-specific
         # gates like `pnpm typecheck` are exempt without needing an allowlist entry).
         # The min-slate floor prevents the absolute threshold from firing on tiny slates
-        # where freq==slate-size (3-of-3 = 100% duplicate signal, not a universal gate).
+        # (≤3 issues) where freq==slate-size is the strongest duplicate signal, not a
+        # universal gate.  On slates of ≥4 issues the threshold CAN fire even when
+        # freq==slate-size (4-of-4 is silently exempted — deliberate boundary: at 4+
+        # issues a command shared by every issue is accepted as a universal CI gate).
         if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ] && [ "$_issue_count" -ge "$_VERIF_UNIV_MIN_SLATE" ]; then
           continue
         fi
