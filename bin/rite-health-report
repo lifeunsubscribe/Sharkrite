@@ -26,6 +26,7 @@ DATA_DIR="${RITE_DATA_DIR:-.rite}"
 LOGS_DIR="$PROJECT_ROOT/$DATA_DIR/logs"
 REPORTS_DIR="$PROJECT_ROOT/$DATA_DIR/reports"
 DISPLAY_MODE=false
+_COMPUTE_RF_ONLY=false
 # Minimum workflow completions in the window before a full report is generated.
 # Override for high- or low-volume projects via RITE_HEALTH_MIN_WORKFLOWS.
 MIN_WORKFLOWS="${RITE_HEALTH_MIN_WORKFLOWS:-3}"
@@ -37,6 +38,9 @@ RITE_HEALTH_RECURRENCE_MIN="${RITE_HEALTH_RECURRENCE_MIN:-2}"
 # Category backstop: coarser signal for reworded recurrences — flag when a
 # finding category appears this many times or more (not user-configurable).
 _RECURRENCE_CAT_MIN=4
+# Catch-all categories excluded from the backstop — buckets so broad that virtually
+# every finding lands in them, making the count meaningless as a recurrence signal.
+_RECURRENCE_CAT_EXCLUDES="codequality"
 
 # Model for the health-report synthesis — DECOUPLED from RITE_REVIEW_MODEL.
 # The report is not code review: most of it is templating pre-computed stats
@@ -62,17 +66,25 @@ case "${1:-}" in
   --display)
     DISPLAY_MODE=true
     ;;
+  --compute-rf-block)
+    # Testing seam: compute RF_BLOCK from RITE_HEALTH_LOGFILES, print, exit.
+    # Bypasses claude/jq checks and the minimum-workflow gate so unit tests can
+    # exercise the precompute pipeline directly without a full report run.
+    _COMPUTE_RF_ONLY=true
+    ;;
 esac
 
-# Pre-checks
-if ! command -v claude &>/dev/null; then
-  echo "Error: claude CLI not found. Required for report analysis."
-  exit 1
-fi
+# Pre-checks (skipped in --compute-rf-block mode which needs no LLM or jq)
+if [ "$_COMPUTE_RF_ONLY" = "false" ]; then
+  if ! command -v claude &>/dev/null; then
+    echo "Error: claude CLI not found. Required for report analysis."
+    exit 1
+  fi
 
-if ! command -v jq &>/dev/null; then
-  echo "Error: jq not found. Required for data parsing."
-  exit 1
+  if ! command -v jq &>/dev/null; then
+    echo "Error: jq not found. Required for data parsing."
+    exit 1
+  fi
 fi
 
 mkdir -p "$REPORTS_DIR"
@@ -121,6 +133,13 @@ if [ -d "$LOGS_DIR" ]; then
       fi
     fi
   done < <(find "$LOGS_DIR" -name "rite-*.log" -type f 2>/dev/null | sort)
+fi
+# Testing seam: explicit log-file list overrides the filesystem scan (--compute-rf-block mode only).
+if [ "$_COMPUTE_RF_ONLY" = "true" ] && [ -n "${RITE_HEALTH_LOGFILES:-}" ]; then
+  RECENT_LOGS=()
+  for _rf_logfile in $RITE_HEALTH_LOGFILES; do
+    RECENT_LOGS+=("$_rf_logfile")
+  done
 fi
 
 # --- Extract diagnostic lines from recent logs ---
@@ -368,6 +387,10 @@ if [ -n "$_rf_raw_headers" ]; then
     while IFS= read -r _rf_entry; do
       _rf_count=$(echo "$_rf_entry" | awk '{print $1}' || true)
       _rf_cat=$(echo "$_rf_entry" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]*//' || true)
+      # Skip categories that are too generic to carry a specific recurrence signal.
+      case " ${_RECURRENCE_CAT_EXCLUDES} " in
+        *" ${_rf_cat} "*) continue ;;
+      esac
       if [ -n "$_rf_count" ] && [ -n "$_rf_cat" ] \
           && [ "${_rf_count:-0}" -ge "${_RECURRENCE_CAT_MIN:-4}" ] 2>/dev/null; then
         _rf_cat_lines+="  ${_rf_count}x: ${_rf_cat}"$'\n'
@@ -385,6 +408,12 @@ if [ -n "$_rf_raw_headers" ]; then
       RF_BLOCK+=$'\n'"By category (coarse backstop for reworded recurrences):"$'\n'"${_rf_cat_lines}"
     fi
   fi
+fi
+
+# --compute-rf-block: output the precomputed block and exit before LLM/claude.
+if [ "$_COMPUTE_RF_ONLY" = "true" ]; then
+  printf '%s\n' "$RF_BLOCK"
+  exit 0
 fi
 
 # --- Count workflow completions (minimum data gate) ---
