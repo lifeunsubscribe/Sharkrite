@@ -24,6 +24,7 @@
 #   UNIT (non-zero exit — JSON-embedded cap phrase must not false-abort):
 #     3. cap phrase inside JSON assistant message + exit 1 → stays exit 1
 #     4. cap phrase at column 0 (bare-line notice) + exit 1 → exit 5
+#     4b. "Claude usage limit reached" bare-line + exit 1 → exit 5
 #     5. cap phrase in stderr + exit 1 → exit 5 (stderr stays unanchored)
 #
 #   UNIT (newline termination):
@@ -161,6 +162,52 @@ STUB
 
   [ "$status" -eq 5 ] || {
     echo "FAIL: expected exit 5 for bare-line cap notice, got: $status" >&2
+    return 1
+  }
+}
+
+@test "unit: 'Claude usage limit reached' bare-line + exit 1 → exit 5" {
+  _tmpdir=$(mktemp -d)
+
+  # Stub claude: emit the "Claude usage limit reached" bare-line notice at
+  # column 0 (out-of-envelope, as the CLI emits it) and exit 1.
+  # Regression tripwire for the (claude )? fix at lib/providers/claude.sh:213 —
+  # without the optional-prefix, "Claude usage limit reached" was not matched
+  # on the stdout non-zero path and the session exited 1 (generic failure)
+  # instead of exit 5 (cap-abort), so the batch continued rather than halting.
+  cat > "$_tmpdir/claude" <<'STUB'
+#!/bin/bash
+echo "Claude usage limit reached resets 11:20pm"
+exit 1
+STUB
+  chmod +x "$_tmpdir/claude"
+
+  run bash -c "
+    set -euo pipefail
+    export PATH='$_tmpdir:/usr/bin:/bin'
+    export RITE_LIB_DIR='$REPO_ROOT/lib'
+    export _RITE_TIMEOUT_CHECKED=true
+    export RITE_TIMEOUT_CMD=timeout
+    export RITE_CLAUDE_TIMEOUT_AGENTIC=10
+    _sc=\$(mktemp)
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '$CLAUDE_PROVIDER' || true
+    set +u; set +o pipefail
+    run_with_timeout() { shift; \"\$@\"; }
+    claude_provider_detect_cli
+    _claude_write_hook_settings() { echo ''; }
+    _claude_pretooluse_hook_path() { echo ''; }
+    claude_provider_build_tool_restrictions() { echo 'none'; }
+    claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
+    _exit=0
+    claude_provider_run_agentic_session 'test prompt' 10 true \"\$_sc\" || _exit=\$?
+    exit \$_exit
+  "
+
+  [ "$status" -eq 5 ] || {
+    echo "FAIL: expected exit 5 for 'Claude usage limit reached' bare-line, got: $status" >&2
+    echo "      The (claude )? prefix in the stdout cap scan regex is required so" >&2
+    echo "      'Claude usage limit reached' is matched. Without it the session exits 1" >&2
+    echo "      and the batch continues rather than halting the cap-abort path." >&2
     return 1
   }
 }
