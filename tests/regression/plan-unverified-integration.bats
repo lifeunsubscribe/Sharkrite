@@ -1370,12 +1370,12 @@ FIXTURE
   }
 
   # Raw position label [1/3] must NOT appear (spikes removed from impl counter)
-  echo "$all_out" | grep -qF "[1/3]" && {
+  if echo "$all_out" | grep -qF "[1/3]"; then
     echo "FAIL: found raw position label [1/3] — spikes must not consume impl ordinal slots" >&2
     echo "--- display output ---" >&2
     echo "$all_out" >&2
     false
-  } || true
+  fi
 
   rm -f "$stdout_out" "$stderr_out"
 }
@@ -1454,20 +1454,20 @@ FIXTURE
   }
 
   # No note line (spike-free batches must not print the note)
-  echo "$all_out" | grep -q "implementation issues only" && {
+  if echo "$all_out" | grep -q "implementation issues only"; then
     echo "FAIL: spike-free preview must not print the #N note line" >&2
     echo "--- display output ---" >&2
     echo "$all_out" >&2
     false
-  } || true
+  fi
 
   # No [spike …] labels
-  echo "$all_out" | grep -qF "[spike" && {
+  if echo "$all_out" | grep -qF "[spike"; then
     echo "FAIL: spike-free preview must not contain [spike ...] labels" >&2
     echo "--- display output ---" >&2
     echo "$all_out" >&2
     false
-  } || true
+  fi
 
   rm -f "$stdout_out" "$stderr_out"
 }
@@ -1742,11 +1742,11 @@ FIXTURE
   }
 
   # Must not produce a spike for bare 'co.uk' (that would be wrong)
-  grep -qi "capture co.uk sample - fixtures" "$issues_file" && {
+  if grep -qi "capture co.uk sample - fixtures" "$issues_file"; then
     echo "FAIL: spike was created for bare 'co.uk' — multi-part TLD normalization is wrong" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   # Spike title must use the registrable domain myservice.co.uk
   local first_title
@@ -1876,11 +1876,11 @@ FIXTURE
   }
 
   # Neither issue should carry a Blocked-by dependency
-  grep -q "Blocked by:" "$issues_file" && {
+  if grep -q "Blocked by:" "$issues_file"; then
     echo "FAIL: found spurious 'Blocked by:' in issues file — grounded-only issue acquired spike dependency" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   rm -f "$stderr_out"
 }
@@ -1954,13 +1954,13 @@ FIXTURE
   # The foo.com issue (block 2 after spike prepended) must NOT carry Blocked-by
   local foocom_block
   foocom_block=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
-  echo "$foocom_block" | grep -q "Blocked by:" && {
+  if echo "$foocom_block" | grep -q "Blocked by:"; then
     echo "FAIL: foo.com issue acquired spurious Blocked-by from foo.co spike (prefix-collision anchor broken)" >&2
     echo "--- foo.com block ---" >&2
     echo "$foocom_block" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   # The foo.co issue (block 3) must carry Blocked-by #SPIKE-foo-co
   local fooco_block
@@ -2525,10 +2525,10 @@ FIXTURE
   }
 
   # A spike block without SPIKE_KEY: must not have the field present
-  grep -q "^SPIKE_KEY:" "$issues_file" && {
+  if grep -q "^SPIKE_KEY:" "$issues_file"; then
     echo "FAIL: test fixture unexpectedly contains SPIKE_KEY: field" >&2
     false
-  } || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
