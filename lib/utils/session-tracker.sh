@@ -130,7 +130,11 @@ _release_session_lock() {
 #   not the age of the JSON file.
 # shellcheck disable=SC2120  # CI's older shellcheck misses cross-file callers; local 0.11.0 doesn't flag this. Callers DO pass mode: workflow-runner.sh:2290, batch-process-issues.sh:175.
 init_session() {
-  local mode="${1:-supervised}"  # supervised or unsupervised
+  # No arg = a lazy re-create (update_session/start_issue_tracking/... found the
+  # file missing). Use the run's real WORKFLOW_MODE rather than inventing
+  # "supervised" — batch 1338 (2026-10-24, --auto) was relabeled supervised
+  # after a gated test deleted its file.
+  local mode="${1:-${WORKFLOW_MODE:-supervised}}"  # supervised or unsupervised
 
   _acquire_session_lock
 

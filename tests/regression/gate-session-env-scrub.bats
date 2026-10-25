@@ -9,6 +9,12 @@
 #     tests across 5 slots (#1182).
 #   - RITE_TARGET_BRANCH=supervised-ux (--branch session): broke both
 #     _docs_apply_approved tests across 3 retries (#1049, PR #1179).
+#   - SESSION_STATE_FILE / RITE_BATCH_ID / BATCH_MODE (batch 1338, 2026-10-24):
+#     #1333's gate ran tests that execute batch-process-issues.sh; they inherited
+#     the live batch's session file, reset it in init_session and deleted it in
+#     the _cleanup_batch_session EXIT trap. The batch's overall clock restarted
+#     mid-run ("Duration: 3s", mode flipped to supervised, ~26 min dropped from
+#     the session-hours cap).
 #
 # A lint rule cannot catch this class: the broken tests contain zero references
 # to the triggering variable. Prevention is a runtime boundary at the one
@@ -46,7 +52,8 @@ setup() {
   for _var in RITE_TARGET_BRANCH RITE_TEST_GATE_SKIP_TRIGGERS \
       RITE_STALE_BRANCH_THRESHOLD RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
       RITE_ACCEPT_RED_MAIN \
-      RITE_TEST_GATE_DIFF_BASE; do
+      RITE_TEST_GATE_DIFF_BASE \
+      SESSION_STATE_FILE RITE_BATCH_ID BATCH_MODE SESSION_START_TIME; do
     echo "$_def" | grep -q -- "-u $_var" || {
       echo "FAIL: _bats_sandbox deny-list missing -u $_var (_GATE_BATS_SCRUB_VARS)" >&2
       return 1
@@ -124,4 +131,47 @@ EOF
       bats "$_d/passthrough-probe.bats" < /dev/null
   rm -rf "$_d"
   [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Behavioral: the live batch session cannot be reached from a gated test
+# ---------------------------------------------------------------------------
+
+@test "behavioral: batch session identity is unset inside gate-scrubbed bats run" {
+  command -v bats >/dev/null 2>&1 || skip "bats not installed"
+  _d=$(mktemp -d)
+  cat > "$_d/batch-env-probe.bats" <<'EOF'
+@test "probe: batch session identity is unset" {
+  [ -z "${SESSION_STATE_FILE:-}" ]
+  [ -z "${RITE_BATCH_ID:-}" ]
+  [ -z "${BATCH_MODE:-}" ]
+  [ -z "${SESSION_START_TIME:-}" ]
+}
+EOF
+  run env SESSION_STATE_FILE=/tmp/live-batch.json RITE_BATCH_ID=live-123 \
+      BATCH_MODE=true SESSION_START_TIME=1 \
+      "${_SANDBOX_ARGS[@]}" \
+      bats "$_d/batch-env-probe.bats" < /dev/null
+  rm -rf "$_d"
+  [ "$status" -eq 0 ]
+}
+
+@test "behavioral: a gated test doing what _cleanup_batch_session does leaves the live session file intact" {
+  command -v bats >/dev/null 2>&1 || skip "bats not installed"
+  _d=$(mktemp -d)
+  local live="$_d/rite-session-state-live.json"
+  printf '{"start_time": 1, "mode": "batch-1338"}\n' > "$live"
+  # The batch script's EXIT trap runs: rm -f "${SESSION_STATE_FILE:-}"
+  cat > "$_d/cleanup-probe.bats" <<'EOF'
+@test "probe: batch cleanup trap body" {
+  rm -f "${SESSION_STATE_FILE:-}"
+}
+EOF
+  run env SESSION_STATE_FILE="$live" RITE_BATCH_ID=live-123 BATCH_MODE=true \
+      "${_SANDBOX_ARGS[@]}" \
+      bats "$_d/cleanup-probe.bats" < /dev/null
+  [ "$status" -eq 0 ]
+  [ -f "$live" ]
+  grep -q '"mode": "batch-1338"' "$live"
+  rm -rf "$_d"
 }
