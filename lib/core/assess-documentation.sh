@@ -807,6 +807,12 @@ SIMILARITY_EOF
             continue
           fi
 
+          # Lifecycle tags (Created, Updated) record doc-lifecycle events and
+          # must never be merged into thematic tags — their entries document
+          # what was created/updated in which PR and must survive intact.
+          case "$_from_tag" in Created|Updated) continue ;; esac
+          case "$_into_tag" in Created|Updated) continue ;; esac
+
           if tag_index_merge_tag "$_from_tag" "$_into_tag"; then
             tag_index_log_history merged "$pr_number" "$_from_tag" "$_into_tag"
           fi
