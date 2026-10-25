@@ -1012,13 +1012,30 @@ EOF
           grep -E "(issue[^0-9]?${issue_number}([^0-9]|$)|#${issue_number}([^0-9]|$)|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
       fi
 
-      # Last resort: read handoff file written by claude-workflow.sh
-      if [ -z "${WORKTREE_PATH:-}" ] && [ -n "${RITE_STATE_DIR:-}" ]; then
-        local _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
+      # Read handoff file written by claude-workflow.sh — authoritative dev-session path.
+      # Read unconditionally (not just as last resort) so a stale PR's worktree cannot
+      # silently replace the dev session's actual path. On path disagreement the run
+      # fails loudly with both paths named; it never guesses. (#1473)
+      # See: docs/architecture/behavioral-design.md — Orchestrator/Dev-Session Worktree Alignment
+      local _dev_session_worktree=""
+      local _handoff_file=""
+      if [ -n "${RITE_STATE_DIR:-}" ]; then
+        _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
         if [ -f "$_handoff_file" ]; then
-          WORKTREE_PATH=$(cat "$_handoff_file" 2>/dev/null || echo "")
+          _dev_session_worktree=$(cat "$_handoff_file" 2>/dev/null || true)
           rm -f "$_handoff_file"
         fi
+      fi
+      if [ -n "${_dev_session_worktree:-}" ] && [ -n "${WORKTREE_PATH:-}" ] && \
+         [ "$_dev_session_worktree" != "$WORKTREE_PATH" ]; then
+        print_error "Worktree path mismatch: dev session and orchestrator found different worktrees"
+        print_error "  Dev session used:   $_dev_session_worktree"
+        print_error "  Orchestrator found: $WORKTREE_PATH"
+        print_info "The dev session's work is in the first path; the second is a discovery miss."
+        print_info "See docs/architecture/behavioral-design.md — Orchestrator/Dev-Session Worktree Alignment"
+        return 1
+      elif [ -n "${_dev_session_worktree:-}" ]; then
+        WORKTREE_PATH="$_dev_session_worktree"
       fi
 
       if [ -n "${WORKTREE_PATH:-}" ]; then
@@ -1052,6 +1069,27 @@ EOF
           MAIN_WORKTREE=$(git rev-parse --show-toplevel)
           WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
             grep -E "(issue[^0-9]?${issue_number}([^0-9]|$)|#${issue_number}([^0-9]|$)|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
+        fi
+
+        # Alignment assertion for retry dev session (same contract as initial run above)
+        _dev_session_worktree=""
+        if [ -n "${RITE_STATE_DIR:-}" ]; then
+          _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
+          if [ -f "$_handoff_file" ]; then
+            _dev_session_worktree=$(cat "$_handoff_file" 2>/dev/null || true)
+            rm -f "$_handoff_file"
+          fi
+        fi
+        if [ -n "${_dev_session_worktree:-}" ] && [ -n "${WORKTREE_PATH:-}" ] && \
+           [ "$_dev_session_worktree" != "$WORKTREE_PATH" ]; then
+          print_error "Worktree path mismatch after retry: dev session and orchestrator found different worktrees"
+          print_error "  Dev session used:   $_dev_session_worktree"
+          print_error "  Orchestrator found: $WORKTREE_PATH"
+          print_info "The dev session's work is in the first path; the second is a discovery miss."
+          print_info "See docs/architecture/behavioral-design.md — Orchestrator/Dev-Session Worktree Alignment"
+          return 1
+        elif [ -n "${_dev_session_worktree:-}" ]; then
+          WORKTREE_PATH="$_dev_session_worktree"
         fi
 
         if [ $workflow_exit -eq 4 ]; then
