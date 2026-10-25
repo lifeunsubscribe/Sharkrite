@@ -264,6 +264,11 @@ _docs_apply_approved() {
     fi
   fi
 
+  # Rebuild docs map in the worktree so the PR includes an up-to-date navigation
+  # index. No provider calls — deterministic path only.
+  RITE_PROJECT_ROOT="$_aa_wt_path" docs_map_build 2>/dev/null || \
+    print_warning "docs-map rebuild in worktree failed — map may be stale" >&2
+
   # Stage everything
   git -C "$_aa_wt_path" add . 2>/dev/null || true
 

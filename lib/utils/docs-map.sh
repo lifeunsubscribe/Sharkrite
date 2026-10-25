@@ -3,12 +3,12 @@
 #
 # Deterministic docs-map builder. Inventories user documentation —
 #   docs/**/*.md, README.md, CLAUDE.md (each only if present)
-# — into .rite/state/docs-map.tsv, recording each file's sections with
-# content fingerprints and the HEAD SHA they were captured at.
+# — into docs/docs-map.tsv (committed path), recording each file's sections
+# with content fingerprints and the HEAD SHA they were captured at.
 #
 # TSV format:
-#   Line 1 (comment header): # docs-map v2 sha=<HEAD sha> built=<ISO-8601 UTC>
-#   Remaining rows:           file_path<TAB>last_verified_sha<TAB>adr_flag<TAB>heading_level<TAB>heading_text<TAB>fingerprint
+#   Line 1 (comment header): # docs-map v3 sha=<HEAD sha> built=<ISO-8601 UTC>
+#   Remaining rows:           file_path<TAB>last_verified_sha<TAB>adr_flag<TAB>heading_level<TAB>heading_text<TAB>fingerprint<TAB>type<TAB>rubric
 #
 # Columns:
 #   file_path          — project-relative path, e.g. README.md
@@ -19,6 +19,8 @@
 #                        empty for preamble sections and headingless files
 #   fingerprint        — sha256 of the normalized section content (heading line + body);
 #                        normalization: trailing whitespace stripped per line
+#   type               — "adr" for docs/**/*adr*.md, "feature" for other docs/, "other" for README/CLAUDE
+#   rubric             — rubric override pointer (default "-")
 #
 # One row per heading-delimited section. Preamble content (before the first heading)
 # and headingless files each get one row with empty heading_level and heading_text.
@@ -66,11 +68,11 @@ RITE_DOCS_MAP_AUTO="${RITE_DOCS_MAP_AUTO:-true}"
 # ---------------------------------------------------------------------------
 # docs_map_path
 #
-# Echo the absolute path to the docs-map TSV file.
+# Echo the absolute path to the docs-map TSV file (committed path).
 # ---------------------------------------------------------------------------
 docs_map_path() {
-  local state_dir="${RITE_STATE_DIR:-${RITE_PROJECT_ROOT:-.}/.rite/state}"
-  echo "${state_dir}/docs-map.tsv"
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+  echo "${project_root}/docs/docs-map.tsv"
 }
 
 # ---------------------------------------------------------------------------
@@ -208,11 +210,10 @@ _docs_map_section_fingerprint() {
 # ---------------------------------------------------------------------------
 docs_map_build() {
   local project_root="${RITE_PROJECT_ROOT:-.}"
-  local state_dir="${RITE_STATE_DIR:-${project_root}/.rite/state}"
-  local map_file="${state_dir}/docs-map.tsv"
+  local map_file="${project_root}/docs/docs-map.tsv"
 
-  # Ensure state directory exists (mkdir -p is idempotent)
-  mkdir -p "$state_dir"
+  # Ensure docs directory exists (mkdir -p is idempotent)
+  mkdir -p "${project_root}/docs"
 
   # Capture HEAD SHA (no -e guard: git rev-parse HEAD fails only in a non-repo,
   # which is caught earlier by config.sh; || true keeps set -e from firing if
@@ -228,13 +229,13 @@ docs_map_build() {
 
   # Write to temp file for atomic replace
   local tmp_file
-  tmp_file="$(mktemp "${state_dir}/docs-map.tsv.XXXXXX")"
+  tmp_file="$(mktemp "${project_root}/docs/docs-map.tsv.XXXXXX")"
   # Ensure cleanup if we exit unexpectedly before mv
   # (not using EXIT trap per test-runbook Rule 4 — this function is not a @test body;
   #  the trap is fine in a library function but we use a local var for simplicity)
 
   # Line 1: comment header
-  printf '# docs-map v2 sha=%s built=%s\n' "$head_sha" "$built_ts" > "$tmp_file"
+  printf '# docs-map v3 sha=%s built=%s\n' "$head_sha" "$built_ts" > "$tmp_file"
 
   # -------------------------------------------------------------------------
   # Collect inventory: docs/**/*.md + README.md + CLAUDE.md
@@ -282,6 +283,19 @@ docs_map_build() {
       adr_flag="adr"
     fi
 
+    # Determine doc type: adr → feature (other docs/) → other (README/CLAUDE)
+    local doc_type
+    if _docs_map_is_adr_file "$file_path"; then
+      doc_type="adr"
+    elif [ "${file_path#"${project_root}/docs/"}" != "$file_path" ]; then
+      doc_type="feature"
+    else
+      doc_type="other"
+    fi
+
+    # Rubric defaults to "-"; override pointer reserved for later cluster-B issues
+    local rubric="-"
+
     # Per-section state: current section's heading and accumulated content.
     local _sec_h_level=""   # "" = preamble or headingless
     local _sec_h_text=""
@@ -293,7 +307,7 @@ docs_map_build() {
     # Emits a row when: the section has a heading (always) OR the preamble
     # content is non-empty. Resets state variables after writing.
     _flush_section() {
-      local _h_lv="$1" _h_tx="$2" _content="$3" _rp="$4" _sha="$5" _af="$6"
+      local _h_lv="$1" _h_tx="$2" _content="$3" _rp="$4" _sha="$5" _af="$6" _ty="$7" _rb="$8"
       local _emit=0
       if [ -n "$_h_lv" ]; then
         # Heading section — always emit
@@ -305,8 +319,8 @@ docs_map_build() {
       if [ "$_emit" -eq 1 ]; then
         local _fp
         _fp="$(_docs_map_section_fingerprint "$_content")"
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-          "$_rp" "$_sha" "$_af" "$_h_lv" "$_h_tx" "$_fp" >> "$tmp_file"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$_rp" "$_sha" "$_af" "$_h_lv" "$_h_tx" "$_fp" "$_ty" "$_rb" >> "$tmp_file"
         _rows_written=$((_rows_written + 1))
       fi
     }
@@ -341,7 +355,7 @@ ${raw_line}"
               # Valid heading — flush the current section, start a new one.
               h_text="$(_docs_map_heading_text "$raw_line")"
               _flush_section "$_sec_h_level" "$_sec_h_text" "$_sec_content" \
-                "$rel_path" "$head_sha" "$adr_flag"
+                "$rel_path" "$head_sha" "$adr_flag" "$doc_type" "$rubric"
               _sec_h_level="$h_level"
               _sec_h_text="$h_text"
               _sec_content="$raw_line"   # heading line is first content of new section
@@ -362,14 +376,14 @@ ${raw_line}"
 
     # Flush the last section.
     _flush_section "$_sec_h_level" "$_sec_h_text" "$_sec_content" \
-      "$rel_path" "$head_sha" "$adr_flag"
+      "$rel_path" "$head_sha" "$adr_flag" "$doc_type" "$rubric"
 
     # Every file must have at least one row (headingless empty files fall here).
     if [ "$_rows_written" -eq 0 ]; then
       local _fp
       _fp="$(_docs_map_section_fingerprint "")"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$rel_path" "$head_sha" "$adr_flag" "" "" "$_fp" >> "$tmp_file"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rel_path" "$head_sha" "$adr_flag" "" "" "$_fp" "$doc_type" "$rubric" >> "$tmp_file"
     fi
   done
 
@@ -378,6 +392,12 @@ ${raw_line}"
 
   # Atomic replace
   mv "$tmp_file" "$map_file"
+
+  # Migration: remove legacy .rite/state/docs-map.tsv if it exists
+  local _legacy_map="${project_root}/.rite/state/docs-map.tsv"
+  if [ -f "$_legacy_map" ]; then
+    rm -f "$_legacy_map" || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -410,7 +430,7 @@ docs_map_ensure() {
     local _header
     _header="$(head -1 "$map_file" 2>/dev/null || true)"
     case "$_header" in
-      "# docs-map v2"*) ;;  # current format — no rebuild needed
+      "# docs-map v3"*) ;;  # current format — no rebuild needed
       *) _needs_rebuild=1 ;;
     esac
   fi
