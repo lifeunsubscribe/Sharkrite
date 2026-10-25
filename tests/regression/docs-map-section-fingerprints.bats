@@ -234,3 +234,72 @@ _source_docs_map() {
   [ -n "$heading_fp" ]
   [ "$preamble_fp" != "$heading_fp" ]
 }
+
+# ---------------------------------------------------------------------------
+# 11. Trailing-whitespace normalization: lines with trailing spaces fingerprint
+#     identically to the same lines without trailing spaces
+# ---------------------------------------------------------------------------
+@test "docs-map fingerprints: trailing whitespace on lines does not change fingerprint" {
+  _source_docs_map
+  docs_map_build
+  local fp_before
+  fp_before="$(grep -F "docs/headingless.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+    cut -f6 || true)"
+
+  # Append trailing spaces to every line and rebuild; fingerprint must be unchanged.
+  sed 's/$/ /' "$FIXTURE_DIR/docs/headingless.md" > "$FIXTURE_DIR/docs/headingless.md.tmp"
+  mv "$FIXTURE_DIR/docs/headingless.md.tmp" "$FIXTURE_DIR/docs/headingless.md"
+  docs_map_build
+
+  local fp_after
+  fp_after="$(grep -F "docs/headingless.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+    cut -f6 || true)"
+
+  [ "$fp_before" = "$fp_after" ]
+}
+
+# ---------------------------------------------------------------------------
+# 12. No-trailing-newline: editing the final line of a file changes fingerprint
+# ---------------------------------------------------------------------------
+@test "docs-map fingerprints: editing final line of no-trailing-newline file changes fingerprint" {
+  # Create a file without a trailing newline (printf without \n at end).
+  printf 'Only line, no newline at end' > "$FIXTURE_DIR/docs/no-newline.md"
+  git -C "$FIXTURE_DIR" add -A
+  git -C "$FIXTURE_DIR" commit -q -m "no-newline fixture"
+
+  _source_docs_map
+  docs_map_build
+  local fp_before
+  fp_before="$(grep -F "docs/no-newline.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+    cut -f6 || true)"
+
+  # Modify the final (only) line.
+  printf 'Different line, no newline at end' > "$FIXTURE_DIR/docs/no-newline.md"
+  docs_map_build
+
+  local fp_after
+  fp_after="$(grep -F "docs/no-newline.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+    cut -f6 || true)"
+
+  [ "$fp_before" != "$fp_after" ]
+}
+
+# ---------------------------------------------------------------------------
+# 13. docs_map_ensure upgrades a v1 map to v2
+# ---------------------------------------------------------------------------
+@test "docs-map ensure: v1 map triggers a rebuild to v2" {
+  _source_docs_map
+  # Write a v1-style header (no "v2") to simulate a pre-existing stale map.
+  local map_file
+  map_file="$(docs_map_path)"
+  mkdir -p "$(dirname "$map_file")"
+  printf '# docs-map v1 sha=abc built=2026-01-01\n' > "$map_file"
+  printf 'docs/headingless.md\tabc\t-\t\t\n' >> "$map_file"
+
+  # docs_map_ensure should detect v1 and rebuild.
+  docs_map_ensure
+
+  local header
+  header="$(head -1 "$map_file")"
+  [[ "$header" == "# docs-map v2"* ]]
+}

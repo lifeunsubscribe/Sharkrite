@@ -30,7 +30,7 @@
 # Public API:
 #   docs_map_path    — echoes the absolute path to the TSV map file
 #   docs_map_build   — full rebuild; atomic write via temp file + mv
-#   docs_map_ensure  — rebuilds when map is missing (no-op on SHA mismatch —
+#   docs_map_ensure  — rebuilds when map is missing or is pre-v2 format; no-op on SHA mismatch —
 #                      cluster-B issues update last_verified_sha per-file and a
 #                      full rebuild would clobber those audit records)
 #
@@ -312,7 +312,7 @@ docs_map_build() {
     }
 
     local raw_line h_level h_text
-    while IFS= read -r raw_line; do
+    while IFS= read -r raw_line || [ -n "$raw_line" ]; do
       # Fence boundary detection: lines starting with ``` or ~~~.
       case "$raw_line" in
         '```'* | '~~~'*)
@@ -402,11 +402,22 @@ docs_map_ensure() {
     return 0
   fi
 
-  # Rebuild only when the map is missing
+  # Rebuild when the map is missing OR is a pre-v2 format (no fingerprint column).
+  local _needs_rebuild=0
   if [ ! -f "$map_file" ]; then
+    _needs_rebuild=1
+  else
+    local _header
+    _header="$(head -1 "$map_file" 2>/dev/null || true)"
+    case "$_header" in
+      "# docs-map v2"*) ;;  # current format — no rebuild needed
+      *) _needs_rebuild=1 ;;
+    esac
+  fi
+  if [ "$_needs_rebuild" -eq 1 ]; then
     # Emit verbose-level message if verbose logging is available
     if declare -f verbose_info >/dev/null 2>&1; then
-      verbose_info "docs-map: rebuilding missing map → $(basename "$map_file")"
+      verbose_info "docs-map: rebuilding missing/stale map → $(basename "$map_file")"
     fi
     docs_map_build
   fi
