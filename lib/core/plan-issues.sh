@@ -4435,6 +4435,14 @@ _detect_unverified_integrations() {
   # issue and one spike-map entry.  Without this guard, the collision leaves an
   # unreferenced orphan spike and a broken downstream dependency.
   local seen_spike_keys=""
+  # seen_spike_titles: newline-separated list of display names already used.
+  # Two candidates with the same truncated prefix (e.g. @aws-sdk/client-cloudformation
+  # and @aws-sdk/client-cloudwatch both truncate to "@aws-sdk/client-cloud...") would
+  # produce byte-identical TITLE lines, causing _dedup_issues to silently discard the
+  # second spike and leave its #SPIKE-<key2> placeholder dangling.  When a collision
+  # is detected, fall back to the sanitized key as the display name (keys are unique
+  # per the seen_spike_keys guard above).
+  local seen_spike_titles=""
 
   while IFS= read -r _candidate_line; do
     [ -z "$_candidate_line" ] && continue
@@ -4462,6 +4470,31 @@ _detect_unverified_integrations() {
     if [ "${#_name}" -gt "$_spike_name_budget" ]; then
       _display_name="${_name:0:$((_spike_name_budget - 3))}..."
     fi
+    # Title-space collision guard: if truncation produces a display name already used,
+    # fall back to the sanitized key (which is unique per the seen_spike_keys guard).
+    if printf '%s\n' "$seen_spike_titles" | grep -qxF "$_display_name" 2>/dev/null; then
+      _display_name="$_key"
+      if [ "${#_display_name}" -gt "$_spike_name_budget" ]; then
+        _display_name="${_display_name:0:$((_spike_name_budget - 3))}..."
+      fi
+      # Dedup loop: if the key-based fallback is also taken (≥3 prefix-sharing
+      # candidates produce an identical truncated key prefix), add a numeric suffix
+      # until the display name is unique within the title budget.
+      local _sfx_n=2
+      while printf '%s\n' "$seen_spike_titles" | grep -qxF "$_display_name" 2>/dev/null; do
+        local _sfx="-${_sfx_n}"
+        local _base_budget=$((_spike_name_budget - ${#_sfx}))
+        if [ "${#_key}" -gt "$_base_budget" ]; then
+          _display_name="${_key:0:$_base_budget}${_sfx}"
+        else
+          _display_name="${_key}${_sfx}"
+        fi
+        _sfx_n=$((_sfx_n + 1))
+        [ "$_sfx_n" -le 99 ] || break
+      done
+    fi
+    seen_spike_titles="${seen_spike_titles}${_display_name}
+"
 
     print_warning "unverified external integration: $_name${_orig:+ (from: $_orig)}" >&2
 
