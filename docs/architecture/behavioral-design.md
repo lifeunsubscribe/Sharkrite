@@ -1798,6 +1798,32 @@ symptom.
 - The comparison uses `-ge "$_fixreview_threshold"` (variable, not a hardcoded literal).
 - `assess-and-resolve.sh` exports `RITE_REVIEW_JUST_POSTED` before calling the assessor.
 
+## Settled Findings Reach the Reviewer, Not Just the Assessor
+
+**2026-10-24.** The assessor has inherited prior decisions since #910:
+`build_prior_decisions_ledger` collects every DISMISSED / ACTIONABLE_LATER
+finding on the PR with its reasoning (newest classification wins) and the
+assessment prompt says to inherit them unless a concrete change touched the
+specific area. The reviewer never saw that ledger — its fix-review pass got the
+prior review body and the fix-commit diff only — so it could re-raise a settled
+finding every round and the assessor re-dismissed it each time. That converges,
+but it costs a review mention and an assessment per round, and a re-raised item
+can come back at a higher severity.
+
+Now `local-review.sh` injects the same ledger into the fix-review prompt as
+"Prior Assessment Decisions (settled — do not re-raise)" with the same rule: do
+not re-raise unless the fix-commit diff changes the code the finding concerns,
+and say what changed if you do. First-pass reviews are untouched (no prior
+review → no ledger fetch). The function moved to `lib/utils/review-helper.sh`
+(exported, both callers source it); `assess-review-issues.sh` is a script with
+a top-level body and cannot be sourced for one function — the same reason
+`generate_adr_for_ref` was extracted in 2026-06.
+
+**Enforcement:** `tests/regression/prior-decisions-ledger.bats` (ledger
+contents, newest-wins dedup, marker filtering, home + export) and the three
+"prior-decisions" cases in `tests/regression/fixreview-verification-prompt.bats`
+(fetched only inside the fix-review block; section wording; empty when no ledger).
+
 ## Gate Verdict Persistence: Empty Re-Selection Cannot Pass Vacuously (#944)
 
 **2026-07-06.** The fix-loop re-gate deliberately narrows its diff base to the

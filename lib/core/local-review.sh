@@ -466,6 +466,30 @@ if [ "${_prior_review_count:-0}" -ge 1 ] 2>/dev/null; then
     fi
   fi
 
+  # Prior DISMISSED / ACTIONABLE_LATER decisions, with reasoning. The assessor
+  # has inherited these since #910; the reviewer did not see them, so it could
+  # re-raise a settled finding every round and the assessor re-dismissed it
+  # each time — a review mention plus an assessment per round, converging on
+  # nothing. Same ledger, same inherit-unless-the-area-changed rule.
+  _prior_decisions_ledger=$(build_prior_decisions_ledger "$PR_NUMBER" 2>/dev/null || true)
+  _prior_decisions_ledger="${_prior_decisions_ledger:-}"
+  _prior_decisions_section=""
+  if [ -n "$_prior_decisions_ledger" ]; then
+    _prior_decisions_count=$(printf '%s\n' "$_prior_decisions_ledger" | grep -c "^### " || true)
+    print_status "Prior assessment decisions: ${_prior_decisions_count:-0} settled finding(s) passed to the reviewer"
+    _prior_decisions_section="
+---
+
+## Prior Assessment Decisions (settled — do not re-raise)
+
+Earlier assessment iterations on this PR classified these findings, with the
+reasoning. Do NOT re-raise a DISMISSED or ACTIONABLE_LATER finding unless the
+fix-commit diff changes the specific code the finding concerns — and if you do,
+say what changed. \"Files changed\" elsewhere in the PR is not grounds.
+
+${_prior_decisions_ledger}"
+  fi
+
   # Build the fixreview context section injected into the prompt.
   # Only emit if we have a prior review body to anchor against.
   if [ -n "$_prior_review_body" ]; then
@@ -501,12 +525,14 @@ The developer has applied fixes. Your job is NOT a fresh audit — it is verific
    - They were **introduced by the fix commits** (i.e. visible in the fix-commit diff, NOT pre-existing in the full PR diff before the fix), OR
    - They are CRITICAL severity (always surface regardless of origin).
    Do NOT re-raise pre-existing issues that were NOT flagged in the prior review.
-3. Apply the same output format as a normal review.
+3. Findings listed under Prior Assessment Decisions below are settled: do NOT re-raise them unless the fix-commit diff touches the code they concern.
+4. Apply the same output format as a normal review.
 
 ## Prior Review (Most Recent)
 
 ${_prior_review_body}
-${_fix_diff_section}"
+${_fix_diff_section}
+${_prior_decisions_section}"
 
     print_status "Fixreview context built — review will verify prior findings"
   else
