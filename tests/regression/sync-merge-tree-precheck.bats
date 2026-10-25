@@ -113,6 +113,7 @@ teardown() {
   git add feature.txt
   git commit -m "Feature work (non-conflicting)" >/dev/null 2>&1
   git push -u origin feat/issue-999 >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
 
   # Create a worktree for the feature branch
   local _wt="$RITE_WORKTREE_DIR/issue-999"
@@ -201,6 +202,7 @@ teardown() {
   git add conflicting-file.txt
   git commit -m "Feature: set conflicting-file differently" >/dev/null 2>&1
   git push -u origin feat/issue-888 >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
 
   # Create worktree for the feature branch
   local _wt="$RITE_WORKTREE_DIR/issue-888"
