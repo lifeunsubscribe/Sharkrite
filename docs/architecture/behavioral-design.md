@@ -883,6 +883,10 @@ Tests: `tests/regression/mid-run-rebase.bats` (clean drift → no-op, including 
 
 Tests: `tests/regression/stale-branch-rebase.bats` (clean branch at 2× threshold → rebased, no restart; conflict → resolver → fallback path preserved; hard-restart threshold → exit 11 without rebase attempt).
 
+**`--sync <N>` path — same ruling extended (#1462):** The per-issue sync path (`sync_issue_branch` in `integration-sync.sh`) previously rebased unconditionally whenever a branch was behind its base, re-litigating conflicts already resolved in merge commits on the branch. The `merge-tree`-clean-means-no-rebase rule now governs this path too: `git merge-tree --write-tree --no-messages "origin/<base>" HEAD` runs before any rebase attempt; exit-0 means the PR will merge as-is and the branch is left completely untouched (outcome `current`, no stale-review triggered). A genuine conflict (exit 1) proceeds to the rebase; if the rebase also conflicts, `attempt_claude_merge_resolution` is invoked with the same `declare -f` guard and `cd`-into-worktree pattern used by the `--sync <branch>` conflict path (lines 198-211 of the same file) before falling back to the manual-resolution hint.
+
+Tests: `tests/regression/sync-merge-tree-precheck.bats` (behind-but-clean branch → outcome=current, HEAD unchanged; structural greps for the precheck call, resolver guard, and manual fallback).
+
 ---
 
 ## Session Limit Design: Why Wall-Clock Age Is the Wrong Metric (issue #283)

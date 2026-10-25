@@ -388,10 +388,30 @@ sync_issue_branch() {
     return 0
   fi
 
-  # ── Rebase onto origin/<base> ────────────────────────────────────────────────
   local _branch_name
   _branch_name=$(git -C "$_wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 
+  # ── merge-tree precheck ───────────────────────────────────────────────────────
+  # Mirrors mid-run-rebase.sh:128-148: a clean in-memory merge means the PR will
+  # merge as-is in Phase 4 regardless of distance; no rebase needed, no stale-review.
+  # Exit codes: 0=clean, 1=conflict, ≥2=unavailable/error.
+  local _mt_rc=0
+  git -C "$_wt_path" merge-tree --write-tree --no-messages "origin/$_base" HEAD \
+    >/dev/null 2>&1 || _mt_rc=$?
+
+  if [ "$_mt_rc" -eq 0 ]; then
+    print_info "Issue #${_issue_n}: ${_behind} commit(s) behind origin/${_base} but merges cleanly — no rebase needed"
+    _SYNC_ISSUE_OUTCOME="current"
+    _diag "SYNC_ISSUE issue=${_issue_n} outcome=current"
+    return 0
+  elif [ "$_mt_rc" -ge 2 ]; then
+    # merge-tree unavailable or unexpected error — fail open and proceed with rebase.
+    print_warning "Issue #${_issue_n}: merge-tree check unavailable (rc=${_mt_rc}) — attempting rebase"
+  fi
+
+  # _mt_rc == 1 (or unavailable): proceed with rebase attempt.
+
+  # ── Rebase onto origin/<base> ─────────────────────────────────────────────────
   print_status "Issue #${_issue_n}: rebasing ${_branch_name:-<unknown>} onto origin/${_base} (${_behind} commit(s) behind)..."
 
   local _rebase_rc=0
@@ -399,11 +419,38 @@ sync_issue_branch() {
 
   if [ "$_rebase_rc" -ne 0 ]; then
     git -C "$_wt_path" rebase --abort 2>/dev/null || true
-    print_error "Issue #${_issue_n}: rebase conflict — aborted"
-    print_info "  Next step: resolve manually: cd '${_wt_path}' && git rebase origin/${_base}; then re-run 'rite --sync ${_issue_n}'"
-    _SYNC_ISSUE_OUTCOME="conflict"
-    _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
-    return 0  # skip — composability requires exit 0 for non-operational outcomes
+
+    # Attempt Claude-assisted resolution before bailing to manual.
+    # Guard: declare -f only — matches integration-sync.sh:198 (--sync <branch> path).
+    local _conflict_resolved=false
+    if declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
+      print_status "Issue #${_issue_n}: attempting Claude-assisted conflict resolution..."
+      local _resolver_rc=0
+      # cd into the worktree: resolver uses bare git calls that act on cwd.
+      # Mirrors integration-sync.sh:206-211 (--sync <branch> conflict path cd pattern).
+      ( cd "$_wt_path" && attempt_claude_merge_resolution \
+        --branch-name "${_branch_name:-}" \
+        --issue-number "$_issue_n" \
+        --merge-target "origin/$_base" ) || _resolver_rc=$?
+
+      if [ "$_resolver_rc" -eq 0 ]; then
+        if ! commit_resolved_conflicts "$_wt_path"; then
+          print_error "Issue #${_issue_n}: failed to commit resolved conflicts"
+          _SYNC_ISSUE_OUTCOME="conflict"
+          _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
+          return 0
+        fi
+        _conflict_resolved=true
+      fi
+    fi
+
+    if [ "$_conflict_resolved" = false ]; then
+      print_error "Issue #${_issue_n}: rebase conflict — aborted"
+      print_info "  Next step: resolve manually: cd '${_wt_path}' && git rebase origin/${_base}; then re-run 'rite --sync ${_issue_n}'"
+      _SYNC_ISSUE_OUTCOME="conflict"
+      _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
+      return 0  # skip — composability requires exit 0 for non-operational outcomes
+    fi
   fi
 
   # ── Push with --force-with-lease ─────────────────────────────────────────────
