@@ -1535,7 +1535,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   if [ -z "$_active_wt" ]; then
     _main_wt=$(git rev-parse --show-toplevel)
     _active_wt=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | \
-      grep -E "(issue.?${ISSUE_NUM}([^0-9]|$)|#${ISSUE_NUM}([^0-9]|$)|[-_]${ISSUE_NUM}[-_]|[-_]${ISSUE_NUM}$|_b${ISSUE_NUM}[-_]|_b${ISSUE_NUM}$)" | head -1 || true)
+      grep -E "(issue[^0-9]?${ISSUE_NUM}([^0-9]|$)|#${ISSUE_NUM}([^0-9]|$)|[-_]${ISSUE_NUM}[-_]|[-_]${ISSUE_NUM}$|_b${ISSUE_NUM}[-_]|_b${ISSUE_NUM}$)" | head -1 || true)
   fi
   if [ -n "$_active_wt" ]; then
     # Check if a rite or claude process is running for this issue
