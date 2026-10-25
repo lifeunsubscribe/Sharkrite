@@ -43,6 +43,8 @@ setup() {
 
   export RITE_PROJECT_ROOT="$FIXTURE_DIR"
   export RITE_STATE_DIR="$FIXTURE_DIR/.rite/state"
+  MAP_FILE="$FIXTURE_DIR/docs/docs-map.tsv"
+  export MAP_FILE
   export RITE_DOCS_MAP_AUTO="true"
 }
 
@@ -57,26 +59,26 @@ _source_docs_map() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Map header is v2 format
+# 1. Map header is v3 format
 # ---------------------------------------------------------------------------
-@test "docs-map fingerprints: header is docs-map v2" {
+@test "docs-map fingerprints: header is docs-map v3" {
   _source_docs_map
   docs_map_build
   local header
-  header="$(head -1 "$RITE_STATE_DIR/docs-map.tsv")"
-  [[ "$header" == "# docs-map v2 sha="* ]]
+  header="$(head -1 "$MAP_FILE")"
+  [[ "$header" == "# docs-map v3 sha="* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 2. Every data row has exactly 6 tab-separated columns
+# 2. Every data row has exactly 8 tab-separated columns
 # ---------------------------------------------------------------------------
-@test "docs-map fingerprints: every data row has 6 columns" {
+@test "docs-map fingerprints: every data row has 8 columns" {
   _source_docs_map
   docs_map_build
-  # Count rows that do NOT have exactly 6 tab-separated fields
+  # Count rows that do NOT have exactly 8 tab-separated fields
   local bad_rows
-  bad_rows="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" | \
-    awk -F'\t' 'NF != 6' || true)"
+  bad_rows="$(grep -v '^#' "$MAP_FILE" | \
+    awk -F'\t' 'NF != 8' || true)"
   [ -z "$bad_rows" ]
 }
 
@@ -88,7 +90,7 @@ _source_docs_map() {
   docs_map_build
   # For rows with a non-empty heading_level (column 4), column 6 must be 64-char hex.
   local bad_fps
-  bad_fps="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" | \
+  bad_fps="$(grep -v '^#' "$MAP_FILE" | \
     awk -F'\t' '$4 != "" && $6 !~ /^[0-9a-f]{64}$/ {print}' || true)"
   [ -z "$bad_fps" ]
 }
@@ -100,7 +102,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local rows
-  rows="$(grep -F "docs/headingless.md" "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  rows="$(grep -F "docs/headingless.md" "$MAP_FILE" || true)"
 
   # Exactly one row
   local count
@@ -125,7 +127,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local rows
-  rows="$(grep -F "docs/with-preamble.md" "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  rows="$(grep -F "docs/with-preamble.md" "$MAP_FILE" || true)"
 
   # Should have 2 rows: preamble (empty h_level) + "Beta" section
   local count
@@ -150,7 +152,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local rows
-  rows="$(grep -F "docs/no-preamble.md" "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  rows="$(grep -F "docs/no-preamble.md" "$MAP_FILE" || true)"
 
   # All rows should have non-empty heading_level (no preamble row)
   local preamble_rows
@@ -165,7 +167,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local rows
-  rows="$(grep -F "docs/fence-heading.md" "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  rows="$(grep -F "docs/fence-heading.md" "$MAP_FILE" || true)"
 
   # File has one real heading → exactly 1 row (no preamble, no fake heading row)
   local count
@@ -185,11 +187,11 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local copy1
-  copy1="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  copy1="$(grep -v '^#' "$MAP_FILE" || true)"
 
   docs_map_build
   local copy2
-  copy2="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  copy2="$(grep -v '^#' "$MAP_FILE" || true)"
 
   [ "$copy1" = "$copy2" ]
 }
@@ -201,7 +203,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local fp_before
-  fp_before="$(grep -F "docs/headingless.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  fp_before="$(grep -F "docs/headingless.md" "$MAP_FILE" | \
     cut -f6 || true)"
 
   # Modify the headingless file and rebuild (no new commit needed — HEAD SHA
@@ -210,7 +212,7 @@ _source_docs_map() {
   docs_map_build
 
   local fp_after
-  fp_after="$(grep -F "docs/headingless.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  fp_after="$(grep -F "docs/headingless.md" "$MAP_FILE" | \
     cut -f6 || true)"
 
   [ "$fp_before" != "$fp_after" ]
@@ -224,7 +226,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local rows
-  rows="$(grep -F "docs/with-preamble.md" "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  rows="$(grep -F "docs/with-preamble.md" "$MAP_FILE" || true)"
 
   local preamble_fp heading_fp
   preamble_fp="$(printf '%s\n' "$rows" | awk -F'\t' '$4 == ""' | cut -f6)"
@@ -243,7 +245,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local fp_before
-  fp_before="$(grep -F "docs/headingless.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  fp_before="$(grep -F "docs/headingless.md" "$MAP_FILE" | \
     cut -f6 || true)"
 
   # Append trailing spaces to every line and rebuild; fingerprint must be unchanged.
@@ -252,7 +254,7 @@ _source_docs_map() {
   docs_map_build
 
   local fp_after
-  fp_after="$(grep -F "docs/headingless.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  fp_after="$(grep -F "docs/headingless.md" "$MAP_FILE" | \
     cut -f6 || true)"
 
   [ "$fp_before" = "$fp_after" ]
@@ -270,7 +272,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local fp_before
-  fp_before="$(grep -F "docs/no-newline.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  fp_before="$(grep -F "docs/no-newline.md" "$MAP_FILE" | \
     cut -f6 || true)"
 
   # Modify the final (only) line.
@@ -278,28 +280,28 @@ _source_docs_map() {
   docs_map_build
 
   local fp_after
-  fp_after="$(grep -F "docs/no-newline.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  fp_after="$(grep -F "docs/no-newline.md" "$MAP_FILE" | \
     cut -f6 || true)"
 
   [ "$fp_before" != "$fp_after" ]
 }
 
 # ---------------------------------------------------------------------------
-# 13. docs_map_ensure upgrades a v1 map to v2
+# 13. docs_map_ensure upgrades a pre-v3 map to v3
 # ---------------------------------------------------------------------------
-@test "docs-map ensure: v1 map triggers a rebuild to v2" {
+@test "docs-map ensure: pre-v3 map triggers a rebuild to v3" {
   _source_docs_map
-  # Write a v1-style header (no "v2") to simulate a pre-existing stale map.
+  # Write a v2-style header to simulate a pre-existing map that pre-dates v3.
   local map_file
   map_file="$(docs_map_path)"
   mkdir -p "$(dirname "$map_file")"
-  printf '# docs-map v1 sha=abc built=2026-01-01\n' > "$map_file"
-  printf 'docs/headingless.md\tabc\t-\t\t\n' >> "$map_file"
+  printf '# docs-map v2 sha=abc built=2026-01-01\n' > "$map_file"
+  printf 'docs/headingless.md\tabc\t-\t\t\tabc123\n' >> "$map_file"
 
-  # docs_map_ensure should detect v1 and rebuild.
+  # docs_map_ensure should detect v2 (non-v3) and rebuild.
   docs_map_ensure
 
   local header
   header="$(head -1 "$map_file")"
-  [[ "$header" == "# docs-map v2"* ]]
+  [[ "$header" == "# docs-map v3"* ]]
 }

@@ -1,0 +1,475 @@
+# docs-map v3 sha=f8402f3d42b5b4e0ce975dbe4061bd1134a77144 built=2026-10-25T16:00:06Z
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Sharkrite Behavioral Design	d3e2d92592c88f38cd86ae48a2c5f914b509aee1c40b1cd70ffdeacc794f2125	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Development Phase (claude-workflow.sh)	f9d667195ea76e709461a9787934d56d5bfe18be3f66c21284ba13efb902300c	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Claude Dev Session	7fde3e2c6b081efc5349d38d12c4ad6e13fd663f2fa67e9fcff3f03b66a66e7f	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Exit Code 4: Empty Dev Output	de23dea4d839dd009adb28c68a6e8bd7f876f5826dcf4f94bf374e3b0c183a65	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Test Gate Auto-Fix	67a10d757e2d0861eba419a9571b37d65155c1c5145a159ce5bd46f72c15e8fb	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Pytest Auto-Optimization	07516b3483d322c36be13e1900a09e9686539bb994630e26ac788fad0dfd51df	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Pytest Loud-Skip on Missing Dependencies (#744)	9368dd9fcb19256a30a9e9fcbd27654ecfae4580c431e6f99b2764e49482013d	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Post-Merge Dependency Reinstall	221092f58545a48b229cd7149f9b94d43ebe30b38fcf67f455275a8e1cb137ad	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Post-Merge Main Poisoning Detection	75b00fbfd5d8382c45ffda93e7c3bf59749e5009dd3b912f1e72634b4dfe44c5	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Batch Processing (batch-process-issues.sh)	33e1949b6473a04ccf54b47a209885e10abb0a647925ba3d5fe3b42d94f05a84	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Batch ↔ Single-Issue Parity Contract	2633f4f11d22d0ed32a001b032e7261f0aad7a07641004971a31a3ab9a8d0091	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Active Process Filtering	26370b9d9935e5801ea9f397807b433d52006beeb75b05564d4826a1ad082e35	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Dependency Detection	e1b82fd6030bc93c126fe3897f7415a385ad4675fe23956be0f445b76624dbd0	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Cross-Batch File Overlap: Warn and Reorder	31a30c4326c59d031f653c484826f43e03b45ec8030e3bcebc2e3640f89bf4d9	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Session Timer	aeb5be1bd1de1c7abf6682188b26075455761847b13199556e26b6e5940ceece	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Cleanup Operations Are Lazy About Network State	1153f89d30063b0d27bb9182f40759f6247f7b1f48b53bef755cc09a510d6f18	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Network Calls During Closed-Issue Cleanup	5d6449cd159640e59201ebed2f01d39e1aee1407cf12764da3f053e9c79ce3c8	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Closed-Issue Cleanup Fallback Chain	a86aa4d621bb145ab9a95fdb2851d809dc148af0cb374f4535ed8e886edf6961	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Plan System (plan-issues.sh)	c6a77ffbfd8e494b5dc2743d297da151ff206e58ddab03dc2041bd908a45fd82	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Coverage Checklist Validation	a818ebf7bd258d76dd9436fe40eaa93bfa0766b93f4337cc750cb4c5281a80f2	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Feedback Persistence	82e61408268cf6823a762bda20ecde631dc4445f0a0d33565e9abc0746282276	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Deferral Extraction from Feedback	ede6c312a454b87be11b94060aaaeb801383ab9ce2ae846652da5bee08aea856	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Service Layer Lint	7de936cf0262ddb28404c374ab179d9fa5cd63383c6b6e8c71a392c9ce73dfbe	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Marker Normalization (jq streaming fix)	7c11f3b2bea8c597618b44476a710f32bce2e42b0913919d3118b81132499986	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Shared Item Permissions Rule	5c31d7b6f62b304b89f5ed1ccf1f39fdec3ce110df5657792e10da16ac095dcc	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)	38a6ef25b4b9c1334daa61b46f878d643f45744d042a58db08510ab8d2a0a72d	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Fix-loop policy: NOW means fixed, LATER means deferred	9974d51c222451e5c67654190f11d8f4dc1cb0714665cfc30180683e3b98e9de	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Verification Out of Fix Session	72c4fe92939aad26bab7d3f659fae5f3a400103a87f905c682ae3a288e40dac5	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Test Selection by Changed Paths	358875ff8ac46ae6f1fb987af638ee25a2a9bc31991d822185e03eae91837da7	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Fix-Loop Gate: Incremental Selection (#724)	5363cb471ad02aa536da34e53a8f7a4dc08a9da2e82a9f7d3ee8159fc46968b3	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Gate Block-on-Any (CRITICAL)	56f984f9d968345bf9e4f36ec1dd37704139da2edcd9e65dddb1b879e1a89839	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Full-suite is OPT-IN; the probe is capped (CRITICAL — the "full suite every time" fix)	0b3e53b7331f9413ff4b645e84bea934bfa547896e58799cc1c8105b37091213	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	No full suite in the issue lifecycle (CRITICAL)	8efc54c9a2de76f54f59a4433965f02b5b7c54c0be7a68dba6def301cf0712f2	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Serial Gate Hint (`sharkrite-gate-serial`) (#724)	5072da210fa17da917872bd4b214f065b0bf4e91c690cb7312a3190abaa19ad9	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Bats Parallelism: Census-Scaled `--jobs` (#1165)	b62133dc20468e99d1bce06d6a7015ffc40dd9cfb838e630beb4623d8b36fff9	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Gate Per-Test Timeout (`BATS_TEST_TIMEOUT`)	93db64b3042f42baba7354cfb4582ce98e3b853abc27c8c4c6d08ed0523ba55b	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Gate Output Routing: live in foreground, log-only when concurrent (CRITICAL)	b10657bbafce30bc7d197c04c66609dcbcb48d425747cb0a208d001c5652f64b	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Fix-review prompt: syntax-check before declaring done	b890d5d5a2e4d6654b55bcfb90be3cda3fab1ffa8c83cc9b220c5f772cb7ced8	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Dev-session Phase 4: framing must match the prohibition (not just the body)	62efeda8733af6e9ecc690a0476de9ecef2fcabfe96922536ad84676eb8d7b11	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Supervised commit/push is a single prompt (2026-10-11, issue #1128)	80b4bb39c8e9359ad1c590ddb6e192a53d217231cf608999548c549814271990	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Supervised standalone full-suite carve-out (2026-10-20, issue #1273)	973f406ac36f3e0f2a4d2066d65aea54ac57ae98180acb258c358e08bad49465	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Dev test gate is skipped under orchestration (CRITICAL)	83ee8246813c39115dad534922c1cc8539dbac8b3d06b75a27e9bb0014ceccbc	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Interrupt handler never auto-pushes WIP to a shared branch (CRITICAL)	6f27aaf7653e064a31d555a9abf281f2b33dd7b5f1a37493171a13deeb62e510	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Spend-cap detection in the dev session aborts the whole batch	6c8b44b3441653809ed29409a850aa675c29f3cc0c39b54cdc09eb17d99f1ee7	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	A file that is both a library and a script needs a mode guard	65aa1f8d5e2ddd3e84ad8e2924d332b7d7d70988b5ed76a1576139c5ff039f5a	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Test stubs MUST NOT live in production paths (CRITICAL)	75d2a245e6def90ee664e1871ce990f77c7dc26dd26bc56d4098f0f905ba04ac	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Follow-up Issue Context	1f6f628273104be6b06013aa8b1f2b3dc5f0417d7315278ec8441c2037ef004b	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Review Comment Filtering (CRITICAL)	67dc4083f0585e9f98a911e387cabe02e5d9f5e038395711e9aea09ccb2dda3b	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Stale Review Loop — SHA-Based Staleness Detection	e35fc0e68d03a9cf637054edfec518b10b3628f43ab4b312602090ef449a6bf4	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	LOW Severity Threshold	fa4a2dfdf0fbca5bba6114147d4d024d6ccfecb3af8123aa1e3e61c58ef45584	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Follow-up Defer Filter: Necessity Bar	816fe3888c00e250ff05e63bb620b4545977e8711b055829235afc27f63bc91a	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Assessment May Not Defer the Issue's Own Acceptance Criteria	d8e21642d2da7433aa8504d5bd5cbfb5fe3e1995e6be419a742c68ebde2cdc73	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Doc Assessment (assess-documentation.sh, workflow-runner.sh)	f7be86e429354f19875058b16db42d36ba00d95e009e25198d31804edb514b94	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Model Selection Per Task	4a0fbbd47cf6de1d93054d5939106583def010ba0e852d6be6b38d42ef9f420e	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Wait timeout	176353b2d80478de5405730df4fb0b3148f0edf46258ffe06acd662d1f31ab08	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	DO NOT skip the assessment based on diff content	efb5c94a854759e3b30a55ca30462fb251db58978ae7c1045cddde9941917184	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Directed-Update Proposal Guards (#1208)	7aeeebd81805f7460279677bde9c7b8846c3fb0fbfabf9843b858573cc3c2cfa	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Proposal Format: Per-Generation End Token (#1233)	9a1a971eea4338039be2362313b75c3d752d0ba4c7d54556ef4bd9757fed8212	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)	c4ba32c8b67f82ae2ab6b031297f12985998c76feb8f04c1b96cfe6b2f3a3366	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Session Limit Design: Why Wall-Clock Age Is the Wrong Metric (issue #283)	2d0e4e772f2d53d4fbdb29aba567c36530f5c5d1d5006915496ca45fc2fee5a6	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Problem	ebb8636b6d8ef4c1aa84f1c455485cd38a22bffc77982045cae18ae961eda0c6	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Root cause (two compounding bugs)	b4a13bbe794b4c25384e2ea687f862bdf890d53ac5bb88d7ed67d7bfe57ec3bb	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Fix	5971bc018782836920e4776c9ca8b2bb416bda9117960406aa72509f49483492	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	What the limits now mean	34966fb1369af6e658c9c726d0821406972a3429a1a532e7bed6f4f6b451c468	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Diagnostic Timing	358dd881675676c4c981a5d170e5a413ea125a612b80a84ab805b3e8e42d7807	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Locking System (issue-lock.sh, scratchpad-lock.sh, session-tracker.sh)	4b666e7044503cf0843ba4e99e2bf6c1c71596767a4314c120e9231840bf932a	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PID-Based Stale Reclamation: Same-Host Assumption	f60973c2b599cab7d5bd005c032df607a163361049ca110dc160b47fcd4beb8c	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The mkdir-then-deferred-pid Reclaim Race (issue #706)	241e79fe5b4b8f69a6ecbc5c862c9692185b6daa297ee95711dbc362775e8458	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR Follow-up Lock: Timing Budget	4b010975b0ea2eb2669b459bcc31d5ba9e3eb6f564fe77fa964a6e973f293438	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Per-Finding GitHub API Call Cap	384017ffc6c2e02b6e44e1cc8469775dfc95e4e23d220aacb35143249cb76b25	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Lock Release Before exec (CRITICAL)	2700de0872ef8a0daeac37271ccc5d678a8e3bea1adecb385d18317ffd062453	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Phase Handoff cwd Invariants (workflow-runner.sh)	32c26930bfdff412260ad9945abdd33b93167c2960717dadc8282000d70be452	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The Problem: Deleted-Directory cwd	799a7a9a6fdb106ceed2e1135c2cf63a3fb76d39a07701524de9a13c628b8908	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The Contract	4ffc226f6870223469d3cbe0551c96d1dc4cbb9c44ab9399f8af8f3de959cd9f	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Implementation	066d1d137b9fe486cfdcd8874a3457de6bf6ae645717b0dbaf085ac0a6d000fc	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	STASHED_UNRELATED_WORK Exception	724f5e716160f743d2b84a7ae308761de7de51a5a455d3aef862cfea2b80186e	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Regression Test	5377f14d3df09851d94edf032bfb4bb188187336408d04fda47923f87f6ef530	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Decisions Log	7b256a6934f203f75473fda5605d6726e8a7ff0ac21d1213febcad3bae18d5a2	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	gh_safe transient-retry regex: under-retry > over-retry (green-main cleanup)	5e7cad2b66483b46837a86eafff00d6e72d12f6794d6220e383255f6c15cb706	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Removed: Plan Directives System	01e02059eea52157e7e54e30ae4efbc5f91febf0bce64cfbc7e67195c8ba945d	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Rejected: ADR Modification for Deferrals	38807b1ee2eeadc8680bb9223e31e3b38bfe507673a309e9e942a4a4377e4025	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Rejected: Keyword Matching for Deferral Detection	ccadc05d221af4294257ef44aa2dfb1e17107589a745c06b466ab956436146ef	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Rule: No Keyword Matching for Detection — Anywhere in Sharkrite	d794a8f5de8e2d55ca74a92b0f38370399ec96e3de5c6baf45906e94274f4ea3	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Decision: How Sharkrite Maintains Its Own Docs	9efd1f65e25f6e47606e0fc880eb6966026e53d014a508463ba0d7a869497e55	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Conventions Catalog: Accumulate-in-Place Contract	8fa860a1885978e3bcbfd916f471f4d62a57301fedc836b2d7831a0f35f098f1	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	macOS/BSD Portability Bug Class (CI Can't Catch)	20c816ef6ebfb08468a38482ad0caaf6773700c3366e68bb3a086996c1c8ffd6	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	macOS bash 3.2 Compatibility	f9bb270cef5a7f05854980c9be3651372264a91ef3daf5bf1ff2abf6d71d5565	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Background	7384e635002b2f7021d098f3c061c1e9aa3d96b6564de77f77d4d47ea178bdb1	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Known bash 4.0+ features that must not appear unguarded in #!/bin/bash scripts	f67fbf522a58d4de4c2ab2b1225da4ebc84809d430b2a8c9a08f7b00299bb53c	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The re-exec pattern (batch-process-issues.sh:69-77)	fb1e1426d03b2745eadd43f82793d45db1c440da572f2ba9f6449b12b1d9f887	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Live incidents	98b9868e892c39b259f26f040368b64f74403d26f39925873bc13df7bc6057e9	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Lint enforcement	01aa6cc268d50c08591cc051c812dbc30bee9fa199d730a4b6e1c34a717bbe24	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Deterministic over Model-Policing-Model	11bdc78b4a976ed2f9f2b69906d86f1f852eb9ca70dc19823c709cfbeb4163f4	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Temp File Conventions	01a68154b96604e8a5d545d234b69a7d891790bc91cdb14fad3e532dfee6140a	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Per-Invocation Isolation (PID Scoping)	55396979581ce949a59854f63e92b77dccfb3c56f1a4c48ee67cf6a316b983e8	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Trap Handlers Must Not Use Globs	9a05fc8fb34721de2971e2b6ee6441466e1b9b3afe7b3337778c70b6698c4fa0	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Live Failures	bdc87899e38fd460c634625a057e1640bc8bc7680276b02c82a550f1928e3284	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Regression Test	1ed3d21d164b0ec3b7c3476e7530f21381723a93c45bb85ab40e0675316838c0	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Fixes That Don't Fully Fix (Anti-Pattern)	27860f8e0bfe1e92bef6bbd55ba4371538ee6d0158f4c20a8b7fc3647197ed50	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The Pattern	501720514e50e5fac83e9b836fb8132116a32c283c672987356f986a5e143ac6	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Live Evidence (2026-06-06 through 2026-06-08)	052e558823d6620b847c0a19cbbccac9aea497bdb5097c4419900c0a01a5b5b5	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Root Causes	f6c2efdba662b3ec4b41711d458c1190968689190717d646627964ed37502903	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	How This Was Fixed (Process Layers)	168966171f7820c28a87bfb4cdf2c79231fc49f25cf276f92ddd5af1de79d064	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	What "Done" Looks Like for Bug-Fix Issues	18b3fe40717fb7629bfc168955a49eb437b5daee7987e5ffd6602b3b99bb7398	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Anti-patterns This Replaces	c9083595b2135dc2d8ff4bbe559467a048ad20961a270271b2aa13c2ccd1ec91	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Cross-Reference	532fb66d6299e6951b80c97f5e3ebaf2cd5cb67ae05c1f7e42dfc3322fd68c03	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Trivial-Fix Fast-Path + Initial Phase 2/3 Parallelism (issue #531)	038645c31b10ad3feb550480c753d9ef84dfa51962a5a8247497042a38ea51a7	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Change 1 — Initial Phase 2/3 parallelism (`workflow-runner.sh`)	45a75aaafb08a295f989308f21b749ab60dd1401bbeae8606eeecfe0241dba97	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Change 2 — Trivial-fix fast-path (`lib/utils/trivial-fix-fastpath.sh`)	997ffd36fb750aea3c0b9429a19969b9dad83c4b64ff9eab686da7f0767b6373	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Post-Rebase Verification Scope (#854)	3e9f0477ad9deb3db0361f33683b24742b29bfc0c8f5eb0cf53e8ed99975ab8d	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Undo Never Closes the Issue Being Undone (#887)	7fc1badfd8dbc0209084567cca8632f4bda55828a5e33192d5b657f24f37dd99	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Worktree Cleanup Skips Detached HEAD (#889)	943721a93f7f9a4f9c1efdb274279f6f7b94574dc1c3ffd636bfdc4a18a180c2	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Divergence "Reviewed" Verdict Compares Epochs (#896)	42ef0b2e74f2cb6a3bac5dba21aaf5e1f4fd3c3d4e0b3c3424be9ad5d9009349	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Force Push Is Lease-Only — No Blind Fallback (#896)	346a9740c9ad19099bc43bcd5f4ff42ea9fd6b211f9e262fbb1ff1fbead08f98	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	validate-setup.sh Is Functions-Only Under Sourcing (#899)	1359912b69109cbc6bd6d7e9c9f6e67c046a71ead67cc3ad3baff28237a797d1	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	ensure_timeout_cmd Never Blocks or Crashes on Non-TTY (#900)	7f69f252b5daea903ab2d620f17041e92db9ae13a186c58641919ccc9cac09db	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Worktree Creation No Longer Symlinks node_modules (#844)	261f450b516d8bbad8628f784cb4dd34dfae1d9d90bc99e6ee6d5d91c4ca0dee	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Gate Flake-Retry: One Bounded Serial Re-Run (#938)	55e5592b7d854552bf178506c64447b0a98f99fa28c146fcba08b8d1b77a7424	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Pass-Type Detector Threshold Reconciliation (#937)	0da93a29cdd3304e85a9bae8c7a1cd3fce2a30b0abef7088457318bca8bdeccd	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Settled Findings Reach the Reviewer, Not Just the Assessor	d509597c1575fe605be90f77245147141cfa944235fe08f8d44f60a43761b91f	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Gate Verdict Persistence: Empty Re-Selection Cannot Pass Vacuously (#944)	f34a13ba6297383a721e59f005f633edb8233307d3864ad668327d9cb87d730e	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Parent-PR Attachment Contract (#1007/#1008)	87d724891903495e43548e672df031fd69999747dacda17a6c1384ef89c52b4b	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Single Resolver in `workflow-runner.sh::run_workflow`	d8fee9efd11225a97df659806f4d41443db48bc9ced79d5cc850cc16dd2e7caa	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	WORKTREE_PATH Resolution	891912fb8ca2993be77433f4dec0bc90eafac00d06afcf189d0f41e02f058627	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Guard: Only Resolve When PR_NUMBER Is Unknown	7d4837659545f8d9024a53b5d62c6070aa77d341cf2b331963e9c281e4deb475	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Regression	8237ce36b0f298b4b765a08fc778e2eb114289d97be273f2330e99d54727bef2	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Hermetic Bats Env: Session-Behavioral Var Scrub (#1186)	aada0bb94bb3d5dc5ebf2c6971a325409131c00df5be75b9738f27f84cbce933	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	`--sync` Typed Dispatch: Grammar, Rail Ordering, and Exit-Code Composability (#1041/#1048)	5cc552654517c734f7b633f6b1f2bbf9bb7f3ca57fac17b6c595eafe5d13e787	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Branch Form — `sync_integration_branch`	986923f2dd706c2e924271b3e07984f2d795048243411fabd165ec6c40a32376	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Issue Form — `sync_issue_branch` and Its Four Skip-Rails	a9586ffba2bec60daebced37ded984b8ca1eae1c2d7fd98ad3536e89cea0440d	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Exit-Code Composability Contract	ac84c686212c496a004bbec98fb83296ba9e9347b7d2de75b19f8075b12c6714	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Bare Sweep Form — `sync_all_repos`	d7c7857e4b216c70839af39a5a8bc12b2458515893de4ccd57ca68b9d12b3d55	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	A Timeout Without SIGKILL Escalation Is Advisory (#1301)	929b9b947ff9675aa6bb13d8c3e413042c3ebebdc68cd3b2c606b37f7964ad2c	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Promotion Review Is Assessed, Not Just Captured (#1278)	612aa73b0a100abb28aad01ab21a57989314e01c460d9cac448ceeab24629766	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)	c2b055235a1dd06a9760416689c94b6f7cc749493f55545e79ecd295ce1c4201	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Deterministic Conflict Mergers Read Stage Blobs, Not the Conflicted File (#1319)	a5e06501814216578da65d572fedafb8db1da72a07d237fb32622d306c60ec1b	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Output Sanitization: stripping operator-local commands from generated artifacts	6353b79ef1a60d6f95f14a38b6ae617e9dc19009b2181ebba733db3f9ba72641	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On Demand	06d439da5e49603af07edf44bc4014041a09c3d8c4331f6837cb572fbe2bdd40	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Units	5c4e4b1f215dad489fd72f20438b1753040c9688d741eed1aad1b5118775c720	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	On, off, and what each state does	cc7e2a71a7730c008d0c9477848867510f280e6432f4a085f675861d3da75dc2	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Tier 1 — detection, per merge, deterministic, zero model calls	79c184ee5358aa7cc5cac8cb74a1d86da91043b1159e487d3a197bade3970ada	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Tier 2 — correction: one bounded model pass, human-approved	de352784a5b649c929cda61b62d5d771aacee4b94e7ddba5bd41bfec81ad402c	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Editing rules — every pass that proposes doc text	caec31ab54d19f173442735a0548c05e8e9babae2b798c11759186d6bd7a00cc	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Rubrics — every doc is checked twice	c2dcb3e92825810537cd1d44d7dffbffc90dbe7eee5117a32cbfb55b99f99628	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The ADR: never edited at promote	38be209384166c06f1baaca2ab2ea1861f8c13e84f2cfdca1db0b2004c495987	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`rite align-docs` — the full audit, on demand	f76e9295813895b8de656b7e89cee46b2d450f93eab82c4582ccdf445da81247	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The docs map — sharkrite's navigation document	0ede34cb74d5d0d32ec07e1c010ab1e3003174f9238043ec5c6cbf9263977a08	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Keeping it lean over time	6b1503f766c46d14e2b1ab75160ba78df9227b91ac8bfe2fce7cbb66d62c1797	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Retirement and migration	dcf95dfa4b62a5c36d499612a02044405a9408b581793acfbd14b942beca2674	feature	-
+docs/architecture/behavioral-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Rejected approaches	6ebe6d288b91dc779286c6746d586f8bc769f6a492950ea1d751bdb6554e760a	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow	2de86fe1830b06a1aa8920b0a46f2a431e43fe7e8a22a49919bea011e0d2a323	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	1. Summary	8eea05fff1f1e15aa844474c8af2350622395a75fe27dd528c182b6aedb4b4a5	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	2. Source of Truth for the Target Branch	c6a3e80694ccdfac26aec07cf7032001f41fe6d69c4e80482388c338cd5f2980	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	2.1 Decision: hybrid — per-issue local state file as the write-once Phase-1 source; PR `baseRefName` as ground truth once a PR exists	f964adcced80f85c5fdca100f433bf412e8905cee9975c9b50a09818f2ab0204	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	2.2 The resolution order (one helper, used everywhere)	642f540f8b34ca4f6d7fe4e44becf43922428def19c657d7c9318acca0ca1ea3	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	2.3 Why the state file (not env var) is the per-issue carrier	8270714231d5b0c76a886b86d2ffb5804ba28f5d5bb7ecd89dc8f75c564a736d	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	2.4 Underspecified / risky — call-outs	9343ca45aa0fbb6b5d307daa5ad2b06231e05341e61dcc82b1682e87faffd6df	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	3. Flag Parsing & Propagation	3b74ff11976fe6f9047081c98dad11d59c6c5e0e4471ed42c1d804bfc2371bb1	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	3.1 `bin/rite` (the `--label` analog)	2c5028874b713c90c7aea3b49e396729767cc6027d6175659839d7ff4bd5b7de	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	3.2 Propagation through the three routing exits	31111bc54bed43c99316c2092dc91e00454871e14594b077e1be6f673ce920b1	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	3.3 `workflow-runner.sh` flag parser	11ce2ab1fe1ee66699ef6cd36ba2aaf81e78faf3a252927aaacea9113a602276	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	4. Merge Changes (set base at creation, merge into target)	ffe0a5b010a897d74bb761499b0d73b64cfdd02fc90052d839e8e27d67ce90bb	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	4.1 Set the PR base at creation	e1509f2eb665dd7e08800195533d8e12e12a240519e755b053f153af40acf6ef	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	4.2 Merge into the target	ad4a6688e10f720960d6ccc36dd2992c3143dab50672713d23ffdf807e4bc4f7	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	4.3 Conflict-resolution paths (BECOMES-TARGET)	1221780a134b10552a8e523856b1a024571029949cf554c59832b113cbe261a3	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	5. The Hardcoded-main Problem (HARDEST PART)	d440846cca4cdc35f6e75ac22fcbe322d78cefdd7ff161664fc6530c88877e26	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	5.1 STAYS-MAIN — pinned to `main` regardless of PR target	dd41e195876b45933792888d71394e31ed163fe1b0572a8f49db8ce90621ed07	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	5.2 BECOMES-TARGET — must use the resolved base	4bd2c3ee566bf8f4e3e30d32b58531e7f05035cf3421f43ae6059b08b106a9ad	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	5.3 `rite --status` Integration branches section	01fda238d05f896adb93a0196d005f086e1b53733ebc0da68e5f0472d1e4e3f9	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	5.4 Threading mechanism	be4e61c1181ee31e52401da7192dbc14cce20d2c688650bafaef851253342fa2	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	6. Contracts & Safety	b5678127714d1617c138047a4e84f1e03add1e5b563256f92b1f7c133c2de714	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	6.1 Batch ↔ Single-Issue Parity	8316661f123a463cf2d857632a3c164ca63e370ce54b7f67066b8bddf1304599	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	6.2 cwd-after-worktree-removal	431473d871a7e37e459e1e0bd9247bae540f574c064af525ee831e7a28a99b06	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	6.3 Re-source Safety	0b105809d42789d8e40acbea34828ec494b6e3b82633b783b5b976bd5ed589a9	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	6.4 Deterministic backstop — the lint rule	33ebf2f683316e3657060fad0d03f932ab5ffa86fc3f15f88d693dab0686accb	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	7. Phased Breakdown	744c60aafdb7345c7bba9ad489dcf531eca4d012b07f726668b080cde754bd8b	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Dependency graph	ebe6423a8afb8186222a6c7760f2d2e1b76a9086a9e3b1ae9269e369f9419bde	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Top risks (ranked)	a0ba45c3076a4005cc19b6b1fa0d20dad16bd73f5ac47517caf94c4b5bdc61c8	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	8. Promote-to-Main Trigger (X → main)	76d69235f86792e4a384d472ffdc72b744b9bcd56cac40789f43eaa1dd3921ce	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	8.1 Implemented design	689ba45346c4a7ed80c09a5985d11005dcec2231b852e9f680cff88f0388f725	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	8.2 Why not `merge-pr.sh`	8e8209ee5f979a3382f6d752e94a87c801bbd314521394619a445a4225b42731	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	8.3 Decision log — reversal of Option A (standing integration PR)	684ce8bbd55ffed664461b400a2fddd1ae487478485f7afa3309060c454b480f	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	9. Merge Ledger + Close Semantics	96c8744f178adc3f8ea041a1633692397b0d807ba668c6122bfd2f5bb8f0ca00	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	9.1 Ledger format	ec74ca544b315174c50e11a807a7274d7e4561bdcefba6bfb78e6d5dda87c82d	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	9.2 Close semantics — issues close at staging merge time	d2d10134cad6428b9360cce1ba0bc7044c95bbb4dfcf88aa6a2c6142bdce6b04	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	9.3 Why the ledger, not `git log`	dd96b49731433773e36ba6ac1c2e92e1504a45d9486625e385da8fb44fe59779	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	10. `rite --sync <branch>` — Syncing Integration Branches	ec887399f88fa9eb0759a4d00428f89a6431a42654455e7598f021c9a07bc5d6	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	10.1 Purpose	14075d33708c445483faf31c618b6de21f8a2368239044c8d499e38b67b0776b	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	10.2 Design invariants	1a760bbfc54919162010d0ee4ae41136e45c3574cb8dac58cc6c542db6904c58	feature	-
+docs/architecture/branch-flag-design.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	10.3 `rite --promote` integration	27832eb811ba30d42e62717a9d0644a2fa555b614b91edb76ca98aae592bc405	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Sharkrite Conventions Catalog	a456bbcf501618c66647daddc41acd8a31c54f9a7701b492fb74db26469f3a63	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	no-keyword-matching	7e18abd1add8314f4107b045d7b21c0a8d0a85bfcbd9cb113d1580b2968fc490	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	local-outside-function	a26ee54b49bea8d15d3657e99877b7d25c1c0e69f1c853498b98a61afaac8363	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	defensive-sourcing-must-be-idempotent	e2c1f96141fc234623442e9b5c490d32cd78464e1f628aaa24ea17134ca248c0	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	set-e-pipefail-grep-silent-death	7f54931f59709a789e2ed717a4c0fb568b8404257346ec6790e39b81a327ce9c	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	structured-header-matching	90c6fc916831ff28583f8c95daa7debfc8f8709283bbd17508410c3f9a59fd08	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	grep-c-output-vs-exit-code	770abe8c79b9041c66203d22ef41b1cd0c6537e24840e995a3cf25180b7f07e8	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	marker-must-anchor-format	7a45751a4503cd4361cdebd40bbaffad17cb79f2ef5c616c14375f476b1cae9c	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	No `sleep infinity` (BSD /bin/sleep rejects it)	b6feae692f1f41c4a3ba0ad12bd695b92be939d7e9ba03ec705ed7fc4dbfc865	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	tr cannot emit a multibyte UTF-8 replacement	81c32de237c8996329e1d7fe969acc747e6abb5da5b26b5180eb05b4817ca078	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	BSD `date -jf` parsing a UTC timestamp needs `-u`	90cc57b4bf0000cfe28244086c7bbda384cb52148d2b3448e28d3f6f7db2a02a	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Escape `/` inside an awk regex character class	c8da582dd2bcc9818ab78b3a2504c08750a0a412b5d276d8dfa0022cce260ab4	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Guard bare RITE_* path vars under set -u	ffe01ab47b8b44589091e7dd97eab93c84c92a5865ca4ce0cde3aa57d9cc2d34	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Variable-sentinel re-source guards for lib files that export -f	545b75955e9957964c07bcd49f828245a4ed623f4e618f95bdab4981639c37c0	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	CRLF-robust grep - strip CR, never \r?	caaa7096852c38b1af02369b0e1a8cbfe9c98151404d8f6718b408353eed4e72	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Never auto-push WIP to a shared default branch	3343ad7fbcc3f1638ea01494e764d29dc3c2539466cf7faf1f9c84071111da80	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Array-fed awk/grep must never fall through to stdin	25f50f4c78773dec3aace192c9344b64347ac9bd75bb4dab954e853f737900fa	feature	-
+docs/architecture/conventions.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Lint-rule bats tests must scope to their rule	64d2864d2573187df8bb7e211191b80d18a412b03edbf64da9a8a3173af089bd	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Encountered Issues System	c2c3b0a04ea2792550a7619f1eb27743048ec47c01bcf5e95298efe955819056	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Purpose	b346b84569aaed8814a60ef09dbbf25a3914d8d12e5fc6cbe6cf1379d1d7f9fa	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Scratchpad Section	00fef75e1ceb09932542d1165f69238cf424aeb1880829790c42bd207d14f76a	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Location	00342c3acda17341a997845ea88f983fe23ec2fb60f026eaff62b3970a07fe56	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Entry Format	8434ef9dcfa4d4b9dbca7b7f658e04a0cadd1dc6042df3f690ba6701d6e3908c	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Categories	2b44433dd43c77dc6e16f49dc80e85fa62ff490619a86c227d5f0a9ce058f718	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Functions (scratchpad-manager.sh)	67554fcc731898c6e11e9f4286b1ccb6323ae915728dbed56f8331c705f7198b	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`log_encountered_issue()`	704c338d5dcb0ca3d5b42cbb3bf7db39490eb3294a1ebd61db8e5e4a8f80ee79	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`create_tech_debt_issues()`	cfc7eceab0a716ef5e9fca14928aa6aef81aa29cd31e43bdfad8974b39b7b33d	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`clear_encountered_issues()`	a8d8916ffd2fa2e702d26a2e192804a4012a2d87095bdd52b50b7a98ac5d909b	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Lifecycle	4deee4959059a12965527aef3430f4f39071d6ded9a69b46e42156f4286a438c	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Tech-Debt Issue Template	c49d0837d2814b2a7f8c91fac36620336db818ec6eb36ef38dd7d29eed4afc03	feature	-
+docs/architecture/encountered-issues-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Origin Tracing	83f8402fdd3e5ce80eacf650ecd95eb66b6b1249c3221f76ec8fa9df997ab2d4	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-			4173b853d2f59e08253e628108c57fe9a6bd90600d2b89aa273196abbb5f4924	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Encountered Issues — Recurring Bug Pattern Catalog	91678200522426bc69faa4f31819fd75039e7c2f6ce15224bb7afb1980b98608	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Table of Contents	2713d2ed73134b9d43c87f1acc15b808041a490245e7f1f478ab009d5298514c	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Sweep + lint rule for 'local' outside function (recurrence of #11 — claude-workflow.sh blocked all worktree creation)	9068d3098c0e5e10b7e09a4eefc19137dd199c5a3d8a40f4ac6e5c4fc5bdbc2e	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Sweep codebase for set -e + pipefail silent-death from $(... | grep ...)	132d86ae9af2e4d962d0c0ae6f09b77b4d971cfba57b4db62b2bfc6dfe139e53	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Batch reporter doesn't count parent-deferred issues in Skipped tally	86fa69dda9381c81fb82cae20cb4dfb59f6c6dcdff7b0922fcb47980fee45393	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Dev session deletes unrelated regression tests — scope boundary not enforced	00535a755c61c6820334b0096e1380257d4c454aaca70f70e06c32f27f4faf57	feature	-
+docs/architecture/encountered-issues.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Sweep + lint + bats for lib file re-source safety (root cause of #61, #69, 93c7ddd, 2267841)	bd2655209f5646a88f802b6e3ce26b6b05b7b8c5035aa5004ce847562c5173b6	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Exit Code Reference	592f8d81f767056815d34dcbc6f9f68bdfe1f63fcd0bb8627794f499bb8b15f9	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Cross-script signal codes	a0a613e6920f537e30ee0236d599e1867b8c5236809b7897e545c5dae9ba4a7a	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Per-script codes	8a6912a89b629872c8d6aab8ee04ff2065f3b82b3d864621092e9670a70a8d64	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`assess-and-resolve.sh`	d856f22f31326f2c9d76216ed4824ed98a7d36dbcfc5c9b94785f8a0f282fd9a	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`merge-pr.sh`	3b25de116d5b31f856a2e377d3532c4a160cd14319766d0260d319343ad9997a	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`claude-workflow.sh`	f6b8dc5d1ab43bc11dfa79ad0854acbcd35d5093d5bf85fd47374c61e28fdd87	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`workflow-runner.sh` (return codes from `run_workflow`)	1211afb77c87346d99311d12bdaab0e6a0e363b5e69f016fd575b2f1154705d3	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`batch-process-issues.sh` (final process exit)	648b40868880691a5879e53140b8c9f40194b894eee9710f8be73be7a56bddb1	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`stale-branch.sh` (`check_stale_branch` return)	2cb578bb91f72ed913ee9c8bcdb4057646f6c9d697adaf7ce212d9391904886d	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`branch-preflight.sh`	ca7cc4b18afed399cf615b14cf40f0d001031ee4923e2b3ac27d7f9d4ce72a31	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`divergence-handler.sh`	b4cc405ab0028c60f4c417bdf44e0a4897b95d342a62d2637691438a31d91bdb	feature	-
+docs/architecture/exit-codes.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`review-assessment.sh`	ca08e118b857e8abb69cdeef555f4a6e0798311676f1918a07d3ba75332ff32e	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Tag Index System (PROPOSAL)	7dbd85ec7d4fe67b0151b828a4cceec4a3dcc9ef3b3091e91c5f1f970c650cfc	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Purpose	b26bae27a31478a82f157175fc3afc96363223b15245a29f67955b497ddb0b8d	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Design Principles	8308a642f7e0c9111681bb4f2242109bdfa55b534d7bda81f6225cbd376e99b1	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Files	461ec57621c442a9773d7aaa9d7d24267a3e7a20a03482c483683e3a0a2516c8	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	`docs/architecture/tag-index.md` (new)	f0e0a5d5415a092181ef43bebe923c21fc0f7ae82821426d18642656747178b2	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Extended YAML in PR-body convention blocks	92085db9a7fa4599a53db622d1ff476f9800a222519dfd1992f180b5d8fe7fd9	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Extended issue body (`rite plan` output)	279ed91d31a559cc41ac6e37cfca8e266dcbe925da232a4f6ee2c611046dcc78	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Lifecycle	93cbcbb63465ccbcd9588dafd2134849441a112277c451fe81b897a0acac7441	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Write (issue generation)	5948f1a593099a6deb8e0266c6eda4c3ba3f4c94b16fa985446841d528fb7e90	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Write (PR-body conventions)	8458914b45c8f913154a54e7b93b25b84d764bcf34558103027bc65f6652e60a	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Store (post-merge)	9191c1ad614d87e10d2ded0a4178e8873b1c154b315da168ab5000ca4af376b6	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Read (`rite N` start)	8084e0cc227782944b43db9d3fa165fbeeba74612e197bf21e315396a29aa586	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Reconcile (drift, post-merge)	2e58037f394578ec81ad5002e156b5785a1ea247f8cb30af33725fd6a3554306	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Codebase Grep (hardening layer)	91202e0be205434e20bfda02c9e1a73b45e4f6a5bc5284aa7bc2d3ee40e92663	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	CLI: `rite --tags`	be9594b4f4b40d262e0cf5503728952f93bcaa8428fe9ce2508865dedb1b4747	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Failure Modes & Graceful Degradation	41bf668a48819805fe4d3cbd7f4c6380928d47ca00fa4eacdb2bd9b6d68dae4f	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Open Questions	d7e304cb378d17cf2d6c83b6c2ce4a20ec139044b7b1beb70af13c2bb50d9d24	feature	-
+docs/architecture/tag-index-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Non-Goals	138a6afa6553fb717ea1dd20c1dcdc3510ffb74187592a60656615051232b598	feature	-
+docs/architecture/tag-index.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Tag Index	2a2121898c988d4599eb371e15530ae8579607367c37be23b5ac6161344c38ff	feature	-
+docs/architecture/tag-index.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Created	3bb89dbde0f9470da7218e38934289e969e5e1955251141507aa8226e2614b67	feature	-
+docs/architecture/tag-index.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Updated	5e9e204e92c7eb23f73ac9e185b75e7150f97e0475c740a93f9ef62cf60fe501	feature	-
+docs/architecture/tag-index.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Per-file	6fd2ea8a8081cc3ad5610be1349a0d27c0e1ba90b96c4f1f8ed4b0002257e99e	feature	-
+docs/architecture/tag-index.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Knob	582e0e9c440c04f83931083290ca8db40914ea5c9075db0c2fdb7095e7604c4c	feature	-
+docs/architecture/tag-index.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	DO	2fa857c06cdf636f46d670cd5e521ba7c9a05daa4a5a390d21b4631b9c917f8c	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Audit: 11 PRs with Dropped Follow-ups (2026-06-02 Outage)	8d70bd50d1a54db247300bba148d12c37305367195bf4d6bbd1ae9ebed2c62c4	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Triage Results	1580b8b4404d08cc646ba8ebd3424b76456365ddf35a07194e66d0b2cb894084	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #278 — Retry GitHub 5xx in doc assessment	e81b7b44558a581dea6888b1808e87c8ffb8b0182d36b7c7ee1007d832f57ef1	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #281 — Deduplicate closing-issue regex across files	164e979c5ee2bfb9df0a56124bd120d16d3db700c3aa5516bc576551761656f8	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #286 — Clean LINT_FIXTURE_DIR in teardown	20e084582224bf77e0031004e790b1229ffd017a733a317b6353a95adb64342a	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #300 — Deduplicate rebase+push logic in cases a and b	faa29998b109acd57811453a95533cb3cca2b10a232a56f4ba34628cd155e40d	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #302 — Refine cleanup gating: skip network	db13a2eec15ec431831b535f90f4965ca4f47a647c788157b4ceef6296607e6d	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #304 — Use portable dead-process PID detection	a031c842af8bed84a2f55f7abe21531e62c422bf33d2b41942bae59b213a8683	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #305 — Add backward-compat alias for _gh_mock_init_state	d5dc7508bab4833f11cd1e7f962e89b93f26a9843218790983fec81f74d4716c	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #306 — Index-based arg walk has fragile double-increment	ac85d0ef78ce03e92891402a5563e9256fd44191df5cff33033a827d0fc4f691	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #307 — Add RITE_LINT_EXTRA_DIRS to single find block	21c23250fabace0cc5d82086345866cb5250778efaeba7a30440fdf658a3e90a	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #310 — Add issue-not-found error handling to binary	b36037d2d96c907144f5c12519380c13b7012cfd4b67b6bffb4b1345151855a2	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR #315 — Tighten transient regex to HTTP status framing	41864dc66d11b937b652781a422462cbfe6942f378ca5df5ea76ab7e59a8d33c	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Summary	eaa728b3732ac3f81306c87a74bd41ca586cbe1d13c19630acb38d405b63cdd1	feature	-
+docs/audit-2026-06-02-dropped-followups.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Audit Script	2fdaad82441257ef5d89c02beab9a6f6f078844c05bb925843c84437e03a44e7	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Configuration	c238232949b2042ac9d115f8a37619da7f56060e8f29f0189115e8f79a184a84	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Project Config (`.rite/config`)	ab6d2a5bb820b11ecdb137dfad57ee035c0401ef4d44d5061a330ab8032707da	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Global Config (`~/.config/rite/config`)	b5dbcb874c459627dbe0e4a50546c92683b2be4f359be01708e49e64e6f09cfb	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Sensitivity Patterns (`.rite/blockers.conf`)	2daf5141fef36a62f80674cb9186abe5e6768f9f7d4cc319227646162f6be638	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Assessment Customization	77f4554d7db96f30998034558284f464d4a5be25e85774856bbd6ee15b54612d	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Environment Variables	491cb4f1bb6fcde116a588758450e87b1247d5e25e8283e7ef9e46e4a2044580	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Session limit semantics (issue #283)	a35186c9e97079cbc60fc0fbd1fa397f8f2787bb95d4d81bf6f5d9dd286df4c7	feature	-
+docs/configuration.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Per-Project `.rite/` Directory	782537de36be03d2d4550080a225d286478507fd90cc01dd72293a15e44cffc6	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Issue Generation Runbook	5ad16b820f31ea912a1fa8eb0e9a6766b3fe2e8cc39ed1f6dbfe6f92ffcd8f92	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Optimized for Sharkrite + Claude Code Workflows	abb22b8625fe69e6dc89b99a8f43aab6d4d38a88fc021d47ead63bd941f4c781	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Purpose	e7b32e6a6f9019bc64831485a84785258bf0c4abbbfdf3cd18d05c7632d2bea9	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Issue Template Structure	5d71c1293fd822e00632dd241a3cfe5bf03b0d72e01e78de97d429dec6279139	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Required Sections	364ee754d471765718ddd33e488bfa1c3450698aaee026108318b8b9859ecec7	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Issue Sizing Guidelines	2e702d18159e08a1f919261390750c72b1341a72b7fedd75d89e0b291c9821ed	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Good Size (15min-1hr per issue; 2hr allowed with Split rationale)	50b1a9953df87a1ca766ed5cd904fc42105ef1f3fdf4804c8664ba4b95ac58a2	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Too Large (must split)	f90050c5184ca6554cf8ff882e803fa6de380bba51dd199108f6f320f78de88e	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Context Window Optimization	adc42968bd6cf55932e4fda08ca4f3e60b085e77ee55cd447b5f8e0f1f2de9c9	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Category Templates	0f17c8c4cc39d9c61917e7cd37f0117f87a0cedadab978d32a0906f221d88f18	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Infrastructure Issues	e425857e81ac51efdc8ea66472f972e7964d648d4dcd5ad61c7d05531616e261	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Backend / API Issues	b9107e40a78042952db6ad08decacf31963886700dfff1b13508a3775e4ae2b1	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Database / Data Model Issues	98ea639900180cf02dab3090d3eabedcc7ab0ef944169138cae5f268db5ce69a	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Testing Issues	732e52888b289f66a40b72b396657d6fe0fb995aa438edc46867fe4cb2271518	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Documentation Issues	797e199e8cb45e414b98984a0e854341fe84beb6c298afa9f17d9f90c1ac45e7	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Priority Guidelines	872ce60c17bda191cb5e17396c0c1eda48338d86b404857239b0d95f038c7422	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	High Priority (do first)	a90f99b497a8781b38637abdca94d44b4ab73284792106d55a7d8f5ef295589b	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Medium Priority (do alongside)	5eaea910beaf36ef3297875746bcbf9fc4496d7772992331884906d5ac8195e6	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Low Priority (do last)	a47b0d994d85f6cce9849a9f071f9be5a32c230c2f14f26e36a5254f6a71409b	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Issue Ordering Strategy	e763b5dd69b285ec758ac0547d3664b60c60f598a260a280711b7504da54477b	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Within a Phase	263b7657e30d8b221abbf0e4f3ddd5dc86500263220f6c4c1949c556f9bdab11	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Dependency Chain Example	7153d0491779c605d6e0a47861e71b50890ca9792071442951a4ad74b5052492	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Field Provenance Flagging	a602952f8856b27dae341999664136cf8a8582552b02822fe04463a225f27d1b	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	When to include a provenance table	3e0624abf64aee6e11e5fe11e524e8925237b02e818c614ad01ab9924e12e7e3	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Format	ca84fe27f8b7a2e72a8b538b7279931882621543f5edc74e038cc1d52db9ec66	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	What the linter checks	0380f27bc31e7e8a1bb114bb3dc4abdc9b97d6febae95c44470c6b81d7f1168b	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Examples	682295f210a6087ea01692a9f18f3149d9809cb259d6f92085bc8707bdffda17	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Anti-Patterns	10335d7ea1e846b51f8b913caa6316afb5c52d5f20bfe046340fb76607a9239c	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Vague Acceptance Criteria	8c5b494c7e868007294bb5f9343a62ea16e1ab7bcf429f916b2ea4a11ca15929	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Missing File Context	b3cfb5e3454b29561d6fc054f68562fd03c8a20b7ca775d2ed76c8234f2be289	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Unbounded Scope	e434dcb3b8408646169c3f287c7691795318a3c6e5238a8443ffbe2e255ec467	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Subjective Done Definitions	45705e959a46dbe0f49adb60810422f325b04461af42842c07af4710b5be5d25	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Using This Runbook	7189f0b7ff822cd057370c5e76712dbae43654a3b3da765f801db246426eff83	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	With `rite plan`	6c89f7dca3302669c4f9d27c07676eb64ba82a4897d9b560f8656e6f5c7d4141	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Manual Issue Creation	9640ceebf4333c5945e34e97c1f11fe174ce01bd281c1208c3e39e9a8ff633f9	feature	-
+docs/issue-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	After Issues Are Created	3b0f62f0bb54898b47573090d78c6c4e8803efa2c3e92c103528dbc500634dfc	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	RTK (Rust Token Killer) — Sharkrite Compatibility Assessment	26082c08cc3217b15cd82193d448616087b06186eb862fc25ef845ac174a18b0	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	1. Feasibility: Can rtk be installed via hook mode without changes to Sharkrite?	b66913ca3e73266109837d8bf6444dbd55945d26316d3c838a7c2113da6d544e	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	How the hook works	c458d44bed6018079323b1efc8323b34f0deef42f477060294bfe7acad96bd47	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	What it affects	66e34510f5abb3683da43710135a159f8ee2ed4c6800eb96f99c33947e5dfb24	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	The caveat: fix-review mode	48230f4c81f37dd76189f369ac4736e1324e9f1aa6cea6d3ae5a25a46d38a55f	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Stdin piping	ef9f2a1a4cf2eb0be3229e514ede656fac5779cae0569db1a03d2f54cf8a6e4f	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Worktrees	ef3b020a9abf2812e9bec5e7b67be6c286ee1f8dec44e59fff1881b231c0facc	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Installation	0338c8584bda95768b9caf1617884b0bb7be0aed71b9b968b508196743cb958a	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	2. Filter Coverage for Sharkrite-Relevant Commands	2bbac10cbba4cee4f4ddfd777af3ed64101498e0d9a0d23a824b0c0c11fbf123	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Commands with native Rust filters (high compression, semantic understanding)	fb0989bc71ab3d1283278470be52a1002adc6758cbf8b91036290753de6d292c	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Commands with TOML filters (lighter compression)	fbb9107eb40b639e6ca94fe749f80116b653e90ccd55d318fc85ddcf5edbd132	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Commands with NO filter (passthrough)	b665afe642ed48df5812287e26bcd49097dd2dd0a2d8086c62b07348cb668ecc	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Gap analysis	9113e640cfa5c604cf3f147e7c1f571aab91cd8796763af89ea854f7f54ccf18	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	3. Risk Rating: The "Strangeness Tax"	8278786d9bd5768b3073852f87dccaf0a475e3a141d214a023970acce66099c9	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	**Overall: LOW for Sharkrite's workflow, MEDIUM for Claude's development quality**	500abc4c41bc9e6ec81aa6af6a27ee1b35b2442712e5bba4a4590145bd3b7ba7	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Why LOW for Sharkrite's workflow integrity:	55801ac0120256e192e34fc234a3121df7291e44d8385bdc0b6948183683fed4	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Why MEDIUM for Claude's development quality during Phase 1:	368d9927f2a47226de3aabf736fe5b06249e4a6e166509af99340f4888b2df26	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Why NOT HIGH:	56143b4688e1b4439643fe1b75794a0968918fe1c29f20a280ea644518df6ebb	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	4. Recommendation	4896694e6905d05739c0aa247566ea59306e651cbcea66139e429bc8911dd06b	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	**Install with specific exclusions. Trial during development phase only.**	a2e3c97f28eb32649b771604e82b5c327ea5a9362649eb8bce2899319a62acc4	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Reasoning	c389129f033ac658aad4c928fdfdc35781cde2097867f9cdd0decb69ddec5f72	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Recommended exclusions	847b4df4ad84c7bf33b01915f6effa7351c072f880fea5a64a8a006d7b3e533d	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Do NOT exclude:	650544731fd467765df0dd1aeb0b3ce673d562fb083581a4769279e766f8a45c	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	5. Installation & Trial Plan	5c70d23e5316d60c5ee681a0fa2323b4a9c20dfdfb931f1950260155fcef5ec1	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Install	7e5a9986b4af1f6f3193cf8ac48c7ce15fe7d377960c50754d24a0427e6b16a8	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Configure exclusions	1a989831369851cc07130ae625d342eddf8394ace7696fba093f80391000caaf	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Test with a single issue	a6f5752ae864430dc921919d4a8183fd7c7a3f44c74b1a7c72fa4cc5b0ccec21	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Monitor token savings	37cbf840cd01308da4469dff4995048b396a6e6d077727596ae4c50ede69617c	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	If problems arise	fc2fdd75158d675bba5b9b484542406c341c21f0eb8d6d8c5bfeeac30a03d8c5	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Trial success criteria	45eacf525c81e26a9c23081adff072637f2782fe7020928e45c2c4fab352ca24	feature	-
+docs/research/rtk-assessment.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	6. Project Health Assessment	02807ce2ef42562e947e75fbc0a7cb6999538fa0ad3ee098a305d27122e73d38	feature	-
+docs/review-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Review System	9a81cb68115f2e0d853147e47f1a3da03b11510fd4979340df87965bcb3a8938	feature	-
+docs/review-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Local Review	43825a947e3e0239bda1b433e3041ac0e9cd076c4079c33c966bad016f8a3d28	feature	-
+docs/review-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Review Assessment	e72854798f4503a2f4bf11e5569648fec559e8da8a1b18d2646c734093fe874c	feature	-
+docs/review-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Assessment Caching	5472b10ea7f6a49e542b4c881da6c7eabf14cc9daf5f3aa18fb0b0ab3565d716	feature	-
+docs/review-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Model Consistency	c1a2d9f17898e63eec8e135048ece00f3ad931aaf01b810be3ed6600c07dcee7	feature	-
+docs/review-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Fix Loop & Tech-Debt Flow	e0390e514b0829135b314a1bc3ef69833cf19c82bb3ae127c70bd3614cbdb02f	feature	-
+docs/review-system.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Review Severity Parsing	61d232cb612266cd7f2c73c380981e9e8e9c657840950c4a99c97f1cffbfeeeb	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Sharkrite Roadmap	0116a5105d263e9bf57e5f1e9f29adc01326adf9bab0d9612df4473de84e5f68	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Current Version (2.x)	850ea7fadac7777ba1ac742d1335ff11a1adf41705577b4c5e73faf602c7e561	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Core Features	2f1ce586ba6314784070ced9d0cb953acd4f159e1748aedcb93edb2b88d50e78	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Recent Additions	e219a3f1308d754e8211de443405fabf83ff07e496b95520d5ac55ac1872a2c9	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Planned: Theme System (3.x)	5b48430d620e5f727b92b1712f07a4bd0a98acff843acc047cc732a4419bfe3c	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Vision	54630f96fa5fabd34a6e2b8dfbfccd88522e8f12f14d0aab0b7535edbe5afd02	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	How It Works	314510b9200de6437f2e3e8a1e77154c9fa69bdcddd39d92894082af5ff762fb	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Theme Detection Strategy	1369dc1d5830a3fe921656f4f19cf8c4c8f2804c92e96edf96eeb0b2751d7d5d	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Example Themes	3b801afa0c7684997a527f039b7abc5082d10ce431a82cafb4a1276bb58619f2	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Implementation Plan	cdd1d9e9e3161d971bd35a312e715d071100a65652e6f7a97ba4059222c96800	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Phase 1: Scanner Framework	ba26b267104654d54512fde745f43e619eebdc0f141a494b21f85ff8f6703ac3	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Phase 2: Theme Definitions	9b6763eca430af543be638628aba3c07c1512c009179418af477578426e4be37	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Phase 3: Smart Updates	5069d1b4c038003c2a13eccdc26e7ea090175bf220710cd5092216d611bc89d9	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Planned: Workflow Commands (3.x)	d79b727661905cc243d3ba2c0a51d1992f204e5527103a5ec952a985d3e2a87d	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Issue Dashboard (`rite status`)	422c9af39d13b66b9093fcbf656d1466cbc1d63449c08136a71f67d1fbe5bdb3	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Retroactive Review (`rite review`)	30853e15169aa4131519d5e771865d8b5c12c847ae13f6ed730f327ea6e8d6e4	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Codebase Scan (`rite scan`)	7eba0c8f63ff075f26b0a7772339c6f60c455ccf35f09fa6406059a3dbdeec6c	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	4	Documentation Generation (`rite scan --docs`)	a6c84c0f3cde9fc2144e88c601c975eab38f1689f85d702eb432534445dbee5f	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Issue Generation (`rite plan`)	7f40e26ae430b31fbffb204f16402cc2d7dcf61585b78a0420f4385a8ce22890	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Feature Tiers (Revised)	bf052bbe662ba4ffaca91035b0ec4993f6bff40d8266ddcaf11ebd6ad86e980e	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Dogfooding: Using Sharkrite on Sharkrite	83f77b684b82de76690b163c5eea13135c067120f22c29fd631778fc8bf4eb84	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Future Ideas (4.x+)	c6ffa36f99c8b5f3564604409a8a657872b6806ee02aa90fd7cf93a7fc26a84b	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Review Learning	2e0edf47800fbfd83b6dc5e2b039086560e80d82f660033654f41e62ae2653aa	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Multi-Repo Themes	6f709886f80ea5bea754ff432ec0e46e7dfd205fed25b626de452d1990173e7b	feature	-
+docs/ROADMAP.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	IDE Integration	e9bc814d56287617cbcfda25b945683828484b45840afc7f2205c59db1698555	feature	-
+docs/sharkrite-drift-log.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Sharkrite Drift Log	f4d2a7c886ac418351f1fdb5de987b9d1d44aacb9966c7f1d3ec15003bcd92a6	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Test Authoring Runbook	5de234038934ca4928ab8b4748dd41edab442c6218ce1a8599573722704aa927	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Sharkrite bats test craft — read before writing or modifying any test	b1765e11a0fcc32366bc0ae65e5f70b42c5f3e4cd9022e1027885d6f3b978e91	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Purpose	70038d853f3f209f4a46763328bb45163fe8220de2311efaeb63bc98f57a1082	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	1. Extend-over-create (prompt-residue; future lint nudge planned)	62fccbdaaf1d78c60e4f18a546c44d6525ba79c822fa3cf17ea064f506fd7deb	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	2. Stubbing that works (#848 lint pending; prompt-residue until it lands)	13362aed8ab382f2120e76e1ae615bfa78705f7ddd06de7bdde6a30caf6f45ee	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	3. Sourcing libs in tests (Rule 30: `BATS_SETUP_STRICT_LEAK`)	0dff8de2123c8084cf8fcf1c057650803f825b2b0e0f80f629d0059efe8645ab	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	4. No `trap ... EXIT` in `@test` bodies (Rule 29: `TRAP_EXIT_IN_BATS_TEST`)	9ee80199179a76d2052e7caba3f75f48262389c1040322ff3f063031fbf9f67c	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	5. Covers-header accuracy (accuracy: future lint; presence: `MISSING_TEST_COVERAGE_HEADER`)	6c6aa5212ec67016e21831cad75445fa2c1c3bcad6e139dadc064ea29e97de93	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	6. Serial hint (prompt-residue; lint heuristic pending)	83b634ddd90acd7ee073b6a05a2edfd066f21c445fd1e4fab589d1410ce3e10d	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	7. Fixture hygiene (prompt-residue)	e6c5f708551e7afc9f9a2df0fa5d5366a3eddd04e2cce539940e6e476dbd8a23	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	8. Structural vs behavioral pins (prompt-residue)	ac8f8162b83f0bf24ea34081b3ddbd7bd1b725ea0dbd4a631df89c3d6dcb61aa	feature	-
+docs/test-authoring-runbook.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	9. Assert against the verdict seam, not the full gate (prompt-residue)	41842b4e12f80074ee8c3e8d5933417366e47fca4983af8473a91a727027c9ae	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Troubleshooting	f06c817ab9d49e95cc86b29523ef3e931eed0da6cacaf47b3e3d7b9df3d3b53d	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	"AWS credentials expired"	0571ead210b7b4f8bb1d3c785a867e6d8edbebd11103a4bd6ed61492076747e2	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	"Session limit reached"	a7fcee8d648ed3343227a5411478f936da929006ccc8a43bbcf0632c08533c48	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	"Worktree limit exceeded"	7788a7a376abbd7b2ec27f75b72de54382b8fb0dbb3f0cb8b38b074eda1be67b	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	"Blocker detected"	bade41bb4f398110e4f1d604d2dce3ab0588bfad3bc8dcc239ad37a0f0fff1c5	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	"PR review not found"	e0b2d0f0c89b90c93d8f8f4ecdd6707c8ca4bfff05063824af9b23eec3507f88	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Uninstall	3ced7e04654185260b047b7588ba66186c97320f07d08abbf721cb0fd191bc05	feature	-
+docs/troubleshooting.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Smart Worktree Management	958a5e7ec11357731f87a4a50812fc1cabcf507817b2e7a155e40c73bc4d0fe4	feature	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	🦈 Sharkrite	5ddcc49437ae86a8bbb4d6a1e0b32694d810119e34fad9b3185951d3467c32a8	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	What it does	79a4aef33cf525dcc7f3652a9feeb32a697d8cc20d36796ff441df5cef0fa8f8	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Quick start	0f7c51a7630b9c37fdd6a3154b99e4faaf8fc2772cfd3b7e53115f02906babdf	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Prerequisites	fa0dd0e241cf5f35ba62e6035a5080e8b3a487c704f521d36f7b82c287ce4d54	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Install	cd01b13ca151d085c338c2d2b6e6f62a9ba5c3b4ffb00a39ef9cb874b5731ba9	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Initialize a project	ebcc605075297773d332e54f976a2219bd52e8a09666722e1eb4c9d3b010ee8e	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Usage	2f6791aadff62f37dfa47f7a3d6d5f7c9bbe696390d68b02c45138cff07bbc18	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	How it works	6d044ab5590ae6d0e26826009bee82a01bdd5323ef5cdd74e98ce5608cde8888	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Review assessment	b72f2d656e1eba4601cd0ef6536165773c045e5a7311beeb5136a72546f9580e	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Configuration	79899f3c76c39e6b78e5979011624b9144d416ff9dd894b29a735567f765e7d0	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Key settings	6fa6d15544221b2154c2677a966f97621389363b6278d22eee20d75b5166e91e	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Keeping your project docs accurate	650fa0864fcf883c96d7a10a85da73bd0191e66f44f0e6edd0d1563546347da1	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Safety	6d0ab74c67fec96dbb887efa81f9ebb0852fd70271799cdef6c9fe7253a18151	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Review sensitivity	1977df34aee47b8d53fa30271c59ef0f0db9e8aed04cff1a3e5e1d96efc2e468	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Hard merge gates	2dccca2853c6d04fbce4c69bd2d41d6ef004b6c888919289c2d20eaaa034447d	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Security feedback loop	6afd593d957a6f0ba2f314714e1bbe54da49272c353ed0f85ecfbfe7592a9946	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Project structure	7d9988e379dff1dedcd6d4d945a99cedbcaf1fd39b14421404612de18e058670	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Uninstall	53b739beb3fb77fc6474d78e097c706d66d7c531863e35e4e909b266994872ad	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Contributing	11b011a6072d54a95ddb75ac13ff6e2f3268ba48669a1ab49b2076428f164b80	other	-
+README.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	License	c962045e0ecdab3a3f7954e264898ea9ef6bdcf016ee9e7ee18c286bf6651d6b	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	1	Sharkrite Development Guide	b754b065bcd251adecbd60606044b7c71b6a91bebdde5f112eac8a2e3c1306a7	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Claude Code Message Board	9795fe95cbd5741d19e45ca1508567aadc908e30dff8760cd1237ebbc06a9eaf	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Behavioral Design	987d7f989ef7d9b1b6782a56971eb27b4a9b022f93d0f09abb869537a4792f24	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Recurring Bug Pattern Catalog	53696a531b1d28334cea2d0692e2637a917558a89139e70e3a05dda60f0d739a	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Architecture	031d4fbb949bcd9c690f315cd61dcb1a5b28f639927d43f6bb5b1a2d5adfaccf	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Workflow Phases	11e7836fb86b5cf8fdfc33689a7cbe5b162f379ba52cbe61decc6aac1092e62e	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Batch ↔ Single-Issue Parity Contract	9a6b3f50f39c6fed6b349d0a7c9801ecc3b6d31477857158611fbfbf7fa568ee	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Data Flow	f699c47a22121a508501734992888c613b239e303606f75cc30eec687f57f2ba	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Phase 3 — Review Staleness Contract (CRITICAL)	2317b03efc38c888cd79716be7d97eadc0467b3867277c18a775a26b18721611	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Model Selection Per Task	227210deace4e267e2d7cea5f529de514b015b61579d3e55a22b03100aa45343	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Shell Conventions	f06e50a81a67f10e549cb73e3d61ef21844d6e236fe171678134c9c3de32e31c	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	CWD after worktree removal (CRITICAL)	06600f173e10eaf6984bcea3bf796b5d7e2c8d5fcbf6278df727ce9ebe0bcb05	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Shell style (CRITICAL)	94c5d90c686a7064e465f77009297e38725f346f07c6615184a073129867b469	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Re-source safety (CRITICAL)	b8e28323b978fbd186d9946c32d864ebe000c63a15bf0de30a2c9df0dff6ded3	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	grep -c pattern (CRITICAL)	b69b3750009882b2060e54ac033e9c74655abe8df1528b4ecab6b81a212aa2f8	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Structured header matching (CRITICAL)	b2c606c81e2c16263a2e17108ee017534ddb711cdcfdf858d52b92fa79f834d3	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Unanchored marker grep (bare-prefix guard, CRITICAL)	ed4048a9c8b5d85e7e344994741bfe0bbbd79730f6fa17052a098e37024026a9	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Review severity parsing	a4120512a7c2a0439e3257177f49a0bcc7982c0d5393e6e103f1b87fcf8ee89b	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Silent death: pipelines inside `$()` (CRITICAL)	0fc05ad062bf51378e7f10febf909782835712cbe2b54c5ad40e25a7685c5141	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Unbound variables with `set -u` (CRITICAL)	12c2b5f3b4e588d885cd563a8ea7d69f54208a19af096497d2ff3e0b06f461ed	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	macOS bash 3.2 compatibility (CRITICAL)	c8f51ebb498ca03bcb987016023799c3a6a75a99519fe61fa5b70b40fa82a84c	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	.gitignore and symlinks	0db6182df1b42c847bff8e16dc23ec7e90019af4cc8a7e81d48189f3e538d8bc	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Safety System	4d56e0261c079a1a92dc33287906e84c60eeb35b2ff7e4127c7ca06f1e5eee23	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Review Sensitivity Hints (path-based)	323b8a1c4b84b4126b4ac69d39ebe195b16d9ff1c8d55afe3a3aec026f5e8566	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Hard Merge Gates (content-aware)	1996ce3eb80caa78b75c876d0e9322605855e4a7a25bd5c638ba6d21601c4586	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Stale Branch Handling	2ec63823c88bc3181f1295339879125fab82050997c7262e4034d44266687c9e	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Assessment Timeout	4153d8bc4b32b4060f139651a0be897de6380aa9e4825c5e33ea35262fd468fd	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Phase Commands	724aaa7f126cafb2887093da7afababe30cad32498779105e56407a11a812d4a	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	PR Detection (`lib/utils/pr-detection.sh`)	e8ad4af315e7755abedd364e691856e6b7eb8e5f1d4c9e6f69348d53dea4b838	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Worktree → Issue Mapping (`lib/utils/issue-lock.sh`)	60283153de6b365562ff467b375d6a1111e1a250bf4036fe43ec1e79e40b9e58	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Creating Issues (CRITICAL)	9fe0b946fe6cd86ee668c4f16e6904f0e8c697b7d743374842a0c3aa1d3c115b	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Follow-up Issue Template	a9f66a3a483630267e66c14944f7bab7c4b7d5153190f133b31ea6429da7d733	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Linting	d9994ad8ebf86849afbb26dc245d70ce4419dcd465ba9619e2ebbb56e78aab96	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Testing	e2d5a6380859065cb6b9bd0b5ac16533e21803dfb1b8855fc12876149895247c	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Test Coverage Headers (issue #462)	8d7e5beb6022638cce0e903b0578798e6aad5bf22515677e045636d091ac3ec4	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Claude Session Prompt Design (CRITICAL)	91a9b3b79630b77d62f04cb93c4d2487eb311380eae8d8c01d89b19d121cbed1	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Git Commits	0b3c89eda5965c7b6a374e160cbfb267a99eb2291b1c55ada9a413b74cbd6ef1	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Common Pitfalls	fd57d2ebbf7bb1e4e8f9cf5c77b892a0954abef97a7fd6b7a6ba869efac375ec	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	2	Token Optimization (rtk)	8fdf8fd04e52fef9d9cd78d533aa622479754efce9c721cae17031cca9a38e81	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	What rtk affects	7e22f3fa8f32e6420607645c6db81e8f8711f23faeb1297ef5a66c467548a462	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Configuration	f69a3fe83df9712c9104f41041b40c11dac508b2e67a75a0b1c121652a601187	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Diagnosing rtk issues	2269c9d27635ddda200ec083dd8afc4985a9aebe4bca56a87f66d11860dcd8d4	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Weekly health report	8b7b742cf3663461c809fcdd247d71b074f54782da71728864c3dc8aa0ff6e93	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Full-Suite Safety Net (`rite --full-suite`)	d99b3ae6e0823bf8c39f00816cf94b2cfe4b1e4edd9806dd76a07d2de4f4423b	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Log files	30ecd3a1673d51fc4969a041883779a1323ef56851f4c225dbc87a3e30dcecab	other	-
+CLAUDE.md	f8402f3d42b5b4e0ce975dbe4061bd1134a77144	-	3	Diagnostic logging	409d0eebcc82d10fafc478474f27c7cbba164f5866db60769a4edad949a90845	other	-

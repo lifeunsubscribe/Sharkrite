@@ -2528,7 +2528,7 @@ consults the map, then reads only the sections it needs, by anchor. A byte cap
 bounds *content loaded per pass*, never *what is discoverable* — `rite plan`'s
 50 KB auto-discovery cap applying to discovery itself (a 240 KB design doc
 loaded whole or not seen) is the oversight this corrects. Today's
-`.rite/state/docs-map.tsv` (headings + one per-file SHA, rebuilt only by
+`docs/docs-map.tsv` (headings + one per-file SHA, rebuilt only by
 `rite docs`, measured 64 commits stale) is the starting point.
 
 ### Keeping it lean over time
