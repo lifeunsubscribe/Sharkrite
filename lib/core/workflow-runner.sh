@@ -1003,12 +1003,12 @@ EOF
       fi
 
       # Fallback: match issue number in worktree path.
-      # Handles batch naming like _b98-109-112- (matches -N- or _bN-) and
+      # Handles batch naming like _b98-109-112- (matches _bN[-_]) and
       # simple naming like issue-N or #N.
       if [ -z "${WORKTREE_PATH:-}" ]; then
         MAIN_WORKTREE=$(git rev-parse --show-toplevel)
         WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
-          grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1 || true)
+          grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
       fi
 
       # Last resort: read handoff file written by claude-workflow.sh
@@ -1050,7 +1050,7 @@ EOF
         if [ -z "${WORKTREE_PATH:-}" ]; then
           MAIN_WORKTREE=$(git rev-parse --show-toplevel)
           WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
-            grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$)" | head -1 || true)
+            grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
         fi
 
         if [ $workflow_exit -eq 4 ]; then

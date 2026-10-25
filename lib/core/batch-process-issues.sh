@@ -453,6 +453,25 @@ _check_dep_queued_later() {
 # Deliberate batch-only behavior: single-issue mode has no queue to defer
 # into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
 # ---------------------------------------------------------------------------
+
+# batch_suffix_matches_issue <path> <issue_num>
+# Returns 0 when the path (or basename) encodes the given issue number.
+# Covers the _b<N> batch-suffix form (e.g. slug_b1419-1420-1421) AND the
+# plain [-_]<N>[-_] separator form. Whole-token matching prevents substring
+# collisions (_b99 must not fire for issue 9).
+batch_suffix_matches_issue() {
+  local _bsm_path="$1" _bsm_n="$2"
+  case "$_bsm_path" in
+    *"issue"?*"${_bsm_n}"*|\
+    *"#${_bsm_n}"*|\
+    *[-_]"${_bsm_n}"[-_]*|\
+    *[-_]"${_bsm_n}"|\
+    *"_b${_bsm_n}"[-_]*|\
+    *"_b${_bsm_n}") return 0;;
+  esac
+  return 1
+}
+
 _ftm_file_overlap() {
   local _issue_body="${1:-}"
   _OVERLAP_FILES=""
@@ -503,13 +522,11 @@ _ftm_file_overlap() {
     [ "$_wt_dir" = "$_ftm_main_wt" ] && continue
     [ "$_wt_dir" = "$_ftm_self_wt" ] && continue
     # Skip the current issue's own pre-existing worktree (resume path) to
-    # prevent self-deferral. Whole-token match prevents substring collisions
+    # prevent self-deferral. batch_suffix_matches_issue covers both [-_]<N> and
+    # _b<N> forms; whole-token matching prevents substring collisions
     # (e.g. issue 9 must not skip a worktree for issue 99).
-    if [ -n "${ISSUE_NUM:-}" ]; then
-      _wt_basename=$(basename "$_wt_dir")
-      case "$_wt_basename" in
-        *[-_]${ISSUE_NUM}[-_]*|*[-_]${ISSUE_NUM}) continue;;
-      esac
+    if [ -n "${ISSUE_NUM:-}" ] && batch_suffix_matches_issue "$(basename "$_wt_dir")" "$ISSUE_NUM"; then
+      continue
     fi
 
     # Resolve the diff base for this worktree (see resolution order above)
@@ -1512,7 +1529,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   if [ -z "$_active_wt" ]; then
     _main_wt=$(git rev-parse --show-toplevel)
     _active_wt=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | \
-      grep -E "(issue.?${ISSUE_NUM}|#${ISSUE_NUM}|[-_]${ISSUE_NUM}[-_]|[-_]${ISSUE_NUM}$)" | head -1 || true)
+      grep -E "(issue.?${ISSUE_NUM}|#${ISSUE_NUM}|[-_]${ISSUE_NUM}[-_]|[-_]${ISSUE_NUM}$|_b${ISSUE_NUM}[-_]|_b${ISSUE_NUM}$)" | head -1 || true)
   fi
   if [ -n "$_active_wt" ]; then
     # Check if a rite or claude process is running for this issue
