@@ -45,8 +45,9 @@
 
 
 
+
 ## Created
-- behavioral-design.md → Follow-up Issue Context
+- behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
 
 
 ## Updated
