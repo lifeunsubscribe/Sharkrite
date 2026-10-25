@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh::_apply_overlap_defer_or_warn
+# sharkrite-test-covers: lib/core/batch-process-issues.sh
 # Regression tests: closed-issue bypass for three pre-run guards (#1461, #1474)
 #
 # Guard 1 — parent-PR guard (#1474):
@@ -33,6 +33,11 @@
 #    5. CLOSED issue with pre-populated _OVERLAP_FILES → proceeds (no defer)
 #    6. OPEN issue with pre-populated _OVERLAP_FILES → deferred (guard fires)
 #    7. CLOSED: ISSUE_LIST length is unchanged after the guard (no re-append)
+#   BEHAVIORAL (guards 1+2 — parent-PR + dep):
+#    8. CLOSED issue with parent-PR marker → proceeds (waiting_for_parent never set)
+#    9. OPEN issue with parent-PR marker → skipped (waiting_for_parent set)
+#   10. CLOSED issue with failed dep → proceeds (dep_failed never set)
+#   11. OPEN issue with failed dep → skipped (dep_failed set)
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -253,5 +258,208 @@ _build_guard_script() {
   }
   ! echo "$output" | grep -q "PROCEEDED" || {
     echo "FAIL: must NOT print PROCEEDED when overlap defers an OPEN issue; got: $output" >&2; return 1
+  }
+}
+
+# =============================================================================
+# Helpers for parent-PR and dep guard behavioral tests (#1474)
+# =============================================================================
+
+# _build_parent_pr_guard_script ISSUE_STATE
+#
+# Builds a self-contained bash script that simulates the parent-PR guard
+# decision point: ISSUE_BODY has a valid parent-PR marker, gh_safe is
+# stubbed to return OPEN for the parent PR, and the parent issue is not in
+# the queue — the worst-case path that would set waiting_for_parent for an
+# OPEN issue without the CLOSED guard.
+#
+# Prints the path of the generated script.
+_build_parent_pr_guard_script() {
+  local _state="$1"
+  local _script="$BATS_TEST_TMPDIR/parent-pr-guard-$$.sh"
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    '' \
+    'print_info()    { printf "INFO: %s\n" "$*" >&2; }' \
+    'print_success() { printf "OK: %s\n"   "$*" >&2; }' \
+    '' \
+    '# Stub: returns OPEN for any parent PR state check.' \
+    'gh_safe() { printf "OPEN\n"; }' \
+    '' \
+    'declare -A ISSUE_STATUS' \
+    'declare -A _DEFER_COUNT' \
+    'SKIPPED_ISSUES=()' \
+    'ISSUE_NUM=42' \
+    "ISSUE_STATE=\"${_state}\"" \
+    'RITE_MARKER_PARENT_PR="sharkrite-parent-pr"' \
+    'RITE_LOCK_DIR="/tmp/no-such-lock-dir-$$"' \
+    '' \
+    '# ISSUE_BODY has a real parent-PR marker (triggers guard for OPEN issue).' \
+    'ISSUE_BODY="sharkrite-parent-pr:99"' \
+    '' \
+    'if [ "$ISSUE_STATE" != "CLOSED" ]; then' \
+    '  if echo "$ISSUE_BODY" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then' \
+    '    PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE "${RITE_MARKER_PARENT_PR}:[0-9]+" | cut -d: -f2 || true)' \
+    '    if [ -n "$PARENT_PR" ]; then' \
+    '      PARENT_PR_STATE=$(gh_safe pr view "$PARENT_PR")' \
+    '      if [ "$PARENT_PR_STATE" = "OPEN" ]; then' \
+    '        SKIPPED_ISSUES+=("$ISSUE_NUM")' \
+    '        ISSUE_STATUS["$ISSUE_NUM"]="waiting_for_parent"' \
+    '        printf "GUARD_FIRED: issue %s status=waiting_for_parent\n" "$ISSUE_NUM"' \
+    '        printf "STATUS:%s\n" "${ISSUE_STATUS[$ISSUE_NUM]:-UNSET}"' \
+    '        printf "SKIPPED_COUNT:%s\n" "${#SKIPPED_ISSUES[@]}"' \
+    '        exit 0' \
+    '      fi' \
+    '    fi' \
+    '  fi' \
+    'fi' \
+    '' \
+    'printf "PROCEEDED: issue %s state=%s\n" "$ISSUE_NUM" "$ISSUE_STATE"' \
+    'printf "STATUS:%s\n" "${ISSUE_STATUS[$ISSUE_NUM]:-UNSET}"' \
+    'printf "SKIPPED_COUNT:%s\n" "${#SKIPPED_ISSUES[@]}"' \
+    > "$_script"
+
+  chmod +x "$_script"
+  echo "$_script"
+}
+
+# _build_dep_guard_script ISSUE_STATE
+#
+# Builds a self-contained bash script that simulates the dep guard decision
+# point: dep issue 99 is pre-set as "failed" in ISSUE_STATUS, DEP_ISSUES is
+# pre-populated (skipping _extract_dep_issues_from_body) — the path that
+# would set dep_failed for an OPEN issue without the CLOSED guard.
+#
+# Prints the path of the generated script.
+_build_dep_guard_script() {
+  local _state="$1"
+  local _script="$BATS_TEST_TMPDIR/dep-guard-$$.sh"
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'set -euo pipefail' \
+    '' \
+    'print_warning() { printf "WARNING: %s\n" "$*" >&2; }' \
+    '' \
+    'declare -A ISSUE_STATUS' \
+    'SKIPPED_ISSUES=()' \
+    'ISSUE_NUM=42' \
+    "ISSUE_STATE=\"${_state}\"" \
+    '' \
+    '# Pre-conditions: dep issue 99 already failed in this batch.' \
+    'ISSUE_STATUS[99]="failed"' \
+    'DEP_ISSUES="99"' \
+    '' \
+    'if [ "$ISSUE_STATE" != "CLOSED" ]; then' \
+    '  DEP_FAILED=false' \
+    '  FAILED_DEP=""' \
+    '  DEP_REASON=""' \
+    '  for dep_num in $DEP_ISSUES; do' \
+    '    dep_status="${ISSUE_STATUS[$dep_num]:-}"' \
+    '    if [ "$dep_status" = "failed" ]; then' \
+    '      DEP_FAILED=true' \
+    '      FAILED_DEP="$dep_num"' \
+    '      DEP_REASON="$dep_status in this batch"' \
+    '      break' \
+    '    fi' \
+    '  done' \
+    '  if [ "$DEP_FAILED" = true ]; then' \
+    '    SKIPPED_ISSUES+=("$ISSUE_NUM")' \
+    '    ISSUE_STATUS["$ISSUE_NUM"]="dep_failed"' \
+    '    printf "GUARD_FIRED: issue %s status=dep_failed\n" "$ISSUE_NUM"' \
+    '    printf "STATUS:%s\n" "${ISSUE_STATUS[$ISSUE_NUM]:-UNSET}"' \
+    '    printf "SKIPPED_COUNT:%s\n" "${#SKIPPED_ISSUES[@]}"' \
+    '    exit 0' \
+    '  fi' \
+    'fi' \
+    '' \
+    'printf "PROCEEDED: issue %s state=%s\n" "$ISSUE_NUM" "$ISSUE_STATE"' \
+    'printf "STATUS:%s\n" "${ISSUE_STATUS[$ISSUE_NUM]:-UNSET}"' \
+    'printf "SKIPPED_COUNT:%s\n" "${#SKIPPED_ISSUES[@]}"' \
+    > "$_script"
+
+  chmod +x "$_script"
+  echo "$_script"
+}
+
+# =============================================================================
+# BEHAVIORAL — parent-PR guard (#1474)
+# =============================================================================
+
+@test "behavioral: CLOSED issue with parent-PR marker → proceeds (waiting_for_parent never set)" {
+  _script=$(_build_parent_pr_guard_script "CLOSED")
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script exited $status; output: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "PROCEEDED: issue 42 state=CLOSED" || {
+    echo "FAIL: expected PROCEEDED; got: $output" >&2; return 1
+  }
+  ! echo "$output" | grep -q "GUARD_FIRED" || {
+    echo "FAIL: CLOSED issue must NOT fire the parent-PR guard; got: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "SKIPPED_COUNT:0" || {
+    echo "FAIL: SKIPPED_COUNT must be 0 for CLOSED issue; got: $output" >&2; return 1
+  }
+}
+
+@test "behavioral: OPEN issue with parent-PR marker → skipped (waiting_for_parent set)" {
+  _script=$(_build_parent_pr_guard_script "OPEN")
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script exited $status; output: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "GUARD_FIRED: issue 42 status=waiting_for_parent" || {
+    echo "FAIL: expected GUARD_FIRED for OPEN issue; got: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "STATUS:waiting_for_parent" || {
+    echo "FAIL: expected STATUS:waiting_for_parent for OPEN issue; got: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "SKIPPED_COUNT:1" || {
+    echo "FAIL: SKIPPED_COUNT must be 1 for OPEN issue; got: $output" >&2; return 1
+  }
+}
+
+# =============================================================================
+# BEHAVIORAL — dep guard (#1474)
+# =============================================================================
+
+@test "behavioral: CLOSED issue with failed dep → proceeds (dep_failed never set)" {
+  _script=$(_build_dep_guard_script "CLOSED")
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script exited $status; output: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "PROCEEDED: issue 42 state=CLOSED" || {
+    echo "FAIL: expected PROCEEDED; got: $output" >&2; return 1
+  }
+  ! echo "$output" | grep -q "GUARD_FIRED" || {
+    echo "FAIL: CLOSED issue must NOT fire the dep guard; got: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "SKIPPED_COUNT:0" || {
+    echo "FAIL: SKIPPED_COUNT must be 0 for CLOSED issue; got: $output" >&2; return 1
+  }
+}
+
+@test "behavioral: OPEN issue with failed dep → skipped (dep_failed set)" {
+  _script=$(_build_dep_guard_script "OPEN")
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script exited $status; output: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "GUARD_FIRED: issue 42 status=dep_failed" || {
+    echo "FAIL: expected GUARD_FIRED for OPEN issue; got: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "STATUS:dep_failed" || {
+    echo "FAIL: expected STATUS:dep_failed for OPEN issue; got: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "SKIPPED_COUNT:1" || {
+    echo "FAIL: SKIPPED_COUNT must be 1 for OPEN issue; got: $output" >&2; return 1
   }
 }
