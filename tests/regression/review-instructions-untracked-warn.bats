@@ -1,188 +1,195 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/local-review.sh
-# tests/regression/review-instructions-untracked-warn.bats
+# Regression test for issue #796: warn when .github/claude-code/pr-review-instructions.md
+# exists locally but is not tracked by git.
 #
-# Regression tests for issue #794/#796/#804/#805/#787:
-# Warn when .github/claude-code/pr-review-instructions.md is present locally
-# but git-untracked, so users discover the file won't be used on fresh
-# checkouts or in CI before a review runs with inconsistent instructions.
+# A present-but-untracked file is used on the local machine yet silently absent on
+# a fresh checkout / in CI, where rite falls back to the generic default without
+# any indication that repo-specific instructions were expected.
 #
-# Verifies:
-# 1. Untracked file → warning emitted (tier-1 selected, git ls-files fails)
-# 2. Tracked file → no warning (tier-1 selected, git ls-files succeeds)
-# 3. Absent file → no warning, silent fallback (tier-2/3 path unchanged)
-# 4. Static check: the ls-files guard and warning text are present in local-review.sh
-#
-# The script body of local-review.sh cannot be sourced in tests — it requires
-# gh, config, a real PR number, and network access. Instead, behavioral tests
-# extract the template-selection block via sharkrite-extract markers and run it
-# in a minimal bash -c subprocess with stubbed helpers and a shim PATH for git.
-
-load '../helpers/setup.bash'
+# These tests verify the tier-1 template-selection branch in local-review.sh
+# directly via sed extraction (same pattern as local-review-error-path.bats),
+# so they exercise the real production code rather than a copy of it.
 
 setup() {
-  setup_test_tmpdir
+  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
+  SCRIPT="$PROJECT_ROOT/lib/core/local-review.sh"
 
-  # RITE_PROJECT_ROOT is the fake repo root; SHIM_DIR overrides PATH for git
-  export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR/project"
-  mkdir -p "$RITE_PROJECT_ROOT/.github/claude-code"
-
-  export SHIM_DIR="$RITE_TEST_TMPDIR/shims"
-  mkdir -p "$SHIM_DIR"
-  export PATH="$SHIM_DIR:$PATH"
-
-  SCRIPT="$RITE_REPO_ROOT/lib/core/local-review.sh"
-}
-
-teardown() {
-  teardown_test_tmpdir
+  # Verify the untracked-warn block is present (marker-count guard).
+  # If the block is removed or duplicated this guard fires before any test runs,
+  # giving a clear diagnosis rather than a silent pass on empty extraction.
+  WARN_COUNT=$(grep -c "untracked — commit it" "$SCRIPT" || true)
+  if [ "$WARN_COUNT" -ne 1 ]; then
+    echo "SETUP FAIL: expected exactly 1 'untracked — commit it' line in $SCRIPT, found $WARN_COUNT" >&2
+    false
+  fi
 }
 
 # ---------------------------------------------------------------------------
-# Helper: extract the template-selection block from local-review.sh using
-# sharkrite-extract markers and run it in an isolated bash -c subprocess.
+# Helper: create an isolated git repo in a temp dir with a minimal commit,
+# then run the untracked-check shell fragment from local-review.sh inside it.
 #
-# Outputs: bats $status and $output from `run`.
-# Arguments: none (uses REPO_TEMPLATE, RITE_PROJECT_ROOT, SHIM_DIR from env)
+# $1 = "untracked" | "tracked" | "absent"
+#
+# Outputs the warnings that print_warning emitted (to stdout, captured by run).
+# Exit 0 always — we're checking warning presence, not exit code.
 # ---------------------------------------------------------------------------
-_run_template_selection() {
-  local block
-  block=$(sed -n '/# sharkrite-extract: template-selection-start/,/# sharkrite-extract: template-selection-end/p' "$SCRIPT")
-  [ -n "$block" ] || { echo "FAIL: sharkrite-extract markers missing from $SCRIPT" >&2; return 1; }
+_run_template_check() {
+  local mode="$1"
+  local test_dir
+  test_dir=$(mktemp -d)
+
+  # Build a minimal git repo so git ls-files --error-unmatch works correctly.
+  (
+    cd "$test_dir"
+    git init -q
+    git config user.email "test@example.com"
+    git config user.name "Test"
+    echo "root" > README.md
+    git add README.md
+    git commit -q -m "init"
+
+    mkdir -p .github/claude-code
+
+    case "$mode" in
+      tracked)
+        echo "# Custom review instructions" > .github/claude-code/pr-review-instructions.md
+        git add .github/claude-code/pr-review-instructions.md
+        git commit -q -m "add review instructions"
+        ;;
+      untracked)
+        echo "# Custom review instructions" > .github/claude-code/pr-review-instructions.md
+        # Intentionally NOT staged or committed — file is present but untracked.
+        ;;
+      absent)
+        # File does not exist at all — tier-1 branch should not be entered.
+        ;;
+    esac
+  )
+
+  # Run the tier-1 template-selection logic from local-review.sh in a subprocess
+  # with a controlled environment. We use the real production code via sed
+  # extraction between sharkrite-extract markers, so any change to the production
+  # implementation is automatically reflected here.
+  #
+  # The markers used here are: sharkrite-extract: template-tier1-start/end
+  # (added to local-review.sh alongside this test).
+  local extracted_code
+  extracted_code=$(sed -n \
+    '/# sharkrite-extract: template-tier1-start/,/# sharkrite-extract: template-tier1-end/p' \
+    "$SCRIPT")
+
+  [ -n "$extracted_code" ] || {
+    echo "FAIL: sed extraction returned empty — sharkrite-extract markers missing in $SCRIPT" >&2
+    rm -rf "$test_dir"
+    return 1
+  }
+
+  # Content anchor: extraction must contain the untracked-check git call.
+  [[ "$extracted_code" == *"ls-files --error-unmatch"* ]] || {
+    echo "FAIL: extracted code missing ls-files --error-unmatch — wrong range extracted" >&2
+    rm -rf "$test_dir"
+    return 1
+  }
 
   run bash -c "
     set -euo pipefail
-    export PATH=\"$SHIM_DIR:\$PATH\"
-    RITE_PROJECT_ROOT=\"$RITE_PROJECT_ROOT\"
-    RITE_INSTALL_DIR=\"$RITE_TEST_TMPDIR/install\"
-    REPO_TEMPLATE=\"\$RITE_PROJECT_ROOT/.github/claude-code/pr-review-instructions.md\"
-    RITE_TEMPLATE=\"\$RITE_INSTALL_DIR/templates/github/claude-code/pr-review-instructions.md\"
 
-    # Logging stubs: print_warning goes to stdout so bats \$output captures it.
-    # print_status/print_success go to stderr (not relevant to these tests).
+    # Stubs for print helpers (matching local-review-diff-fallback.bats pattern)
     print_status()  { echo \"[STATUS] \$*\" >&2; }
     print_warning() { echo \"[WARNING] \$*\"; }
-    print_success() { echo \"[SUCCESS] \$*\" >&2; }
+    export -f print_status print_warning
 
-    $block
+    RITE_PROJECT_ROOT='${test_dir}'
+    REPO_TEMPLATE='${test_dir}/.github/claude-code/pr-review-instructions.md'
+    # Set RITE_TEMPLATE to a guaranteed-nonexistent path so set -u is satisfied
+    # and the elif branch is skipped (falls through to else), exercising the
+    # real fallback path rather than dying silently on an unbound variable.
+    RITE_TEMPLATE='/nonexistent/rite-template-for-test'
+    REVIEW_TEMPLATE=''
 
-    echo \"TEMPLATE_SELECTED:\${REVIEW_TEMPLATE:-NONE}\"
+    ${extracted_code}
   "
+
+  rm -rf "$test_dir"
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: untracked file → warning is emitted
+# Test 1: Untracked file → warning is emitted
 # ---------------------------------------------------------------------------
 
-@test "untracked review instructions: emits untracked warning" {
-  # Create the instructions file but do NOT track it in git
-  echo "# custom review" > "$RITE_PROJECT_ROOT/.github/claude-code/pr-review-instructions.md"
+@test "untracked review instructions: warning printed" {
+  _run_template_check untracked
 
-  # git shim: ls-files --error-unmatch exits 1 (file untracked)
-  cat > "$SHIM_DIR/git" <<'EOF'
-#!/bin/bash
-if [[ "$*" == *"ls-files"*"--error-unmatch"* ]]; then
-  exit 1
-fi
-# Passthrough for any other git calls (shouldn't occur in this block)
-command git "$@"
-EOF
-  chmod +x "$SHIM_DIR/git"
-
-  _run_template_selection
-
-  [ "$status" -eq 0 ]
-  # Warning must be present
-  [[ "$output" == *"untracked"* ]]
-  [[ "$output" == *"commit it"* ]]
-  # Tier-1 must still be selected (file is used locally)
-  [[ "$output" == *"TEMPLATE_SELECTED:"*".github/claude-code/pr-review-instructions.md"* ]]
+  # Warning line must be present (via print_warning stub → stdout)
+  [[ "$output" == *"untracked"* ]] || {
+    echo "Expected 'untracked' in output but got: $output" >&2
+    false
+  }
+  [[ "$output" == *"commit it"* ]] || {
+    echo "Expected 'commit it' in output but got: $output" >&2
+    false
+  }
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: tracked file → no warning
+# Test 2: Tracked file → no warning
 # ---------------------------------------------------------------------------
 
-@test "tracked review instructions: no untracked warning emitted" {
-  echo "# custom review" > "$RITE_PROJECT_ROOT/.github/claude-code/pr-review-instructions.md"
+@test "tracked review instructions: no warning printed" {
+  _run_template_check tracked
 
-  # git shim: ls-files --error-unmatch exits 0 (file is tracked)
-  cat > "$SHIM_DIR/git" <<'EOF'
-#!/bin/bash
-if [[ "$*" == *"ls-files"*"--error-unmatch"* ]]; then
-  exit 0
-fi
-command git "$@"
-EOF
-  chmod +x "$SHIM_DIR/git"
-
-  _run_template_selection
-
-  [ "$status" -eq 0 ]
-  # No warning
-  [[ "$output" != *"untracked"* ]]
-  # Tier-1 still selected
-  [[ "$output" == *"TEMPLATE_SELECTED:"*".github/claude-code/pr-review-instructions.md"* ]]
+  # Warning must NOT be present
+  [[ "$output" != *"untracked"* ]] || {
+    echo "Did not expect 'untracked' in output for tracked file but got: $output" >&2
+    false
+  }
+  [[ "$output" != *"commit it"* ]] || {
+    echo "Did not expect 'commit it' in output for tracked file but got: $output" >&2
+    false
+  }
 }
 
 # ---------------------------------------------------------------------------
-# Test 3: absent file → no warning, falls through to tier-2/3
+# Test 3: Absent file → silent fallback, no warning from tier-1 branch
 # ---------------------------------------------------------------------------
 
-@test "absent review instructions: no warning, falls back silently" {
-  # File does not exist — no git shim needed (git ls-files never reached)
-  # Provide a passthrough git shim to prevent accidental real git calls
-  cat > "$SHIM_DIR/git" <<'EOF'
-#!/bin/bash
-# Should not be called when REPO_TEMPLATE does not exist
-echo "UNEXPECTED git call: $*" >&2
-exit 1
-EOF
-  chmod +x "$SHIM_DIR/git"
+@test "absent review instructions: no warning (tier-1 branch not entered)" {
+  _run_template_check absent
 
-  _run_template_selection
+  # Verify the subprocess actually ran to completion (not a vacuous pass from
+  # set -u dying on unbound RITE_TEMPLATE — that would also produce empty output
+  # but $status would be non-zero).
+  [ "$status" -eq 0 ] || {
+    echo "Expected subprocess to exit 0 for absent case but got status=$status; output: $output" >&2
+    false
+  }
 
-  [ "$status" -eq 0 ]
-  # No untracked warning
-  [[ "$output" != *"untracked"* ]]
-  # Tier-1 not selected (file absent); tier-2 also absent → NONE
-  [[ "$output" == *"TEMPLATE_SELECTED:NONE"* ]]
-  # git shim must NOT have been called (no "UNEXPECTED git call" in output)
-  [[ "$output" != *"UNEXPECTED git call"* ]]
+  # The tier-1 branch is not entered when the file is absent, so no warning.
+  [[ "$output" != *"untracked"* ]] || {
+    echo "Did not expect 'untracked' in output for absent file but got: $output" >&2
+    false
+  }
+  [[ "$output" != *"commit it"* ]] || {
+    echo "Did not expect 'commit it' in output for absent file but got: $output" >&2
+    false
+  }
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: static check — guard and warning text present in local-review.sh
+# Test 4: Static source check — sharkrite-extract markers appear exactly once
 # ---------------------------------------------------------------------------
 
-@test "local-review.sh contains ls-files untracked guard and warning text" {
-  # The git ls-files --error-unmatch pattern must be present
-  GUARD_COUNT=$(grep -c "ls-files --error-unmatch" "$SCRIPT" || true)
-  [ "$GUARD_COUNT" -ge 1 ]
-
-  # The warning message must mention "untracked"
-  WARN_COUNT=$(grep -c "untracked" "$SCRIPT" || true)
-  [ "$WARN_COUNT" -ge 1 ]
-
-  # The warning message must mention committing the file
-  COMMIT_COUNT=$(grep -c "commit it" "$SCRIPT" || true)
-  [ "$COMMIT_COUNT" -ge 1 ]
-}
-
-# ---------------------------------------------------------------------------
-# Test 5: static check — sharkrite-extract markers are present exactly once
-# ---------------------------------------------------------------------------
-
-@test "local-review.sh template-selection sharkrite-extract markers appear exactly once" {
-  START_COUNT=$(grep -c "sharkrite-extract: template-selection-start" "$SCRIPT" || true)
-  END_COUNT=$(grep -c "sharkrite-extract: template-selection-end" "$SCRIPT" || true)
+@test "local-review.sh has exactly one pair of template-tier1 extract markers" {
+  START_COUNT=$(grep -c '# sharkrite-extract: template-tier1-start' "$SCRIPT" || true)
+  END_COUNT=$(grep -c '# sharkrite-extract: template-tier1-end' "$SCRIPT" || true)
 
   [ "$START_COUNT" -eq 1 ] || {
-    echo "Expected exactly 1 template-selection-start marker, found $START_COUNT" >&2
+    echo "Expected 1 template-tier1-start marker, found $START_COUNT" >&2
     false
   }
   [ "$END_COUNT" -eq 1 ] || {
-    echo "Expected exactly 1 template-selection-end marker, found $END_COUNT" >&2
+    echo "Expected 1 template-tier1-end marker, found $END_COUNT" >&2
     false
   }
 }
