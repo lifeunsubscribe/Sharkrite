@@ -37,11 +37,12 @@ setup() {
 # given gate JSON file.  Returns the GATE_PREPEND_ITEMS and GATE_NOW_COUNT
 # values so the caller can assert on them.
 #
-# This extracts the same logic used in assess-and-resolve.sh lines 1008-1100:
-# read the JSON, iterate lint/tests arrays, and synthesize a fallback item when
-# both loops yield zero items but exit_code is non-zero.  We inline the kernel
-# here (matching the static-test pattern in gate-block-on-any.bats) so there is
-# no subprocess dependency on jq being available in PATH inside the bats runner.
+# This replicates the same logic as _build_gate_prepend_items in
+# assess-and-resolve.sh: read the JSON, iterate lint/tests arrays, and
+# synthesize a fallback item when both loops yield zero items but exit_code is
+# non-zero.  We inline the kernel here (matching the static-test pattern in
+# gate-block-on-any.bats) so there is no subprocess dependency on jq being
+# available in PATH inside the bats runner.
 #
 # Outputs:
 #   GATE_NOW_COUNT=N   — number of [GATE] ACTIONABLE_NOW items synthesized
@@ -277,8 +278,8 @@ _run_retry_cap_kernel_for_gate() {
 }
 
 @test "behavioral (#1014): REAL consumption block blocks gate_timeout, passes missing_runner" {
-  # Runs the PRODUCTION gate-consumption block — sed-extracted from
-  # assess-and-resolve.sh and eval'd with print_* stubbed — against both a
+  # Runs the PRODUCTION _build_gate_prepend_items function sourced from
+  # assess-and-resolve.sh (RITE_SOURCE_FUNCTIONS_ONLY=1) against both a
   # gate_timeout sentinel (expect 1 blocking item mentioning the reason) and a
   # missing_runner sentinel (expect 0). Guards against the replica kernel
   # above drifting from the real code (the #983 vacuous-replica lesson).
@@ -288,18 +289,25 @@ _run_retry_cap_kernel_for_gate() {
 #!/usr/bin/env bash
 set -euo pipefail
 SRC="$1"; REASON="$2"
-print_warning() { echo "WARN: $*" >&2; }
-print_status()  { :; }
-print_success() { :; }
-CURRENT_HEAD_SHA=""
+# Derive RITE_LIB_DIR from the source path (.../lib/core/assess-and-resolve.sh)
+RITE_LIB_DIR="$(cd "$(dirname "$SRC")/.." && pwd)"
+export RITE_LIB_DIR
 _GATE_FINDINGS_FILE=$(mktemp)
 printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"%s"}\n' "$REASON" > "$_GATE_FINDINGS_FILE"
 
-# Extract the production block: from the GATE_PREPEND_ITEMS reset to the
-# column-0 fi that closes the findings-file guard. Anchor drift fails loudly.
-_block=$(sed -n '/^GATE_PREPEND_ITEMS=""$/,/^fi$/p' "$SRC")
-[ -n "$_block" ] || { echo "FAIL: could not extract consumption block" >&2; exit 1; }
-eval "$_block"
+# Load only function definitions; the guard at RITE_SOURCE_FUNCTIONS_ONLY=1
+# stops before the executable body (arg parsing, exec redirects, live calls).
+RITE_SOURCE_FUNCTIONS_ONLY=1 source "$SRC"
+set +u; set +o pipefail
+print_warning() { echo "WARN: $*" >&2; }
+print_status()  { :; }
+print_success() { :; }
+GATE_PREPEND_ITEMS=""
+GATE_NOW_COUNT=0
+_gate_verdict_is_stale=false
+CURRENT_HEAD_SHA=""
+RITE_GATE_FINDINGS="$_GATE_FINDINGS_FILE"
+_build_gate_prepend_items
 
 echo "COUNT=${GATE_NOW_COUNT}"
 printf '%s' "$GATE_PREPEND_ITEMS" | head -1

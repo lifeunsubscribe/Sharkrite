@@ -72,11 +72,62 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# Structural: y/n/e behavioral contracts — verified via code inspection
-# (Main-flow commit+push body is inline at lib/core/claude-workflow.sh:3775,
-# not a callable function; behavioral tests blocked until it is extracted.
-# Tracked by issue #1368, which also covers the RITE_GATE_FINDINGS builder
-# extraction deferred in test-gate-parallel.bats.)
+# Behavioral: _supervised_commit_push — y/n/e contracts (issue #1368)
+# Now that the body is extracted to a callable function, these tests drive
+# it directly via RITE_SOURCE_FUNCTIONS_ONLY=1 + stdin piping.
+# ---------------------------------------------------------------------------
+
+@test "behavioral: y-path proceeds and preserves commit message" {
+  run env \
+    RITE_LIB_DIR="$RITE_LIB_DIR" \
+    RITE_SOURCE_FUNCTIONS_ONLY=1 \
+    RITE_LOG_FILE=/dev/null \
+    bash -c '
+      source "$RITE_LIB_DIR/core/claude-workflow.sh"
+      print_info() { true; }
+      COMMIT_MSG="test: add widget"
+      CHANGES_COUNT=2
+      _supervised_commit_push
+      echo "PROCEEDED:$COMMIT_MSG"
+    ' <<< "y"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "PROCEEDED:test: add widget"
+}
+
+@test "behavioral: n-path exits 0 without proceeding" {
+  run env \
+    RITE_LIB_DIR="$RITE_LIB_DIR" \
+    RITE_SOURCE_FUNCTIONS_ONLY=1 \
+    RITE_LOG_FILE=/dev/null \
+    bash -c '
+      source "$RITE_LIB_DIR/core/claude-workflow.sh"
+      print_info() { true; }
+      COMMIT_MSG="test: add widget"
+      CHANGES_COUNT=2
+      _supervised_commit_push
+      echo "PROCEEDED"
+    ' <<< "n"
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -q "PROCEEDED"
+}
+
+@test "behavioral: e-path replaces commit message then proceeds on y" {
+  run env \
+    RITE_LIB_DIR="$RITE_LIB_DIR" \
+    RITE_SOURCE_FUNCTIONS_ONLY=1 \
+    RITE_LOG_FILE=/dev/null \
+    bash -c '
+      source "$RITE_LIB_DIR/core/claude-workflow.sh"
+      print_info() { true; }
+      COMMIT_MSG="test: original message"
+      CHANGES_COUNT=1
+      _supervised_commit_push
+      echo "PROCEEDED:$COMMIT_MSG"
+    ' <<< $'e\ncustom: new message\ny'
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "PROCEEDED:custom: new message"
+}
+
 # ---------------------------------------------------------------------------
 
 @test "structural: n path calls 'exit 0' (aborts without committing)" {
@@ -102,13 +153,14 @@ setup() {
 }
 
 @test "structural: auto mode bypasses the supervised commit prompt" {
-  # The 'Commit and push ... file(s)? [y/n/e]' prompt must be inside
-  # 'if [ "$AUTO_MODE" = false ]' — auto runs are unaffected by this issue.
-  prompt_line=$(grep -n 'Commit and push.*file(s).*\[y\/n\/e\]' "$WF" | head -1 | cut -d: -f1)
-  [ -n "$prompt_line" ]
+  # _supervised_commit_push (which contains the commit prompt) must be called
+  # from within 'if [ "$AUTO_MODE" = false ]' — auto runs are unaffected.
+  # Anchor on the call site, not the function body (which moved after #1368 extraction).
+  call_line=$(grep -n '_supervised_commit_push' "$WF" | grep -v '()' | grep -v ':#' | head -1 | cut -d: -f1)
+  [ -n "$call_line" ]
   # Find the nearest preceding guard line — it must test AUTO_MODE = false, not
   # just reference AUTO_MODE (which would be vacuous since any earlier reference
   # to AUTO_MODE passes the grep even without the = false guard).
-  context=$(sed -n "1,${prompt_line}p" "$WF" | grep 'AUTO_MODE' | tail -1)
+  context=$(sed -n "1,${call_line}p" "$WF" | grep 'AUTO_MODE' | tail -1)
   echo "$context" | grep -q 'AUTO_MODE.*=.*false\|=.*false.*AUTO_MODE'
 }

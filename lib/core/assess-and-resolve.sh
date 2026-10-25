@@ -509,6 +509,291 @@ _resolve_time_estimate() {
 }
 
 # ---------------------------------------------------------------------------
+# _build_gate_prepend_items — build GATE_PREPEND_ITEMS from gate findings JSON
+#
+# Reads the gate findings file (from RITE_GATE_FINDINGS env var, or the
+# fallback path gate-findings-${PR_NUMBER}.json) and appends structured
+# ACTIONABLE_NOW assessment items to GATE_PREPEND_ITEMS. Also increments
+# GATE_NOW_COUNT for each blocking finding.
+#
+# Extracted from the inline gate-findings block so behavioral tests can call
+# this function directly via RITE_SOURCE_FUNCTIONS_ONLY=1 (issue #1368).
+#
+# Globals read:   RITE_GATE_FINDINGS, PR_NUMBER, RITE_STATE_DIR,
+#                 RITE_PROJECT_ROOT, CURRENT_HEAD_SHA,
+#                 RITE_ACCEPT_RED_MAIN, _RITE_MAIN_BASELINE_FILE
+# Globals written: GATE_PREPEND_ITEMS (appended), GATE_NOW_COUNT (incremented)
+# Side effects:   deletes the gate findings file after consumption
+# ---------------------------------------------------------------------------
+_build_gate_prepend_items() {
+  # Initialize the global stale-verdict sentinel. The caller reads this after
+  # return to guard the zero-findings early-exit path (line ~1714). Must not
+  # use `local` — the caller needs to see the value after this function returns.
+  _gate_verdict_is_stale=false
+
+  # Detect gate findings file (env var from workflow-runner, or fallback path)
+  local _f="${RITE_GATE_FINDINGS:-}"
+  if [ -z "$_f" ] && [ -n "${PR_NUMBER:-}" ]; then
+    _f="${RITE_STATE_DIR:-${RITE_PROJECT_ROOT:-$PWD}/.rite/state}/gate-findings-${PR_NUMBER}.json"
+  fi
+  [ -n "${_f:-}" ] || return 0
+  [ -f "$_f" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local _gate_skipped
+  _gate_skipped=$(jq -r '.skipped // false' "$_f" 2>/dev/null || echo "false")
+  local _gate_exit_code
+  _gate_exit_code=$(jq -r '.exit_code // 0' "$_f" 2>/dev/null || echo "0")
+  # Guard: jq can return "null" or empty if the field is missing/malformed, which would
+  # crash the integer test below with "integer expression expected" under set -e.
+  # Treat any non-numeric value as 0 (safe: means "passed", gate is not blocked).
+  case "$_gate_exit_code" in
+    ''|*[!0-9]*) _gate_exit_code=0 ;;
+  esac
+
+  # ---- Gate verdict SHA-pinning check (issue #986) ----
+  # A passing gate verdict from a superseded commit must NOT authorize a merge
+  # or skip the fix loop. Verify the head_sha embedded in the gate JSON matches
+  # the PR's current HEAD (CURRENT_HEAD_SHA, resolved above via the GitHub API).
+  #
+  # Conservative rules:
+  #   - No head_sha in JSON (pre-#986 gate) → accept as-is (backward compat)
+  #   - SHA match or no CURRENT_HEAD_SHA known → accept as-is
+  #   - SHA mismatch AND gate PASSED → verdict is stale; emit loud warning
+  #     and discard it (treat as if no gate ran — assessment must proceed)
+  #   - SHA mismatch AND gate FAILED → still block (conservative: failure from
+  #     an earlier SHA is a real signal; it may still apply to HEAD)
+  local _gate_verdict_sha
+  _gate_verdict_sha=$(jq -r '.head_sha // ""' "$_f" 2>/dev/null || true)
+  _gate_verdict_sha="${_gate_verdict_sha:-}"
+
+  if [ -n "$_gate_verdict_sha" ] && [ -n "${CURRENT_HEAD_SHA:-}" ] \
+     && [ "$_gate_verdict_sha" != "$CURRENT_HEAD_SHA" ]; then
+    # SHA mismatch detected.
+    if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -eq 0 ]; then
+      # Gate PASSED at a superseded SHA — this verdict cannot authorize a merge.
+      _gate_verdict_is_stale=true
+      print_warning "Gate verdict is stale — gate ran at ${_gate_verdict_sha:0:8}, HEAD is ${CURRENT_HEAD_SHA:0:8}"
+      print_warning "A PASSING verdict from a superseded commit cannot authorize a merge — discarding it (gate must re-run)"
+      echo ""
+      # Mark as skipped so the normal failure-processing block below does not fire
+      # and GATE_NOW_COUNT stays 0. The early exit at 'zero findings + gate passed'
+      # is also guarded by _gate_verdict_is_stale so a stale PASS cannot authorize
+      # a merge even when the review has zero findings.
+      _gate_skipped="true"
+    else
+      # Gate FAILED at a superseded SHA — still report it (conservative).
+      print_warning "Gate verdict was recorded at ${_gate_verdict_sha:0:8} (current HEAD: ${CURRENT_HEAD_SHA:0:8}) — verdict may not reflect the current state, but failures are still reported"
+      echo ""
+    fi
+  fi
+
+  if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -ne 0 ]; then
+    # ---- Red-main attribution subtraction (issue #1149) ----
+    # When RITE_ACCEPT_RED_MAIN=1, the batch preflight found main itself is red
+    # and saved main's gate findings as the baseline. Failures that also appear
+    # on main are NOT attributable to this branch — they are INFO_ONLY.
+    # Only branch-introduced failures become ACTIONABLE_NOW.
+    #
+    # Attribution matching:
+    #   tests: by test_name (exact match — the description is stable across main/branch)
+    #   lint:  by file+rule (ignoring line number — edits shift lines; the
+    #          file+rule pair identifies the same violation class)
+    #
+    # When attribution mode is active and ALL failures are inherited, the
+    # synthetic empty-findings block (below) is suppressed — there is nothing
+    # for the fix loop to fix.
+    # DORMANT (2026-10-13): the green-main preflight that wrote this baseline
+    # was removed — full suites run only in the overnight pipeline, never in a
+    # workflow. This reader is kept because it costs nothing when the file is
+    # absent and is the seam for a future lazy attribution pass.
+    local _gate_accept_red_main=false
+    local _gate_main_baseline_tests=""
+    local _gate_main_baseline_lint_keys=""
+    local _gate_inherited_count=0
+    local _gate_inherited_summary=""
+    local _main_baseline="${_RITE_MAIN_BASELINE_FILE:-${RITE_STATE_DIR:-${RITE_PROJECT_ROOT:-$PWD}/.rite/state}/gate-main-baseline.json}"
+    if [ "${RITE_ACCEPT_RED_MAIN:-0}" = "1" ] && [ -f "$_main_baseline" ]; then
+      _gate_accept_red_main=true
+      _gate_main_baseline_tests=$(jq -r '(.tests // []) | .[].test_name // empty' \
+        "$_main_baseline" 2>/dev/null || true)
+      _gate_main_baseline_lint_keys=$(jq -r '(.lint // []) | .[] | "\(.file // ""):\(.rule // "")"' \
+        "$_main_baseline" 2>/dev/null || true)
+    fi
+
+    # Build [GATE] ACTIONABLE_NOW items from lint failures
+    local _lint_item _lint_file _lint_line _lint_rule _lint_msg _lint_is_inherited _lint_key
+    while IFS= read -r _lint_item; do
+      _lint_file=$(echo "$_lint_item" | jq -r '.file // ""' 2>/dev/null || true)
+      _lint_line=$(echo "$_lint_item" | jq -r '.line // ""' 2>/dev/null || true)
+      _lint_rule=$(echo "$_lint_item" | jq -r '.rule // "lint"' 2>/dev/null || true)
+      _lint_msg=$(echo "$_lint_item" | jq -r '.message // ""' 2>/dev/null || true)
+      if [ -n "$_lint_msg" ]; then
+        # Attribution check: is this lint rule+file also failing on main?
+        _lint_is_inherited=false
+        if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_lint_keys" ]; then
+          _lint_key="${_lint_file}:${_lint_rule}"
+          if printf '%s\n' "$_gate_main_baseline_lint_keys" | grep -qxF "$_lint_key" 2>/dev/null; then
+            _lint_is_inherited=true
+          fi
+        fi
+
+        if [ "$_lint_is_inherited" = "true" ]; then
+          GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - INFO_ONLY
+**Severity:** INFO
+**Category:** Lint failure (main-inherited — not attributable to this branch)
+**Location:** ${_lint_file}:${_lint_line}
+**Reasoning:** This lint violation also fails on \`main\`. Not caused by this branch (RITE_ACCEPT_RED_MAIN=1). Fix main to resolve.
+**Message:** ${_lint_msg}
+
+"
+          _gate_inherited_count=$(( _gate_inherited_count + 1 ))
+          _gate_inherited_summary="${_gate_inherited_summary}[lint] ${_lint_file}:${_lint_rule}; "
+        else
+          GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Lint failure (objective — no LLM categorization needed)
+**Location:** ${_lint_file}:${_lint_line}
+**Fix Effort:** Quick (lint rule violation)
+**Reasoning:** \`make check\` (post-commit gate) reported this violation. Fix: address the lint rule violation at the indicated location.
+**Message:** ${_lint_msg}
+
+"
+          GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+        fi
+      fi
+    done < <(jq -c '.lint[]' "$_f" 2>/dev/null || true)
+
+    # Build [GATE] ACTIONABLE_NOW items from test failures
+    local _test_item _test_file _test_name _test_reason _test_is_inherited
+    while IFS= read -r _test_item; do
+      _test_file=$(echo "$_test_item" | jq -r '.file // "bats"' 2>/dev/null || true)
+      _test_name=$(echo "$_test_item" | jq -r '.test_name // "unknown test"' 2>/dev/null || true)
+      _test_reason=$(echo "$_test_item" | jq -r '.reason // "assertion failed"' 2>/dev/null || true)
+      if [ -n "$_test_name" ]; then
+        # Attribution check: is this test name also failing on main?
+        _test_is_inherited=false
+        if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_tests" ]; then
+          if printf '%s\n' "$_gate_main_baseline_tests" | grep -qxF "$_test_name" 2>/dev/null; then
+            _test_is_inherited=true
+          fi
+        fi
+
+        if [ "$_test_is_inherited" = "true" ]; then
+          # Title by test name (#1163): headers must be distinct per finding.
+          GATE_PREPEND_ITEMS+="### [GATE] bats failure (main-inherited): ${_test_name} - INFO_ONLY
+**Severity:** INFO
+**Category:** Test failure (main-inherited — not attributable to this branch)
+**Location:** ${_test_file}
+**Reasoning:** This test also fails on \`main\`. Not caused by this branch (RITE_ACCEPT_RED_MAIN=1). Fix main to resolve.
+**Test:** ${_test_name}
+**Reason:** ${_test_reason}
+
+"
+          _gate_inherited_count=$(( _gate_inherited_count + 1 ))
+          _gate_inherited_summary="${_gate_inherited_summary}${_test_name}; "
+        else
+          GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_name} - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Test failure (objective — no LLM categorization needed)
+**Location:** ${_test_file}
+**Fix Effort:** Medium (failing test needs investigation)
+**Reasoning:** \`bats -r tests/\` (post-commit gate) reported this failure. Fix: identify root cause and address the failing test assertion.
+**Test:** ${_test_name}
+**Reason:** ${_test_reason}
+
+"
+          GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+        fi
+      fi
+    done < <(jq -c '.tests[]' "$_f" 2>/dev/null || true)
+
+    # --- Synthetic block for empty-findings gate failures ---
+    # When the gate exit code is non-zero but both loops above produced zero
+    # items (e.g. the test runner was unavailable — exit 127 — so no TAP
+    # "not ok" lines were emitted, and no lint output was parseable), the
+    # non-zero exit_code is authoritative proof that verification failed.
+    # Without this synthesis the failure is silently swallowed: GATE_NOW_COUNT
+    # stays 0, the assessment sees no [GATE] items, and the PR merges unverified.
+    #
+    # This was the live failure mode for LeadFlow PR #400 (issue #331,
+    # 2026-06-30): jest 127 × 3 retries → empty arrays → "ready to merge".
+    # The same hole opens for any non-bats runner (pytest/cargo/go) on a plain
+    # non-TAP exit-1. (Issue #799)
+    #
+    # Exception: when RITE_ACCEPT_RED_MAIN=1 and all failures were attributed
+    # to main (inherited), there are no branch-introduced failures. The gate
+    # correctly shows nothing to fix — do not fire the synthetic block.
+    if [ "$GATE_NOW_COUNT" -eq 0 ] && \
+       ! ( [ "$_gate_accept_red_main" = "true" ] && [ "$_gate_inherited_count" -gt 0 ] ); then
+      # Read the reason field from the gate JSON if present (e.g. "runner_unavailable").
+      # Falls back to a generic description naming the raw exit code.
+      local _gate_reason_field
+      _gate_reason_field=$(jq -r '.reason // ""' "$_f" 2>/dev/null || true)
+      local _gate_failure_desc
+      if [ -n "$_gate_reason_field" ]; then
+        _gate_failure_desc="gate failure: ${_gate_reason_field} (exit_code=${_gate_exit_code})"
+      else
+        _gate_failure_desc="gate failure: non-zero exit (exit_code=${_gate_exit_code}) with no parseable findings"
+      fi
+      GATE_PREPEND_ITEMS+="### [GATE] ${_gate_failure_desc} - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Gate failure (objective — no LLM categorization needed)
+**Fix Effort:** Medium (investigate why the test runner produced no parseable output)
+**Reasoning:** The post-commit gate exited non-zero (exit_code=${_gate_exit_code}) but produced zero parseable lint or test findings. This means verification did not complete — the gate CANNOT confirm the suite passed. A non-zero exit with no findings is still a blocking failure; merging unverified code is not acceptable. Investigate the runner (check for missing dependencies, bootstrap failures, or non-TAP output) and resolve the underlying issue before merging.
+
+"
+      GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+    fi
+
+    if [ "$GATE_NOW_COUNT" -gt 0 ]; then
+      print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
+    fi
+
+    if [ "$_gate_inherited_count" -gt 0 ]; then
+      print_status "${_gate_inherited_count} gate failure(s) attributed to red main (INFO_ONLY, not counted toward fix loop)"
+    fi
+  elif [ "$_gate_skipped" = "true" ]; then
+    # ---- Unverified-skip blocking (issue #1014) ----
+    # skipped:true sentinels split into two classes by reason:
+    #   * verification STARTED but never CONCLUDED — gate_timeout (the
+    #     bounded-wait kill, #654's anti-hang design) and gate_crashed (the
+    #     crash trap). These previously read as a green gate here: zero [GATE]
+    #     items, so a clean review authorized the merge with the change
+    #     entirely unverified. Live escape: PR #998 merged 40 minutes after
+    #     its gate was watchdog-killed (#993 deadlock) and shipped the #1010
+    #     regression. A missing verdict is not a passing verdict — block.
+    #   * deliberate environmental skips — missing_deps / missing_runner /
+    #     missing_worktree (target repo not bootstrapped: the suite is
+    #     un-runnable there, not hung mid-verification) and no_tests. These
+    #     keep the documented proceed-with-review-only contract.
+    # The stale-PASS discard above (#986) also sets _gate_skipped=true but
+    # writes no reason into the JSON, so it never matches this case.
+    local _gate_skip_reason
+    _gate_skip_reason=$(jq -r '.reason // ""' "$_f" 2>/dev/null || true)
+    case "$_gate_skip_reason" in
+      gate_timeout|gate_crashed)
+        GATE_PREPEND_ITEMS+="### [GATE] ${_gate_skip_reason}: gate never produced a verdict — change is unverified - ACTIONABLE_NOW
+**Severity:** HIGH
+**Category:** Gate failure (objective — no LLM categorization needed)
+**Fix Effort:** Investigate (the gate was killed before completing)
+**Reasoning:** The post-commit gate was terminated before producing a verdict (reason: ${_gate_skip_reason}). None of the selection was verified — a missing verdict is not a passing verdict, and merging unverified code is not acceptable. Investigate why the gate did not finish (nested-bats deadlock, leaked subprocess holding the gate pipe, crashed runner), resolve it, and let the gate re-run to a real verdict.
+
+"
+        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
+        print_warning "Gate was killed before completing (${_gate_skip_reason}) — change is unverified, blocking (#1014)"
+        ;;
+    esac
+  fi
+
+  # Delete after consumption so stale findings cannot leak into a later resume or
+  # standalone --assess-and-fix run.  The env-var path (RITE_GATE_FINDINGS) is
+  # always preferred; the fallback file (gate-findings-N.json) is the one that
+  # persists across process boundaries, so it is the one that must be cleaned up.
+  rm -f "${_f:-}" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above (_followup_dedup_check,
 # _resolve_priority_label, _resolve_done_def, _resolve_time_estimate) without
@@ -1163,262 +1448,10 @@ echo ""
 # are unconditionally ACTIONABLE_NOW. Prepended to the review assessment output.
 # Source: RITE_GATE_FINDINGS env var (set by workflow-runner.sh) or fallback path.
 # ============================================================================
-
-# Detect gate findings file (env var from workflow-runner, or fallback path)
-_GATE_FINDINGS_FILE="${RITE_GATE_FINDINGS:-}"
-if [ -z "$_GATE_FINDINGS_FILE" ] && [ -n "$PR_NUMBER" ]; then
-  _GATE_FINDINGS_FILE="${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/gate-findings-${PR_NUMBER}.json"
-fi
-
 GATE_PREPEND_ITEMS=""
 GATE_NOW_COUNT=0
-
-if [ -n "${_GATE_FINDINGS_FILE:-}" ] && [ -f "$_GATE_FINDINGS_FILE" ] && command -v jq >/dev/null 2>&1; then
-  _gate_skipped=$(jq -r '.skipped // false' "$_GATE_FINDINGS_FILE" 2>/dev/null || echo "false")
-  _gate_exit_code=$(jq -r '.exit_code // 0' "$_GATE_FINDINGS_FILE" 2>/dev/null || echo "0")
-  # Guard: jq can return "null" or empty if the field is missing/malformed, which would
-  # crash the integer test below with "integer expression expected" under set -e.
-  # Treat any non-numeric value as 0 (safe: means "passed", gate is not blocked).
-  case "$_gate_exit_code" in
-    ''|*[!0-9]*) _gate_exit_code=0 ;;
-  esac
-
-  # ---- Gate verdict SHA-pinning check (issue #986) ----
-  # A passing gate verdict from a superseded commit must NOT authorize a merge
-  # or skip the fix loop. Verify the head_sha embedded in the gate JSON matches
-  # the PR's current HEAD (CURRENT_HEAD_SHA, resolved above via the GitHub API).
-  #
-  # Conservative rules:
-  #   - No head_sha in JSON (pre-#986 gate) → accept as-is (backward compat)
-  #   - SHA match or no CURRENT_HEAD_SHA known → accept as-is
-  #   - SHA mismatch AND gate PASSED → verdict is stale; emit loud warning
-  #     and discard it (treat as if no gate ran — assessment must proceed)
-  #   - SHA mismatch AND gate FAILED → still block (conservative: failure from
-  #     an earlier SHA is a real signal; it may still apply to HEAD)
-  _gate_verdict_sha=$(jq -r '.head_sha // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
-  _gate_verdict_sha="${_gate_verdict_sha:-}"
-  _gate_verdict_is_stale=false
-
-  if [ -n "$_gate_verdict_sha" ] && [ -n "${CURRENT_HEAD_SHA:-}" ] \
-     && [ "$_gate_verdict_sha" != "$CURRENT_HEAD_SHA" ]; then
-    # SHA mismatch detected.
-    if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -eq 0 ]; then
-      # Gate PASSED at a superseded SHA — this verdict cannot authorize a merge.
-      _gate_verdict_is_stale=true
-      print_warning "Gate verdict is stale — gate ran at ${_gate_verdict_sha:0:8}, HEAD is ${CURRENT_HEAD_SHA:0:8}"
-      print_warning "A PASSING verdict from a superseded commit cannot authorize a merge — discarding it (gate must re-run)"
-      echo ""
-      # Mark as skipped so the normal failure-processing block below does not fire
-      # and GATE_NOW_COUNT stays 0. The early exit at 'zero findings + gate passed'
-      # is also guarded by _gate_verdict_is_stale so a stale PASS cannot authorize
-      # a merge even when the review has zero findings.
-      _gate_skipped="true"
-    else
-      # Gate FAILED at a superseded SHA — still report it (conservative).
-      print_warning "Gate verdict was recorded at ${_gate_verdict_sha:0:8} (current HEAD: ${CURRENT_HEAD_SHA:0:8}) — verdict may not reflect the current state, but failures are still reported"
-      echo ""
-    fi
-  fi
-
-  if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -ne 0 ]; then
-    # ---- Red-main attribution subtraction (issue #1149) ----
-    # When RITE_ACCEPT_RED_MAIN=1, the batch preflight found main itself is red
-    # and saved main's gate findings as the baseline. Failures that also appear
-    # on main are NOT attributable to this branch — they are INFO_ONLY.
-    # Only branch-introduced failures become ACTIONABLE_NOW.
-    #
-    # Attribution matching:
-    #   tests: by test_name (exact match — the description is stable across main/branch)
-    #   lint:  by file+rule (ignoring line number — edits shift lines; the
-    #          file+rule pair identifies the same violation class)
-    #
-    # When attribution mode is active and ALL failures are inherited, the
-    # synthetic empty-findings block (below) is suppressed — there is nothing
-    # for the fix loop to fix.
-    # DORMANT (2026-10-13): the green-main preflight that wrote this baseline
-    # was removed — full suites run only in the overnight pipeline, never in a
-    # workflow. This reader is kept because it costs nothing when the file is
-    # absent and is the seam for a future lazy attribution pass.
-    _gate_accept_red_main=false
-    _gate_main_baseline_tests=""
-    _gate_main_baseline_lint_keys=""
-    _gate_inherited_count=0
-    _gate_inherited_summary=""
-    _main_baseline="${_RITE_MAIN_BASELINE_FILE:-${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/gate-main-baseline.json}"
-    if [ "${RITE_ACCEPT_RED_MAIN:-0}" = "1" ] && [ -f "$_main_baseline" ]; then
-      _gate_accept_red_main=true
-      _gate_main_baseline_tests=$(jq -r '(.tests // []) | .[].test_name // empty' \
-        "$_main_baseline" 2>/dev/null || true)
-      _gate_main_baseline_lint_keys=$(jq -r '(.lint // []) | .[] | "\(.file // ""):\(.rule // "")"' \
-        "$_main_baseline" 2>/dev/null || true)
-    fi
-
-    # Build [GATE] ACTIONABLE_NOW items from lint failures
-    while IFS= read -r _lint_item; do
-      _lint_file=$(echo "$_lint_item" | jq -r '.file // ""' 2>/dev/null || true)
-      _lint_line=$(echo "$_lint_item" | jq -r '.line // ""' 2>/dev/null || true)
-      _lint_rule=$(echo "$_lint_item" | jq -r '.rule // "lint"' 2>/dev/null || true)
-      _lint_msg=$(echo "$_lint_item" | jq -r '.message // ""' 2>/dev/null || true)
-      if [ -n "$_lint_msg" ]; then
-        # Attribution check: is this lint rule+file also failing on main?
-        _lint_is_inherited=false
-        if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_lint_keys" ]; then
-          _lint_key="${_lint_file}:${_lint_rule}"
-          if printf '%s\n' "$_gate_main_baseline_lint_keys" | grep -qxF "$_lint_key" 2>/dev/null; then
-            _lint_is_inherited=true
-          fi
-        fi
-
-        if [ "$_lint_is_inherited" = "true" ]; then
-          GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - INFO_ONLY
-**Severity:** INFO
-**Category:** Lint failure (main-inherited — not attributable to this branch)
-**Location:** ${_lint_file}:${_lint_line}
-**Reasoning:** This lint violation also fails on \`main\`. Not caused by this branch (RITE_ACCEPT_RED_MAIN=1). Fix main to resolve.
-**Message:** ${_lint_msg}
-
-"
-          _gate_inherited_count=$(( _gate_inherited_count + 1 ))
-          _gate_inherited_summary="${_gate_inherited_summary}[lint] ${_lint_file}:${_lint_rule}; "
-        else
-          GATE_PREPEND_ITEMS+="### [GATE] make check: ${_lint_rule} — ${_lint_file}:${_lint_line} - ACTIONABLE_NOW
-**Severity:** HIGH
-**Category:** Lint failure (objective — no LLM categorization needed)
-**Location:** ${_lint_file}:${_lint_line}
-**Fix Effort:** Quick (lint rule violation)
-**Reasoning:** \`make check\` (post-commit gate) reported this violation. Fix: address the lint rule violation at the indicated location.
-**Message:** ${_lint_msg}
-
-"
-          GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
-        fi
-      fi
-    done < <(jq -c '.lint[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
-
-    # Build [GATE] ACTIONABLE_NOW items from test failures
-    while IFS= read -r _test_item; do
-      _test_file=$(echo "$_test_item" | jq -r '.file // "bats"' 2>/dev/null || true)
-      _test_name=$(echo "$_test_item" | jq -r '.test_name // "unknown test"' 2>/dev/null || true)
-      _test_reason=$(echo "$_test_item" | jq -r '.reason // "assertion failed"' 2>/dev/null || true)
-      if [ -n "$_test_name" ]; then
-        # Attribution check: is this test name also failing on main?
-        _test_is_inherited=false
-        if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_tests" ]; then
-          if printf '%s\n' "$_gate_main_baseline_tests" | grep -qxF "$_test_name" 2>/dev/null; then
-            _test_is_inherited=true
-          fi
-        fi
-
-        if [ "$_test_is_inherited" = "true" ]; then
-          # Title by test name (#1163): headers must be distinct per finding.
-          GATE_PREPEND_ITEMS+="### [GATE] bats failure (main-inherited): ${_test_name} - INFO_ONLY
-**Severity:** INFO
-**Category:** Test failure (main-inherited — not attributable to this branch)
-**Location:** ${_test_file}
-**Reasoning:** This test also fails on \`main\`. Not caused by this branch (RITE_ACCEPT_RED_MAIN=1). Fix main to resolve.
-**Test:** ${_test_name}
-**Reason:** ${_test_reason}
-
-"
-          _gate_inherited_count=$(( _gate_inherited_count + 1 ))
-          _gate_inherited_summary="${_gate_inherited_summary}${_test_name}; "
-        else
-          GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_name} - ACTIONABLE_NOW
-**Severity:** HIGH
-**Category:** Test failure (objective — no LLM categorization needed)
-**Location:** ${_test_file}
-**Fix Effort:** Medium (failing test needs investigation)
-**Reasoning:** \`bats -r tests/\` (post-commit gate) reported this failure. Fix: identify root cause and address the failing test assertion.
-**Test:** ${_test_name}
-**Reason:** ${_test_reason}
-
-"
-          GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
-        fi
-      fi
-    done < <(jq -c '.tests[]' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
-
-    # --- Synthetic block for empty-findings gate failures ---
-    # When the gate exit code is non-zero but both loops above produced zero
-    # items (e.g. the test runner was unavailable — exit 127 — so no TAP
-    # "not ok" lines were emitted, and no lint output was parseable), the
-    # non-zero exit_code is authoritative proof that verification failed.
-    # Without this synthesis the failure is silently swallowed: GATE_NOW_COUNT
-    # stays 0, the assessment sees no [GATE] items, and the PR merges unverified.
-    #
-    # This was the live failure mode for LeadFlow PR #400 (issue #331,
-    # 2026-06-30): jest 127 × 3 retries → empty arrays → "ready to merge".
-    # The same hole opens for any non-bats runner (pytest/cargo/go) on a plain
-    # non-TAP exit-1. (Issue #799)
-    #
-    # Exception: when RITE_ACCEPT_RED_MAIN=1 and all failures were attributed
-    # to main (inherited), there are no branch-introduced failures. The gate
-    # correctly shows nothing to fix — do not fire the synthetic block.
-    if [ "$GATE_NOW_COUNT" -eq 0 ] && \
-       ! ( [ "$_gate_accept_red_main" = "true" ] && [ "$_gate_inherited_count" -gt 0 ] ); then
-      # Read the reason field from the gate JSON if present (e.g. "runner_unavailable").
-      # Falls back to a generic description naming the raw exit code.
-      _gate_reason_field=$(jq -r '.reason // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
-      if [ -n "$_gate_reason_field" ]; then
-        _gate_failure_desc="gate failure: ${_gate_reason_field} (exit_code=${_gate_exit_code})"
-      else
-        _gate_failure_desc="gate failure: non-zero exit (exit_code=${_gate_exit_code}) with no parseable findings"
-      fi
-      GATE_PREPEND_ITEMS+="### [GATE] ${_gate_failure_desc} - ACTIONABLE_NOW
-**Severity:** HIGH
-**Category:** Gate failure (objective — no LLM categorization needed)
-**Fix Effort:** Medium (investigate why the test runner produced no parseable output)
-**Reasoning:** The post-commit gate exited non-zero (exit_code=${_gate_exit_code}) but produced zero parseable lint or test findings. This means verification did not complete — the gate CANNOT confirm the suite passed. A non-zero exit with no findings is still a blocking failure; merging unverified code is not acceptable. Investigate the runner (check for missing dependencies, bootstrap failures, or non-TAP output) and resolve the underlying issue before merging.
-
-"
-      GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
-    fi
-
-    if [ "$GATE_NOW_COUNT" -gt 0 ]; then
-      print_status "Post-commit gate found $GATE_NOW_COUNT failure(s) — prepending as [GATE] ACTIONABLE_NOW items"
-    fi
-
-    if [ "$_gate_inherited_count" -gt 0 ]; then
-      print_status "${_gate_inherited_count} gate failure(s) attributed to red main (INFO_ONLY, not counted toward fix loop)"
-    fi
-  elif [ "$_gate_skipped" = "true" ]; then
-    # ---- Unverified-skip blocking (issue #1014) ----
-    # skipped:true sentinels split into two classes by reason:
-    #   * verification STARTED but never CONCLUDED — gate_timeout (the
-    #     bounded-wait kill, #654's anti-hang design) and gate_crashed (the
-    #     crash trap). These previously read as a green gate here: zero [GATE]
-    #     items, so a clean review authorized the merge with the change
-    #     entirely unverified. Live escape: PR #998 merged 40 minutes after
-    #     its gate was watchdog-killed (#993 deadlock) and shipped the #1010
-    #     regression. A missing verdict is not a passing verdict — block.
-    #   * deliberate environmental skips — missing_deps / missing_runner /
-    #     missing_worktree (target repo not bootstrapped: the suite is
-    #     un-runnable there, not hung mid-verification) and no_tests. These
-    #     keep the documented proceed-with-review-only contract.
-    # The stale-PASS discard above (#986) also sets _gate_skipped=true but
-    # writes no reason into the JSON, so it never matches this case.
-    _gate_skip_reason=$(jq -r '.reason // ""' "$_GATE_FINDINGS_FILE" 2>/dev/null || true)
-    case "$_gate_skip_reason" in
-      gate_timeout|gate_crashed)
-        GATE_PREPEND_ITEMS+="### [GATE] ${_gate_skip_reason}: gate never produced a verdict — change is unverified - ACTIONABLE_NOW
-**Severity:** HIGH
-**Category:** Gate failure (objective — no LLM categorization needed)
-**Fix Effort:** Investigate (the gate was killed before completing)
-**Reasoning:** The post-commit gate was terminated before producing a verdict (reason: ${_gate_skip_reason}). None of the selection was verified — a missing verdict is not a passing verdict, and merging unverified code is not acceptable. Investigate why the gate did not finish (nested-bats deadlock, leaked subprocess holding the gate pipe, crashed runner), resolve it, and let the gate re-run to a real verdict.
-
-"
-        GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
-        print_warning "Gate was killed before completing (${_gate_skip_reason}) — change is unverified, blocking (#1014)"
-        ;;
-    esac
-  fi
-
-  # Delete after consumption so stale findings cannot leak into a later resume or
-  # standalone --assess-and-fix run.  The env-var path (RITE_GATE_FINDINGS) is
-  # always preferred; the fallback file (gate-findings-N.json) is the one that
-  # persists across process boundaries, so it is the one that must be cleaned up.
-  rm -f "${_GATE_FINDINGS_FILE:-}" 2>/dev/null || true
-fi
+_gate_verdict_is_stale=false
+_build_gate_prepend_items
 
 # ============================================================================
 # SMART ASSESSMENT: Use Claude CLI to filter ACTIONABLE items

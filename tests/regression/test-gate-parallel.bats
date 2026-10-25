@@ -281,15 +281,9 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Behavioral: gate test-failure builder output format
-#
-# These two tests use an inline copy of the builder loop from assess-and-resolve.sh
-# rather than invoking assess-and-resolve.sh directly (the inline body is not a
-# callable function). A regression that reverts the real builder without touching
-# this copy leaves these tests passing. Replacing the inline copy with an end-to-end
-# invocation via RITE_GATE_FINDINGS is tracked by issue #1368, which also
-# covers the supervised commit+push behavioral extraction deferred in
-# supervised-commit-push-prompt.bats and behavioral-design.md § "Supervised commit/push".
+# Behavioral: _build_gate_prepend_items output format (issue #1368)
+# Now that the builder is a callable function, these tests drive it directly
+# via RITE_SOURCE_FUNCTIONS_ONLY=1 + RITE_GATE_FINDINGS env var.
 # ---------------------------------------------------------------------------
 
 @test "gate test-failure builder: two distinct test_names produce distinct ACTIONABLE_NOW headers" {
@@ -301,22 +295,21 @@ EOF
   _gate_json=$(mktemp)
   printf '%s\n' '{"exit_code":1,"tests":[{"file":"bats","test_name":"first failing test","reason":"assertion failed"},{"file":"bats","test_name":"second failing test","reason":"unexpected output"}],"lint":[]}' > "$_gate_json"
 
-  run bash -c "
-    set +u
-    _GATE_FINDINGS_FILE='$_gate_json'
-    GATE_NOW_COUNT=0
-    GATE_PREPEND_ITEMS=''
-    while IFS= read -r _test_item; do
-      _test_name=\$(echo \"\$_test_item\" | jq -r '.test_name // \"unknown test\"' 2>/dev/null || true)
-      if [ -n \"\$_test_name\" ]; then
-        GATE_PREPEND_ITEMS+=\"### [GATE] bats failure: \${_test_name} - ACTIONABLE_NOW
-\"
-        GATE_NOW_COUNT=\$(( GATE_NOW_COUNT + 1 ))
-      fi
-    done < <(jq -c '.tests[]' \"\$_GATE_FINDINGS_FILE\" 2>/dev/null || true)
-    printf '%s' \"\$GATE_PREPEND_ITEMS\"
-    echo \"COUNT:\$GATE_NOW_COUNT\"
-  "
+  run env \
+    RITE_LIB_DIR="$RITE_LIB_DIR" \
+    RITE_SOURCE_FUNCTIONS_ONLY=1 \
+    RITE_GATE_FINDINGS="$_gate_json" \
+    bash -c '
+      source "$RITE_LIB_DIR/core/assess-and-resolve.sh"
+      set +u; set +o pipefail
+      print_warning() { true; }; print_status() { true; }
+      GATE_PREPEND_ITEMS=""
+      GATE_NOW_COUNT=0
+      _gate_verdict_is_stale=false
+      _build_gate_prepend_items
+      printf "%s" "$GATE_PREPEND_ITEMS"
+      echo "COUNT:$GATE_NOW_COUNT"
+    '
   [ "$status" -eq 0 ]
   [[ "$output" == *"### [GATE] bats failure: first failing test - ACTIONABLE_NOW"* ]]
   [[ "$output" == *"### [GATE] bats failure: second failing test - ACTIONABLE_NOW"* ]]
@@ -326,7 +319,7 @@ EOF
 }
 
 @test "gate test-failure builder: test_name with quotes and brackets survives header regex" {
-  # A test name like 'foo \"bar\" [baz]' must still match ^### .* - ACTIONABLE_NOW
+  # A test name like 'foo "bar" [baz]' must still match ^### .* - ACTIONABLE_NOW
   # (the structured-header regex used by dedup, carryover, and dismissal checks).
   if ! command -v jq >/dev/null 2>&1; then
     skip "jq not available"
@@ -335,22 +328,21 @@ EOF
   # Use a test_name with embedded quotes and brackets (already escaped in JSON)
   printf '%s\n' '{"exit_code":1,"tests":[{"file":"bats","test_name":"foo \"bar\" [baz]","reason":"failed"}],"lint":[]}' > "$_gate_json"
 
-  run bash -c "
-    set +u
-    _GATE_FINDINGS_FILE='$_gate_json'
-    GATE_NOW_COUNT=0
-    GATE_PREPEND_ITEMS=''
-    while IFS= read -r _test_item; do
-      _test_name=\$(echo \"\$_test_item\" | jq -r '.test_name // \"unknown test\"' 2>/dev/null || true)
-      if [ -n \"\$_test_name\" ]; then
-        GATE_PREPEND_ITEMS+=\"### [GATE] bats failure: \${_test_name} - ACTIONABLE_NOW
-\"
-        GATE_NOW_COUNT=\$(( GATE_NOW_COUNT + 1 ))
-      fi
-    done < <(jq -c '.tests[]' \"\$_GATE_FINDINGS_FILE\" 2>/dev/null || true)
-    printf '%s' \"\$GATE_PREPEND_ITEMS\"
-    echo \"COUNT:\$GATE_NOW_COUNT\"
-  "
+  run env \
+    RITE_LIB_DIR="$RITE_LIB_DIR" \
+    RITE_SOURCE_FUNCTIONS_ONLY=1 \
+    RITE_GATE_FINDINGS="$_gate_json" \
+    bash -c '
+      source "$RITE_LIB_DIR/core/assess-and-resolve.sh"
+      set +u; set +o pipefail
+      print_warning() { true; }; print_status() { true; }
+      GATE_PREPEND_ITEMS=""
+      GATE_NOW_COUNT=0
+      _gate_verdict_is_stale=false
+      _build_gate_prepend_items
+      printf "%s" "$GATE_PREPEND_ITEMS"
+      echo "COUNT:$GATE_NOW_COUNT"
+    '
   [ "$status" -eq 0 ]
   # The header must still match the structured regex ^### .* - ACTIONABLE_NOW
   echo "$output" | grep -qE '^### .* - ACTIONABLE_NOW'
