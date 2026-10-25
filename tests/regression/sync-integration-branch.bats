@@ -266,16 +266,16 @@ _run_rite() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 18: Structural — sync_issue_branch does not invoke workflow machinery.
+# Test 18: Structural — sync_issue_branch does not invoke orchestrator-only machinery.
 # ---------------------------------------------------------------------------
-@test "sync_issue_branch does not invoke verify_post_merge or run_workflow (orchestrator-only calls)" {
+@test "sync_issue_branch does not invoke run_workflow (orchestrator-only call)" {
   local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
   [ -f "$_lib" ]
   local _count
-  # attempt_claude_merge_resolution is intentionally wired in sync_issue_branch (#1462).
-  # verify_post_merge and run_workflow belong to the orchestrator layer and must not
-  # appear in this utility function.
-  _count=$(sed -n '/^sync_issue_branch()/,/^}/p' "$_lib" | grep -cE 'verify_post_merge|run_workflow' || true)
+  # attempt_claude_merge_resolution and verify_post_merge are intentionally wired
+  # in sync_issue_branch (#1462, #1480).
+  # run_workflow belongs to the orchestrator layer and must not appear here.
+  _count=$(sed -n '/^sync_issue_branch()/,/^}/p' "$_lib" | grep -c 'run_workflow' || true)
   [ "$_count" -eq 0 ]
 }
 
