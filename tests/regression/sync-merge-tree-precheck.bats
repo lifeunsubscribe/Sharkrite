@@ -286,6 +286,16 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# Structural: resolver-resolved path emits outcome=resolved in its _diag call.
+# Health reports need this to distinguish resolver-synced from plain rebase-synced.
+# ---------------------------------------------------------------------------
+@test "sync_issue_branch emits outcome=resolved diag on resolver-resolved path" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  sed -n '/^sync_issue_branch()/,/^}/p' "$_lib" | grep -q '_diag "SYNC_ISSUE.*outcome=resolved"'
+}
+
+# ---------------------------------------------------------------------------
 # Behavioral: when verify_post_merge fails after conflict resolution, the
 # resolution commit is rolled back (no unverified commit left on the branch),
 # outcome=conflict, and exit 0 (composable).

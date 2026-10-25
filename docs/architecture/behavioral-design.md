@@ -2008,7 +2008,9 @@ If all rails pass, the function rebases onto `origin/<base>`. On rebase conflict
 
 The conflict path mirrors the branch form. `attempt_claude_merge_resolution` is called in the parent shell (not a subshell) so `_RITE_RESOLVER_CONFLICT_PATHS` propagates to `commit_resolved_conflicts` for scoped staging. `verify_post_merge` is called with `origin/<base>` as the diff base (rebase path — per #854, this runs branch-only coverage against the post-rebase tree rather than the expensive pre-rebase-HEAD union).
 
-**Diagnostic:** `SYNC_ISSUE issue=<N> outcome=skipped-lock|skipped-dirty|skipped-threshold|current|not-found|conflict|synced|push_failed|fetch_failed`
+**Diagnostic:** `SYNC_ISSUE issue=<N> outcome=skipped-lock|skipped-dirty|skipped-threshold|current|not-found|conflict|synced|resolved|push_failed|fetch_failed`
+
+`outcome=resolved` is emitted when the resolver successfully handled the rebase conflict; `outcome=synced` is emitted when the plain rebase succeeded with no conflicts. Both leave `_SYNC_ISSUE_OUTCOME="synced"` — `resolved` appears only in the diag stream, where the health report can aggregate it.
 
 ### Exit-Code Composability Contract
 

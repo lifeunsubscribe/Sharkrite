@@ -500,7 +500,11 @@ sync_issue_branch() {
     print_success "Issue #${_issue_n}: synced — rebased ${_branch_name:-HEAD} onto origin/${_base}"
   fi
   _SYNC_ISSUE_OUTCOME="synced"
-  _diag "SYNC_ISSUE issue=${_issue_n} outcome=synced"
+  if [ "$_conflict_resolved" = true ]; then
+    _diag "SYNC_ISSUE issue=${_issue_n} outcome=resolved"
+  else
+    _diag "SYNC_ISSUE issue=${_issue_n} outcome=synced"
+  fi
   return 0
 }
 
