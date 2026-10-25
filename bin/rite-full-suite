@@ -539,7 +539,13 @@ PROMPT_HDR
   # --- Remediation issue (persistent failures only) ---
   # Flake-only runs (all cleared) get no issue — just the report.
   # shellcheck disable=SC1090
-  source "$RITE_LIB_DIR/utils/markers.sh" 2>/dev/null || true
+  # Mandatory: the remediation-issue block below uses RITE_MARKER_* constants
+  # bare (RAW_MARKER_LITERAL forbids literal fallbacks), so a failed source
+  # must stop here loudly rather than crash later under set -u.
+  if ! source "$RITE_LIB_DIR/utils/markers.sh"; then
+    print_error "Cannot load $RITE_LIB_DIR/utils/markers.sh — remediation-issue markers unavailable"
+    exit 1
+  fi
   # shellcheck disable=SC1090
   source "$RITE_LIB_DIR/utils/gh-retry.sh" 2>/dev/null || true
   if [ "${_persistent_count:-0}" -gt 0 ] || [ "${_lint_persistent_count:-0}" -gt 0 ] || [ "${_unmapped_count:-0}" -gt 0 ]; then
@@ -569,13 +575,13 @@ PROMPT_HDR
     # false-positives (e.g. hash 407 matching hash 4070).
     _existing_remediation=""
     _raw_dedup_hits=$(gh_safe issue list --state open \
-      --search "\"${RITE_MARKER_FULL_SUITE_REMEDIATION:-sharkrite-full-suite-remediation}:${_hash}\" in:body" \
+      --search "\"${RITE_MARKER_FULL_SUITE_REMEDIATION}:${_hash}\" in:body" \
       --json number --jq '.[].number' 2>/dev/null || true)
     if [ -n "${_raw_dedup_hits:-}" ]; then
       while IFS= read -r _candidate; do
         [ -z "$_candidate" ] && continue
         _cbody=$(gh_safe issue view "$_candidate" --json body --jq '.body' 2>/dev/null || true)
-        if echo "${_cbody:-}" | grep -qE "${RITE_MARKER_FULL_SUITE_REMEDIATION:-sharkrite-full-suite-remediation}:${_hash}([^0-9]|$)"; then
+        if echo "${_cbody:-}" | grep -qE "${RITE_MARKER_FULL_SUITE_REMEDIATION}:${_hash}([^0-9]|$)"; then
           _existing_remediation="${_candidate}"
           break
         fi
@@ -628,7 +634,7 @@ PROMPT_HDR
       _verify_block="${_verify_block}"$'\n'"rite --full-suite    # confirm full safety net passes"
 
       {
-        echo "<!-- ${RITE_MARKER_FULL_SUITE_REMEDIATION:-sharkrite-full-suite-remediation}:${_hash} -->"
+        echo "<!-- ${RITE_MARKER_FULL_SUITE_REMEDIATION}:${_hash} -->"
         echo ""
         echo "## Description"
         echo ""
