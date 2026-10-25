@@ -100,8 +100,11 @@ _build_map() {
 # ---------------------------------------------------------------------------
 
 @test "docs_map_adr_links: excludes links to code files not in map" {
-  # lib/utils/config.sh is real in the sharkrite repo but is NOT a .md file
-  # and will not appear in the fixture docs map
+  # Create a real .sh file in the fixture so cd succeeds and the map-lookup
+  # exclusion branch is exercised (not the cd-failure branch).
+  mkdir -p "$FIXTURE_DIR/lib/utils"
+  printf '# stub\n' > "$FIXTURE_DIR/lib/utils/config.sh"
+
   printf '# ADR 001\n\nImplemented in [config.sh](../../lib/utils/config.sh).\n' \
     > "$FIXTURE_DIR/docs/architecture/adr-001.md"
 
@@ -182,6 +185,40 @@ _build_map() {
 
 @test "docs_map_adr_links: excludes anchor-only links" {
   printf '# ADR 001\n\nGo to [section](#decision).\n' \
+    > "$FIXTURE_DIR/docs/architecture/adr-001.md"
+
+  _source_docs_map
+  _build_map
+
+  run docs_map_adr_links "docs/architecture/adr-001.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# Fenced code blocks: links inside ``` ... ``` are not real ADR references
+# ---------------------------------------------------------------------------
+
+@test "docs_map_adr_links: excludes links inside fenced code blocks" {
+  # An ADR that documents the markdown-link format in a fenced example should
+  # not emit any path — the link is illustrative, not a real ADR→feature-doc
+  # mapping. This is the #90 bare-prefix guard applied to fenced content.
+  printf '# ADR 001\n\n## Example\n\n```markdown\n[Feature A](../features/feature-a.md)\n```\n\nReal link: [Feature B](../features/feature-b.md).\n' \
+    > "$FIXTURE_DIR/docs/architecture/adr-001.md"
+
+  _source_docs_map
+  _build_map
+
+  run docs_map_adr_links "docs/architecture/adr-001.md"
+  [ "$status" -eq 0 ]
+  # Only the real link outside the fence should be emitted
+  [ "${#lines[@]}" -eq 1 ]
+  [ "${lines[0]}" = "docs/features/feature-b.md" ]
+}
+
+@test "docs_map_adr_links: fenced-only ADR emits nothing" {
+  # All links are inside fenced blocks — output must be empty
+  printf '# ADR 001\n\n```bash\n[Feature A](../features/feature-a.md)\n[Feature B](../features/feature-b.md)\n```\n' \
     > "$FIXTURE_DIR/docs/architecture/adr-001.md"
 
   _source_docs_map

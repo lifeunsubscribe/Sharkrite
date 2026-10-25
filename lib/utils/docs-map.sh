@@ -474,6 +474,42 @@ docs_map_ensure() {
 # a doc that merely *documents* the marker format (no real test path) produces no
 # output. This is the #90 bare-prefix guard applied to doc-file parsing.
 # ---------------------------------------------------------------------------
+docs_map_enforcing_tests() {
+  local doc_path="$1"
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Resolve to absolute path
+  case "$doc_path" in
+    /*) ;;
+    *) doc_path="${project_root}/${doc_path}" ;;
+  esac
+
+  [ -f "$doc_path" ] || return 0
+
+  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_ENFORCED_BY is a marker constant defined in markers.sh, not a user config var; RITE_MARKER_* is the canonical prefix convention for marker constants (see markers.sh); _RITE_ prefix cannot be used; ledger is frozen per 2026-07-14 rule
+  local _marker="${RITE_MARKER_ENFORCED_BY}"
+
+  # Format-anchored grep: requires at least one [^[:space:]]+.bats token AND closing -->.
+  # Requiring --> also rejects line-wrapped markers (multi-line comments where the
+  # marker name and --> are on different lines). Per-entry case filter below rejects
+  # non-.bats tokens (e.g. N/A) that share a line with a real .bats path.
+  # The #90 bare-prefix guard applied to doc-file parsing.
+  local _matched_line _value _entry
+  while IFS= read -r _matched_line; do
+    # Extract the value between "${_marker}:" and "-->"
+    _value="${_matched_line#*${_marker}:}"
+    _value="${_value%%-->*}"
+    # Split comma-separated paths; default IFS strips leading/trailing whitespace;
+    # case filter rejects non-.bats entries (e.g. N/A, empty trailing comma slot).
+    while read -r _entry; do
+      case "$_entry" in
+        *.bats) printf '%s\n' "$_entry" ;;
+      esac
+    done < <(printf '%s\n' "$_value" | tr ',' '\n' || true)
+  done < <(grep -E "<!--[[:space:]]*${_marker}:[^>]*[^[:space:]]+\.bats[^>]*-->" "$doc_path" 2>/dev/null || true)
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # docs_map_adr_links ADR_PATH
 #
@@ -484,6 +520,7 @@ docs_map_ensure() {
 # External URLs (http/https/ftp/mailto), anchor-only links (#...), and links
 # that resolve to files not in the map (code files, unknown paths) are excluded.
 # URL fragments are stripped before resolution (foo.md#section → foo.md).
+# Links inside fenced code blocks (``` ... ```) are excluded.
 #
 # ADR_PATH may be absolute or project-relative. Returns 0 with empty output
 # when the ADR has no in-map links, the ADR file does not exist, or the
@@ -543,45 +580,9 @@ docs_map_adr_links() {
 "
       fi
     fi
-  done < <(grep -oE '\[[^]]*\]\([^)]+\)' "$adr_path" 2>/dev/null | \
+  done < <(awk '/^```/{skip=!skip; next} !skip' "$adr_path" 2>/dev/null | \
+           grep -oE '\[[^]]*\]\([^)]+\)' 2>/dev/null | \
            sed 's/^.*](//;s/)$//' 2>/dev/null || true)
 
-  return 0
-}
-
-# ---------------------------------------------------------------------------
-docs_map_enforcing_tests() {
-  local doc_path="$1"
-  local project_root="${RITE_PROJECT_ROOT:-.}"
-
-  # Resolve to absolute path
-  case "$doc_path" in
-    /*) ;;
-    *) doc_path="${project_root}/${doc_path}" ;;
-  esac
-
-  [ -f "$doc_path" ] || return 0
-
-  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_ENFORCED_BY is a marker constant defined in markers.sh, not a user config var; RITE_MARKER_* is the canonical prefix convention for marker constants (see markers.sh); _RITE_ prefix cannot be used; ledger is frozen per 2026-07-14 rule
-  local _marker="${RITE_MARKER_ENFORCED_BY}"
-
-  # Format-anchored grep: requires at least one [^[:space:]]+.bats token AND closing -->.
-  # Requiring --> also rejects line-wrapped markers (multi-line comments where the
-  # marker name and --> are on different lines). Per-entry case filter below rejects
-  # non-.bats tokens (e.g. N/A) that share a line with a real .bats path.
-  # The #90 bare-prefix guard applied to doc-file parsing.
-  local _matched_line _value _entry
-  while IFS= read -r _matched_line; do
-    # Extract the value between "${_marker}:" and "-->"
-    _value="${_matched_line#*${_marker}:}"
-    _value="${_value%%-->*}"
-    # Split comma-separated paths; default IFS strips leading/trailing whitespace;
-    # case filter rejects non-.bats entries (e.g. N/A, empty trailing comma slot).
-    while read -r _entry; do
-      case "$_entry" in
-        *.bats) printf '%s\n' "$_entry" ;;
-      esac
-    done < <(printf '%s\n' "$_value" | tr ',' '\n' || true)
-  done < <(grep -E "<!--[[:space:]]*${_marker}:[^>]*[^[:space:]]+\.bats[^>]*-->" "$doc_path" 2>/dev/null || true)
   return 0
 }
