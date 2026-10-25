@@ -589,9 +589,86 @@ EOF
   awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
       | grep -qF "$persist_name"
 
-  # clear_name must NOT appear in the Persistent Failures section
+  # clear_name must NOT appear in the Persistent Failures section.
+  # Use backtick-wrapped grep: clear_name is a prefix of persist_name, so
+  # a bare grep -F would match the persistent entry as a substring.
   ! awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
-      | grep -qF "$clear_name"
+      | grep -qF "\`${clear_name}\`"
+}
+
+# ---------------------------------------------------------------------------
+# Test 6c: name-collision guard — a cleared test whose name is a trailing
+# substring (suffix) of a persistent test's name must still be classified
+# as cleared, not persistent.
+# Regression for the suffix-anchor bug: with the old
+# substr($0,len-len(name)+1)==name comparison, "collision-test-6c" matched
+# the end of "not ok 1 suffix-collision-test-6c".
+# ---------------------------------------------------------------------------
+@test "investigate: cleared test with name that is suffix of persistent test is not misclassified" {
+  _write_lib_stubs
+  _write_make_stub
+
+  local persist_name="suffix-collision-test-6c"
+  local clear_name="collision-test-6c"
+
+  # Write a two-test bats file
+  local bats_file="$_FAKE_PROJECT/tests/collision-suffix.bats"
+  printf '#!/usr/bin/env bats\n@test "%s" { false; }\n@test "%s" { true; }\n' \
+    "$persist_name" "$clear_name" > "$bats_file"
+
+  mkdir -p "$_FAKE_PROJECT/bin"
+
+  # bats stub:
+  #   parallel run → both fail
+  #   serial run → only persist_name fails; clear_name passes
+  cat > "$_FAKE_PROJECT/bin/bats" << EOF
+#!/bin/bash
+if echo "\$*" | grep -q -- "-r tests/"; then
+  printf '1..2\nnot ok 1 %s\nnot ok 2 %s\n' "$persist_name" "$clear_name"
+  exit 1
+else
+  printf '1..2\nnot ok 1 %s\n  # assertion: false\nok 2 %s\n' "$persist_name" "$clear_name"
+  exit 1
+fi
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  cat > "$_FAKE_PROJECT/bin/gh" << EOF
+#!/bin/bash
+echo "\$@" >> "$_GH_CALL_LOG"
+if echo "\$*" | grep -q "issue list"; then
+  echo "null"
+  exit 0
+fi
+if echo "\$*" | grep -q "issue create"; then
+  echo "https://github.com/owner/repo/issues/68"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/gh"
+
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash "$_FULL_SUITE_SCRIPT" --investigate
+
+  local _report
+  _report=$(find "$_FAKE_PROJECT/.rite/reports" -name "full-suite-*.md" | head -1 || true)
+  [ -n "$_report" ]
+
+  # persist_name must be in the Persistent Failures section
+  awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
+      | grep -qF "\`${persist_name}\`"
+
+  # clear_name must NOT appear in the Persistent Failures section.
+  # Use backtick-wrapped grep: clear_name is a suffix of persist_name, so a
+  # bare grep -F would match the persistent entry as a substring.
+  ! awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
+      | grep -qF "\`${clear_name}\`"
 }
 
 # ---------------------------------------------------------------------------

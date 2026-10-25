@@ -375,14 +375,14 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
       fi
       [ -z "$_t_canonical_src" ] && continue
 
-      # Match the exact TAP line "not ok N test-name" by anchoring to end-of-line.
-      # Prevents substring collisions: a test named "foo" must not match "not ok 1 foo-bar".
-      if awk -v name="$_t_name" \
-           'BEGIN{f=0} /^not ok/ && substr($0,length($0)-length(name)+1)==name{f=1} END{exit(1-f)}' \
+      # Strip "not ok N " prefix and require exact equality — prevents both prefix
+      # and suffix substring collisions. ENVIRON avoids awk -v backslash interpretation.
+      if NAME="$_t_name" awk \
+           'BEGIN{f=0} /^not ok [0-9]+ /{l=$0; sub(/^not ok [0-9]+ /,"",l); if(l==ENVIRON["NAME"])f=1} END{exit(1-f)}' \
            "$_serial_results_raw" 2>/dev/null; then
         # Persistent: extract first # assertion line after the exact not-ok line.
-        _assert_line=$(awk -v name="$_t_name" '
-          /^not ok/ && substr($0, length($0) - length(name) + 1) == name { found=1; next }
+        _assert_line=$(NAME="$_t_name" awk '
+          /^not ok [0-9]+ /{l=$0; sub(/^not ok [0-9]+ /,"",l); if(l==ENVIRON["NAME"]){found=1; next}}
           found && /^#/ { sub(/^# */, ""); print; exit }
           found && !/^#/ { found=0 }
         ' "$_serial_results_raw" 2>/dev/null | head -1 || true)
