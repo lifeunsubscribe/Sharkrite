@@ -1507,15 +1507,23 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   # cap (_UNIQUE_ISSUE_COUNT); cap exhausted → warning + run in place.
   # Deliberate batch-only divergence: single-issue mode has no queue to defer
   # into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
+  #
+  # Skipped for CLOSED issues: cleanup-only work touches no source files and
+  # therefore cannot conflict with another worktree's diff. The parity contract
+  # ("do NOT short-circuit here", above) owns closed-issue handling via
+  # run_workflow() → handle_closed_issue(). Deferring a closed issue only
+  # delays cleanup while burning the defer cap.
   # ---------------------------------------------------------------------------
-  _OVERLAP_FILES=""
-  _OVERLAP_WT=""
-  _ftm_file_overlap "$ISSUE_BODY"
-  _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=$?
-  if [ "$_overlap_action_rc" -ne 0 ]; then
-    echo ""
-    _gate_consec_count=0; _gate_consec_sig=""
-    continue
+  if [ "$ISSUE_STATE" != "CLOSED" ]; then
+    _OVERLAP_FILES=""
+    _OVERLAP_WT=""
+    _ftm_file_overlap "$ISSUE_BODY"
+    _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=$?
+    if [ "$_overlap_action_rc" -ne 0 ]; then
+      echo ""
+      _gate_consec_count=0; _gate_consec_sig=""
+      continue
+    fi
   fi
 
   # Check if issue is actively being worked on (worktree exists with a running rite/claude process)
