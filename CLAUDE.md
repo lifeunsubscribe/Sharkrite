@@ -170,6 +170,7 @@ Every file in `lib/` MUST be safe to source multiple times under `set -euo pipef
 | 2026-05-31 | `issue-lock.sh` | Guard checked `RITE_LIB_DIR` instead of `RITE_LOCK_DIR` (#69) |
 | 2026-06-01 | `stash-manager.sh` | `readonly` crash on re-source (commit 2267841) |
 | 2026-06-01 | `claude.sh` | Source-path construction bug (commit 93c7ddd) |
+| 2026-10-25 | `scratchpad-manager.sh` | Bootstrap gate keyed on `RITE_LIB_DIR` while the gated block consumed `RITE_PROJECT_ROOT` — crashed under `set -u` for any caller exporting only `RITE_LIB_DIR` (#1466) |
 
 **Canonical guard pattern — function libraries:**
 

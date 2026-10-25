@@ -42,7 +42,15 @@ _RITE_SCRATCHPAD_MANAGER_LOADED=true
 # SCRATCHPAD_FILE, RITE_INSTALL_DIR). Canonical bootstrap so this file is
 # sourceable standalone (re-source safety test); in production config.sh is
 # always loaded first, making this a no-op.
-if [ -z "${RITE_LIB_DIR:-}" ]; then
+#
+# Gate on the variables actually consumed below, NOT on RITE_LIB_DIR. Keying off
+# RITE_LIB_DIR treats it as a proxy for "config.sh has run", which is false
+# whenever a caller exports RITE_LIB_DIR on its own — bats `setup()` does exactly
+# that — and the bootstrap is then skipped while RITE_PROJECT_ROOT stays unset,
+# so the SCRATCHPAD_FILE default below dies under `set -u`.
+# Same bug class as #69 (issue-lock.sh guard checked RITE_LIB_DIR instead of
+# RITE_LOCK_DIR) — see CLAUDE.md -> "Re-source safety".
+if [ -z "${RITE_PROJECT_ROOT:-}" ] || [ -z "${RITE_DATA_DIR:-}" ]; then
   _SCRATCHPAD_MANAGER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_SCRATCHPAD_MANAGER_DIR/config.sh"
 fi
