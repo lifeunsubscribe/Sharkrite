@@ -1219,6 +1219,8 @@ run_test_gate() {
         if ! _provision_pytest_testmon "$project_root" "$_gate_raw_sink"; then
           print_warning "[test-gate] pytest-testmon unavailable — running unscoped (see sharkrite #975 / #1125)"
         fi
+        # _RITE_PYTEST_VENV_PYTHON now holds the venv interpreter path when provision
+        # succeeded (empty on failure). Wire it + --testmon into the invocation in #1306/#1168.
       fi
       echo "[test-gate] Running pytest..."
       { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
