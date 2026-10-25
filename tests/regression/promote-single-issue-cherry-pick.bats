@@ -151,7 +151,7 @@ RUNEOF
   run bash "$_runner" 2>&1
   [ "$status" -eq 0 ]
   # Cherry-pick must NOT have been attempted
-  ! echo "$output" | grep -q "CHERRY_PICK_CALLED=true"
+  if echo "$output" | grep -q "CHERRY_PICK_CALLED=true"; then false; fi
   # Should emit idempotent info message
   echo "$output" | grep -qi "already promoted\|nothing to do"
 }
