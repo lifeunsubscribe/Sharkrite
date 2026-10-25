@@ -1018,9 +1018,17 @@ PROMPT_EOF
               seen[title] = 1
             }
             if ($0 == end_tok) {
-              gsub("---END---",   "<!--rite-end-esc-->",   buf)
-              gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
-              gsub(end_tok, "---END---", buf)
+              # Escape canonical markers ONLY in the body: carve off the structural
+              # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+              # rebuild it with a literal canonical terminator. gsub over the whole
+              # buf destroyed the opening marker (#1483); the all-occurrences token
+              # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+              head_len = length("---ISSUE---\n")
+              tail_len = length($0) + 1
+              body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+              gsub("---END---",   "<!--rite-end-esc-->",   body)
+              gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+              buf = "---ISSUE---\n" body "---END---\n"
               in_issue = 0; printf "%s", buf; buf = ""
             }
             next
@@ -3713,9 +3721,17 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
     in_issue {
       buf = buf $0 "\n"
       if ($0 == end_tok) {
-        gsub("---END---",   "<!--rite-end-esc-->",   buf)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
-        gsub(end_tok, "---END---", buf)
+        # Escape canonical markers ONLY in the body: carve off the structural
+        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+        # rebuild it with a literal canonical terminator. gsub over the whole
+        # buf destroyed the opening marker (#1483); the all-occurrences token
+        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+        head_len = length("---ISSUE---\n")
+        tail_len = length($0) + 1
+        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+        gsub("---END---",   "<!--rite-end-esc-->",   body)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+        buf = "---ISSUE---\n" body "---END---\n"
         in_issue = 0; printf "%s", buf; buf = ""
       }
       next

@@ -28,7 +28,7 @@
 #      the emitted output, so downstream ---END--- parsers see the canonical form.
 #   C. Structural: generate_issues uses a per-run unique token (not hardcoded ---END---).
 #   D. Structural: the streaming awk passes the token via -v end_tok and normalises
-#      via gsub(end_tok, "---END---", buf) before printing.
+#      via a deterministic frame rebuild (substr body carve-out) before printing.
 #   E. Structural: _request_missing_blocks accepts a third argument (_end_token)
 #      and uses it in both the completion prompt and the completion awk.
 
@@ -66,7 +66,17 @@
         seen[title] = 1
       }
       if ($0 == end_tok) {
-        gsub(end_tok, "---END---", buf)
+        # Escape canonical markers ONLY in the body: carve off the structural
+        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+        # rebuild it with a literal canonical terminator. gsub over the whole
+        # buf destroyed the opening marker (#1483); the all-occurrences token
+        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+        head_len = length("---ISSUE---\n")
+        tail_len = length($0) + 1
+        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+        gsub("---END---",   "<!--rite-end-esc-->",   body)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+        buf = "---ISSUE---\n" body "---END---\n"
         in_issue = 0; printf "%s", buf; buf = ""
       }
       next
@@ -110,7 +120,17 @@
         seen[title] = 1
       }
       if ($0 == end_tok) {
-        gsub(end_tok, "---END---", buf)
+        # Escape canonical markers ONLY in the body: carve off the structural
+        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+        # rebuild it with a literal canonical terminator. gsub over the whole
+        # buf destroyed the opening marker (#1483); the all-occurrences token
+        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+        head_len = length("---ISSUE---\n")
+        tail_len = length($0) + 1
+        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+        gsub("---END---",   "<!--rite-end-esc-->",   body)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+        buf = "---ISSUE---\n" body "---END---\n"
         in_issue = 0; printf "%s", buf; buf = ""
       }
       next
@@ -176,7 +196,7 @@
 # D — structural: streaming awk uses -v end_tok= and gsub normalisation
 # ---------------------------------------------------------------------------
 
-@test "D: generate_issues streaming awk passes end_tok via -v and normalises via gsub" {
+@test "D: generate_issues streaming awk passes end_tok via -v and normalises via frame rebuild" {
   local plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
 
   local fn_body
@@ -198,18 +218,26 @@
     false
   }
 
-  # Streaming awk must normalise the token back to ---END--- via gsub
-  echo "$fn_body" | grep -q 'gsub(end_tok, "---END---"' || {
-    echo "FAIL: streaming awk does not normalise end_tok to ---END--- via gsub" >&2
+  # Streaming awk must rebuild the frame deterministically: carve the body
+  # out with substr, escape only the body, append a literal ---END---.
+  echo "$fn_body" | grep -q 'body = substr(buf, head_len + 1' || {
+    echo "FAIL: streaming awk does not carve the body via substr for the escape pass" >&2
     false
   }
+
+  # The all-occurrences gsub(end_tok, ...) is banned (#1485): a token echo in
+  # the body would be rewritten into an unescaped interior ---END---.
+  if echo "$fn_body" | grep -q 'gsub(end_tok'; then
+    echo "FAIL: banned all-occurrences gsub(end_tok, ...) is present (#1485)" >&2
+    false
+  fi
 }
 
 # ---------------------------------------------------------------------------
 # E — structural: _request_missing_blocks accepts token arg and uses it
 # ---------------------------------------------------------------------------
 
-@test "E: _request_missing_blocks accepts _end_token param and uses it in completion awk" {
+@test "E: _request_missing_blocks accepts _end_token param and normalises via frame rebuild" {
   local plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
 
   local fn_body
@@ -237,11 +265,17 @@
     false
   }
 
-  # Completion awk must normalise back to ---END--- via gsub
-  echo "$fn_body" | grep -q 'gsub(end_tok, "---END---"' || {
-    echo "FAIL: _request_missing_blocks completion awk does not normalise end_tok to ---END--- via gsub" >&2
+  # Completion awk must rebuild the frame deterministically (same contract
+  # as the streaming awk; gsub(end_tok, ...) is banned, #1485).
+  echo "$fn_body" | grep -q 'body = substr(buf, head_len + 1' || {
+    echo "FAIL: _request_missing_blocks completion awk does not carve the body via substr" >&2
     false
   }
+
+  if echo "$fn_body" | grep -q 'gsub(end_tok'; then
+    echo "FAIL: banned all-occurrences gsub(end_tok, ...) is present (#1485)" >&2
+    false
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -278,9 +312,17 @@
         seen[title] = 1
       }
       if ($0 == end_tok) {
-        gsub("---END---",   "<!--rite-end-esc-->",   buf)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
-        gsub(end_tok, "---END---", buf)
+        # Escape canonical markers ONLY in the body: carve off the structural
+        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+        # rebuild it with a literal canonical terminator. gsub over the whole
+        # buf destroyed the opening marker (#1483); the all-occurrences token
+        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+        head_len = length("---ISSUE---\n")
+        tail_len = length($0) + 1
+        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+        gsub("---END---",   "<!--rite-end-esc-->",   body)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+        buf = "---ISSUE---\n" body "---END---\n"
         in_issue = 0; printf "%s", buf; buf = ""
       }
       next
@@ -360,9 +402,17 @@
         seen[title] = 1
       }
       if ($0 == end_tok) {
-        gsub("---END---",   "<!--rite-end-esc-->",   buf)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
-        gsub(end_tok, "---END---", buf)
+        # Escape canonical markers ONLY in the body: carve off the structural
+        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+        # rebuild it with a literal canonical terminator. gsub over the whole
+        # buf destroyed the opening marker (#1483); the all-occurrences token
+        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+        head_len = length("---ISSUE---\n")
+        tail_len = length($0) + 1
+        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+        gsub("---END---",   "<!--rite-end-esc-->",   body)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+        buf = "---ISSUE---\n" body "---END---\n"
         in_issue = 0; printf "%s", buf; buf = ""
       }
       next
