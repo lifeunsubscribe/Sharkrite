@@ -160,3 +160,76 @@ _source_docs_map() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+# ---------------------------------------------------------------------------
+# docs_map_enforcing_tests: malformed-input cases (findings 1-3 regression)
+# ---------------------------------------------------------------------------
+
+@test "docs_map_enforcing_tests: trailing comma does not emit empty path" {
+  printf '# Feature\n\n<!-- sharkrite-enforced-by: tests/regression/foo.bats, -->\n' \
+    > "$FIXTURE_DIR/docs/trailing-comma.md"
+
+  _source_docs_map
+
+  run docs_map_enforcing_tests "docs/trailing-comma.md"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "tests/regression/foo.bats" ]
+  [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "docs_map_enforcing_tests: mixed .bats and non-.bats entries emits only .bats" {
+  printf '# Feature\n\n<!-- sharkrite-enforced-by: tests/regression/foo.bats, N/A -->\n' \
+    > "$FIXTURE_DIR/docs/mixed-entries.md"
+
+  _source_docs_map
+
+  run docs_map_enforcing_tests "docs/mixed-entries.md"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "tests/regression/foo.bats" ]
+  [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "docs_map_enforcing_tests: multi-space padding is stripped correctly" {
+  printf '# Feature\n\n<!-- sharkrite-enforced-by: tests/regression/foo.bats,  tests/regression/bar.bats -->\n' \
+    > "$FIXTURE_DIR/docs/multi-space.md"
+
+  _source_docs_map
+
+  run docs_map_enforcing_tests "docs/multi-space.md"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "tests/regression/foo.bats" ]
+  [ "${lines[1]}" = "tests/regression/bar.bats" ]
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "docs_map_enforcing_tests: line-wrapped marker produces empty output" {
+  # A marker split across lines: grep is line-scoped, and --> is required on the
+  # same line as the marker name, so the continuation line is never matched.
+  printf '# Feature\n\n<!-- sharkrite-enforced-by: tests/regression/foo.bats,\ntests/regression/bar.bats -->\n' \
+    > "$FIXTURE_DIR/docs/line-wrapped.md"
+
+  _source_docs_map
+
+  run docs_map_enforcing_tests "docs/line-wrapped.md"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "docs_map_enforcing_tests: survives set -euo pipefail with empty trailing entry" {
+  # Regression for the silent-death bug: [ -n "$_entry" ] && printf returned 1
+  # for an empty trailing comma slot, killing callers under set -e.
+  printf '# Feature\n\n<!-- sharkrite-enforced-by: tests/regression/foo.bats, -->\n' \
+    > "$FIXTURE_DIR/docs/trailing-comma-pipefail.md"
+
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='${FIXTURE_DIR}'
+    export RITE_DOCS_MAP_AUTO='false'
+    export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
+    source '${RITE_REPO_ROOT}/lib/utils/docs-map.sh'
+    docs_map_enforcing_tests 'docs/trailing-comma-pipefail.md'
+  "
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "tests/regression/foo.bats" ]
+  [ "${#lines[@]}" -eq 1 ]
+}
