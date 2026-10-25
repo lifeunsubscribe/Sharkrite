@@ -136,3 +136,58 @@ _bsm() {
   run _bsm "fix-issue-runbook_b1470-1471" "147"
   [ "$status" -ne 0 ]
 }
+
+# =============================================================================
+# STRUCTURAL: verify grep-E sites carry ([^0-9]|$) trailing anchor on issue.?N and #N
+# =============================================================================
+
+@test "structural: workflow-runner.sh worktree-discover site 1 has trailing non-digit anchor on issue.?N" {
+  # issue.?N without ([^0-9]|$) can match issue-1419 when N=141.
+  local _count
+  _count=$(grep -cF 'issue.?${issue_number}([^0-9]|$)' "$WORKFLOW_RUNNER" || true)
+  [ "$_count" -ge 1 ]
+}
+
+@test "structural: workflow-runner.sh both worktree-discover sites have anchored issue.?N pattern" {
+  # Two sites: initial discover and retry re-discover; both must be anchored.
+  local _count
+  _count=$(grep -cF 'issue.?${issue_number}([^0-9]|$)' "$WORKFLOW_RUNNER" || true)
+  [ "$_count" -ge 2 ]
+}
+
+@test "structural: batch-process-issues.sh active-wt detect has trailing non-digit anchor on issue.?N" {
+  grep -qF 'issue.?${ISSUE_NUM}([^0-9]|$)' "$BATCH_PROCESSOR"
+}
+
+# =============================================================================
+# BEHAVIORAL: grep-E pattern substring-collision prevention (issue.?N and #N)
+# =============================================================================
+
+# Helper: run the same grep-E used at the three worktree-discover sites.
+# Args: <path> <issue_num>
+# Returns 0 if the path matches, 1 if not.
+_wt_grep() {
+  local _path="$1" _n="$2"
+  printf '%s\n' "$_path" | \
+    grep -qE "(issue.?${_n}([^0-9]|\$)|#${_n}([^0-9]|\$)|[-_]${_n}[-_]|[-_]${_n}\$|_b${_n}[-_]|_b${_n}\$)"
+}
+
+@test "grep-E behavioral: issue-141 matches issue 141" {
+  run _wt_grep "fix-issue-141" "141"
+  [ "$status" -eq 0 ]
+}
+
+@test "grep-E behavioral: issue-1419 must NOT match issue 141 (substring collision)" {
+  run _wt_grep "fix-issue-1419" "141"
+  [ "$status" -ne 0 ]
+}
+
+@test "grep-E behavioral: #141 matches issue 141" {
+  run _wt_grep "branch#141" "141"
+  [ "$status" -eq 0 ]
+}
+
+@test "grep-E behavioral: #1419 must NOT match issue 141 (substring collision on # prefix)" {
+  run _wt_grep "branch#1419" "141"
+  [ "$status" -ne 0 ]
+}
