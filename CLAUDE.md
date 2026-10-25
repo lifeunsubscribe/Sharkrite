@@ -38,14 +38,13 @@ lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + 
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
-lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/integration-ledger.sh   # Integration branch ledger (issue↔SHA record, append/entries/mark_promoted)
-lib/utils/doc-consent.sh          # Doc-mode consent helpers (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog)
+lib/utils/doc-consent.sh          # Doc-drift opt-in (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; unset = never asked, records nothing)
 lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → .rite/state/docs-map.tsv)
-lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — changelog mode)
+lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — written per merge only with recorded consent)
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
@@ -497,9 +496,10 @@ Only content-aware and practical conditions block merges:
 - **Session limits** — dual-cap model (issue #283):
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
   - **Cumulative session cap** (`RITE_MAX_SESSION_HOURS`, default 12h): fires when total active work time across all issues in this session exceeds the threshold. Measures actual work, not wall-clock age of the state file — a zombie file from a prior crash contributes 0h.
+  - **Opt-in cap auto-resume** (`RITE_CAP_AUTORESUME=true`): on a usage-cap abort with a parsed reset time, holds the machine awake (macOS AC only, via `caffeinate`) and re-invokes the remaining batch after the cap resets — one resume per manifest (second cap aborts normally). See `lib/utils/cap-resume.sh`.
 - **AWS credentials expired** — deployment credentials invalid
 - **Integration-branch guard** — `merge-pr.sh` exits 1 when the PR targets `main` but the session's resolved target (state file → `RITE_TARGET_BRANCH` → default) is a non-main integration branch. Substitutes for GitHub branch protection (unavailable on the free plan). Override with `--allow-main-base`: `rite <issue> --allow-main-base`. Implemented in `lib/core/merge-pr.sh`; forwarded by `lib/core/workflow-runner.sh`.
-- **Supervised mode**: Interactive `read -p` prompt for approval; the assess gate also offers `(a)ccept / (f)eedback / (s)top` — free-text feedback accumulates within the gate stop (the state file is consumed one-shot by the next fix session; not persisted across separate runs) and is injected as an **Operator guidance** block into the fix session's prompt, and posted as a PR comment addendum for traceability
+- **Supervised mode**: Interactive `read -p` prompt for approval; the assess gate also offers `(a)ccept / (f)eedback / (s)top` — free-text feedback (multiple `f` entries accumulate, separated by `---`) is written to a per-PR state file; the next fix session reads it, injects it as an **Operator guidance** block, and deletes the file — so the feedback reaches exactly one fix session and does not linger for later assess runs. Also posted as a PR comment addendum for traceability
 - **Unsupervised mode**: Stops workflow (unless `--bypass-blockers`)
 - Approvals remembered per-issue via `has_approved_blocker()`
 
@@ -556,16 +556,16 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
-rite docs                  # Doc consent/audit: enable doc-sync or audit drift on demand;
+rite docs                  # Doc consent/audit: turn on drift tracking or audit drift on demand;
                            # after consent, if drift entries exist, offers to reconcile them
                            # via the same per-entry preview loop (zero entries → no-op)
 rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file creations;
                            # per-proposal preview → (y)approve / (n)skip / (f)eedback loop;
                            # approved changes applied as a dedicated docs PR on
                            # ${RITE_TARGET_BRANCH:-main} — NO auto-merge (human review required).
-                           # Works in both doc-sync and changelog consent modes — explicit
-                           # command + preview approval IS consent (Layer 2 gate not checked
-                           # on the approved-apply path). Can CREATE new docs (e.g. ADRs).
+                           # Works in any consent mode — explicit command + preview approval
+                           # IS consent. Can CREATE new docs (e.g. ADRs). Nothing in sharkrite
+                           # edits docs without this approval loop (per-merge doc-sync retired).
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
@@ -943,11 +943,11 @@ tail -f .rite/logs/rite-sync-*.log           # live view during a sync
 
 **Two-channel write convention** (important when modifying logging code):
 
-1. **Human-readable output** (Claude tool indicators, bats results, lint output, `print_info`/`print_step`/etc.) → write to stdout/stderr. The FIFO-based tee in `bin/rite` captures everything that flows through the inherited stdout fd into the log file automatically. Subprocesses inherit the fd; no special handling needed.
+1. **Human-readable output** (Claude tool indicators, bats results, lint output, `print_info`/`print_step`/etc.) → write to stdout/stderr. The nested-procsub tee (`exec > >(tee >(strip_ansi >> FILE))`) in `bin/rite` captures everything that flows through the inherited stdout fd into the log file automatically. Subprocesses inherit the fd; no special handling needed.
 
 2. **Structured metadata** (`[diag]`, `[timing]`, `[rtk]` lines) → `_diag`, `_timer_start/_end`, `_rtk_snapshot` write directly to `$RITE_LOG_FILE` via `>>`. This is intentional: these events must appear in the log even in `--verbose` mode (where stdout is the terminal, not the tee). **Do NOT also print them to stdout** — the tee would capture them a second time, producing duplicates. Note: in verbose+logged mode the single-appearance guarantee depends on the `if/elif` exclusivity inside `_diag` and `_timer_*` (exactly one branch executes per call, so the direct-write path fires once and stdout is skipped); the direct-write-only convention is necessary but not sufficient on its own.
 
-**FIFO-based tee (implemented in `bin/rite`):** The log capture uses a named FIFO (`mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX"` — `XXXXXX` must be at the end; BSD `mktemp -u` does not support suffixes after the template) rather than the simpler nested-process-substitution pattern `exec > >(tee >(strip_ansi >> FILE))`. The nested pattern loses data: the inner `>(...)` process exits before the outer tee flushes, truncating the last kilobytes of output. The FIFO keeps the `strip_ansi` reader alive for exactly as long as the tee write end is open.
+**Log capture pattern (`bin/rite`):** The log capture uses the nested process-substitution `exec > >(tee >(strip_ansi >> FILE))`. The outer `>(tee …)` redirects stdout to `tee`, which writes to the terminal and to the inner `>(strip_ansi >> FILE)` procsub; `strip_ansi` strips ANSI escape codes before appending to the log file. This pattern has a theoretical tail-truncation race: bash does not wait for process-substitution subprocesses to drain before exiting, so the last few bytes of output could be lost if the procsubs are still draining when the shell exits. A FIFO-based alternative was considered to close this race — by having a named-FIFO reader (`strip_ansi >> FILE < FIFO &`) that drains naturally when tee closes the write end — but was not implemented; a prior attempt at a FIFO+explicit-`wait` pattern in `bin/rite-full-suite` caused a deadlock (the procsub keeps the write fd open until the shell exits, so a pre-exit `wait` hangs forever — see `tests/regression/full-suite-subcommand.bats`). If tail truncation is observed in practice, the correct fix is a FIFO without an explicit `wait`: start `strip_ansi >> FILE < FIFO &` in the background, then `exec > >(tee FIFO)`, and let the reader drain on its own when the write end closes. BSD `mktemp -u` does not support suffixes after the template, so use `mktemp -u "${TMPDIR:-/tmp}/rite_log_XXXXXX"` (six X's at the end, no suffix).
 
 ### Diagnostic logging
 

@@ -443,7 +443,7 @@ run_promote() {
   # Capture branch HEAD SHA at preflight; passed to the merge API in Phase 6 so any
   # push during review/suite triggers a 409 abort rather than merging unreviewed code.
   local _branch_sha=""
-  _branch_sha=$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)
+  _branch_sha=$(git rev-parse --verify --quiet "origin/$BRANCH" 2>/dev/null || true)
 
   # Ledger must exist with >= 1 promoted=false entry.
   local _ledger_entries=""
@@ -486,7 +486,7 @@ run_promote() {
         sync_integration_branch "$BRANCH" || true
         # Re-fetch and re-check after sync; also re-capture SHA so Phase 6 sees the post-sync tip
         git_fetch_safe origin "$BRANCH" || true
-        _branch_sha=$(git rev-parse "origin/$BRANCH" 2>/dev/null || true)
+        _branch_sha=$(git rev-parse --verify --quiet "origin/$BRANCH" 2>/dev/null || true)
         _behind=$(git rev-list --count "origin/${BRANCH}..origin/main" 2>/dev/null || true)
         _behind="${_behind:-0}"
         if [ "$_behind" -gt 0 ]; then

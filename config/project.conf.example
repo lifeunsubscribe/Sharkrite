@@ -150,26 +150,6 @@
 # are expected noise.
 # RITE_HEALTH_RECURRENCE_MIN=2
 
-# Gate tier for target-repo node workspaces monorepo tests (default: "cycle").
-# Only affects npm/pnpm workspaces repos; single-package and non-node repos
-# are unaffected.
-#
-# "cycle" — per-cycle tier (default): for each fix iteration, run only the
-#   workspace(s) that have changed source files, using framework-native diff
-#   scoping (jest --findRelatedTests / vitest related) when a known runner is
-#   detected. If a scoped run selects
-#   0 test files while non-test source changed, falls back to that workspace's
-#   full suite (sanity valve). Zero target-repo configuration required: runner
-#   auto-detected from each workspace's package.json devDependencies (or test
-#   script token), package manager from lock file markers.
-#
-# "merge" — merge-decision tier: full root npm/pnpm test (blast-radius pass,
-#   run exactly once per issue lifecycle by workflow-runner's pre-merge gate
-#   call). This is the value workflow-runner sets internally; you normally do
-#   not need to override it here. Set to "merge" to always run the full suite
-#   (disables workspace scoping for all gate calls in this project).
-#
-
 # Native diff scoping for node workspaces monorepo tests (default: true).
 # When true, the per-cycle tier uses jest --findRelatedTests (or vitest related)
 # to select only the test files that import/require the changed source files.
@@ -263,31 +243,25 @@
 # Documentation
 # =============================================================================
 
-# Sharkrite maintains internal docs at .rite/docs/ automatically.
-# No configuration needed for internal docs.
-
-# To enable project doc sync, run `rite docs` — it walks through the consent
-# flow and scaffolds .rite/doc-sync.md from templates/doc-sync.md.example.
-# You can also create .rite/doc-sync.md manually; see the template for the
-# format. If .rite/doc-sync.md does not exist, only internal docs are maintained.
+# Merges always update the conventions and tag-index catalogs. Doc drift
+# tracking is opt-in (RITE_DOC_MODE below); nothing edits docs/ automatically.
 
 # Docs map auto-rebuild (default: true).
 # When true, docs_map_ensure() automatically rebuilds .rite/state/docs-map.tsv
 # when the file is missing. The map inventories README.md, CLAUDE.md, and
-# docs/**/*.md with headings and ADR flags for use by cluster-B doc-sync features.
+# docs/**/*.md with headings and ADR flags for use by cluster-B doc features.
 # Set to "false" to suppress auto-rebuild (e.g. when the map is managed externally).
 # RITE_DOCS_MAP_AUTO=true
 
-# Doc-mode consent — controls whether sharkrite updates files in docs/ after merges.
+# Doc drift consent (opt-in) — nothing edits docs/ automatically in any mode.
 #
 # Values:
-#   "sync"      — yes consent; sharkrite may update docs/ when code changes make
-#                 them inaccurate.  Requires .rite/doc-sync.md to be present (Layer 2
-#                 activation switch).  Set by rite --init when you answer Y.
-#   "changelog" — no consent; only drift changelog entries are written.
-#                 Set by rite --init when you answer N.
+#   "sync"      — each merge records a drift entry (docs it may have made
+#                 inaccurate); `rite docs` proposes fixes for your approval.
+#                 Set by rite --init / `rite docs` when you answer y.
+#   "off"       — declined; nothing is recorded. Set when you answer n.
+#   "changelog" — legacy: records drift entries; `rite docs` logs audit findings.
 #
-# LEAVE UNSET (default: empty) to let sharkrite ask on the next supervised run.
-# An empty value means "not yet recorded" — it is NOT the same as "changelog".
-# Setting this to "changelog" here permanently suppresses the consent prompt.
-# RITE_DOC_MODE="changelog"
+# LEAVE UNSET (default: empty) to be asked on the next supervised run or
+# `rite docs`. Unset records nothing — unattended runs never opt a repo in.
+# RITE_DOC_MODE="off"

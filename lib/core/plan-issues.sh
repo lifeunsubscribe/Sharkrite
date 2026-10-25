@@ -87,6 +87,11 @@ if [ -n "${RITE_LIB_DIR:-}" ] && ! declare -f parse_tag_index >/dev/null 2>&1; t
   source "$RITE_LIB_DIR/utils/tag-index.sh"
 fi
 
+# Runbook title-length cap (imperative title rule: ≤50 chars).
+# Shared between _lint_issues_strict Check 10 and the spike-title truncation
+# in _detect_unverified_integrations (budget = _RITE_PLAN_TITLE_MAX_LEN - 26).
+_RITE_PLAN_TITLE_MAX_LEN=50
+
 # =============================================================================
 # _collect_auto_docs: auto-discover docs/**/*.md, ADRs, and README.md
 #
@@ -1166,9 +1171,13 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
   fi
 
   # Strict deterministic validator: graph checks, dangling refs, verification
-  # paths, and deferral citations. Runs last in the linter chain. Errors (cycles,
-  # unresolved refs) are fatal; warnings are non-fatal.
+  # paths, and deferral citations. Runs last in the deterministic linter chain.
+  # Errors (cycles, unresolved refs) are fatal; warnings are non-fatal.
   # Pass existing_issues so dangling-ref check can validate against open issues.
+  # Self-references in an issue's own Dependencies are meaningless; rewrite
+  # them first so they can't masquerade as a cycle (see _strip_self_dep_refs).
+  _strip_self_dep_refs "$temp_file"
+
   _strict_lint_rc=0
   _lint_issues_strict "$temp_file" "$existing_issues" || _strict_lint_rc=$?
   if [ "$_strict_lint_rc" -ne 0 ]; then
@@ -1177,6 +1186,12 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
     rm -f "$temp_file"
     return "$_strict_lint_rc"
   fi
+
+  # Negative-existence claim lint: warn when plan text asserts a symbol absent
+  # while git grep finds it in the repo. Two-stage: deterministic git grep gate +
+  # triage-model validation. Separate from _lint_issues_strict so its LLM call
+  # does not violate that function's zero-LLM contract. Non-fatal: warn-only.
+  _lint_negative_existence_claims "$temp_file" || true
 
   # Section-completeness lint: every block must carry all required runbook
   # sections. Attempts targeted per-block regeneration on failure (bounded:
@@ -1491,18 +1506,164 @@ _title_is_spike() {
 }
 
 # =============================================================================
+# _strip_self_dep_refs — rewrite an issue's reference to its own ordinal.
+#
+# An issue cannot depend on itself, so a #K in issue K's own Dependencies
+# section carries no scheduling meaning — but left in place it reads as a
+# one-node cycle and _lint_issues_strict aborts the whole generation (live:
+# 2026-10-24, doc-drift plan, 25 issues on fable discarded because issue #16
+# wrote "After #16's prerequisites — After #2, #13"). Had it reached GitHub,
+# the ordinal→issue-number rewrite would have made the issue block on itself
+# in the batch dep-guard forever.
+#
+# Rewrites the self-ref to "this issue" ("After this issue's prerequisites")
+# so the line still reads naturally and carries only the real edges. Scoped
+# exactly like _lint_issues_strict's dep harvest: the **Dependencies**: header
+# line and following lines until the next **/## header or ---END---. Ordinals
+# are non-spike positions (spikes have none), matching the lint's numbering.
+# Real multi-issue cycles are untouched and still fail the lint.
+#
+# Usage: _strip_self_dep_refs <issues_file>   (rewrites in place; always 0)
+# =============================================================================
+_strip_self_dep_refs() {
+  local _sd_file="$1"
+  [ -s "$_sd_file" ] || return 0
+  local _sd_out
+  _sd_out=$(mktemp) || return 0
+  local _sd_line _sd_title="" _sd_ord=0 _sd_self="" _sd_in_issue=false _sd_in_deps=false
+  local _sd_changed=0
+  while IFS= read -r _sd_line || [ -n "$_sd_line" ]; do
+    if [ "$_sd_line" = "---ISSUE---" ]; then
+      _sd_in_issue=true; _sd_in_deps=false; _sd_title=""; _sd_self=""
+    elif [ "$_sd_in_issue" = true ]; then
+      case "$_sd_line" in
+        "TITLE: "*)
+          _sd_title="${_sd_line#TITLE: }"
+          if ! _title_is_spike "$_sd_title"; then
+            _sd_ord=$((_sd_ord + 1))
+            _sd_self="$_sd_ord"
+          fi
+          ;;
+        "---END---")
+          _sd_in_issue=false; _sd_in_deps=false
+          ;;
+        *)
+          if [[ "$_sd_line" =~ ^(\*\*)?Dependencies(\*\*)?[[:space:]]*: ]]; then
+            _sd_in_deps=true
+          elif [ "$_sd_in_deps" = true ]; then
+            case "$_sd_line" in "**"*|"##"*) _sd_in_deps=false ;; esac
+          fi
+          if [ "$_sd_in_deps" = true ] && [ -n "$_sd_self" ] \
+             && [[ "$_sd_line" =~ \#${_sd_self}([^0-9]|$) ]]; then
+            local _sd_new
+            _sd_new=$(printf '%s\n' "$_sd_line" | sed -E "s/#${_sd_self}([^0-9]|$)/this issue\1/g" || true)
+            if [ "$_sd_new" != "$_sd_line" ]; then
+              print_info "plan: dropped self-reference #${_sd_self} from the Dependencies of '${_sd_title}' (an issue cannot depend on itself)" >&2
+              _sd_line="$_sd_new"
+              _sd_changed=$((_sd_changed + 1))
+            fi
+          fi
+          ;;
+      esac
+    fi
+    printf '%s\n' "$_sd_line" >> "$_sd_out"
+  done < "$_sd_file"
+  if [ "$_sd_changed" -gt 0 ]; then
+    cat "$_sd_out" > "$_sd_file"
+  fi
+  rm -f "$_sd_out"
+  return 0
+}
+
+# =============================================================================
+# _strip_par_ref — remove one #N ref from a "can run in parallel with" annotation.
+#
+# Tokenizes the ref list after the literal phrase instead of enumerating
+# shape-specific sed patterns, so prose embedded before the phrase is handled:
+#   "(needs context; can run in parallel with #4, #5, #7)"  → #4 stripped correctly
+#   "(can run in parallel with #1)"                         → whole group removed
+#
+# When the filtered list empties, the phrase is dropped along with an immediately-
+# preceding "; " or " " separator.  When the enclosing paren held only the phrase,
+# the paren itself is also dropped.
+#
+# Args: $1=line  $2=par_ref (e.g. "#4")
+# Output: modified line on stdout (unchanged when phrase absent or ref not present)
+# =============================================================================
+
+_strip_par_ref() {
+  local _spr_line="$1"
+  local _spr_ref="$2"
+
+  case "$_spr_line" in
+    *"can run in parallel with"*) ;;
+    *) printf '%s\n' "$_spr_line"; return ;;
+  esac
+
+  printf '%s\n' "$_spr_line" | awk -v ref="$_spr_ref" '
+  {
+    line = $0
+    kw   = "can run in parallel with "
+    kid  = index(line, kw)
+    if (kid == 0) { print; next }
+
+    before   = substr(line, 1, kid - 1)
+    after_kw = substr(line, kid + length(kw))
+
+    cp = index(after_kw, ")")
+    if (cp == 0) { print; next }
+
+    ref_list = substr(after_kw, 1, cp - 1)
+    tail     = substr(after_kw, cp)
+
+    n     = split(ref_list, toks, /[[:space:]]*,[[:space:]]*/)
+    found    = 0
+    new_list = ""
+    for (i = 1; i <= n; i++) {
+      tok = toks[i]
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", tok)
+      if (tok == ref) {
+        found = 1
+      } else if (tok != "") {
+        new_list = (new_list == "") ? tok : (new_list ", " tok)
+      }
+    }
+
+    if (!found) { print; next }
+
+    if (new_list != "") {
+      print before kw new_list tail
+      next
+    }
+
+    sub(/[[:space:]]*;[[:space:]]*$/, "", before)
+    sub(/[[:space:]]+$/,              "", before)
+
+    if (before ~ /\($/) {
+      sub(/[[:space:]]*\($/, "", before)
+      print before substr(tail, 2)
+    } else {
+      print before tail
+    }
+  }
+  ' || true
+}
+
+# =============================================================================
 # _transform_dep_line — rewrite a **Dependencies**: line to add After #N and
 # remove the corresponding parallel-with annotation.
 #
 # Args: $1=line  $2=after_num (non-spike ordinal)
 #
-# Handles all annotation shapes:
-#   sole ref:    "(can run in parallel with #N)"         → removed
-#   first ref:   "(can run in parallel with #N, ...)"    → "#N, " removed
-#   last ref:    "(..., #N)"                              → ", #N" removed
-#   empty group: "(can run in parallel with )" artifact  → removed
+# Handles all annotation shapes including prose-embedded:
+#   "(can run in parallel with #N)"                           → whole group removed
+#   "(can run in parallel with #N, ...)"                      → #N removed
+#   "(..., #N)"                                               → #N removed
+#   "(prose; can run in parallel with #N, ...)"               → #N removed, prose intact
 #
-# If After #N already present, the add step is skipped (idempotent).
+# If #N already present outside parallel-worded parens (After #N or bare #N outside such groups),
+# the add step is skipped (idempotent).  A #N inside a "(parallel ...)" annotation does NOT count
+# as present — Step 1 should have removed it; if it remains the dep edge is still added.
 # Non-inline Dependencies lines (header-only, no ": ") are returned unchanged.
 # =============================================================================
 
@@ -1521,23 +1682,21 @@ _transform_dep_line() {
     return
   fi
 
-  # Step 1: remove par_ref from the parallel-with annotation (all shapes).
-  # Sole ref: " (can run in parallel with #N)"
-  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with ${_tdl_par_ref})//" || true)
-  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref})//" || true)
-  # First ref of multiple: "(can run in parallel with #N, ..." → remove "#N, "
-  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with ${_tdl_par_ref}, /(can run in parallel with /" || true)
-  # Last ref of multiple: "..., #N)" → remove ", #N"
-  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref})/)/g" || true)
-  # Middle ref of 3+: "(... #A, #N, #B ...)" → "(... #A, #B ...)"
-  _tdl_content=$(echo "$_tdl_content" | sed "s/, ${_tdl_par_ref},/,/g" || true)
-  # Clean up now-empty paren group
-  _tdl_content=$(echo "$_tdl_content" | sed "s/ (can run in parallel with )//" || true)
-  _tdl_content=$(echo "$_tdl_content" | sed "s/(can run in parallel with )//" || true)
+  # Step 1: remove par_ref from the parallel-with annotation (all shapes, including
+  # prose-embedded: "(prose; can run in parallel with #N, ...)").
+  _tdl_content=$(_strip_par_ref "$_tdl_content" "$_tdl_par_ref")
 
   # Step 2: add After #N if not already present.
-  # Use a word-boundary regex to avoid substring collision (#1 matching inside #12).
-  if ! echo "$_tdl_content" | grep -qE "After #${_tdl_after_num}([^0-9]|$)"; then
+  # Strip parallel-worded parenthetical groups before the presence check — a #N
+  # token inside a "parallel" paren group (canonical "can run in parallel with #N"
+  # that Step 1 missed, or non-canonical "parallel with #N", "(parallel: #N)",
+  # etc.) is a scheduling annotation, not a dep edge.  Non-parallel paren groups
+  # like "(and #N)" DO carry genuine dep refs and must remain visible for the
+  # presence check.  Genuine dep edges (After #N, bare #N) always appear outside
+  # parens.  Suffix ([^0-9]|$) prevents #8 matching #80.
+  local _tdl_check
+  _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*[Pp]arallel[^)]*)//g' || true)
+  if ! echo "$_tdl_check" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
         # Replace "None" keyword with the After tag, preserving trailing content
@@ -1565,8 +1724,10 @@ _transform_dep_line() {
 #
 # Reads the file line-by-line, transforms the first **Dependencies**: line in
 # the block whose TITLE matches later_title, writes to a temp file, then
-# atomically replaces the original.  Idempotent: if After #N is already
-# present and the annotation already absent, the file is unchanged.
+# atomically replaces the original.  Idempotent: if #N appears outside
+# parallel-worded paren groups (bare #N or After #N) and the annotation is
+# already absent, the file is unchanged.  A #N inside a "(parallel ...)" group
+# does not count — the dep edge is still added in that case.
 # =============================================================================
 
 _autochain_rewrite_deps() {
@@ -1635,14 +1796,7 @@ _autochain_remove_par_annotation() {
     if [ "$_arpa_in_target" = true ] && [ "$_arpa_dep_done" = false ] && \
        echo "$_arpa_line" | grep -qE '^\*\*Dependencies\*\*:'; then
       _arpa_dep_done=true
-      # Apply only annotation-removal sed patterns (no After tag added).
-      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with ${_arpa_par_ref})//" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref})//" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with ${_arpa_par_ref}, /(can run in parallel with /" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref})/)/g" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/, ${_arpa_par_ref},/,/g" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/ (can run in parallel with )//" || true)
-      _arpa_line=$(echo "$_arpa_line" | sed "s/(can run in parallel with )//" || true)
+      _arpa_line=$(_strip_par_ref "$_arpa_line" "$_arpa_par_ref")
     fi
 
     printf '%s\n' "$_arpa_line"
@@ -1832,8 +1986,12 @@ _lint_issues_strict() {
             # Fix 1: harvest parallel refs from this line BEFORE stripping
             # parens — scoped to the Dependencies section so prose mentions
             # elsewhere in the body (e.g. description) are not harvested.
+            # sed strips everything up to and including "parallel" so only
+            # refs that appear AFTER the keyword are collected (prevents
+            # prose-embedded refs like "(needs #2's schema; can run in
+            # parallel with #4)" from harvesting #2 as a sibling).
             local _dp_prefs
-            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | sed -E 's/.*[Pp]arallel//' | grep -oE '#[0-9]+' || true)
             [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Strip "(can run in parallel with #M, #P)" annotations before
             # harvesting refs. The generation prompt mandates that format for
@@ -1859,8 +2017,9 @@ _lint_issues_strict() {
               "---END---"|"**"*|"##"*) _in_deps=false; continue ;;
             esac
             # Fix 1: harvest parallel refs from this body line BEFORE stripping
+            # (same anchoring as the header-line site above — see comment there)
             local _dp_prefs
-            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | grep -oE '#[0-9]+' || true)
+            _dp_prefs=$(echo "$_dline" | grep -oE '\([^)]*[Pp]arallel[^)]*\)' | sed -E 's/.*[Pp]arallel//' | grep -oE '#[0-9]+' || true)
             [ -n "$_dp_prefs" ] && _issue_parallel_with="${_issue_parallel_with}${_dp_prefs}"$'\n'
             # Collect all #N patterns from dependency lines (parallel-with
             # annotations stripped — see header-line handling above)
@@ -2428,112 +2587,187 @@ _lint_issues_strict() {
     done
   done
 
-  # Check 7: Parallel-claim file overlap (visible WARNING)
+  # Check 7: Concurrent file overlap derived from the dep graph (visible WARNING + auto-chain)
   #
-  # Issues that declare themselves parallel via "(can run in parallel with #N)"
-  # annotations AND share files in their Files to Modify emit a print_warning
-  # so the human approving the plan sees it before creation.
-  # Same-file-different-function parallelism is legitimate (e.g. three draw
-  # functions in one .cpp), so this is a WARNING (not an error) — file-level
-  # overlap genuinely isn't always a conflict. Suppressed per-issue with
-  # <!-- sharkrite-plan-lint disable parallel-file-overlap - Reason: <text> -->.
-  local _pi=0
-  for _pi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
-    local _pi_title="${_titles[$_pi]}"
-    local _pi_modify="${_files_modify[$_pi]}"
-    local _pi_supps="${_suppressions[$_pi]}"
-    local _pi_parallel="${_parallel_with[$_pi]:-}"
+  # A pair (pi, pj) is "concurrent" when neither issue is an ancestor of the other
+  # via the dep edges already built in Check 2's _rev_adj arrays.  This catches both
+  # explicitly annotated-parallel pairs AND unannotated concurrent pairs — e.g. two
+  # issues that both depend on a common ancestor but have no dep edge between them
+  # (the orrery round-6 near-miss: #4 After #2,#3 and #6 After #3 both modified
+  # auth.ts/sign-in.tsx and Check 7 never fired because neither named the other).
+  #
+  # After each auto-chain, _rev_adj is updated in memory and reachability is
+  # recomputed so a chain added for one pair can make another pair sequential —
+  # preventing redundant over-chaining.  Runs to fixpoint (terminates because each
+  # iteration strictly reduces the number of concurrent pairs).
+  #
+  # _parallel_with annotations are no longer used for detection; they are consumed
+  # only for annotation-stripping after an auto-chain rewrite.
+  #
+  # Suppress (either side): <!-- sharkrite-plan-lint disable parallel-file-overlap - Reason: -->
+  # → warn-only (disjoint-functions escape hatch; both sides suppressed → skip silently).
 
-    if echo "$_pi_supps" | grep -qw "parallel-file-overlap"; then
-      continue
-    fi
+  local -a _ch7_desc
+  local _ch7_done=false
+  local _ch7_warned_pairs=""
+  while [ "$_ch7_done" = false ]; do
+    _ch7_done=true
 
-    [ -z "$_pi_parallel" ] && continue
-    [ -z "$_pi_modify" ] && continue
-
-    while IFS= read -r _pref; do
-      [ -z "$_pref" ] && continue
-      local _prefnum
-      _prefnum=$(echo "$_pref" | sed 's/^#//' || true)
-      [ -z "$_prefnum" ] && continue
-
-      # Only check batch-internal non-spike parallel refs (#N is a non-spike ordinal)
-      if [ "$_prefnum" -ge 1 ] && [ "$_prefnum" -le "$_nonspike_count" ] 2>/dev/null; then
-        local _pj="${_nonspike_to_arr[$((_prefnum - 1))]}"
-        # Fix 2: skip self-references (_pi == _pj) — an issue's parallel
-        # annotation that includes its own ordinal would always find a shared
-        # file and emit a spurious self-referential warning.
-        [ "$_pj" -eq "$_pi" ] && continue
-        # Fix 3: only report each (i,j) pair once for bidirectional annotations.
-        # When BOTH sides declare the parallel (A→B and B→A), the lower-ordinal
-        # issue is the canonical reporter (_pi < _pj).  When only the higher-ordinal
-        # side declares the parallel (unidirectional higher→lower, e.g. #2 parallel
-        # with #1 but #1 does not declare parallel with #2), there is no other
-        # reporter — suppress only if _pj also lists _pi's non-spike ordinal.
-        #
-        # Fix 3b: suppression on the canonical (lower-ordinal) reporter.
-        # If _pj (the lower-ordinal issue) has parallel-file-overlap suppressed,
-        # it was already skipped by the suppression guard at the top of the loop,
-        # so it will never emit.  In that case the higher-ordinal side (_pi) must
-        # NOT defer — it is the only possible emitter for this pair.
-        if [ "$_pi" -gt "$_pj" ]; then
-          local _pj_parallel="${_parallel_with[$_pj]:-}"
-          local _pj_supps_check="${_suppressions[$_pj]:-}"
-          local _pi_ns_ord="${_arr_to_nonspike[$_pi]:-0}"
-          if [ "$_pi_ns_ord" -gt 0 ] && echo "$_pj_parallel" | grep -qxF "#${_pi_ns_ord}" && \
-             ! echo "$_pj_supps_check" | grep -qw "parallel-file-overlap"; then
-            # Bidirectional: lower ordinal (_pj) will report this pair — skip here
-            continue
-          fi
-          # Either unidirectional or _pj is suppressed: no lower-ordinal reporter
-          # will emit, so fall through and emit from here.
+    # Compute transitive descendants: _ch7_desc[i] = pipe-surrounded list of all
+    # raw indices reachable from i following _rev_adj edges (BFS).  Includes self
+    # so case-match lookups use *"|N|"* uniformly.
+    _ch7_desc=()
+    local _ch7_i
+    for _ch7_i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+      local _ch7_vis="|${_ch7_i}|"
+      local _ch7_q="$_ch7_i"
+      while [ -n "$_ch7_q" ]; do
+        local _ch7_cur="${_ch7_q%% *}"
+        if [ "$_ch7_q" = "$_ch7_cur" ]; then
+          _ch7_q=""
+        else
+          _ch7_q="${_ch7_q#* }"
         fi
-        local _pj_title="${_titles[$_pj]}"
-        local _pj_modify="${_files_modify[$_pj]}"
-        [ -z "$_pj_modify" ] && continue
+        local _ch7_adj="${_rev_adj[$_ch7_cur]:-}"
+        [ -z "$_ch7_adj" ] && continue
+        while IFS= read -r _ch7_nb; do
+          [ -z "$_ch7_nb" ] && continue
+          case "$_ch7_vis" in
+            *"|${_ch7_nb}|"*) continue ;;
+          esac
+          _ch7_vis="${_ch7_vis}${_ch7_nb}|"
+          _ch7_q="${_ch7_q:+${_ch7_q} }${_ch7_nb}"
+        done < <(printf '%s' "$_ch7_adj" | tr '|' '\n' || true)
+      done
+      _ch7_desc+=("$_ch7_vis")
+    done
 
-        # Find first shared path
-        local _par_shared=""
-        while IFS= read -r _ppA; do
-          [ -z "$_ppA" ] && continue
-          if echo "$_pj_modify" | grep -qxF "$_ppA"; then
-            _par_shared="$_ppA"
-            break
-          fi
-        done <<< "$_pi_modify"
+    # Scan all pairs (pi, pj) with pi < pj in raw-index space; both non-spikes
+    local _ch7_pi
+    for _ch7_pi in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+      [ "${_arr_to_nonspike[$_ch7_pi]:-0}" -eq 0 ] && continue
+      local _ch7_pi_modify="${_files_modify[$_ch7_pi]}"
+      [ -z "$_ch7_pi_modify" ] && continue
 
-        if [ -n "$_par_shared" ]; then
-          local _after_num
-          if [ "$_pi" -lt "$_pj" ]; then
-            _after_num="${_arr_to_nonspike[$_pi]}"  # non-spike ordinal of _pi
-          else
-            _after_num="$_prefnum"  # non-spike ordinal of _pj (already)
-          fi
-          # Check whether the PEER issue (_pj) also carries a suppress marker.
-          # Either side suppressed → warn-only (disjoint-functions escape hatch).
-          # Neither side suppressed → deterministic auto-chain rewrite.
-          local _pj_supps_eff="${_suppressions[$_pj]:-}"
-          if echo "$_pj_supps_eff" | grep -qw "parallel-file-overlap"; then
-            # Peer (_pj) is suppressed — warn-only
-            print_warning "strict-lint: WARNING: parallel-file-overlap: '$_pi_title' and '#${_prefnum} ${_pj_title}' are marked parallel but both modify '${_par_shared}' — chain the later one (After #${_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
-            _warning_count=$((_warning_count + 1))
-          else
-            # Neither side suppressed — auto-chain: rewrite the later issue.
-            if [ "$_pi" -lt "$_pj" ]; then
-              # _pj is the later issue (higher ordinal)
-              _autochain_rewrite_deps "$issues_file" "$_pj_title" "$_after_num"
-              # Clean up _pi's stale parallel annotation referencing _pj (bidirectional case).
-              _autochain_remove_par_annotation "$issues_file" "$_pi_title" "$_prefnum"
-              print_info "[auto-chained] parallel-file-overlap: '$_pj_title' rewired After #${_after_num} ('$_pi_title'); both modify '${_par_shared}'" >&2
-            else
-              # _pi is the later issue (higher ordinal)
-              _autochain_rewrite_deps "$issues_file" "$_pi_title" "$_after_num"
-              print_info "[auto-chained] parallel-file-overlap: '$_pi_title' rewired After #${_after_num} ('$_pj_title'); both modify '${_par_shared}'" >&2
+      local _ch7_pj
+      for _ch7_pj in $([ "$((_ch7_pi + 1))" -le "$((_issue_count - 1))" ] && \
+                       seq "$((_ch7_pi + 1))" "$((_issue_count - 1))" || true); do
+        [ "${_arr_to_nonspike[$_ch7_pj]:-0}" -eq 0 ] && continue
+        local _ch7_pj_modify="${_files_modify[$_ch7_pj]}"
+        [ -z "$_ch7_pj_modify" ] && continue
+
+        # Skip if either is an ancestor of the other (sequential, not concurrent).
+        # Exception: if the later issue also carries a (can run in parallel with #ancestor)
+        # annotation, it is contradictory — emit a WARNING and strip the annotation before
+        # continuing.  Both issues sharing a file is required to avoid false positives on
+        # annotation-only deps with no actual overlap.
+        local _ch7_pi_desc="${_ch7_desc[$_ch7_pi]:-}"
+        local _ch7_pj_desc="${_ch7_desc[$_ch7_pj]:-}"
+        case "$_ch7_pi_desc" in *"|${_ch7_pj}|"*)
+          # pi is ancestor of pj; check if pj has a contradictory parallel annotation
+          local _ch7_pj_pars="${_parallel_with[$_ch7_pj]:-}"
+          local _ch7_pi_ord_s="${_arr_to_nonspike[$_ch7_pi]}"
+          if echo "$_ch7_pj_pars" | grep -qxF "#${_ch7_pi_ord_s}"; then
+            local _ch7_seq_shared=""
+            while IFS= read -r _ch7_pA; do
+              [ -z "$_ch7_pA" ] && continue
+              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+                _ch7_seq_shared="$_ch7_pA"
+                break
+              fi
+            done <<< "$_ch7_pi_modify"
+            if [ -n "$_ch7_seq_shared" ]; then
+              print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pi]}' and '${_titles[$_ch7_pj]}' have a dep edge (After #${_ch7_pi_ord_s}) but also declare (can run in parallel with #${_ch7_pi_ord_s}) — annotation is contradictory and After #${_ch7_pi_ord_s} takes precedence; both modify '${_ch7_seq_shared}'; stripping the parallel annotation" >&2
+              _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pj]}" "$_ch7_pi_ord_s"
+              _parallel_with[$_ch7_pj]=$(printf '%s\n' "${_parallel_with[$_ch7_pj]:-}" | grep -vxF "#${_ch7_pi_ord_s}" || true)
+              _warning_count=$((_warning_count + 1))
             fi
           fi
+          continue ;;
+        esac
+        case "$_ch7_pj_desc" in *"|${_ch7_pi}|"*)
+          # pj is ancestor of pi; check if pi has a contradictory parallel annotation
+          local _ch7_pi_pars="${_parallel_with[$_ch7_pi]:-}"
+          local _ch7_pj_ord_s="${_arr_to_nonspike[$_ch7_pj]}"
+          if echo "$_ch7_pi_pars" | grep -qxF "#${_ch7_pj_ord_s}"; then
+            local _ch7_sq2_shared=""
+            while IFS= read -r _ch7_pA; do
+              [ -z "$_ch7_pA" ] && continue
+              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+                _ch7_sq2_shared="$_ch7_pA"
+                break
+              fi
+            done <<< "$_ch7_pi_modify"
+            if [ -n "$_ch7_sq2_shared" ]; then
+              print_warning "strict-lint: WARNING: parallel-file-overlap: '${_titles[$_ch7_pj]}' and '${_titles[$_ch7_pi]}' have a dep edge (After #${_ch7_pj_ord_s}) but also declare (can run in parallel with #${_ch7_pj_ord_s}) — annotation is contradictory and After #${_ch7_pj_ord_s} takes precedence; both modify '${_ch7_sq2_shared}'; stripping the parallel annotation" >&2
+              _autochain_remove_par_annotation "$issues_file" "${_titles[$_ch7_pi]}" "$_ch7_pj_ord_s"
+              _parallel_with[$_ch7_pi]=$(printf '%s\n' "${_parallel_with[$_ch7_pi]:-}" | grep -vxF "#${_ch7_pj_ord_s}" || true)
+              _warning_count=$((_warning_count + 1))
+            fi
+          fi
+          continue ;;
+        esac
+
+        # Concurrent pair — find first shared path between their Files to Modify
+        local _ch7_shared=""
+        while IFS= read -r _ch7_pA; do
+          [ -z "$_ch7_pA" ] && continue
+          if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+            _ch7_shared="$_ch7_pA"
+            break
+          fi
+        done <<< "$_ch7_pi_modify"
+        [ -z "$_ch7_shared" ] && continue
+
+        # Determine earlier/later by non-spike ordinal.
+        # For standard (spike-prepended) plans raw-index order == ordinal order,
+        # but compare explicitly in case of non-standard orderings.
+        local _ch7_pi_ord="${_arr_to_nonspike[$_ch7_pi]}"
+        local _ch7_pj_ord="${_arr_to_nonspike[$_ch7_pj]}"
+        local _ch7_earlier _ch7_later _ch7_after_num _ch7_later_ord
+        if [ "$_ch7_pi_ord" -lt "$_ch7_pj_ord" ]; then
+          _ch7_earlier=$_ch7_pi; _ch7_later=$_ch7_pj
+          _ch7_after_num=$_ch7_pi_ord; _ch7_later_ord=$_ch7_pj_ord
+        else
+          _ch7_earlier=$_ch7_pj; _ch7_later=$_ch7_pi
+          _ch7_after_num=$_ch7_pj_ord; _ch7_later_ord=$_ch7_pi_ord
         fi
-      fi
-    done <<< "$_pi_parallel"
+        local _ch7_earlier_title="${_titles[$_ch7_earlier]}"
+        local _ch7_later_title="${_titles[$_ch7_later]}"
+        local _ch7_pi_supps="${_suppressions[$_ch7_pi]:-}"
+        local _ch7_pj_supps="${_suppressions[$_ch7_pj]:-}"
+
+        # Suppress logic (disjoint-functions escape hatch):
+        #   both sides suppressed → skip silently (mutual acknowledgement)
+        #   one side suppressed  → warn-only, deduped across fixpoint passes
+        if echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" && \
+           echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
+          : # both sides suppressed — skip silently
+        elif echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" || \
+             echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
+          local _ch7_pair_key="${_ch7_pi}_${_ch7_pj}"
+          case "$_ch7_warned_pairs" in *"|${_ch7_pair_key}|"*) : ;; *)
+            print_warning "strict-lint: WARNING: parallel-file-overlap: '${_ch7_earlier_title}' and '${_ch7_later_title}' are concurrent but both modify '${_ch7_shared}' — chain the later one (After #${_ch7_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
+            _warning_count=$((_warning_count + 1))
+            _ch7_warned_pairs="${_ch7_warned_pairs}|${_ch7_pair_key}|"
+          ;; esac
+        else
+          # Neither suppressed — auto-chain: rewrite later issue, strip annotations both ways
+          _autochain_rewrite_deps "$issues_file" "$_ch7_later_title" "$_ch7_after_num"
+          _autochain_remove_par_annotation "$issues_file" "$_ch7_earlier_title" "$_ch7_later_ord"
+          _parallel_with[$_ch7_earlier]=$(printf '%s\n' "${_parallel_with[$_ch7_earlier]:-}" | grep -vxF "#${_ch7_later_ord}" || true)
+          _autochain_remove_par_annotation "$issues_file" "$_ch7_later_title" "$_ch7_after_num"
+          _parallel_with[$_ch7_later]=$(printf '%s\n' "${_parallel_with[$_ch7_later]:-}" | grep -vxF "#${_ch7_after_num}" || true)
+          print_info "[auto-chained] parallel-file-overlap: '${_ch7_later_title}' rewired After #${_ch7_after_num} ('${_ch7_earlier_title}'); both modify '${_ch7_shared}'" >&2
+
+          # Update _rev_adj in memory so the next fixpoint pass sees this new edge
+          _rev_adj[$_ch7_earlier]="${_rev_adj[$_ch7_earlier]}${_ch7_later}|"
+
+          _ch7_done=false
+          break 2  # Restart fixpoint loop with updated reachability
+        fi
+      done
+    done
   done
 
   # Check 8: Duplicate verification commands across issues (WARNING)
@@ -2643,7 +2877,10 @@ pytest"
         # not per-issue deliverables (checked before the allowlist so project-specific
         # gates like `pnpm typecheck` are exempt without needing an allowlist entry).
         # The min-slate floor prevents the absolute threshold from firing on tiny slates
-        # where freq==slate-size (3-of-3 = 100% duplicate signal, not a universal gate).
+        # (≤3 issues) where freq==slate-size is the strongest duplicate signal, not a
+        # universal gate.  On slates of ≥4 issues the threshold CAN fire even when
+        # freq==slate-size (4-of-4 is silently exempted — deliberate boundary: at 4+
+        # issues a command shared by every issue is accepted as a universal CI gate).
         if [ "${_verif_cmd_freq["$_vcmd_norm"]:-0}" -ge "$_VERIF_UNIV_THRESHOLD" ] && [ "$_issue_count" -ge "$_VERIF_UNIV_MIN_SLATE" ]; then
           continue
         fi
@@ -2692,6 +2929,32 @@ pytest"
     fi
   done
 
+  # Check 10: Title length cap — warn when title exceeds the runbook's ≤50-char limit
+  #
+  # Generated titles occasionally exceed _RITE_PLAN_TITLE_MAX_LEN when the planner
+  # doesn't respect prompt compliance. Warn-only (no auto-truncation: mangling a title
+  # deterministically is worse than surfacing it for manual correction at the preview
+  # feedback seam). Suppressed per-issue with:
+  #   <!-- sharkrite-plan-lint disable title-length - Reason: <text> -->
+  # Character counting uses bash ${#} which counts Unicode code points (not bytes)
+  # in bash 4+ with a UTF-8-capable locale (en_US.UTF-8 / C.UTF-8).
+  for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
+    local _issue_title="${_titles[$_i]}"
+    local _issue_supps="${_suppressions[$_i]}"
+
+    if echo "$_issue_supps" | grep -qw "title-length"; then
+      continue
+    fi
+
+    [ -z "$_issue_title" ] && continue
+
+    local _title_len=${#_issue_title}
+    if [ "$_title_len" -gt "$_RITE_PLAN_TITLE_MAX_LEN" ]; then
+      print_warning "strict-lint: WARNING: title-length: '${_issue_title}' is ${_title_len} chars (cap ${_RITE_PLAN_TITLE_MAX_LEN})" >&2
+      _warning_count=$((_warning_count + 1))
+    fi
+  done
+
   # Summary
   if [ "$_error_count" -gt 0 ]; then
     print_warning "strict-lint: ${_error_count} error(s) found — fix before creating issues" >&2
@@ -2704,6 +2967,214 @@ pytest"
   fi
 
   return "$_strict_exit"
+}
+
+# =============================================================================
+# Negative-existence claim lint (two-stage): detect plan text asserting that a
+# symbol does not exist when the symbol actually appears in the repo.
+#
+# Motivation: two orrery approval blockers were caused by the planner asserting
+# repo-state negatives ("no migration", "there is no function yet") that were
+# false — the symbols existed in the repo. Both were caught only by human review.
+#
+# Stage 1 — deterministic (zero LLM): for each body line matching a
+# negative-existence phrase, extract identifier-shaped tokens (backtick-quoted,
+# snake_case, camelCase) and git-grep them against tracked non-markdown files.
+# No hit → silent; no LLM call is made (gates cost to the non-common path).
+#
+# Stage 2 — triage validation (LLM, narrow binary): each Stage 1 hit is
+# classified by the triage model (haiku) with the claim line + hit context.
+# Only a "CONTRADICTED" verdict emits a warning. A "CONSISTENT" verdict
+# (e.g., the claim is scoped to a different layer) is dropped silently.
+# Provider unavailable or call fails → the raw hit is still reported, tagged
+# "(unvalidated)" — findings degrade gracefully, never disappear.
+#
+# Known non-goal: positive-claim verification ("X exists" in the plan when it
+# doesn't) — different class, different failure economics. The provenance lint
+# and Check 4 (verification paths) cover the positive-claim residue.
+#
+# Suppression (per issue):
+#   <!-- sharkrite-plan-lint disable negative-existence - Reason: ... -->
+# Reason field is required; a marker without Reason is rejected and the check runs.
+#
+# Non-fatal: always exits 0 (warn-only; the preview feedback loop owns fixes).
+#
+# Usage: _lint_negative_existence_claims <issues_file>
+# =============================================================================
+_lint_negative_existence_claims() {
+  local issues_file="$1"
+  local _negex_project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Negative-existence phrases (ERE, case-insensitive).
+  # Each alternative flags lines that assert a symbol does not exist.
+  local _NEGEX_RE='no [a-zA-Z_][a-zA-Z0-9_ ]* yet|does not exist|doesn'"'"'t exist|no .* migration|no schema change|not in the schema|missing'
+
+  local _negex_in_issue=false
+  local _negex_issue_block=""
+  local _negex_issue_title=""
+
+  while IFS= read -r _negex_line; do
+    if [ "$_negex_line" = "---ISSUE---" ]; then
+      _negex_in_issue=true
+      _negex_issue_block=""
+      _negex_issue_title=""
+      continue
+    fi
+
+    if [ "$_negex_in_issue" = true ]; then
+      _negex_issue_block="${_negex_issue_block}${_negex_line}"$'\n'
+
+      case "$_negex_line" in
+        TITLE:\ *)
+          _negex_issue_title="${_negex_line#TITLE: }"
+          ;;
+      esac
+
+      if [ "$_negex_line" = "---END---" ]; then
+        _negex_in_issue=false
+
+        # --- Per-issue suppression check ---
+        local _negex_suppressed=false
+        local _negex_has_reason=false
+        local _negex_marker_line
+        while IFS= read -r _negex_marker_line; do
+          [ -z "$_negex_marker_line" ] && continue
+          if echo "$_negex_marker_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence[[:space:]]+-[[:space:]]+Reason:"; then
+            _negex_suppressed=true
+            _negex_has_reason=true
+          elif echo "$_negex_marker_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence"; then
+            _negex_suppressed=true
+            _negex_has_reason=false
+          fi
+        done < <(echo "$_negex_issue_block" | grep "${RITE_MARKER_PLAN_LINT}" || true)
+
+        if [ "$_negex_suppressed" = true ] && [ "$_negex_has_reason" = false ]; then
+          print_warning "negex-lint: suppression marker missing required Reason: field for rule 'negative-existence' in '${_negex_issue_title}'; rule will run anyway" >&2
+          _negex_suppressed=false
+        elif [ "$_negex_suppressed" = true ]; then
+          local _negex_reason
+          _negex_reason=$(echo "$_negex_issue_block" | grep "${RITE_MARKER_PLAN_LINT}" | \
+            grep -E "disable[[:space:]]+negative-existence" | \
+            sed 's/.*Reason:[[:space:]]*//' | sed 's/[[:space:]]*-->[[:space:]]*//' | \
+            sed 's/[[:space:]]*$//' | head -1 || true)
+          print_info "[suppressed] negative-existence: ${_negex_reason}" >&2
+        fi
+
+        if [ "$_negex_suppressed" = true ]; then
+          _negex_issue_block=""
+          continue
+        fi
+
+        # Resolve triage model once per issue block (avoids redundant calls)
+        local _negex_triage_model
+        _negex_triage_model=$(provider_resolve_model "triage")
+
+        # --- Stage 1: scan each body line for negative-existence phrases ---
+        while IFS= read -r _negex_bline; do
+          # Skip structural / metadata lines — they carry syntax, not claims
+          case "$_negex_bline" in
+            ""|"---ISSUE---"|"---END---")
+              continue ;;
+            TITLE:*|LABELS:*|TIME:*|BODY:*|SPIKE_KEY:*)
+              continue ;;
+            "<!--"*)
+              continue ;;
+          esac
+
+          # Does this line match a negative-existence phrase?
+          if ! echo "$_negex_bline" | grep -iqE "$_NEGEX_RE"; then
+            continue
+          fi
+
+          # Extract identifier-shaped tokens from the matching line.
+          # 1. Backtick-quoted (highest precision — explicit by author)
+          local _negex_idents=""
+          local _negex_btidents
+          _negex_btidents=$(echo "$_negex_bline" | grep -oE '`[^`]+`' | sed 's/`//g' || true)
+          [ -n "$_negex_btidents" ] && _negex_idents="${_negex_idents}${_negex_btidents}"$'\n'
+
+          # 2. Bare snake_case (two or more lower-case words joined by underscores)
+          local _negex_snidents
+          _negex_snidents=$(echo "$_negex_bline" | grep -oE '\b[a-z][a-z0-9]*(_[a-z0-9]+)+\b' || true)
+          [ -n "$_negex_snidents" ] && _negex_idents="${_negex_idents}${_negex_snidents}"$'\n'
+
+          # 3. Bare camelCase (lower-case start, at least one upper-case in body)
+          local _negex_ccidents
+          _negex_ccidents=$(echo "$_negex_bline" | grep -oE '\b[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*\b' || true)
+          [ -n "$_negex_ccidents" ] && _negex_idents="${_negex_idents}${_negex_ccidents}"$'\n'
+
+          [ -z "$_negex_idents" ] && continue
+
+          # Deduplicate and drop very short tokens (< 3 chars are noise)
+          local _negex_unique_idents
+          _negex_unique_idents=$(printf '%s' "$_negex_idents" | sort -u | grep -E '.{3,}' || true)
+          [ -z "$_negex_unique_idents" ] && continue
+
+          # Cap at 5 identifiers per line to prevent pathological slowdown on
+          # lines with many tokens (e.g., a verbose description sentence).
+          local _negex_id_count=0
+          while IFS= read -r _negex_ident; do
+            [ -z "$_negex_ident" ] && continue
+            _negex_id_count=$((_negex_id_count + 1))
+            [ "$_negex_id_count" -gt 5 ] && break
+
+            # --- Stage 1: git grep (deterministic) ---
+            local _negex_hits
+            _negex_hits=$(git -C "$_negex_project_root" grep -Fnw "$_negex_ident" -- ':!*.md' 2>/dev/null || true)
+            [ -z "$_negex_hits" ] && continue
+
+            # --- Stage 2: triage validation (LLM) ---
+            # Pass only the first hit to the triage prompt (most representative location).
+            local _negex_first_hit
+            _negex_first_hit=$(printf '%s\n' "$_negex_hits" | head -1 || true)
+
+            local _negex_hit_file
+            _negex_hit_file=$(echo "$_negex_first_hit" | cut -d: -f1 || true)
+            local _negex_hit_lineno
+            _negex_hit_lineno=$(echo "$_negex_first_hit" | cut -d: -f2 || true)
+
+            local _negex_triage_prompt
+            # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (claim line, identifier, hit context, issue title)
+            _negex_triage_prompt=$(cat <<NEGEX_TRIAGE_EOF
+You are validating a negative-existence claim found in a software plan issue.
+
+Issue title: "${_negex_issue_title}"
+Claim line: "${_negex_bline}"
+Identifier under review: "${_negex_ident}"
+Repository hit: ${_negex_first_hit}
+
+Does the repository hit CONTRADICT the claim (the identifier exists in the repository in the same context as the claim asserts it absent), or is the hit CONSISTENT with the claim (e.g., the claim is scoped to a different layer, service, component, or migration step than what the repository hit covers)?
+
+Reply with exactly one word: CONTRADICTED or CONSISTENT.
+NEGEX_TRIAGE_EOF
+)
+
+            local _negex_verdict=""
+            local _negex_triage_rc=0
+            _negex_verdict=$(provider_run_prompt "$_negex_triage_prompt" "$_negex_triage_model" "false" 2>/dev/null </dev/null) \
+              || _negex_triage_rc=$?
+
+            # Normalize: extract the first CONTRADICTED or CONSISTENT token
+            local _negex_verdict_norm
+            _negex_verdict_norm=$(printf '%s' "$_negex_verdict" | tr '[:lower:]' '[:upper:]' | \
+              grep -oE 'CONTRADICTED|CONSISTENT' | head -1 || true)
+
+            if [ "$_negex_triage_rc" -ne 0 ] || [ -z "$_negex_verdict_norm" ]; then
+              # Provider unavailable or unexpected response: report unvalidated
+              print_warning "negex-lint: WARNING: negative-existence: '${_negex_ident}' claimed absent in '${_negex_issue_title}' but found at ${_negex_hit_file}:${_negex_hit_lineno} (unvalidated)" >&2
+            elif [ "$_negex_verdict_norm" = "CONTRADICTED" ]; then
+              print_warning "negex-lint: WARNING: negative-existence: '${_negex_ident}' claimed absent in '${_negex_issue_title}' but defined at ${_negex_hit_file}:${_negex_hit_lineno}" >&2
+            fi
+            # CONSISTENT verdict: drop silently (claim is scoped to a different context)
+          done <<< "$_negex_unique_idents"
+        done <<< "$_negex_issue_block"
+
+        _negex_issue_block=""
+      fi
+    fi
+  done < "$issues_file"
+
+  return 0
 }
 
 # =============================================================================
@@ -3003,17 +3474,27 @@ _lint_issues_sections() {
 }
 
 # =============================================================================
-# Force ---ISSUE--- / ---END--- markers onto their own lines
+# Force ---ISSUE--- / ---END--- markers onto their own lines; relocate any
+# Split rationale: line from header position to immediately after BODY:
 # =============================================================================
 # jq -rj (join mode) emits text chunks with no added newlines, so markers can be
 # concatenated with surrounding text ("...text---ISSUE---TITLE: ..."). Every
 # downstream parser keys on whole-line markers, so normalize before any parsing.
 # Idempotent enough for repeated calls is NOT guaranteed (re-splitting adds blank
 # lines), so call exactly once per generated file.
+#
+# A Split rationale: line between ---ISSUE--- and BODY: passes Check 9 (which
+# greps the whole issue block) but is silently dropped by create_issues (which
+# only captures lines after BODY: into current_body). Moving it to immediately
+# after BODY: ensures it reaches the created issue body. Only Split rationale:
+# is relocated — swallowing arbitrary unknown lines into the body would hide
+# format errors.
 _normalize_issue_markers() {
   local _f="$1"
   local _norm
   _norm=$(mktemp)
+
+  # Pass 1: Force ---ISSUE--- / ---END--- markers onto their own lines.
   sed \
     -e 's/---ISSUE---/\
 ---ISSUE---\
@@ -3022,7 +3503,38 @@ _normalize_issue_markers() {
 ---END---\
 /g' \
     "$_f" > "$_norm"
-  mv "$_norm" "$_f"
+
+  # Pass 2: Relocate a Split rationale: line from header position (before BODY:)
+  # to immediately after BODY:. Idempotent: a rationale already after BODY: is
+  # passed through unchanged because body_seen=1 when it is encountered.
+  local _norm2
+  _norm2=$(mktemp)
+  awk '
+    BEGIN { in_block=0; body_seen=0; saved_rat="" }
+    /^---ISSUE---$/ {
+      in_block=1; body_seen=0; saved_rat=""
+      print; next
+    }
+    /^---END---$/ {
+      if (saved_rat != "") { print saved_rat; saved_rat="" }
+      in_block=0; body_seen=0
+      print; next
+    }
+    in_block && !body_seen && tolower($0) ~ /^[*]*split rationale[*]*:/ {
+      saved_rat = (saved_rat == "") ? $0 : saved_rat "\n" $0
+      next
+    }
+    in_block && !body_seen && /^BODY:/ {
+      body_seen=1
+      print
+      if (saved_rat != "") { print saved_rat; saved_rat="" }
+      next
+    }
+    { print }
+    END { if (saved_rat != "") print saved_rat }
+  ' "$_norm" > "$_norm2"
+  mv "$_norm2" "$_f"
+  rm -f "$_norm"
 }
 
 # =============================================================================
@@ -3828,6 +4340,19 @@ _detect_unverified_integrations() {
         if [ -n "$_hosts" ]; then
           while IFS= read -r _host; do
             [ -z "$_host" ] && continue
+            # Never-external check: loopback and RFC 2606 documentation hosts are
+            # categorically impossible external integrations — skip them before the
+            # grounded-set lookup so they never produce a fixture-capture spike.
+            # (Live: localhost:54324/Inbucket in a verification command spawned a spike.)
+            # IPv6 loopback ([::1]) cannot reach this branch — the host-char class
+            # [a-zA-Z0-9.-] excludes '[' and ':' — so it is inert by construction.
+            case "$_host" in
+              localhost|127.0.0.1|0.0.0.0) continue ;;
+              *.local|*.localhost) continue ;;
+              *.test|*.example|*.invalid) continue ;;
+              example.com|example.net|example.org) continue ;;
+              *.example.com|*.example.net|*.example.org) continue ;;
+            esac
             # Normalize first so that a fixtures/foo.co/ fixture grounds both
             # api.foo.co and auth.foo.co (all normalize to foo.co before the check).
             local _host_reg
@@ -3918,12 +4443,13 @@ _detect_unverified_integrations() {
     else
       _fixture_path="$_key"
     fi
-    # Truncate display name so the title stays within the ≤50-char runbook cap.
-    # Fixed chars: "Capture " (8) + " sample - fixtures" (18) = 26; name budget = 24.
+    # Truncate display name so the spike title stays within the _RITE_PLAN_TITLE_MAX_LEN cap.
+    # Fixed chars: "Capture " (8) + " sample - fixtures" (18) = 26; name budget = cap - 26.
+    local _spike_name_budget=$((_RITE_PLAN_TITLE_MAX_LEN - 26))
     local _display_name
     _display_name="$_name"
-    if [ "${#_name}" -gt 24 ]; then
-      _display_name="${_name:0:21}..."
+    if [ "${#_name}" -gt "$_spike_name_budget" ]; then
+      _display_name="${_name:0:$((_spike_name_budget - 3))}..."
     fi
 
     print_warning "unverified external integration: $_name${_orig:+ (from: $_orig)}" >&2

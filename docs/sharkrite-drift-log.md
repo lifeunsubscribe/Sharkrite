@@ -165,6 +165,24 @@ CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_b
 **Suspected inaccuracy**: `CLAUDE.md`'s description of `_dedup_issues` as the deduplification mechanism for near-duplicate plan blocks is now incomplete — the title-guard in `plan-issues.sh` is the actual rejection point for reworded near-duplicates before they reach `_dedup_issues`.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T00:02:31Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The CLAUDE.md says "holds the machine awake (macOS AC only, via `caffeinate`)" but the actual code in `cap-resume.sh` also **re-invokes the batch** on battery — it only skips the caffeinate hold, not the entire resume. The resume still happens on battery, just without keeping the machine awake.
+
+`CLAUDE.md:497` says "holds the machine awake (macOS AC only, via `caffeinate`) and re-invokes the remaining batch" — this implies the entire feature is AC-only, but the code skips only the caffeinate hold on battery while still waiting and re-invoking on any platform.
+
+`CLAUDE.md:497` says the feature is "macOS AC only" but cap-resume.sh re-invokes the batch on battery too — only the caffeinate hold is skipped on battery/non-macOS.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:04:39Z -->
 **Changed files**: lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/gate-failure-empty-items-blocks-merge.bats, tests/regression/gate-verdict-seam.bats
 **Implicated docs**:
@@ -173,6 +191,20 @@ CLAUDE.md's example `# sharkrite-test-covers: lib/utils/test-gate.sh::_compute_b
 - docs/test-authoring-runbook.md — "Test Authoring Runbook"
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T00:07:15Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md:497` says the auto-resume feature is "macOS AC only" but `cap-resume.sh` re-invokes the batch on battery too — only the `caffeinate` hold is skipped on battery/non-macOS.
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1311 issue:1240 recorded:2026-10-20T00:09:53Z -->
@@ -247,6 +279,38 @@ The issue number `#1236` in the gate-verdict.sh architecture entry is wrong — 
 - docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
 - CLAUDE.md — "Sharkrite Development Guide"
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T04:27:30Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: Now I have a clear picture. The config example (lines 43-44) says "On battery or non-macOS: skips the hold but still waits and resumes." The CLAUDE.md line 497 says "macOS AC only, via `caffeinate`" — implying it only runs on macOS AC power. But the actual behavior is that it resumes on battery too (just without the caffeinate hold). The CLAUDE.md description "macOS AC only" is the inaccuracy — the feature works on non-AC/non-macOS too, just without caffeinate.
+
+CLAUDE.md's "macOS AC only" description of cap auto-resume is incorrect — the feature waits and re-invokes on battery and non-macOS too, skipping only the `caffeinate` hold.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T04:31:48Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `README.md:147` shows `RITE_MAX_SESSION_HOURS` default as `4`, while the actual default in `config.sh` and all documentation is `12`. This is the inaccuracy.
+
+`README.md` documents `RITE_MAX_SESSION_HOURS` default as `4` but the actual default is `12` (set in `config.sh`, `blocker-rules.sh`, `batch-process-issues.sh`, and `configuration.md`).
 <!-- /sharkrite-doc-drift -->
 
 <!-- sharkrite-doc-drift pr:1323 issue:1127 recorded:2026-10-20T05:11:37Z -->
@@ -451,6 +515,24 @@ CLAUDE.md's fix-session timeout formula (`300 + 240 × ACTIONABLE_NOW_COUNT` sec
 **Suspected inaccuracy**: `branch-flag-design.md:276` documents single-issue promote as `rite --promote <branch> --cherry-pick <issue>`, but the shipped command uses the positional form `rite --promote <branch> <issue>` with no `--cherry-pick` flag.
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T06:31:59Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md` says behavioral y/n/e main-flow tests are "deferred to #1169" but PR #1334 removed that issue citation, replacing it with "file a tracking issue" (no issue number).
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T06:41:18Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md:599` says behavioral tests for the main-flow commit+push prompt are "deferred" pending extraction of `claude-workflow.sh:3747` into a callable function, but the PR updated `supervised-commit-push-prompt.bats` to cite line 3747 as the specific inline location — meaning the doc now accurately describes the defer but may misstate whether a tracking issue already exists or remains unfiled.
+
+The doc at line 599 still says "operator must file tracking issue" and "consolidate with the `assess-and-resolve.sh` RITE_GATE_FINDINGS builder extraction deferred in `tests/regression/test-gate-parallel.bats`" — but the PR added that RITE_GATE_FINDINGS deferral comment to `test-gate-parallel.bats` for the first time, meaning the doc referenced a deferral in that file before the file actually contained it.
+
+`behavioral-design.md:599` cross-references a deferral in `tests/regression/test-gate-parallel.bats` that did not exist until this PR added it, so the doc pre-dated and drove the test comment rather than describing existing test state.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1331 issue:1203 recorded:2026-10-20T14:14:15Z -->
 **Changed files**: lib/core/claude-workflow.sh, lib/utils/config.sh, tests/regression/fix-timeout-retry.bats
 **Implicated docs**:
@@ -577,6 +659,20 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 **Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
 <!-- /sharkrite-doc-drift -->
 
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T19:31:14Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md` cites the inline prompt location as `claude-workflow.sh:3775` but the prior recorded line was `3747`, which may now be stale if the file shifted.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T19:37:50Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: `behavioral-design.md` claims behavioral main-flow y/n/e tests are "deferred to a future refactoring issue," but PR #1334 updated this to cite issue #1169 specifically.
+<!-- /sharkrite-doc-drift -->
+
 <!-- sharkrite-doc-drift pr:1361 issue:1359 recorded:2026-10-20T19:57:05Z -->
 **Changed files**: lib/core/plan-issues.sh, lib/utils/gate-runners.sh, tests/regression/plan-validator-strict.bats
 **Implicated docs**:
@@ -649,4 +745,222 @@ CLAUDE.md line 55 says `gate-runners.sh` handles "workspace bootstrap" via shell
 CLAUDE.md says the four seams are "issue bodies, follow-up issue bodies, review PR comments, promotion PR bodies" but the actual seams include `plan-issues.sh` (plan issue bodies) instead of or in addition to "issue bodies," and `local-review.sh` sanitizes the review output (not PR comments).
 
 `CLAUDE.md` lists "review PR comments" as one of the four sanitized seams, but `local-review.sh` sanitizes the raw review output before it is posted, not the PR comment itself.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T21:31:07Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `docs/architecture/behavioral-design.md` may still describe the log-capture mechanism as a FIFO-based tee rather than the nested-procsub pattern that CLAUDE.md now documents.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T21:35:40Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md` still describes `bin/rite` as using a FIFO-based tee, but PR #1358 changed the implementation to a nested process-substitution pattern (`exec > >(tee >(strip_ansi >> FILE))`).
+
+`behavioral-design.md` claims `bin/rite` uses a FIFO-based tee to prevent tail-truncation, but the implementation was changed to nested process-substitution with a known truncation race.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:02:36Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `behavioral-design.md`'s never-external paragraph contains a stray `**Verify:**` grep line accidentally committed from the issue's Documentation Impact section, not behavioral documentation.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1358 issue:1277 recorded:2026-10-20T22:04:25Z -->
+**Changed files**: CLAUDE.md, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/promote-sync-logging.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- docs/test-authoring-runbook.md — "Test Authoring Runbook"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The test file exists and covers `bin/rite-full-suite` — so CLAUDE.md's reference to it for the "prior attempt at a FIFO+explicit-`wait` pattern in `bin/rite-full-suite` caused a deadlock" claim appears plausible. 
+
+Now I have enough context. The PR changed the log-capture description from "FIFO-based (implemented)" to "nested-procsub (FIFO not implemented, has tail-truncation race)". CLAUDE.md now says FIFO was "not implemented" and still mentions a deadlock test in `full-suite-subcommand.bats`. That test actually covers `bin/rite-full-suite` safety-net behavior, not the FIFO deadlock — so CLAUDE.md's claim that `tests/regression/full-suite-subcommand.bats` documents the FIFO+wait deadlock is the most likely inaccuracy introduced by this PR.
+
+`CLAUDE.md`'s "Log capture pattern" section claims `tests/regression/full-suite-subcommand.bats` documents the FIFO+explicit-`wait` deadlock, but that file covers the full-suite safety-net behavior, not the FIFO deadlock.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1376 issue:1370 recorded:2026-10-20T22:07:24Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The behavioral-design.md at line 1386 describes `_detect_unverified_integrations` as checking whether hostnames "are grounded in the project's fixture directories or dependency manifests" — but PR #1376 added a categorical never-external exclusion step that happens *before* the grounded-set check. The documentation doesn't mention this loopback/RFC-2606 exclusion layer.
+
+`_detect_unverified_integrations` docs say grounding is a set-membership fixture/manifest check, but PR #1376 added a never-external exclusion (`localhost`, `127.0.0.1`, `example.com`, etc.) that filters candidates before the grounded-set check runs.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1336 issue:1273 recorded:2026-10-20T22:17:48Z -->
+**Changed files**: CLAUDE.md, config/project.conf.example, lib/core/assess-documentation.sh, lib/core/claude-workflow.sh, lib/core/docs-command.sh, lib/utils/gate-selection.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/research/rtk-assessment.md — "RTK (Rust Token Killer) — Sharkrite Compatibility Assessment"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+**Suspected inaccuracy**: `docs/architecture/behavioral-design.md` likely still documents the timeout-retry loop (double-budget retry on timeout with no uncommitted changes) that was removed from `claude-workflow.sh`.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1336 issue:1273 recorded:2026-10-20T22:22:06Z -->
+**Changed files**: CLAUDE.md, config/project.conf.example, lib/core/assess-documentation.sh, lib/core/claude-workflow.sh, lib/core/docs-command.sh, lib/utils/gate-selection.sh, tests/regression/gate-tiered-scoped-cycles.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/branch-flag-design.md — "Design Doc: `rite N --branch <name>` — Target-Branch Merge Workflow"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/encountered-issues.md — "Encountered Issues — Recurring Bug Pattern Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/architecture/tag-index-system.md — "Tag Index System (PROPOSAL)"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/research/rtk-assessment.md — "RTK (Rust Token Killer) — Sharkrite Compatibility Assessment"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+**Suspected inaccuracy**: not assessed — provider unavailable; verify implicated sections manually
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1334 issue:1169 recorded:2026-10-20T22:31:46Z -->
+**Changed files**: tests/regression/supervised-commit-push-prompt.bats, tests/regression/test-gate-parallel.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+**Suspected inaccuracy**: Now I have the full picture. The PR #1334 changed the `behavioral-design.md` Enforcement line to say the behavioral main-flow tests are "tracked by issue #1368" — but the bats comment was also updated to reference `lib/core/claude-workflow.sh:3775` as the concrete inline location. The behavioral-design.md does NOT include this line number — it only says "extracting the inline commit+push body into a callable function."
+
+The most likely documentation inaccuracy: the `behavioral-design.md` Enforcement line says the deferral is "tracked by issue #1368" but previously the bats comment said `~line 3668` for the location; the updated bats comment now says line `3775`. The doc itself doesn't specify the line number, but the prior PR body said `~line 3668`. This is a minor inconsistency between the doc's claim and reality.
+
+More significantly: the `behavioral-design.md` line at ~549 was also changed from "FIFO-tee" to "nested-procsub tee" — and CLAUDE.md documents the log capture as using "nested-procsub tee" (`exec > >(tee >(strip_ansi >> FILE))`). So that was actually fixing an inaccuracy.
+
+The most directly introduced inaccuracy would be: the `behavioral-design.md` Enforcement line now says "tracked by issue #1368" — if issue #1368 was never actually filed or has different scope, the doc would be claiming something false. But the commit message says "Cite issue #1368 at the three deferral sites" suggesting it WAS filed.
+
+The real remaining inaccuracy is the old bats comment said the inline body is at `~line 3668` (from the PR description) but the updated comment says `3775`. Since `behavioral-design.md` references the test files but doesn't include the line number, the doc is fine. The doc itself has no line-number claim.
+
+Looking at the diff again more carefully — the behavioral-design.md Enforcement line changed from open deferral to "tracked by issue #1368." The most likely inaccuracy introduced is that the doc now asserts the RITE_GATE_FINDINGS builder extraction is also covered by issue #1368, when the original deferred issue was specifically about the supervised commit+push prompt extraction. The doc bundles two distinct concerns under one issue number.
+
+`behavioral-design.md §"Supervised commit/push"` Enforcement line claims issue #1368 "also covers the `RITE_GATE_FINDINGS` builder extraction deferred in `test-gate-parallel.bats`" — this might be inaccurate if #1368's scope is narrower.
+
+`behavioral-design.md §"Supervised commit/push"` Enforcement now claims issue #1368 covers the `RITE_GATE_FINDINGS` builder extraction, but #1368 may only track the commit+push body extraction.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T22:43:49Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s "macOS AC only" description of `RITE_CAP_AUTORESUME` is wrong — `cap-resume.sh` waits and re-invokes the batch on battery and non-macOS too, skipping only the `caffeinate` hold.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1312 issue:1143 recorded:2026-10-20T22:48:10Z -->
+**Changed files**: CLAUDE.md, config/rite.conf.example, lib/core/batch-process-issues.sh, lib/utils/cap-resume.sh, tests/regression/cap-autoresume.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/architecture/conventions.md — "Sharkrite Conventions Catalog"
+- docs/architecture/exit-codes.md — "Exit Code Reference"
+- docs/configuration.md — "Configuration"
+- docs/issue-runbook.md — "Issue Generation Runbook"
+- docs/ROADMAP.md — "Sharkrite Roadmap"
+- README.md — "🦈 Sharkrite"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `CLAUDE.md`'s "macOS AC only" qualifier on `RITE_CAP_AUTORESUME` is wrong — `cap-resume.sh` waits and re-invokes the batch on battery and non-macOS too, skipping only the `caffeinate` hold.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1383 issue:1372 recorded:2026-10-21T15:23:05Z -->
+**Changed files**: lib/utils/sanitize-output.sh, tests/regression/sanitize-rtk-wrappers.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md says `sanitize_generated_commands` "strips these" — but the PR change makes it preserve (not strip) rtk meta-commands like `gain`, `discover`, `stats`, `init`, `read`. The documented behavior claims the function strips all rtk-wrapped commands at the four seams, but it now selectively preserves meta-commands through unchanged.
+
+`sanitize_generated_commands` is documented as stripping rtk-wrapped commands, but it now preserves meta-commands (`gain`, `discover`, `stats`, `init`, `read`) intact rather than stripping them.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1391 issue:1390 recorded:2026-10-21T19:22:44Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-negative-existence-lint.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md documents that `_lint_issues_strict` "runs last in the linter chain," but it now runs before `_lint_negative_existence_claims` (which runs last).
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1389 issue:1386 recorded:2026-10-21T20:01:57Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: Check 7 now derives concurrency from the dep graph (catching unannotated concurrent pairs) instead of relying solely on explicit `(can run in parallel with #N)` annotations.
+
+`CLAUDE.md` says Check 7 fires on issues that "declare themselves parallel via `(can run in parallel with #N)` annotations" — but it now fires on any dep-graph-concurrent pair regardless of annotation.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1389 issue:1386 recorded:2026-10-21T20:21:58Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: Now I see it. The Check 7 contract says it's part of `_lint_issues_strict` (item 6 in the chain). The description of `_lint_issues_strict` at line 1446 says "graph checks, dangling refs, verification paths, deferral citations (#353)" — it doesn't mention the new concurrent file overlap / auto-chain behavior that PR #1389 added. The `_lint_issues_strict` description omits the newly-added Check 7 concurrent-file-overlap auto-chain capability.
+
+`_lint_issues_strict` description in `behavioral-design.md` omits Check 7's new derived-concurrent auto-chain, listing only "graph checks, dangling refs, verification paths, deferral citations (#353)".
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1396 issue:1387 recorded:2026-10-21T20:45:58Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: The behavioral-design.md at line 1438 describes the auto-chain contract as "`After #N` added to the later issue's Dependencies line" without mentioning the dedup/skip behavior when a bare `#N` ref already exists — which is the exact behavior this PR changed.
+
+`behavioral-design.md` line 1438 claims auto-chain adds "`After #N`" unconditionally, but after PR #1396 the append is skipped when a bare `#N` already appears on the Dependencies line.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1398 issue:1388 recorded:2026-10-21T22:47:15Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-unverified-integration.bats, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: CLAUDE.md documents that `rite plan` generates issues following the runbook title format with `≤50 chars`, but does not mention that `_lint_issues_strict` now emits a warning (not an error) for titles exceeding this cap — a user reading the docs would expect truncation or enforcement, not a warn-only Check 10 that requires manual correction at the preview seam.
+
+`_lint_issues_strict` Check 10 warns on titles over 50 chars but does not block issue creation; CLAUDE.md implies the cap is enforced, not advisory.
+<!-- /sharkrite-doc-drift -->
+
+<!-- sharkrite-doc-drift pr:1400 issue:1399 recorded:2026-10-21T23:43:18Z -->
+**Changed files**: lib/core/plan-issues.sh, tests/regression/plan-validator-strict.bats
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Sharkrite Behavioral Design"
+- docs/configuration.md — "Configuration"
+- CLAUDE.md — "Sharkrite Development Guide"
+**Suspected inaccuracy**: `_normalize_issue_markers` in CLAUDE.md is described as only forcing markers onto their own lines, but it now also relocates `Split rationale:` lines from header position to after `BODY:`.
 <!-- /sharkrite-doc-drift -->

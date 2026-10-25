@@ -39,6 +39,11 @@
 #   AC1 — unsuppressed overlap → auto-chain INFO + file rewritten, no WARNING, exit 0
 #   AC4 — three-way transitive A←B←C → B gets After #1, C gets After #2, exit 0
 #   AC5 — spike-prepended slate → auto-chain uses non-spike ordinal in rewrite, exit 0
+#   AC6 — round-6 reproduction: unannotated concurrent pair (#4 After #2,#3 and #6 After #3) sharing auth.ts → auto-chained
+#   AC7 — fixpoint: A→B initial dep; B+C concurrent sharing file → C After #2 only; A+C sequential by transitivity (not re-chained)
+#   NRM1 — _normalize_issue_markers: header-position Split rationale: relocated to after BODY:
+#   NRM2 — _normalize_issue_markers: body-position Split rationale: left untouched (idempotent)
+#   NRM3 — round-trip: header-position Split rationale: survives into parsed current_body
 
 load '../helpers/setup.bash'
 
@@ -62,6 +67,10 @@ setup() {
   source "${RITE_REPO_ROOT}/lib/utils/markers.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
+  # Top-level constant from plan-issues.sh (line 93) — not inside any function,
+  # so not captured by the awk brace-depth extractor below. Must be set explicitly.
+  _RITE_PLAN_TITLE_MAX_LEN=50
+
   # Stub print_* functions so output goes cleanly without terminal setup.
   print_warning() { echo "WARNING: $*" >&2; }
   print_info()    { echo "INFO: $*" >&2; }
@@ -71,10 +80,13 @@ setup() {
   print_header()  { echo "HEADER: $*" >&2; }
 
   # Extract helper functions and _lint_issues_strict from plan-issues.sh.
-  # Order matters: _title_is_spike and the two auto-chain helpers must be
+  # Order matters: _title_is_spike and the auto-chain helpers must be
   # defined before _lint_issues_strict, which calls all three.
+  # _strip_par_ref must be defined before _transform_dep_line and
+  # _autochain_remove_par_annotation, which both delegate to it.
   eval "$(awk '
     /^_title_is_spike[(][)]/ { in_fn=1; depth=0 }
+    /^_strip_par_ref[(][)]/ { in_fn=1; depth=0 }
     /^_transform_dep_line[(][)]/ { in_fn=1; depth=0 }
     /^_autochain_rewrite_deps[(][)]/ { in_fn=1; depth=0 }
     /^_autochain_remove_par_annotation[(][)]/ { in_fn=1; depth=0 }
@@ -88,6 +100,22 @@ setup() {
       print; next
     }
   ' "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  # Extract _normalize_issue_markers separately — needed by the NRM fixtures.
+  local _nrm_fn
+  for _nrm_fn in _normalize_issue_markers; do
+    eval "$(awk -v target="^${_nrm_fn}[(][)]" '
+      $0 ~ target { in_fn=1; depth=0 }
+      in_fn {
+        for (i=1; i<=length($0); i++) {
+          c=substr($0,i,1)
+          if (c=="{") depth++
+          if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+        }
+        print; next
+      }
+    ' "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+  done
 }
 
 teardown() {
@@ -750,8 +778,11 @@ FIXTURE
   # The validator should use inline markers, not env-var flags.
   # It may reference RITE_PROJECT_ROOT (path config, not a behavior flag) — that is allowed.
   # Any RITE_* var that looks like a flag (boolean-style: RITE_PLAN_*) is not allowed.
+  # _RITE_PLAN_* (underscore-prefixed) are internal constants, not user-facing env vars — allowed.
+  # Strip _RITE_PLAN_* occurrences before the grep so the substring "RITE_PLAN_TITLE_MAX_LEN"
+  # inside "_RITE_PLAN_TITLE_MAX_LEN" does not produce a false positive.
   local new_rite_flags
-  new_rite_flags=$(echo "$fn_body" | grep -oE 'RITE_PLAN_[A-Z_]+' | sort -u || true)
+  new_rite_flags=$(echo "$fn_body" | sed 's/_RITE_PLAN_[A-Z_]*//g' | grep -oE 'RITE_PLAN_[A-Z_]+' | sort -u || true)
 
   [ -z "$new_rite_flags" ] || {
     echo "FAIL: _lint_issues_strict references RITE_PLAN_* env-var flags (violates no-env-var-escape-hatch policy):" >&2
@@ -2301,8 +2332,9 @@ FIXTURE
   }
 
   # Must NOT emit a parallel-file-overlap WARNING — the parallel annotation lives in
-  # the Description body, not in the Dependencies section.
-  grep -q "parallel-file-overlap:" "$stderr_out" && {
+  # the Description body, not in the Dependencies section.  An auto-chain INFO line
+  # may appear (the genuinely concurrent pair gets chained) but that is not a WARNING.
+  grep -q "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" && {
     echo "FAIL: unexpected parallel-file-overlap WARNING from prose-body parallel mention" >&2
     cat "$stderr_out" >&2
     false
@@ -4061,6 +4093,141 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# Check 8 H8f — 4-of-4 distinctive duplicate: a command shared by ALL 4 issues
+# on a 4-issue slate reaches freq=4 (≥ _VERIF_UNIV_THRESHOLD=3) AND
+# _issue_count=4 (≥ _VERIF_UNIV_MIN_SLATE=4), so the frequency exemption fires
+# silently — NO duplicate-verification WARNING.  This is the deliberate boundary:
+# the min-slate floor protects slates ≤3; on slates ≥4 freq==slate-size is
+# accepted as a universal CI gate.  This test pins that boundary so future
+# reviewers have a record of the deliberate decision rather than re-opening it
+# as an unfixed sibling of the 3-of-3 case.
+# ---------------------------------------------------------------------------
+
+@test "Check 8 H8f: distinctive command shared by all 4 issues on a 4-issue slate — no warning (deliberate boundary)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-4of4-distinctive.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Migrate widget A to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget A to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_a.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget A migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget B to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget B to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_b.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget B migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget C to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget C to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_c.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget C migration passes validation.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Migrate widget D to new schema
+LABELS: tech-debt,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Migrate widget D to the new database schema.
+
+**Claude Context**:
+Files to Modify:
+- src/widgets/widget_d.py
+
+**Acceptance Criteria**:
+- [ ] Migration passes: `db-migrate --validate widgets`
+
+**Verification Commands**:
+```bash
+db-migrate --validate widgets
+```
+
+**Done Definition**: Done when widget D migration passes validation.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # All 4 issues share a distinctive command — freq=4 ≥ threshold=3 AND
+  # slate=4 ≥ min_slate=4, so the frequency exemption fires.  No warning expected.
+  if grep -q "strict-lint: WARNING: duplicate-verification:" "$stderr_out"; then
+    echo "FAIL: unexpected duplicate-verification WARNING for 4-of-4 on a 4-issue slate (freq exemption should fire)" >&2
+    cat "$stderr_out" >&2
+    false
+  fi
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
 # Regression: Check 4 receives single-token backtick paths from acceptance criteria
 #
 # A single-token backtick entry (no space) in acceptance criteria — e.g.
@@ -5017,4 +5184,1185 @@ FIXTURE
   }
 
   rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# AC-prose — orrery-shape regression: prose-embedded parallel annotation.
+#
+# Reproduces the exact orrery round-4 failure: issue #3 has
+# "After #1 (needs one working sign-in method for a session; can run in
+# parallel with #4, #5, #7)" and issues #4, #5, #7 all modify src/session.ts.
+#
+# Before the fix, the shape-enumerated seds removed the comma-preceded refs
+# (#5 and #7) but left #4 (the first ref after "with "), producing the stale
+# residue "After #5, After #4, After #3 (…; can run in parallel with #4)".
+#
+# After the fix, all three refs are stripped and the prose is intact.
+#
+# Fixture: 7 non-spike issues; ordinals 3, 4, 5, 7 all modify src/session.ts.
+# Issues #4, #5, #7 have "Dependencies: None" (unidirectional annotation).
+# ---------------------------------------------------------------------------
+
+@test "AC-prose: orrery-shape prose-embedded annotation — all refs removed, prose intact" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac-prose.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Bootstrap Auth Config
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Creates the auth configuration.
+
+**Claude Context**:
+Files to Modify:
+- src/auth-config.ts
+
+**Acceptance Criteria**:
+- [ ] Config present: `npm test -- --testPathPattern=auth-config`
+
+**Done Definition**: Done when auth config is bootstrapped.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Env Loader
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Adds environment variable loader, not related to session.
+
+**Claude Context**:
+Files to Modify:
+- src/env-loader.ts
+
+**Acceptance Criteria**:
+- [ ] Env loader works: `npm test -- --testPathPattern=env`
+
+**Done Definition**: Done when env loader is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Setup Session Store
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Sets up the session store in src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Session store works: `npm test -- --testPathPattern=session`
+
+**Done Definition**: Done when session store is set up.
+
+**Dependencies**: After #1 (needs one working sign-in method for a session; can run in parallel with #4, #5, #7)
+---END---
+---ISSUE---
+TITLE: Add Session Middleware
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds middleware layer to src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Middleware active: `npm test -- --testPathPattern=session-middleware`
+
+**Done Definition**: Done when middleware is active.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Session Expiry
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds expiry handling to src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Expiry works: `npm test -- --testPathPattern=session-expiry`
+
+**Done Definition**: Done when expiry is implemented.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Logging Helper
+LABELS: backend,priority-medium
+TIME: 30min
+BODY:
+**Description**:
+Adds a logging helper unrelated to the session module.
+
+**Claude Context**:
+Files to Modify:
+- src/logging.ts
+
+**Acceptance Criteria**:
+- [ ] Logging works: `npm test -- --testPathPattern=logging`
+
+**Done Definition**: Done when logging helper is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Add Session Rotation
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Adds session rotation logic to src/session.ts.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Acceptance Criteria**:
+- [ ] Rotation works: `npm test -- --testPathPattern=session-rotation`
+
+**Done Definition**: Done when rotation is implemented.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit three INFO auto-chain messages (one per shared-file pair)
+  local info_count
+  info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
+  [ "$info_count" -ge 3 ] || {
+    echo "FAIL: expected at least 3 auto-chain INFO messages, got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Issue #3 (Setup Session Store) must retain its prose annotation intact
+  sed -n '/^TITLE: Setup Session Store/,/^---END---$/p' "$issues_file" | \
+    grep -q "needs one working sign-in method for a session" || {
+      echo "FAIL: prose annotation not preserved in issue #3's Dependencies" >&2
+      cat "$issues_file" >&2
+      false
+    }
+
+  # Issue #3 must have NO remaining 'can run in parallel with' refs
+  sed -n '/^TITLE: Setup Session Store/,/^---END---$/p' "$issues_file" | \
+    grep -q "can run in parallel with" && {
+      echo "FAIL: stale 'can run in parallel with' annotation survived in issue #3's Dependencies" >&2
+      cat "$issues_file" >&2
+      false
+    }
+
+  # No WARNING: parallel-file-overlap — all three pairs were auto-chained
+  grep -q "WARNING: parallel-file-overlap" "$stderr_out" && {
+    echo "FAIL: unexpected WARNING for parallel-file-overlap (expected auto-chain INFO)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fix 4 — prose-embedded ref before "parallel" in a paren group must NOT be
+# harvested as a parallel-with sibling.
+#
+# Issue body: "After #1 (needs #1's output; can run in parallel with #3)"
+# The paren group contains "parallel". Before this fix, both #1 and #3 were
+# extracted as parallel-with siblings because the harvest grep matched all
+# #N inside the group. With the fix, only #3 (after "parallel") is extracted.
+#
+# Consequence of the bug: #1 is a real dependency edge AND spuriously a
+# parallel-with sibling. If issues #1 and #2 share a file, Check 7 emits a
+# false parallel-file-overlap WARNING for the #1/#2 pair.
+# ---------------------------------------------------------------------------
+
+@test "Fix 4: prose-embedded ref before 'parallel' in paren group — not harvested as parallel sibling, no spurious WARNING" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-fix4.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Schema Builder
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds the shared schema.
+
+**Claude Context**:
+Files to Modify:
+- src/schema.cpp
+
+**Acceptance Criteria**:
+- [ ] Schema builds: `make test`
+
+**Done Definition**: Done when schema builds.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Parser
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Parses using the schema from issue one.
+
+**Claude Context**:
+Files to Modify:
+- src/schema.cpp
+
+**Acceptance Criteria**:
+- [ ] Parser passes: `make test`
+
+**Done Definition**: Done when parser passes.
+
+**Dependencies**: After #1 (needs #1's output; can run in parallel with #3)
+---END---
+---ISSUE---
+TITLE: Side Feature
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Independent side feature.
+
+**Claude Context**:
+Files to Modify:
+- src/side.cpp
+
+**Acceptance Criteria**:
+- [ ] Side passes: `make test`
+
+**Done Definition**: Done when side passes.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (no cycle, no dangling ref — #1 and #3 are valid)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit a parallel-file-overlap WARNING — #1 is a real dependency
+  # edge, not a parallel sibling; the paren group prose ref is pre-"parallel"
+  # and must not be harvested as a scheduling hint.
+  grep -q "parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected parallel-file-overlap WARNING from prose-embedded ref before 'parallel' keyword" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AC6 — round-6 reproduction: unannotated concurrent pair auto-chained
+#
+# Modelled after orrery round 6: two issues share a common ancestor (#3) but
+# have no dep edge between themselves and NO parallel annotation.  Both modify
+# auth.ts and sign-in.tsx.  Check 7 must detect the concurrency from the dep
+# graph and auto-chain the later one (higher non-spike ordinal).
+#
+# Graph: #2→#4 (4 After 2), #3→#4 (4 After 3), #3→#6 (6 After 3).
+# Neither #4 nor #6 is an ancestor of the other → concurrent.
+# No parallel annotations on any issue.
+# Expected: #6 (ordinal 6) gets After #4 (ordinal 4).
+# ---------------------------------------------------------------------------
+
+@test "AC6: unannotated concurrent pair sharing a file is auto-chained (round-6 reproduction)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac6.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Bootstrap Infrastructure
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Bootstrap step.
+
+**Claude Context**:
+Files to Modify:
+- src/bootstrap.ts
+
+**Done Definition**: Done when bootstrap runs.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Auth Config Setup
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Sets up auth configuration.
+
+**Claude Context**:
+Files to Modify:
+- src/auth-config.ts
+
+**Done Definition**: Done when auth config is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Base Session Layer
+LABELS: backend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Base session layer needed by auth and sign-in features.
+
+**Claude Context**:
+Files to Modify:
+- src/session.ts
+
+**Done Definition**: Done when session layer is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Feature Alpha Auth
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Implements the alpha authentication flow.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when alpha auth flow passes tests.
+
+**Dependencies**: After #2, After #3
+---END---
+---ISSUE---
+TITLE: Unrelated Logger
+LABELS: backend,priority-low
+TIME: 30min
+BODY:
+**Description**:
+Unrelated logging helper.
+
+**Claude Context**:
+Files to Modify:
+- src/logger.ts
+
+**Done Definition**: Done when logger works.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Feature Beta Auth
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Implements the beta authentication flow.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when beta auth flow passes tests.
+
+**Dependencies**: After #3
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 — this is a WARNING-class check with auto-chain rewrite
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit at least one auto-chain INFO for the concurrent pair
+  local info_count
+  info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
+  [ "$info_count" -ge 1 ] || {
+    echo "FAIL: expected at least 1 auto-chain INFO, got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The auto-chain must mention Feature Beta Auth (the later issue, ordinal 6)
+  grep "auto-chained.*parallel-file-overlap" "$stderr_out" | grep -q "Feature Beta Auth" || {
+    echo "FAIL: auto-chain INFO should name 'Feature Beta Auth' as the rewired issue" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # The auto-chain must mention Feature Alpha Auth (the earlier issue, ordinal 4)
+  grep "auto-chained.*parallel-file-overlap" "$stderr_out" | grep -q "Feature Alpha Auth" || {
+    echo "FAIL: auto-chain INFO should name 'Feature Alpha Auth' as the anchor" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Feature Beta Auth must now have After #4 in its Dependencies line
+  sed -n '/^TITLE: Feature Beta Auth/,/^---END---$/p' "$issues_file" | \
+    grep -qE 'After #4' || {
+      echo "FAIL: Feature Beta Auth should have After #4 in its Dependencies" >&2
+      sed -n '/^TITLE: Feature Beta Auth/,/^---END---$/p' "$issues_file" >&2
+      false
+    }
+
+  # No WARNING emitted — both sides lack a suppression marker → auto-chain not warn
+  grep -q "strict-lint: WARNING: parallel-file-overlap:" "$stderr_out" && {
+    echo "FAIL: unexpected WARNING for parallel-file-overlap (expected auto-chain)" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AC7 — fixpoint: two auto-chains complete and the dep graph converges
+#
+# Initial state: Issue 2 already depends on Issue 1 (After #1).  Issue 3
+# has no deps.  Issues 2 and 3 both modify sign-in.tsx.  Issues 1 and 3
+# both modify auth.ts (shared file added to make the (1,3) pair non-vacuous).
+#
+# Pass 1: (1,2) sequential. (1,3) concurrent + share auth.ts → chain Issue 3
+# After #1.  _rev_adj updated in memory.
+# Pass 2 (fixpoint): (1,2) sequential. (1,3) sequential (After #1 added).
+# (2,3) concurrent + share sign-in.tsx → chain Issue 3 After #2.  _rev_adj
+# updated.
+# Pass 3: all pairs sequential. Done.
+#
+# Verifies: exactly two auto-chain INFOs; Issue 3 gets both After #1 and
+# After #2.  Falsifiable: with the _rev_adj update missing, pass 2 would
+# re-encounter (1,3) as concurrent (idempotent rewrite + another INFO),
+# causing info_count > 2 or a timeout.
+# ---------------------------------------------------------------------------
+
+@test "AC7: fixpoint terminates with exactly two auto-chains when both pairs share files" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ac7.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: Auth Config Module
+LABELS: backend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Creates the auth configuration and the auth.ts entry point.
+
+**Claude Context**:
+Files to Modify:
+- src/auth-config.ts
+- src/auth.ts
+
+**Done Definition**: Done when auth config module is present.
+
+**Dependencies**: None
+---END---
+---ISSUE---
+TITLE: Sign-in Page
+LABELS: frontend,priority-high
+TIME: 1hr
+BODY:
+**Description**:
+Builds the sign-in page, consuming auth.ts and producing sign-in.tsx.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when sign-in page renders.
+
+**Dependencies**: After #1
+---END---
+---ISSUE---
+TITLE: Sign-in Validation
+LABELS: frontend,priority-high
+TIME: 30min
+BODY:
+**Description**:
+Adds client-side validation to the sign-in form.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.ts
+- src/sign-in.tsx
+
+**Done Definition**: Done when validation is wired up.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit exactly two auto-chain INFOs (Auth Config→Sign-in Validation pass 1,
+  # Sign-in Page→Sign-in Validation pass 2).  With a broken _rev_adj update,
+  # pass 2 would re-encounter the already-chained (1,3) pair and emit additional
+  # INFOs, causing info_count > 2.
+  local info_count
+  info_count=$(grep -c "auto-chained.*parallel-file-overlap" "$stderr_out" || true)
+  [ "$info_count" -eq 2 ] || {
+    echo "FAIL: expected exactly 2 auto-chain INFOs (fixpoint convergence), got $info_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Sign-in Validation must have After #1 (Auth Config Module — first auto-chain)
+  sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" | \
+    grep -qE 'After #1' || {
+      echo "FAIL: Sign-in Validation should have After #1 in its Dependencies" >&2
+      sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" >&2
+      false
+    }
+
+  # Sign-in Validation must have After #2 (Sign-in Page — second auto-chain)
+  sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" | \
+    grep -qE 'After #2' || {
+      echo "FAIL: Sign-in Validation should have After #2 in its Dependencies" >&2
+      sed -n '/^TITLE: Sign-in Validation/,/^---END---$/p' "$issues_file" >&2
+      false
+    }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# AC8a — bare-ref dedup: orrery round-6 reproduction.
+#
+# Authored Dependencies line already carries bare #8 as a dep ref.
+# Auto-chain should NOT append "After #8" — the bare ref already encodes the edge.
+# Before the fix, _transform_dep_line's Step 2 only checked for "After #N" form,
+# missing the bare ref, producing "After #8, After #3, #8" (two #8 references).
+# ---------------------------------------------------------------------------
+
+@test "AC8a: bare-ref dedup — authored 'After #3, #8' chained against #8 yields single #8 reference" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, #8" 8)
+
+  # Must contain exactly one occurrence of #8 (not followed by a digit)
+  local count
+  count=$(printf '%s\n' "$result" | grep -oE '#8([^0-9]|$)' | wc -l || true)
+  [ "$count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 #8 reference, got $count: $result" >&2
+    false
+  }
+
+  # Must NOT contain 'After #8, After #3' (the prepend-duplicate pattern)
+  if printf '%s\n' "$result" | grep -q "After #8.*#8\|#8.*After #8"; then
+    echo "FAIL: result contains duplicate #8 references: $result" >&2
+    false
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# AC8b — bare-ref dedup word-boundary: #80 must NOT suppress append of After #8.
+#
+# The presence check uses ([^0-9]|$) to prevent #8 from matching inside #80.
+# This test confirms the word-boundary is correct: a line with #80 must still
+# receive the appended After #8.
+# ---------------------------------------------------------------------------
+
+@test "AC8b: word-boundary — bare #80 does not suppress append of After #8" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, #80" 8)
+
+  # Must contain After #8 (appended because #80 is not a match for #8)
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended when line has #80 (not #8): $result" >&2
+    false
+  }
+
+  # Must still carry the original #80 reference
+  printf '%s\n' "$result" | grep -q '#80' || {
+    echo "FAIL: original #80 reference should be preserved: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC8c — existing After #N form still idempotent (pre-existing behavior).
+#
+# A line that already carries "After #8" in canonical form must not receive
+# a second "After #8" — this was the original idempotency contract.
+# ---------------------------------------------------------------------------
+
+@test "AC8c: existing After #N form still idempotent — no duplicate append" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, After #8" 8)
+
+  # Must contain exactly one After #8
+  local count
+  count=$(printf '%s\n' "$result" | grep -oE 'After #8([^0-9]|$)' | wc -l || true)
+  [ "$count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 'After #8', got $count: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC8d — non-canonical parallel annotation: dep edge must still be added.
+#
+# A Dependencies line carrying a non-canonical parallel annotation like
+# "(parallel with #8)" (missing "can run in") leaves a bare #8 token that
+# Step 1 (_strip_par_ref) does not remove.  Before the fix, Step 2's presence
+# check saw #8 inside the paren group and skipped the append — producing a
+# false "[auto-chained]" log with no edge written.
+#
+# After the fix, Step 2 strips paren groups before the presence check, so #8
+# inside "(parallel with #8)" is invisible to the check, and "After #8" is
+# correctly appended.
+# ---------------------------------------------------------------------------
+
+@test "AC8d: non-canonical parallel annotation does not suppress dep-edge append" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: (parallel with #8)" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+
+  # Must contain exactly one #8 reference outside paren groups.
+  # Step 2 strips only parallel-worded parens before the presence check, so
+  # a non-canonical annotation like "(parallel with #8)" is excluded from the
+  # presence check but NOT removed from the output — only the canonical
+  # "can run in parallel with" phrase is cleaned by _strip_par_ref in Step 1.
+  local after_count
+  after_count=$(printf '%s\n' "$result" | grep -oE 'After #8([^0-9]|$)' | wc -l || true)
+  [ "$after_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 'After #8', got $after_count: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC8e — non-canonical parallel annotation with other deps: dep edge appended.
+#
+# When the line already has deps but only a non-canonical parallel annotation
+# references #8 (not an actual dep edge), "After #8" must still be prepended.
+# ---------------------------------------------------------------------------
+
+@test "AC8e: non-canonical parallel annotation plus other deps — After #N prepended" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, (parallel with #8)" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+
+  # Must still contain After #3
+  printf '%s\n' "$result" | grep -q 'After #3' || {
+    echo "FAIL: original After #3 should be preserved; got: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# T1 — title-length: 51-char title emits WARNING, exit 0
+#
+# "[Phase 1] Implement full authentication module now!" is 51 characters (ASCII).
+# Validator must emit strict-lint: WARNING: title-length and exit 0 (warn-only).
+# ---------------------------------------------------------------------------
+
+@test "T1: 51-char title — strict-lint WARNING title-length, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-t1.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full authentication module now!
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Add authentication module.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.py
+
+**Acceptance Criteria**:
+- [ ] Auth works: `pytest tests/test_auth.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_auth.py
+```
+
+**Done Definition**: Done when auth passes.
+
+**Scope Boundary**:
+- DO: add auth module
+- DO NOT: add other modules
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0 (title-length is warn-only, never fatal)
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for title-length warning, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit WARNING mentioning title-length
+  grep -q "title-length" "$stderr_out" || {
+    echo "FAIL: expected title-length WARNING in stderr" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Warning must name the title and the char count
+  grep -q "Implement full authentication module now!" "$stderr_out" || {
+    echo "FAIL: expected issue title in title-length WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Warning must mention the cap (50)
+  grep -q "cap 50" "$stderr_out" || {
+    echo "FAIL: expected cap 50 in title-length WARNING" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# T2 — title-length: 50-char title is silent, exit 0
+#
+# "[Phase 1] Implement authentication module for now!" is exactly 50 characters.
+# Validator must NOT emit title-length WARNING (at cap, not over).
+# ---------------------------------------------------------------------------
+
+@test "T2: 50-char title — no title-length WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-t2.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement authentication module for now!
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Add authentication module.
+
+**Claude Context**:
+Files to Modify:
+- src/auth.py
+
+**Acceptance Criteria**:
+- [ ] Auth works: `pytest tests/test_auth.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_auth.py
+```
+
+**Done Definition**: Done when auth passes.
+
+**Scope Boundary**:
+- DO: add auth module
+- DO NOT: add other modules
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for 50-char title, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit title-length WARNING
+  grep -q "title-length" "$stderr_out" && {
+    echo "FAIL: unexpected title-length WARNING for 50-char title" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# T3 — title-length: 51-char title with suppression — no WARNING, suppressed logged, exit 0
+# ---------------------------------------------------------------------------
+
+@test "T3: 51-char title with title-length suppression — suppressed, no WARNING, exit 0" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-t3.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full authentication module now!
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Add authentication module.
+
+<!-- sharkrite-plan-lint disable title-length - Reason: ADR D2 mandates the full module name in the title for release tagging automation -->
+
+**Claude Context**:
+Files to Modify:
+- src/auth.py
+
+**Acceptance Criteria**:
+- [ ] Auth works: `pytest tests/test_auth.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_auth.py
+```
+
+**Done Definition**: Done when auth passes.
+
+**Scope Boundary**:
+- DO: add auth module
+- DO NOT: add other modules
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 with suppression, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit title-length WARNING (suppressed).
+  # Anchor to "WARNING: title-length" — the suppression itself logs
+  # "[suppressed] title-length: <reason>" which contains "title-length"
+  # but is not a WARNING. A bare grep would always match and fail this test.
+  grep -q "WARNING: title-length" "$stderr_out" && {
+    echo "FAIL: unexpected title-length WARNING — suppression should have fired" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must log the suppression ([suppressed] in output)
+  grep -q "\[suppressed\]" "$stderr_out" || {
+    echo "FAIL: expected [suppressed] log for title-length suppression" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# T4 — title-length: multi-byte accented title exactly at char cap — silent, exit 0
+#
+# "[Phase 2] Réfactor user endpoint - fix auth checks" is 50 Unicode characters
+# but 51 bytes (é is 2 bytes in UTF-8). A byte-counting implementation would
+# incorrectly warn; a character-counting implementation stays silent.
+# ---------------------------------------------------------------------------
+
+@test "T4: 50-char title with accented char (51 bytes) — no WARNING, exit 0 (char count not bytes)" {
+  # Pin locale: bash's ${#} counts code points only in a UTF-8-capable locale.
+  # Under LC_ALL=C (common on CI runners and launchd), ${#} counts bytes, so a
+  # 50-char/51-byte title would measure 51 > 50 and emit a spurious WARNING.
+  # en_US.UTF-8 is standard on macOS; C.UTF-8 is the portable Linux fallback.
+  if locale -a 2>/dev/null | grep -qxF 'en_US.UTF-8'; then
+    export LC_ALL=en_US.UTF-8
+  else
+    export LC_ALL=C.UTF-8
+  fi
+
+  local issues_file="$RITE_TEST_TMPDIR/issues-t4.txt"
+
+  # This title is 50 Unicode characters, 51 UTF-8 bytes (é = U+00E9 = 2 bytes).
+  # A byte-counting implementation would wrongly emit title-length WARNING.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 2] Réfactor user endpoint - fix auth checks
+LABELS: backend,priority-medium
+TIME: 1hr
+BODY:
+**Description**:
+Refactor user endpoint.
+
+**Claude Context**:
+Files to Modify:
+- src/users.py
+
+**Acceptance Criteria**:
+- [ ] Endpoint works: `pytest tests/test_users.py`
+
+**Verification Commands**:
+```bash
+pytest tests/test_users.py
+```
+
+**Done Definition**: Done when endpoint passes.
+
+**Scope Boundary**:
+- DO: refactor user endpoint
+- DO NOT: add other endpoints
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  local exit_code=0
+  _lint_issues_strict "$issues_file" "" 2>"$stderr_out" || exit_code=$?
+
+  # Must exit 0
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0 for 50-char accented title, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must NOT emit title-length WARNING (50 chars ≤ 50 cap)
+  grep -q "title-length" "$stderr_out" && {
+    echo "FAIL: unexpected title-length WARNING — title is 50 chars (51 bytes); must count chars not bytes" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture NRM1 — _normalize_issue_markers relocates header-position Split
+# rationale: to immediately after BODY:
+# ---------------------------------------------------------------------------
+
+@test "Fixture NRM1: header-position Split rationale: relocated to immediately after BODY:" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-nrm1.txt"
+
+  # Split rationale: appears between TIME: and BODY: — header position.
+  # The creation loop drops it there; normalization must move it into the body.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+Split rationale: GET list + POST share the same schema; splitting duplicates validation with no clean seam.
+BODY:
+**Description**: Add CRUD endpoints.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  _normalize_issue_markers "$issues_file"
+
+  # The Split rationale: line must appear somewhere after BODY: in the output.
+  local normalized
+  normalized=$(cat "$issues_file")
+
+  # Verify the line is still present (not dropped).
+  echo "$normalized" | grep -q "Split rationale:" || {
+    echo "FAIL: Split rationale: line was dropped by normalization" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+
+  # Verify the line appears after BODY: (not before it).
+  # awk prints the line number of BODY: and of Split rationale: then we compare.
+  local body_lineno rat_lineno
+  body_lineno=$(awk '/^BODY:/{print NR; exit}' "$issues_file")
+  rat_lineno=$(awk '/Split rationale:/{print NR; exit}' "$issues_file")
+
+  [ -n "$body_lineno" ] || {
+    echo "FAIL: BODY: line not found in normalized output" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+  [ -n "$rat_lineno" ] || {
+    echo "FAIL: Split rationale: line not found after normalization" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+  [ "$rat_lineno" -gt "$body_lineno" ] || {
+    echo "FAIL: Split rationale: (line $rat_lineno) is not after BODY: (line $body_lineno)" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+
+  # Verify it is immediately after BODY: (rat_lineno == body_lineno + 1).
+  [ "$rat_lineno" -eq $(( body_lineno + 1 )) ] || {
+    echo "FAIL: Split rationale: (line $rat_lineno) is not immediately after BODY: (line $body_lineno)" >&2
+    printf '%s\n' "$normalized" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture NRM2 — _normalize_issue_markers leaves a body-position Split
+# rationale: untouched (idempotent)
+# ---------------------------------------------------------------------------
+
+@test "Fixture NRM2: body-position Split rationale: remains after BODY: (idempotent)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-nrm2.txt"
+
+  # Split rationale: already in body position — normalization must not move it
+  # to before BODY: or drop it.  The whole-file content may gain blank lines
+  # around markers (known non-idempotency of the marker-splitting sed pass), so
+  # the check is on the relative position of the rationale to BODY:, not on
+  # exact file equality.
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+BODY:
+**Description**: Add CRUD endpoints.
+
+Split rationale: GET list + POST share the same schema; splitting duplicates validation with no clean seam.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  _normalize_issue_markers "$issues_file"
+
+  # The rationale must still appear after BODY: after normalization.
+  local body_lineno rat_lineno
+  body_lineno=$(awk '/^BODY:/{print NR; exit}' "$issues_file")
+  rat_lineno=$(awk '/Split rationale:/{print NR; exit}' "$issues_file")
+
+  [ -n "$body_lineno" ] || {
+    echo "FAIL: BODY: line not found in normalized output" >&2
+    cat "$issues_file" >&2
+    false
+  }
+  [ -n "$rat_lineno" ] || {
+    echo "FAIL: Split rationale: line was dropped by normalization" >&2
+    cat "$issues_file" >&2
+    false
+  }
+  [ "$rat_lineno" -gt "$body_lineno" ] || {
+    echo "FAIL: Split rationale: (line $rat_lineno) moved before BODY: (line $body_lineno) — not idempotent" >&2
+    cat "$issues_file" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture NRM3 — round-trip: header-position Split rationale: survives into
+# the current_body the creation loop would ship
+# ---------------------------------------------------------------------------
+
+@test "Fixture NRM3: header-position Split rationale: survives into current_body after normalization" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-nrm3.txt"
+
+  cat > "$issues_file" <<'FIXTURE'
+---ISSUE---
+TITLE: [Phase 1] Implement full CRUD router - users
+LABELS: backend,priority-high
+TIME: 2hr
+Split rationale: GET list + POST share the same schema; splitting duplicates validation with no clean seam.
+BODY:
+**Description**: Add CRUD endpoints.
+
+**Dependencies**: None
+---END---
+FIXTURE
+
+  _normalize_issue_markers "$issues_file"
+
+  # Simulate the create_issues body-capture loop: collect lines after BODY: into
+  # current_body and verify Split rationale: is present there.
+  local current_body="" in_body=false
+  while IFS= read -r line; do
+    if [ "$line" = "---ISSUE---" ] || [ "$line" = "---END---" ]; then
+      in_body=false
+    elif [ "${line#BODY:}" != "$line" ]; then
+      in_body=true
+      local after_body="${line#BODY:}"
+      after_body="${after_body# }"
+      [ -n "$after_body" ] && current_body="$after_body"$'\n'
+    elif [ "$in_body" = true ]; then
+      current_body+="$line"$'\n'
+    fi
+  done < "$issues_file"
+
+  echo "$current_body" | grep -q "Split rationale:" || {
+    echo "FAIL: Split rationale: not found in current_body after normalization" >&2
+    echo "current_body:" >&2
+    printf '%s\n' "$current_body" >&2
+    false
+  }
 }

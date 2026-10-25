@@ -280,6 +280,18 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+# ---------------------------------------------------------------------------
+# Behavioral: gate test-failure builder output format
+#
+# These two tests use an inline copy of the builder loop from assess-and-resolve.sh
+# rather than invoking assess-and-resolve.sh directly (the inline body is not a
+# callable function). A regression that reverts the real builder without touching
+# this copy leaves these tests passing. Replacing the inline copy with an end-to-end
+# invocation via RITE_GATE_FINDINGS is tracked by issue #1368, which also
+# covers the supervised commit+push behavioral extraction deferred in
+# supervised-commit-push-prompt.bats and behavioral-design.md § "Supervised commit/push".
+# ---------------------------------------------------------------------------
+
 @test "gate test-failure builder: two distinct test_names produce distinct ACTIONABLE_NOW headers" {
   # Two findings with the same file ("bats") but different test_names must emit
   # two distinct ### headers — each keyed by test_name, not the constant "bats".

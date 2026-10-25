@@ -150,20 +150,63 @@ PROBE
 # LIBRARY CONTRACT
 # =============================================================================
 
-@test "library: gate-runners.sh still refuses to load under bash 3.2" {
-  # The refusal is the correct behavior for the library; this test pins it so
-  # nobody "fixes" the symptom by deleting the guard and reintroducing a silent
-  # parse failure. The callers are what had to change.
+@test "library: gate-runners.sh parses and loads under bash 3.2" {
+  # This test originally pinned the opposite — that the library REFUSED to
+  # load under 3.2 — so nobody deleted the refusal while the file was still
+  # unparseable. The unparseable shape is gone (#1351 collapsed the four copies
+  # into _expand_workspace_dirs), so the stronger property is pinned instead:
+  # the file loads under the interpreter its callers actually run on. The
+  # caller guards stay until their own removal PR; they are inert under 4+.
   _is_bash32 || skip "/bin/bash is not 3.2 on this host"
 
-  run "$_sysbash" -c "source '$REPO_ROOT/lib/utils/gate-runners.sh'"
-
-  [ "$status" -ne 0 ] || {
-    echo "FAIL: gate-runners.sh loaded under 3.2 — the refusal is gone" >&2
+  "$_sysbash" -n "$REPO_ROOT/lib/utils/gate-runners.sh" 2>/dev/null || {
+    echo "FAIL: gate-runners.sh does not parse under /bin/bash 3.2" >&2
+    "$_sysbash" -n "$REPO_ROOT/lib/utils/gate-runners.sh" 2>&1 | head -3 >&2
     return 1
   }
-  echo "$output" | grep -qi 'requires bash 4' || {
-    echo "FAIL: expected the bash-4 refusal, got: $output" >&2
+  run "$_sysbash" -c "
+    export RITE_LIB_DIR='$REPO_ROOT/lib'
+    source '$REPO_ROOT/lib/utils/gate-runners.sh' && declare -f _expand_workspace_dirs >/dev/null && echo LOADED
+  "
+  [ "$status" -eq 0 ] && echo "$output" | grep -q LOADED || {
+    echo "FAIL: gate-runners.sh did not load under 3.2 (status $status): $output" >&2
     return 1
   }
 }
+
+# =============================================================================
+# SWEEP — the rule, not a list
+#
+# #1374 guarded the five entry points known at the time. That was a list, and
+# the list was incomplete: lib/core/create-pr.sh died the same way one phase
+# later, under /bin/bash, in the middle of a live batch. The guard is inert
+# when a file is sourced, so the correct scope is a RULE — every executable
+# #!/bin/bash file in lib/ carries it — not an enumeration of known callers.
+# =============================================================================
+
+@test "sweep: every executable #!/bin/bash file in lib/ carries the guard" {
+  _missing=""
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    head -1 "$_f" | grep -q '^#!/bin/bash' || continue
+    grep -q 'BASH_VERSINFO\[0\]' "$_f" || _missing="$_missing
+  $_f"
+  done < <(find "$REPO_ROOT/lib" -name '*.sh' -perm -u+x | sort)
+
+  [ -z "$_missing" ] || {
+    echo "FAIL: executable #!/bin/bash file(s) in lib/ with no bash-4 guard:$_missing" >&2
+    echo "" >&2
+    echo "      Anything runnable can be spawned as a subprocess under" >&2
+    echo "      /bin/bash (3.2 on macOS) and will die the moment it reaches" >&2
+    echo "      gate-runners.sh. The guard is a no-op when sourced, so there" >&2
+    echo "      is no cost to carrying it." >&2
+    return 1
+  }
+}
+
+# NOTE: the "parses under /bin/bash" invariant for the whole tree already lives
+# in tests/regression/bin-bash-32-parse-sweep.bats, which correctly accepts
+# EITHER a clean 3.2 parse OR a BASH_VERSINFO guard. assess-documentation.sh and
+# plan-issues.sh are deliberately unparseable under 3.2 (heredoc-in-cmdsubst,
+# issues #1163/#1190) and rely on that second arm. Duplicating it more strictly
+# here would just re-fail those two for a reason that is already handled.

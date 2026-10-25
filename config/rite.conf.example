@@ -36,6 +36,16 @@
 # Raise only if a provider legitimately needs longer to flush on shutdown.
 # RITE_TIMEOUT_KILL_AFTER=30
 
+# Opt-in auto-resume of a batch after a usage-cap reset.
+# When enabled, a cap abort waits until the parsed reset time, then re-invokes
+# the remaining issues as a fresh rite process.  On macOS with AC power, holds
+# the machine awake via caffeinate -i.  On battery or non-macOS: skips the
+# hold but still waits and resumes.  Guard: at most one auto-resume per manifest
+# (a second cap in the resumed run aborts normally — no reschedule loops).
+# Note: does not work when the lid is closed before the wait begins; caffeinate
+# prevents sleep only while the script is running.
+# RITE_CAP_AUTORESUME=false
+
 # =============================================================================
 # Notifications (optional)
 # =============================================================================

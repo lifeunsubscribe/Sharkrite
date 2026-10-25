@@ -10,6 +10,28 @@
 
 set -euo pipefail
 
+# Bash 4+ re-exec guard (issue #1361 fallout — see #1374).
+#
+# lib/utils/gate-runners.sh nests `case` statements inside process
+# substitutions, which bash 3.2 cannot parse, so it refuses to load under 3.2.
+# On macOS /bin/bash IS 3.2, so any #!/bin/bash file that reaches it — directly
+# or through test-gate.sh / gate-verdict.sh — dies before doing any work.
+#
+# #1374 guarded the five entry points known at the time and missed the rest:
+# create-pr.sh then died the same way one phase later. Rather than chase them
+# one at a time, every executable #!/bin/bash file in lib/ now carries this.
+# It is inert when the file is sourced (the BASH_SOURCE test is false), so it
+# costs nothing for the ones that are only ever libraries.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] && [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    if [ -x "$_newer_bash" ] && [ "$_newer_bash" != "${BASH:-}" ]; then
+      exec "$_newer_bash" "$0" "$@"
+    fi
+  done
+  echo "Error: requires bash 4+. Install via: brew install bash" >&2
+  exit 1
+fi
+
 # Re-source guard: skip if already loaded (idempotent sourcing)
 if declare -f parse_rite_config >/dev/null 2>&1; then
   return 0 2>/dev/null || true
@@ -220,12 +242,11 @@ RITE_MAX_FINDINGS_PER_RUN="${RITE_MAX_FINDINGS_PER_RUN:-20}"
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
-# Doc-mode consent: records whether the user consented to sharkrite updating
-# files in docs/ when code changes make them inaccurate.
-# Values: "sync" (yes — .rite/doc-sync.md scaffolded, Layer 2 active) or
-#         "changelog" (no — drift notes only).
-# EMPTY DEFAULT IS INTENTIONAL: empty means "not yet recorded"; defaulting to
-# "changelog" here would break the ask-once logic in ensure_doc_mode().
+# Doc-drift consent (opt-in). Values: "sync" (record drift per merge; `rite docs`
+# reconciles), "changelog" (legacy: record drift per merge), "off" (declined).
+# Nothing edits docs/ automatically in any mode. See doc-consent.sh.
+# EMPTY DEFAULT IS INTENTIONAL: empty means "not yet asked" — nothing is
+# recorded, and a supervised run or `rite docs` asks.
 # Set via `rite --init` or a supervised workflow run.
 RITE_DOC_MODE="${RITE_DOC_MODE:-}"
 
@@ -244,9 +265,6 @@ if [ "$RITE_NOTIFICATIONS" != "true" ]; then
   EMAIL_NOTIFICATION_ADDRESS=""
   RITE_SNS_TOPIC_ARN=""
 fi
-
-# Internal docs directory
-RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/docs}"
 
 # Scratchpad
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
@@ -416,7 +434,6 @@ export RITE_SNS_TOPIC_ARN
 export RITE_EMAIL_FROM
 export SLACK_WEBHOOK
 export EMAIL_NOTIFICATION_ADDRESS
-export RITE_INTERNAL_DOCS_DIR
 export SCRATCHPAD_FILE
 export RITE_LOCK_DIR
 export RITE_STATE_DIR

@@ -32,6 +32,8 @@
 #                all trigger Blocked-by injection (([^a-zA-Z0-9.-]|$) anchor fix).
 #   Fixture AD — Go module path host prefix (e.g. "github" from "github.com/stretchr/testify") does NOT
 #                ground a host spike — dot is not a valid vendor-token boundary separator.
+#   Fixture AE — Loopback/never-external hosts (localhost:port, 127.0.0.1, *.local) produce zero spikes.
+#   Fixture AF — RFC 2606 documentation domains (example.com, *.test, *.invalid) produce zero spikes.
 
 load '../helpers/setup.bash'
 
@@ -107,6 +109,11 @@ setup() {
     "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")
   # shellcheck disable=SC1090
   eval "$(sed -n "${_di_start},${_di_end}p" "${RITE_REPO_ROOT}/lib/core/plan-issues.sh")"
+
+  # Top-level constant from plan-issues.sh (line ~93) — not inside any function,
+  # so not captured by the sed line-range extraction above. Must be set explicitly.
+  # Used by _detect_unverified_integrations to budget the spike title display name.
+  _RITE_PLAN_TITLE_MAX_LEN=50
 
 }
 
@@ -1363,12 +1370,12 @@ FIXTURE
   }
 
   # Raw position label [1/3] must NOT appear (spikes removed from impl counter)
-  echo "$all_out" | grep -qF "[1/3]" && {
+  if echo "$all_out" | grep -qF "[1/3]"; then
     echo "FAIL: found raw position label [1/3] — spikes must not consume impl ordinal slots" >&2
     echo "--- display output ---" >&2
     echo "$all_out" >&2
     false
-  } || true
+  fi
 
   rm -f "$stdout_out" "$stderr_out"
 }
@@ -1447,20 +1454,20 @@ FIXTURE
   }
 
   # No note line (spike-free batches must not print the note)
-  echo "$all_out" | grep -q "implementation issues only" && {
+  if echo "$all_out" | grep -q "implementation issues only"; then
     echo "FAIL: spike-free preview must not print the #N note line" >&2
     echo "--- display output ---" >&2
     echo "$all_out" >&2
     false
-  } || true
+  fi
 
   # No [spike …] labels
-  echo "$all_out" | grep -qF "[spike" && {
+  if echo "$all_out" | grep -qF "[spike"; then
     echo "FAIL: spike-free preview must not contain [spike ...] labels" >&2
     echo "--- display output ---" >&2
     echo "$all_out" >&2
     false
-  } || true
+  fi
 
   rm -f "$stdout_out" "$stderr_out"
 }
@@ -1735,11 +1742,11 @@ FIXTURE
   }
 
   # Must not produce a spike for bare 'co.uk' (that would be wrong)
-  grep -qi "capture co.uk sample - fixtures" "$issues_file" && {
+  if grep -qi "capture co.uk sample - fixtures" "$issues_file"; then
     echo "FAIL: spike was created for bare 'co.uk' — multi-part TLD normalization is wrong" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   # Spike title must use the registrable domain myservice.co.uk
   local first_title
@@ -1869,11 +1876,11 @@ FIXTURE
   }
 
   # Neither issue should carry a Blocked-by dependency
-  grep -q "Blocked by:" "$issues_file" && {
+  if grep -q "Blocked by:" "$issues_file"; then
     echo "FAIL: found spurious 'Blocked by:' in issues file — grounded-only issue acquired spike dependency" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   rm -f "$stderr_out"
 }
@@ -1947,13 +1954,13 @@ FIXTURE
   # The foo.com issue (block 2 after spike prepended) must NOT carry Blocked-by
   local foocom_block
   foocom_block=$(awk '/^---ISSUE---/{b++; buf=""} b==2{buf=buf"\n"$0} /^---END---/ && b==2{print buf; exit}' "$issues_file")
-  echo "$foocom_block" | grep -q "Blocked by:" && {
+  if echo "$foocom_block" | grep -q "Blocked by:"; then
     echo "FAIL: foo.com issue acquired spurious Blocked-by from foo.co spike (prefix-collision anchor broken)" >&2
     echo "--- foo.com block ---" >&2
     echo "$foocom_block" >&2
     cat "$issues_file" >&2
     false
-  } || true
+  fi
 
   # The foo.co issue (block 3) must carry Blocked-by #SPIKE-foo-co
   local fooco_block
@@ -2518,10 +2525,10 @@ FIXTURE
   }
 
   # A spike block without SPIKE_KEY: must not have the field present
-  grep -q "^SPIKE_KEY:" "$issues_file" && {
+  if grep -q "^SPIKE_KEY:" "$issues_file"; then
     echo "FAIL: test fixture unexpectedly contains SPIKE_KEY: field" >&2
     false
-  } || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2660,4 +2667,250 @@ FIXTURE
     echo "$fn_body" | grep '_strptime)' >&2
     false
   }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AE: loopback/never-external hosts produce zero spikes
+#
+# Live failure (orrery 2026-10-20): http://localhost:54324 (Inbucket) in a
+# verification command produced "Capture localhost sample - fixtures" and put
+# "Blocked by: #SPIKE-localhost" on the magic-link issue.
+#
+# Tests: localhost:port, 127.0.0.1, 0.0.0.0, and *.local suffix —
+# all silently skipped before the grounded-set check, producing zero spikes
+# and zero Blocked-by rewrites.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AE: localhost:port URL produces zero spikes and zero Blocked-by (orrery regression)" {
+  # No fixtures or manifests — if the never-external check were absent, localhost
+  # would be ungrounded and produce a spike + Blocked-by.
+  local issues_file="$RITE_TEST_TMPDIR/issues-ae-localhost.txt"
+  write_issues_file "$issues_file" \
+    "Send magic-link email" \
+    "Run verification: curl http://localhost:54324/api/v1/mailbox to check Inbucket delivery."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must emit NO warning — loopback is never-external, not an ungrounded integration
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for localhost URL, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must still have exactly 1 issue (no spike prepended)
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike for localhost), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # Must have no Blocked-by line
+  if grep -q "Blocked by:" "$issues_file"; then
+    echo "FAIL: found spurious 'Blocked by:' for localhost URL" >&2
+    cat "$issues_file" >&2
+    false
+  fi
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AE: 127.0.0.1 URL produces zero spikes" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ae-127.txt"
+  write_issues_file "$issues_file" \
+    "Health check local server" \
+    "Verify: curl http://127.0.0.1:8080/health returns 200."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for 127.0.0.1 URL, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike for 127.0.0.1), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AE: *.local mDNS hostname produces zero spikes" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-ae-local.txt"
+  write_issues_file "$issues_file" \
+    "Connect to local dev service" \
+    "Access http://myapp.local:3000/api to hit the dev service on the LAN."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for *.local hostname, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike for *.local), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AE: real external host still spikes when same issue also contains localhost URL" {
+  # Mixed body: one never-external host (localhost) + one real external host (api.realservice.io).
+  # The never-external host must be silently skipped; the real host must still spike.
+  local issues_file="$RITE_TEST_TMPDIR/issues-ae-mixed.txt"
+  write_issues_file "$issues_file" \
+    "Integrate real service with local dev" \
+    "Call https://api.realservice.io/data then verify at http://localhost:9999/status."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+
+  # Exactly one WARNING — for realservice.io, not localhost
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 1 ] || {
+    echo "FAIL: expected 1 WARNING (realservice.io), got $warning_count — localhost must be excluded silently" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  grep -q "realservice.io" "$stderr_out" || {
+    echo "FAIL: WARNING does not mention realservice.io" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Must have 2 issues: 1 spike (for realservice.io) + 1 original
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 2 ] || {
+    echo "FAIL: expected 2 issues (spike for realservice.io only), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # No spike for localhost must appear
+  if grep -qi "capture localhost sample" "$issues_file"; then
+    echo "FAIL: found spurious 'localhost' spike — never-external exclusion failed" >&2
+    cat "$issues_file" >&2
+    false
+  fi
+
+  rm -f "$stderr_out"
+}
+
+# ---------------------------------------------------------------------------
+# Fixture AF: RFC 2606 documentation domains produce zero spikes
+#
+# example.com/example.net/example.org (and subdomains), *.test, *.invalid
+# are reserved by RFC 2606 for documentation and testing — they cannot be
+# real external integrations and must be silently excluded.
+# ---------------------------------------------------------------------------
+
+@test "Fixture AF: example.com subdomain URL produces zero spikes (RFC 2606)" {
+  # No fixtures for sub.example.com — without the never-external check this
+  # would generate a spike. With the check, it is silently skipped.
+  local issues_file="$RITE_TEST_TMPDIR/issues-af-example.txt"
+  write_issues_file "$issues_file" \
+    "Sketch callback handler" \
+    "When the provider redirects to https://sub.example.com/callback, parse the code."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for RFC 2606 example.com subdomain, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike for RFC 2606 example.com subdomain), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "Fixture AF: *.test and *.invalid TLD URLs produce zero spikes (RFC 2606)" {
+  local issues_file="$RITE_TEST_TMPDIR/issues-af-tld.txt"
+  write_issues_file "$issues_file" \
+    "Wire up test environment" \
+    "Point client at https://auth.myapp.test/login and https://api.myapp.invalid/v1 in tests."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ]
+
+  local warning_count
+  warning_count=$(grep -c "^WARNING:" "$stderr_out" || true)
+  [ "$warning_count" -eq 0 ] || {
+    echo "FAIL: expected 0 WARNINGs for *.test / *.invalid hosts, got $warning_count" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 1 ] || {
+    echo "FAIL: expected 1 issue (no spike for RFC 2606 reserved TLDs), got $issue_count" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
 }

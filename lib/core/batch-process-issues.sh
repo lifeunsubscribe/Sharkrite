@@ -56,6 +56,7 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/cap-resume.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -560,6 +561,53 @@ _ftm_file_overlap() {
 }
 
 # ---------------------------------------------------------------------------
+# _apply_overlap_defer_or_warn
+#
+# Apply the defer-or-warn decision after _ftm_file_overlap has populated
+# _OVERLAP_FILES/_OVERLAP_WT.  When _OVERLAP_FILES is empty, returns 0
+# immediately (no overlap detected, caller proceeds).
+#
+# When overlap is detected:
+#   Below cap  → increments _DEFER_COUNT[$ISSUE_NUM], re-appends $ISSUE_NUM to
+#                ISSUE_LIST, sets ISSUE_STATUS[ISSUE_NUM]="deferred_for_overlap",
+#                prints a warning, and returns 1 (caller must `continue` the loop).
+#   Cap reached → prints a warn-in-place warning and returns 0 (caller proceeds).
+#
+# Returns:
+#   0 → no overlap, or cap exhausted → caller runs the issue in place
+#   1 → issue deferred → caller must `continue` the batch loop
+#
+# Globals read:  _OVERLAP_FILES, _OVERLAP_WT, ISSUE_NUM, _DEFER_COUNT,
+#                _UNIQUE_ISSUE_COUNT, ISSUE_LIST
+# Globals written: _DEFER_COUNT, ISSUE_LIST, ISSUE_STATUS
+# Extracted so tests can source and call it directly rather than duplicating
+# the cap comparison and ISSUE_LIST re-append logic in a heredoc fixture.
+# ---------------------------------------------------------------------------
+_apply_overlap_defer_or_warn() {
+  [ -n "${_OVERLAP_FILES:-}" ] || return 0
+
+  local _overlap_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
+  local _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+
+  if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
+    _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
+    print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+    ISSUE_LIST+=("$ISSUE_NUM")
+    ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT")"
+    fi
+    return 1
+  else
+    print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT") cap_exhausted=true"
+    fi
+    return 0
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency
@@ -870,6 +918,10 @@ AUTH_FAILURE_ISSUES=()           # Exit 18: provider auth failure — batch halt
 # Auth-halt flag: set to true when exit 18 triggers a batch halt so the
 # post-loop pass can mark remaining unprocessed issues as skipped:auth.
 _BATCH_AUTH_HALT=false
+
+# Cap-abort flag: set to true when exit 5 breaks the issue loop so the
+# post-loop path can attempt an opt-in auto-resume (lib/utils/cap-resume.sh).
+_CAP_ABORT=false
 
 # Circuit-breaker state (issue #823): consecutive identical gate failures.
 # Tracks the last-seen gate failure signature and the run length so the batch
@@ -1421,26 +1473,11 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   _OVERLAP_FILES=""
   _OVERLAP_WT=""
   _ftm_file_overlap "$ISSUE_BODY"
-  if [ -n "${_OVERLAP_FILES:-}" ]; then
-    _overlap_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
-    _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
-    if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
-      _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
-      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
-      ISSUE_LIST+=("$ISSUE_NUM")
-      ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
-      if declare -f _diag >/dev/null 2>&1; then
-        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT")"
-      fi
-      echo ""
-      _gate_consec_count=0; _gate_consec_sig=""
-      continue
-    else
-      print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
-      if declare -f _diag >/dev/null 2>&1; then
-        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT") cap_exhausted=true"
-      fi
-    fi
+  _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=$?
+  if [ "$_overlap_action_rc" -ne 0 ]; then
+    echo ""
+    _gate_consec_count=0; _gate_consec_sig=""
+    continue
   fi
 
   # Check if issue is actively being worked on (worktree exists with a running rite/claude process)
@@ -1800,11 +1837,13 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
+      increment_failed   # session tracker: invariant_violated counts as processed
 
     elif [ $EXIT_CODE -eq 5 ]; then
       # Usage cap reached — abort batch, write resume manifest, print resume cmd.
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="usage_cap"
+      increment_failed   # session tracker: usage_cap counts as processed
 
       # Read reset-line persisted by claude.sh when the cap was detected.
       # RITE_BATCH_ID is always set in batch context (see top of this file), so the
@@ -1859,13 +1898,18 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         [ -n "$_issues_json" ] && _issues_json="${_issues_json},"
         _issues_json="${_issues_json}${_ri}"
       done
+      # Propagate resumed=true when already in a resumed run so a second cap in
+      # the resumed batch does not trigger another auto-resume loop.
+      _resumed_val="false"
+      [ "${_RITE_CAP_RESUMED:-}" = "1" ] && _resumed_val="true"
       jq -n \
         --argjson issues "[${_issues_json}]" \
         --arg flags "$_batch_flags" \
         --argjson reset_epoch "$_cap_reset_epoch" \
         --arg reset_text "${_cap_reset_text:-}" \
         --argjson written "$_written_epoch" \
-        '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written}' \
+        --argjson resumed "$_resumed_val" \
+        '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written, resumed: $resumed}' \
         > "$_manifest_path"
 
       # Print enhanced abort message
@@ -1880,6 +1924,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       print_info "Resume with: $_resume_cmd"
       print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
+      _CAP_ABORT=true
       break
 
     elif [ $EXIT_CODE -eq 18 ]; then
@@ -1902,6 +1947,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="auth_failure"
+      increment_failed   # session tracker: auth_failure counts as processed
       AUTH_FAILURE_ISSUES+=("$ISSUE_NUM")
       _BATCH_AUTH_HALT=true
       break
@@ -1929,6 +1975,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"
+      increment_failed   # session tracker: failed counts as processed
     fi
   fi
 
@@ -2228,6 +2275,14 @@ if [ "$SESSION_DURATION" != "0" ]; then
 fi
 
 send_notification_all "$NOTIFICATION_MESSAGE" "normal"
+
+# Opt-in auto-resume: if a cap abort occurred and RITE_CAP_AUTORESUME=true,
+# wait for the reset time and exec a fresh rite invocation with the remaining
+# issues.  attempt_cap_autoresume either execs (and does not return) or
+# returns 1 when not eligible — fall through to the normal exit path.
+if [ "${_CAP_ABORT:-false}" = "true" ]; then
+  attempt_cap_autoresume "${_manifest_path:-}" || true
+fi
 
 # Exit with appropriate code
 # Circuit-breaker trip takes priority — it is a distinct failure mode that

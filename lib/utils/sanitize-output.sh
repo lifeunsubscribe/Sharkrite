@@ -16,6 +16,9 @@
 #     Strips "rtk proxy <cmd>" → "<cmd>" and "rtk <cmd>" → "<cmd>" at
 #     command positions (line-start, after backtick / $( / "| " / "&& ").
 #     Prose mentions of "rtk" not at a command position are left untouched.
+#     Meta-commands (gain, discover, stats, init, read) pass through unchanged:
+#     they have no underlying command, so stripping "rtk " would leave a
+#     nonexistent bare word. See ~/.claude/RTK.md "Meta Commands" section.
 #     Prints the sanitized body on stdout; one print_info line to stderr when
 #     anything is rewritten.
 #
@@ -75,8 +78,25 @@ sanitize_generated_commands() {
   # Each sed call handles one position type; processing line-start before mid-line
   # prevents a double-strip on lines that start with an rtk call.
   # -E for ERE throughout; each substitution is a simple literal-string replacement.
+  #
+  # Order: protect meta-commands → proxy rules → bare-rtk rules → restore.
+  # Meta-commands (see ~/.claude/RTK.md "Meta Commands" section) are temporarily
+  # replaced with a placeholder so the strip rules leave them intact, then restored.
+  # Word boundary ([^[:alnum:]_-]|$) prevents false positives like "rtk readlink",
+  # "rtk initdb", or "rtk stats-collector" from being protected when they should be
+  # stripped. Hyphens are excluded from the boundary class so "stats-collector" is
+  # not mistaken for the "stats" meta-command followed by a boundary character.
+  # Randomized placeholder prevents collision when the input already contains the
+  # literal placeholder string (e.g. issue bodies that document the sanitization
+  # format). PID + RANDOM makes a collision astronomically unlikely.
+  local _RTK_META_PH="__RITE_RTK_META_${$}_${RANDOM}__"
   local _sgc_sanitized
   _sgc_sanitized=$(printf '%s' "$_sgc_body" | \
+    sed -E 's/^rtk (gain|discover|stats|init|read)([^[:alnum:]_-]|$)/'"${_RTK_META_PH}"'\1\2/' | \
+    sed -E 's/`rtk (gain|discover|stats|init|read)([^[:alnum:]_-]|$)/`'"${_RTK_META_PH}"'\1\2/g' | \
+    sed -E 's/\$\(rtk (gain|discover|stats|init|read)([^[:alnum:]_-]|$)/\$('"${_RTK_META_PH}"'\1\2/g' | \
+    sed -E 's/([|] )rtk (gain|discover|stats|init|read)([^[:alnum:]_-]|$)/\1'"${_RTK_META_PH}"'\2\3/g' | \
+    sed -E 's/(&& )rtk (gain|discover|stats|init|read)([^[:alnum:]_-]|$)/\1'"${_RTK_META_PH}"'\2\3/g' | \
     sed -E 's/^rtk proxy //' | \
     sed -E 's/^rtk //' | \
     sed -E 's/`rtk proxy /`/g' | \
@@ -86,7 +106,8 @@ sanitize_generated_commands() {
     sed -E 's/([|] )rtk proxy /\1/g' | \
     sed -E 's/([|] )rtk /\1/g' | \
     sed -E 's/(&& )rtk proxy /\1/g' | \
-    sed -E 's/(&& )rtk /\1/g' || true)
+    sed -E 's/(&& )rtk /\1/g' | \
+    sed 's/'"${_RTK_META_PH}"'/rtk /g' || true)
 
   if [ "${_sgc_sanitized}" = "${_sgc_body}" ]; then
     printf '%s' "$_sgc_body"

@@ -99,7 +99,7 @@ scan_worktrees() {
         # Unpushed commits
         local unpushed=0
         local remote_exists
-        remote_exists=$(git -C "$current_path" rev-parse "origin/$branch" 2>/dev/null || echo "")
+        remote_exists=$(git -C "$current_path" rev-parse --verify --quiet "origin/$branch" 2>/dev/null || echo "")
         if [ -n "$remote_exists" ]; then
           unpushed=$(git -C "$current_path" log --oneline "origin/$branch..HEAD" 2>/dev/null | wc -l | tr -d ' ' || true)
         fi
@@ -161,7 +161,7 @@ scan_worktrees() {
     uncommitted=$(git -C "$current_path" status --porcelain 2>/dev/null | grep -cvE "^\?\?" || true)
     local unpushed=0
     local remote_exists
-    remote_exists=$(git -C "$current_path" rev-parse "origin/$branch" 2>/dev/null || echo "")
+    remote_exists=$(git -C "$current_path" rev-parse --verify --quiet "origin/$branch" 2>/dev/null || echo "")
     if [ -n "$remote_exists" ]; then
       unpushed=$(git -C "$current_path" log --oneline "origin/$branch..HEAD" 2>/dev/null | wc -l | tr -d ' ' || true)
     fi
@@ -485,7 +485,7 @@ render_integration_branches() {
 
     # --- Check whether origin/<branch> ref exists locally ---
     local _origin_sha
-    _origin_sha=$(git rev-parse "origin/$_branch" 2>/dev/null || echo "")
+    _origin_sha=$(git rev-parse --verify --quiet "origin/$_branch" 2>/dev/null || echo "")
 
     # Skip fully-retired ledgers: all entries promoted, no in-flight worktrees,
     # and no local origin/<branch> ref (branch was deleted after promotion).
