@@ -361,12 +361,19 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
       fi
       [ -z "$_t_canonical_src" ] && continue
 
-      # Check whether this test still fails in serial run
-      if grep -qF "not ok" "$_serial_results_raw" 2>/dev/null && \
-         grep -qF "$_t_name" "$_serial_results_raw" 2>/dev/null; then
-        # Persistent: extract first # line after the not-ok for this test
-        _assert_line=$(grep -A4 "not ok.*${_t_name}" "$_serial_results_raw" 2>/dev/null \
-          | grep "^#" | head -1 | sed 's/^# *//' || true)
+      # Check whether this test still fails in serial run: pipe lines that
+      # contain the test name (fixed-string) into a check for "not ok" so a
+      # multi-test file where only a sibling fails does not misclassify this
+      # test as persistent.
+      if grep -F "$_t_name" "$_serial_results_raw" 2>/dev/null | grep -qF "not ok" 2>/dev/null; then
+        # Persistent: extract first # assertion line after the not-ok line for
+        # this test.  awk's index() is a fixed-string lookup — safe for any
+        # test name containing regex metacharacters.
+        _assert_line=$(awk -v name="$_t_name" '
+          index($0, name) && /not ok/ { found=1; next }
+          found && /^#/ { sub(/^# */, ""); print; exit }
+          found && !/^#/ { found=0 }
+        ' "$_serial_results_raw" 2>/dev/null | head -1 || true)
         printf '%s\t%s\t%s\n' "$_t_name" "$_bats_file" "${_assert_line:-}" >> "$_persistent_tsv"
       else
         # Cleared on serial re-run — parallel-starvation flake
@@ -417,7 +424,7 @@ PROMPT_HDR
         while IFS=$'\t' read -r _pn _pf _pa; do
           echo "  name: ${_pn}"
           echo "  file: ${_pf#"$_PROJECT_ROOT/"}"
-          [ -n "${_pa:-}" ] && echo "  assertion: ${_pa}"
+          if [ -n "${_pa:-}" ]; then echo "  assertion: ${_pa}"; fi
         done < "$_persistent_tsv"
       else
         echo "  (none)"
@@ -478,7 +485,7 @@ PROMPT_HDR
         [ -z "$_pn" ] && continue
         echo "### \`${_pn}\`"
         echo "- **File:** \`${_pf#"$_PROJECT_ROOT/"}\`"
-        [ -n "${_pa:-}" ] && echo "- **Assertion:** ${_pa}"
+        if [ -n "${_pa:-}" ]; then echo "- **Assertion:** ${_pa}"; fi
         echo ""
       done < "$_persistent_tsv"
     fi
@@ -523,7 +530,7 @@ PROMPT_HDR
   source "$RITE_LIB_DIR/utils/markers.sh" 2>/dev/null || true
   # shellcheck disable=SC1090
   source "$RITE_LIB_DIR/utils/gh-retry.sh" 2>/dev/null || true
-  if [ "${_persistent_count:-0}" -gt 0 ] || [ "${_lint_persistent_count:-0}" -gt 0 ]; then
+  if [ "${_persistent_count:-0}" -gt 0 ] || [ "${_lint_persistent_count:-0}" -gt 0 ] || [ "${_unmapped_count:-0}" -gt 0 ]; then
 
     # Compute a deterministic hash from the sorted set of persistent items.
     # cksum is POSIX and available on macOS + Linux; take only the decimal checksum.
@@ -535,15 +542,33 @@ PROMPT_HDR
         echo "$_pn" >> "$_hash_lines_file"
       done < "$_persistent_tsv"
     fi
+    if [ -s "$_unmapped_tsv" ]; then
+      while IFS= read -r _un; do
+        [ -z "$_un" ] && continue
+        printf 'unmapped:%s\n' "$_un" >> "$_hash_lines_file"
+      done < "$_unmapped_tsv"
+    fi
     _hash=$(sort "$_hash_lines_file" | cksum | awk '{print $1}' || true)
     _hash="${_hash:-0}"
 
     # Dedup check: search for an open issue already carrying this marker.
-    # Guard anchors on the hash (not the bare prefix) per bare-prefix-grep rule.
+    # Mirrors merge-pr.sh:129-142: quoted phrase + in:body guards GitHub fuzzy
+    # tokenization; client-side grep-qE on the fetched body guards superstring
+    # false-positives (e.g. hash 407 matching hash 4070).
     _existing_remediation=""
-    _existing_remediation=$(gh_safe issue list --state open \
-      --search "${RITE_MARKER_FULL_SUITE_REMEDIATION:-}:${_hash}" \
-      --json number --jq '.[0].number' 2>/dev/null || true)
+    _raw_dedup_hits=$(gh_safe issue list --state open \
+      --search "\"${RITE_MARKER_FULL_SUITE_REMEDIATION:-sharkrite-full-suite-remediation}:${_hash}\" in:body" \
+      --json number --jq '.[].number' 2>/dev/null || true)
+    if [ -n "${_raw_dedup_hits:-}" ]; then
+      while IFS= read -r _candidate; do
+        [ -z "$_candidate" ] && continue
+        _cbody=$(gh_safe issue view "$_candidate" --json body --jq '.body' 2>/dev/null || true)
+        if echo "${_cbody:-}" | grep -qE "${RITE_MARKER_FULL_SUITE_REMEDIATION:-sharkrite-full-suite-remediation}:${_hash}([^0-9]|$)"; then
+          _existing_remediation="${_candidate}"
+          break
+        fi
+      done <<< "$_raw_dedup_hits"
+    fi
 
     if [ -n "${_existing_remediation:-}" ] && [ "${_existing_remediation}" != "null" ]; then
       print_info "Remediation issue #${_existing_remediation} already exists for this failure set — skipping duplicate."
@@ -572,6 +597,12 @@ PROMPT_HDR
       if [ "${_lint_persistent_count:-0}" -gt 0 ]; then
         _ac_block="${_ac_block}- [ ] Lint check clean: \`make check\`"$'\n'
       fi
+      if [ -s "$_unmapped_tsv" ]; then
+        while IFS= read -r _un; do
+          [ -z "$_un" ] && continue
+          _ac_block="${_ac_block}- [ ] Locate and fix unmapped failure: \`${_un}\` (run \`bats -r tests/\` to reproduce)"$'\n'
+        done < "$_unmapped_tsv"
+      fi
       _ac_block="${_ac_block:-- [ ] All failures resolved}"
 
       # Build verification commands block
@@ -585,11 +616,11 @@ PROMPT_HDR
       _verify_block="${_verify_block}"$'\n'"rite --full-suite    # confirm full safety net passes"
 
       {
-        echo "<!-- ${RITE_MARKER_FULL_SUITE_REMEDIATION:-}:${_hash} -->"
+        echo "<!-- ${RITE_MARKER_FULL_SUITE_REMEDIATION:-sharkrite-full-suite-remediation}:${_hash} -->"
         echo ""
         echo "## Description"
         echo ""
-        echo "Overnight full-suite run on ${_TODAY} found ${_persistent_count} persistent test failure(s) and ${_lint_persistent_count} lint violation(s) that survived serial re-run. All cleared-on-serial failures are excluded from this issue (those are parallelism artifacts, not regressions). Fix the persistent failures before the next scheduled run."
+        echo "Overnight full-suite run on ${_TODAY} found ${_persistent_count} persistent test failure(s), ${_lint_persistent_count} lint violation(s), and ${_unmapped_count} unmapped failure(s) (source file not locatable) that require investigation. All cleared-on-serial failures are excluded from this issue (those are parallelism artifacts, not regressions). Fix the failures below before the next scheduled run."
         echo ""
         echo "**Report:** \`${_REPORT_FILE}\`"
         echo "**Branch:** \`${_BRANCH}\`"
