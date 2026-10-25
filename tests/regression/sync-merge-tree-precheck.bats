@@ -236,6 +236,11 @@ teardown() {
     return 0
   }
 
+  # Stub verify_post_merge: returns pass so the test focuses on the resolver
+  # parent-shell invariant and scoped-staging contract. A separate structural
+  # test (below) pins that verify_post_merge is called before the push.
+  verify_post_merge() { return 0; }
+
   # ── Run sync_issue_branch ─────────────────────────────────────────────────
   local _rc=0
   sync_issue_branch "888" || _rc=$?
@@ -251,4 +256,31 @@ teardown() {
 
   # conflicting-file.txt MUST appear (was scoped-staged via _RITE_RESOLVER_CONFLICT_PATHS)
   [[ "$_last_commit_files" == *"conflicting-file.txt"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Structural: verify_post_merge is called inside sync_issue_branch after
+# commit_resolved_conflicts — matches the --sync <branch> parity contract.
+# ---------------------------------------------------------------------------
+@test "sync_issue_branch calls verify_post_merge after commit_resolved_conflicts" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  sed -n '/^sync_issue_branch()/,/^}/p' "$_lib" | grep -q 'verify_post_merge'
+}
+
+# ---------------------------------------------------------------------------
+# Structural: verify_post_merge appears AFTER commit_resolved_conflicts in
+# the sync_issue_branch body (order matters for the correctness guarantee).
+# ---------------------------------------------------------------------------
+@test "sync_issue_branch: verify_post_merge appears after commit_resolved_conflicts" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  local _body
+  _body=$(sed -n '/^sync_issue_branch()/,/^}/p' "$_lib")
+  local _commit_line _verify_line
+  _commit_line=$(echo "$_body" | grep -n 'commit_resolved_conflicts' | head -1 | cut -d: -f1 || true)
+  _verify_line=$(echo "$_body" | grep -n 'verify_post_merge' | head -1 | cut -d: -f1 || true)
+  [ -n "$_commit_line" ]
+  [ -n "$_verify_line" ]
+  [ "$_verify_line" -gt "$_commit_line" ]
 }

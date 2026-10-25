@@ -2004,9 +2004,9 @@ Rebases the feature branch for an issue onto its resolver-determined base and fo
 3. **Staleness threshold** (Rail 3) — `get_commits_behind_main` ≥ `RITE_STALE_BRANCH_THRESHOLD` (default: 10). A branch this far behind is likely to produce conflicts on rebase, and the resulting stale-review rewrite would be expensive. The correct path is the workflow's own stale-branch handler, which is conflict-based (post-#1137): it attempts a rebase first and falls back to close-and-restart only if conflicts are unresolvable. Deferring here avoids a shallow sync attempt on what the workflow's resolver is better equipped to handle. → `skipped-threshold`, exit 0.
 4. **Already current** (Rail 4) — `COMMITS_BEHIND_MAIN == 0`. No rebase needed. → `current`, exit 0.
 
-If all rails pass, the function rebases onto `origin/<base>`. On rebase conflict: abort, exit 0 (informational skip). On push rejection after a successful rebase: exit 1 (operational failure).
+If all rails pass, the function rebases onto `origin/<base>`. On rebase conflict: abort then attempt Claude-assisted resolution (guarded with `declare -f`, same as the branch form). On successful resolution: `commit_resolved_conflicts` → `verify_post_merge "origin/<base>"` → force-push. On push rejection after a successful rebase or resolution: exit 1 (operational failure). On `verify_post_merge` failure or unresolvable conflict: exit 0 (informational skip, per the composability contract).
 
-`sync_issue_branch` does not invoke Claude conflict resolution or `verify_post_merge`. These workflow-level tools belong to the issue lifecycle, not the lightweight sync path. The issue form is intentionally shallower than the branch form.
+The conflict path mirrors the branch form. `attempt_claude_merge_resolution` is called in the parent shell (not a subshell) so `_RITE_RESOLVER_CONFLICT_PATHS` propagates to `commit_resolved_conflicts` for scoped staging. `verify_post_merge` is called with `origin/<base>` as the diff base (rebase path — per #854, this runs branch-only coverage against the post-rebase tree rather than the expensive pre-rebase-HEAD union).
 
 **Diagnostic:** `SYNC_ISSUE issue=<N> outcome=skipped-lock|skipped-dirty|skipped-threshold|current|not-found|conflict|synced|push_failed|fetch_failed`
 

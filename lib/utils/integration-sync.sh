@@ -455,6 +455,13 @@ sync_issue_branch() {
           return 0
         fi
         _conflict_resolved=true
+        if ! verify_post_merge "$_wt_path" "origin/$_base"; then
+          print_warning "Issue #${_issue_n}: conflict resolution succeeded at git level but tests fail"
+          print_error "Issue #${_issue_n}: post-resolution verification failed — cannot push"
+          _SYNC_ISSUE_OUTCOME="conflict"
+          _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
+          return 0
+        fi
       fi
     fi
 
