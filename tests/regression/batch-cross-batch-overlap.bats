@@ -147,7 +147,7 @@ _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=\$?
 
 if [ "\$_overlap_action_rc" -ne 0 ]; then
   echo "OVERLAP_DEFERRED: issue \$ISSUE_NUM (defer #\${_DEFER_COUNT[\$ISSUE_NUM]}) files=\${_OVERLAP_FILES}"
-  echo "STATUS:deferred_for_overlap"
+  echo "STATUS:\${ISSUE_STATUS[\$ISSUE_NUM]:-UNSET}"
   echo "ISSUE_LIST_LEN_BEFORE:\${_list_len_before}"
   echo "ISSUE_LIST_LEN_AFTER:\${#ISSUE_LIST[@]}"
   echo "DEFER_COUNT:\${_DEFER_COUNT[\$ISSUE_NUM]}"
