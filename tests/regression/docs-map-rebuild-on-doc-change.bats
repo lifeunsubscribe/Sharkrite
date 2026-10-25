@@ -130,12 +130,24 @@ _source_docs_map() {
 }
 
 # ---------------------------------------------------------------------------
-# 7. docs-command.sh: _docs_apply_approved calls docs_map_build before git add
+# 7. docs-command.sh: _docs_apply_approved calls docs_map_build before git add,
+#    gated on _aa_applied counter (so all-skipped paths don't trigger a spurious
+#    commit+push of just the map rebuild)
 # ---------------------------------------------------------------------------
-@test "docs-apply: _docs_apply_approved calls docs_map_build after proposals" {
-  local count
-  count="$(grep -c "docs_map_build" "$RITE_REPO_ROOT/lib/core/docs-command.sh" || true)"
-  [ "$count" -ge 1 ]
+@test "docs-apply: _docs_apply_approved rebuilds docs-map only when proposals were applied" {
+  # Extract the _docs_apply_approved function body and verify:
+  #   (a) docs_map_build is called inside the function (hook exists)
+  #   (b) the call is gated on _aa_applied (all-skipped guard exists)
+  # An awk extraction is used so matches outside the function body cannot satisfy (a).
+  local fn_body
+  fn_body="$(awk '/^_docs_apply_approved\(\)/{found=1} found{print} found && /^\}$/{exit}' \
+    "$RITE_REPO_ROOT/lib/core/docs-command.sh" || true)"
+
+  # (a) docs_map_build must appear inside _docs_apply_approved
+  printf '%s\n' "$fn_body" | grep -q "docs_map_build"
+
+  # (b) _aa_applied counter must gate the rebuild call
+  printf '%s\n' "$fn_body" | grep -q "_aa_applied"
 }
 
 # ---------------------------------------------------------------------------

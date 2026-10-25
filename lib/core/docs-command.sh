@@ -200,6 +200,7 @@ _docs_apply_approved() {
 
   # Apply each approved proposal to the worktree
   local _aa_all_drift_refs=""
+  local _aa_applied=0
   local _aa_pf
   for _aa_pf in "${_aa_dir}"/approved_*.txt; do
     [ -f "$_aa_pf" ] || continue
@@ -246,6 +247,7 @@ _docs_apply_approved() {
     mkdir -p "$(dirname "$_aa_target_file")"
     # Strip trailing newline added by the accumulation loop (printf is idempotent)
     printf '%s' "$_aa_content" > "$_aa_target_file"
+    _aa_applied=$(( _aa_applied + 1 ))
 
     # Accumulate drift refs (strip "none")
     if [ -n "$_aa_drift" ] && [ "$_aa_drift" != "none" ]; then
@@ -265,8 +267,9 @@ _docs_apply_approved() {
   fi
 
   # Rebuild docs map in the worktree so docs/docs-map.tsv is included in the PR.
-  # Zero provider calls — docs_map_build is fully deterministic.
-  if declare -f docs_map_build >/dev/null 2>&1; then
+  # Only when proposals were actually applied — all-skipped paths produce no content
+  # change and must not trigger a spurious commit+push of just the map rebuild.
+  if [ "$_aa_applied" -gt 0 ] && declare -f docs_map_build >/dev/null 2>&1; then
     ( export RITE_PROJECT_ROOT="$_aa_wt_path"; docs_map_build 2>/dev/null ) || true
   fi
 
@@ -902,10 +905,12 @@ _docs_enable_flow() {
   fi
 
   if [[ "$reply_val" =~ ^[Yy]$ ]]; then
-    # Yes: record sync + build map
+    # Yes: record sync + ensure map exists (docs_map_ensure skips rebuild when
+    # docs/docs-map.tsv is already committed, preventing a modified-file conflict
+    # on subsequent git pull --ff-only in the main checkout)
     record_doc_mode "sync"
     print_success "Doc drift tracking on"
-    docs_map_build
+    docs_map_ensure || true
     print_success "Docs map built"
 
     # If the drift log has entries, offer to reconcile now
@@ -935,10 +940,10 @@ _docs_enable_flow() {
       docs_directed_update "$instructions" || true
     fi
   else
-    # No: record off + build map (directed updates still work)
+    # No: record off + ensure map exists (same guard: don't overwrite a committed map)
     record_doc_mode "off"
     print_info "Doc drift tracking off — run 'rite docs' again to turn it on"
-    docs_map_build
+    docs_map_ensure || true
     print_info "Docs map built"
 
     if [ -n "$instructions" ]; then

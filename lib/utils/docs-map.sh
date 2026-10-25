@@ -250,9 +250,12 @@ docs_map_build() {
   local built_ts
   built_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-  # Write to temp file for atomic replace
+  # Write to temp file outside docs/ for atomic replace.
+  # Keeping the temp file outside the tracked docs/ dir prevents a stray
+  # docs-map.tsv.XXXXXX from being staged by git add . if the build fails
+  # between mktemp and mv.
   local tmp_file
-  tmp_file="$(mktemp "${project_root}/docs/docs-map.tsv.XXXXXX")"
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/docs-map-XXXXXX")"
   # Ensure cleanup if we exit unexpectedly before mv
   # (not using EXIT trap per test-runbook Rule 4 — this function is not a @test body;
   #  the trap is fine in a library function but we use a local var for simplicity)
