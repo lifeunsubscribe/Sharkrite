@@ -1249,6 +1249,15 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   # Bug history: #274 — batch silently bypassed closed-issue cleanup for 8 orphan
   # worktrees that accumulated from issues processed via batch (#34, #201-#203).
 
+  # Parent-PR and dependency guards only apply to OPEN issues. For CLOSED issues
+  # both guards are skipped so run_workflow() → handle_closed_issue() handles all
+  # cleanup. Without this gate the waiting_for_parent path can bypass
+  # handle_closed_issue() (reproducing the #274 orphan-worktree bug class) and
+  # the dep guard burns gh issue view per-dep-per-pass on already-closed issues.
+  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
+  ISSUE_BODY=""
+  if [ "$ISSUE_STATE" != "CLOSED" ]; then
+
   # Check if this is a follow-up issue with parent PR dependency
   ISSUE_BODY=$(gh_safe issue view "$ISSUE_NUM" --json body --jq '.body')
   ISSUE_BODY="${ISSUE_BODY:-}"
@@ -1498,6 +1507,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       continue
     fi
   fi
+  fi  # [ "$ISSUE_STATE" != "CLOSED" ] — parent-PR + dep guards
 
   # ---------------------------------------------------------------------------
   # Per-slot cross-batch file overlap check: warn and reorder when this

@@ -1,25 +1,38 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/batch-process-issues.sh::_apply_overlap_defer_or_warn
-# Regression test: closed-issue bypass for the cross-batch overlap guard (#1461)
+# Regression tests: closed-issue bypass for three pre-run guards (#1461, #1474)
 #
-# Bug: The overlap guard ran before closed-issue handling, so a CLOSED issue
-# was deferred (re-appended to ISSUE_LIST) instead of proceeding to cleanup.
-# Each pass burned one defer-cap slot and made one extra gh API call. A batch
-# with 25 closed issues could exhaust the cap 25 times.
+# Guard 1 — parent-PR guard (#1474):
+#   Bug: The parent-PR guard's waiting_for_parent path fired for CLOSED issues,
+#   bypassing handle_closed_issue() entirely — reproducing the #274 orphan-worktree
+#   class. A CLOSED follow-up issue got ISSUE_STATUS="waiting_for_parent" and was
+#   re-deferred forever instead of being cleaned up.
+#   Fix: Wrap the ISSUE_BODY fetch + parent-PR guard in
+#   `if [ "$ISSUE_STATE" != "CLOSED" ]; then`.
 #
-# Fix: Wrap the overlap guard in `if [ "$ISSUE_STATE" != "CLOSED" ]`.
-# ISSUE_STATE is already read before this block — no extra network call needed.
+# Guard 2 — dependency guard (#1474):
+#   Bug: The dep guard fired gh issue view per-dep per-pass for CLOSED issues,
+#   burning network calls and potentially marking issues as dep_failed (bypassing
+#   handle_closed_issue()).
+#   Fix: Same gate as above covers the dep guard too (single if-block wraps both).
+#
+# Guard 3 — cross-batch overlap guard (#1461):
+#   Bug: The overlap guard ran before closed-issue handling, so a CLOSED issue
+#   was deferred (re-appended to ISSUE_LIST) instead of proceeding to cleanup.
+#   Each pass burned one defer-cap slot and made one extra gh API call.
+#   Fix: Wrap the overlap guard in `if [ "$ISSUE_STATE" != "CLOSED" ]`.
 #
 # Tests:
-#   STRUCTURAL:
-#    1. Closed-issue guard (`ISSUE_STATE != "CLOSED"`) exists before the
-#       _ftm_file_overlap call
-#    2. Guard comment references the parity contract ("do NOT short-circuit")
-#
-#   BEHAVIORAL:
-#    3. CLOSED issue with pre-populated _OVERLAP_FILES → proceeds (no defer)
-#    4. OPEN issue with pre-populated _OVERLAP_FILES → deferred (guard fires)
-#    5. CLOSED: ISSUE_LIST length is unchanged after the guard (no re-append)
+#   STRUCTURAL (guard 1 — parent-PR):
+#    1. CLOSED-state gate exists before the parent-PR grep check
+#    2. CLOSED-state gate exists before _extract_dep_issues_from_body
+#   STRUCTURAL (guard 3 — overlap):
+#    3. Closed-issue guard exists before the _ftm_file_overlap call
+#    4. Guard comment references the parity contract ("do NOT short-circuit")
+#   BEHAVIORAL (guard 3 — overlap):
+#    5. CLOSED issue with pre-populated _OVERLAP_FILES → proceeds (no defer)
+#    6. OPEN issue with pre-populated _OVERLAP_FILES → deferred (guard fires)
+#    7. CLOSED: ISSUE_LIST length is unchanged after the guard (no re-append)
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -32,7 +45,57 @@ setup() {
 }
 
 # =============================================================================
-# STRUCTURAL
+# STRUCTURAL — parent-PR + dep guards (#1474)
+# =============================================================================
+
+@test "structural: CLOSED-state gate exists before parent-PR grep check" {
+  # The 'if [ "$ISSUE_STATE" != "CLOSED" ]; then' gate that wraps the ISSUE_BODY
+  # fetch must appear before the parent-PR grep (RITE_MARKER_PARENT_PR) in the
+  # source, so CLOSED follow-up issues bypass the waiting_for_parent path and
+  # reach run_workflow() → handle_closed_issue() instead.
+  local _guard_line _parent_pr_line
+  _guard_line=$(grep -n 'if \[ "\$ISSUE_STATE" != "CLOSED" \]' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+  _parent_pr_line=$(grep -n 'RITE_MARKER_PARENT_PR.*\[0-9\]' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_guard_line" ] || {
+    echo "FAIL: no 'ISSUE_STATE != CLOSED' guard found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ -n "$_parent_pr_line" ] || {
+    echo "FAIL: no RITE_MARKER_PARENT_PR grep line found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ "$_guard_line" -lt "$_parent_pr_line" ] || {
+    echo "FAIL: guard (line $_guard_line) must come BEFORE parent-PR grep (line $_parent_pr_line)" >&2
+    return 1
+  }
+}
+
+@test "structural: CLOSED-state gate exists before dep guard call site" {
+  # The same gate wraps the dep guard, so CLOSED issues bypass the dep_failed /
+  # deferred_for_dep paths that would otherwise bypass handle_closed_issue().
+  # We grep for the call site (DEP_ISSUES=..._extract_dep_issues_from_body), not
+  # the function definition, so the line number comparison is meaningful.
+  local _guard_line _dep_guard_line
+  _guard_line=$(grep -n 'if \[ "\$ISSUE_STATE" != "CLOSED" \]' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+  _dep_guard_line=$(grep -n 'DEP_ISSUES=.*_extract_dep_issues_from_body' "$BATCH_PROCESSOR" | head -1 | cut -d: -f1 || true)
+
+  [ -n "$_guard_line" ] || {
+    echo "FAIL: no 'ISSUE_STATE != CLOSED' guard found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ -n "$_dep_guard_line" ] || {
+    echo "FAIL: no DEP_ISSUES=_extract_dep_issues_from_body call found in $BATCH_PROCESSOR" >&2
+    return 1
+  }
+  [ "$_guard_line" -lt "$_dep_guard_line" ] || {
+    echo "FAIL: guard (line $_guard_line) must come BEFORE dep guard call site (line $_dep_guard_line)" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# STRUCTURAL — overlap guard (#1461)
 # =============================================================================
 
 @test "structural: CLOSED-state guard exists before _ftm_file_overlap call" {
@@ -145,7 +208,7 @@ _build_guard_script() {
 }
 
 # =============================================================================
-# BEHAVIORAL
+# BEHAVIORAL — overlap guard (#1461)
 # =============================================================================
 
 @test "behavioral: CLOSED issue with overlap pre-populated → proceeds (never deferred)" {
