@@ -210,7 +210,7 @@ claude_provider_run_agentic_session() {
   # CLI's own output, never the streamed transcript.
   local _cap_stdout_phrase="" _cap_stderr_phrase=""
   if [ "$_exit_code" -ne 0 ]; then
-    _cap_stdout_phrase=$(grep -oiE "^(spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached)" "$_stdout_capture" 2>/dev/null | head -1 || true)
+    _cap_stdout_phrase=$(grep -oiE "^(spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached)" "$_stdout_capture" 2>/dev/null | head -1 || true)
     if [ -z "$_cap_stdout_phrase" ]; then
       _cap_stderr_phrase=$(grep -oiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached" "$stderr_file" 2>/dev/null | head -1 || true)
     fi
@@ -237,9 +237,15 @@ claude_provider_run_agentic_session() {
   elif [ "$_exit_code" -eq 0 ] && \
      grep -qiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" \
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
-    local _cap_ph0=""
-    _cap_ph0=$(grep -oiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" "$_stdout_capture" "$stderr_file" 2>/dev/null | head -1 || true)
-    { _diag "CAP_DETECTED channel=stdout phrase=${_cap_ph0}"; } 2>/dev/null || true
+    local _cap_ph0="" _cap_ch0=""
+    _cap_ph0=$(grep -oiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" "$_stdout_capture" 2>/dev/null | head -1 || true)
+    if [ -n "$_cap_ph0" ]; then
+      _cap_ch0="stdout"
+    else
+      _cap_ph0=$(grep -oiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" "$stderr_file" 2>/dev/null | head -1 || true)
+      _cap_ch0="stderr"
+    fi
+    { _diag "CAP_DETECTED channel=${_cap_ch0} phrase=${_cap_ph0}"; } 2>/dev/null || true
     _exit_code=5
   # Detect provider auth failure in stdout or stderr. Live phrasings observed
   # (Pilot 2026-07-05/06, rite-855-871-872 batch):
