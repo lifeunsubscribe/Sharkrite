@@ -452,8 +452,8 @@ RUNEOF
   run bash "$_runner" 2>&1
   [ "$status" -eq 0 ]
 
-  # merge-pr.sh must have been invoked once
-  grep -q "MERGE_PR_CALLED" "$_call_log"
+  # merge-pr.sh must have been invoked with the correct PR number and --allow-main-base flag
+  grep -q "MERGE_PR_CALLED pr=555 flags=--auto --allow-main-base" "$_call_log"
   # Ledger entry must be marked promoted
   grep -q "LEDGER_MARKED branch=success-branch issue=42" "$_call_log"
   # Per-issue comment must have been posted
