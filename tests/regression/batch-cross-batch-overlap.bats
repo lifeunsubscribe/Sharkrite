@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh::_ftm_file_overlap
+# sharkrite-test-covers: lib/core/batch-process-issues.sh::_ftm_file_overlap|_apply_overlap_defer_or_warn
 # tests/regression/batch-cross-batch-overlap.bats
 #
 # Regression tests for the cross-batch file-overlap warn-and-reorder feature
@@ -71,10 +71,12 @@ _setup_wt_repo() {
 # _build_overlap_script REPO_PATH ISSUE_BODY_FILE [DEFER_COUNT] [UNIQUE_COUNT]
 #
 # Write a test script that:
-#   1. Inlines _ftm_file_overlap (extracted from the batch processor)
+#   1. Inlines _ftm_file_overlap AND _apply_overlap_defer_or_warn from the
+#      batch processor (production code — not duplicated logic)
 #   2. Runs from REPO_PATH so git worktree list sees the fixture worktrees
-#   3. Calls _ftm_file_overlap with the body from ISSUE_BODY_FILE
+#   3. Calls the production functions with the body from ISSUE_BODY_FILE
 #   4. Prints OVERLAP_DEFERRED / OVERLAP_WARN_IN_PLACE / PROCEEDED + STATUS
+#      plus ISSUE_LIST_LEN_BEFORE/AFTER and DEFER_COUNT when deferred
 # Prints the path of the generated script.
 _build_overlap_script() {
   local _repo="$1"
@@ -93,15 +95,34 @@ _build_overlap_script() {
     echo "ERROR: could not extract _ftm_file_overlap from $BATCH_PROCESSOR" >&2
     return 1
   fi
+
+  local _fn2_tmp="$BATS_TEST_TMPDIR/fn2-body-$$.sh"
+  awk '
+    /_apply_overlap_defer_or_warn[(][)]/ { in_fn=1 }
+    in_fn { print }
+    in_fn && /^}$/ { exit }
+  ' "$BATCH_PROCESSOR" > "$_fn2_tmp" 2>/dev/null
+  if ! grep -q "_apply_overlap_defer_or_warn" "$_fn2_tmp" 2>/dev/null; then
+    echo "ERROR: could not extract _apply_overlap_defer_or_warn from $BATCH_PROCESSOR" >&2
+    return 1
+  fi
+
   local _fn_body
   _fn_body=$(cat "$_fn_tmp" || true)
+  local _fn2_body
+  _fn2_body=$(cat "$_fn2_tmp" || true)
 
   cat > "$_script" <<SCRIPT_EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Inline _ftm_file_overlap extracted from batch-process-issues.sh
+# Stub print_warning (used by _apply_overlap_defer_or_warn; not available outside the full lib chain)
+print_warning() { printf 'WARNING: %s\n' "\$*" >&2; }
+
+# Inline production functions extracted from batch-process-issues.sh
 ${_fn_body}
+
+${_fn2_body}
 
 declare -A ISSUE_STATUS
 declare -A _DEFER_COUNT
@@ -121,21 +142,18 @@ ISSUE_BODY=\$(cat "${_body_file}")
 
 _ftm_file_overlap "\$ISSUE_BODY"
 
-_overlap_defer_count="\${_DEFER_COUNT[\$ISSUE_NUM]:-0}"
-_overlap_max="\${_UNIQUE_ISSUE_COUNT:-\${#ISSUE_LIST[@]}}"
+_list_len_before="\${#ISSUE_LIST[@]}"
+_overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=\$?
 
-if [ -n "\${_OVERLAP_FILES:-}" ]; then
-  if [ "\$_overlap_defer_count" -lt "\$_overlap_max" ]; then
-    _DEFER_COUNT[\$ISSUE_NUM]=\$(( _overlap_defer_count + 1 ))
-    echo "OVERLAP_DEFERRED: issue \$ISSUE_NUM (defer #\${_DEFER_COUNT[\$ISSUE_NUM]}) files=\${_OVERLAP_FILES}"
-    ISSUE_LIST+=("\$ISSUE_NUM")
-    ISSUE_STATUS["\$ISSUE_NUM"]="deferred_for_overlap"
-    echo "STATUS:deferred_for_overlap"
-  else
-    echo "OVERLAP_WARN_IN_PLACE: issue \$ISSUE_NUM files=\${_OVERLAP_FILES}"
-    ISSUE_STATUS["\$ISSUE_NUM"]="cap_exhausted"
-    echo "STATUS:cap_exhausted"
-  fi
+if [ "\$_overlap_action_rc" -ne 0 ]; then
+  echo "OVERLAP_DEFERRED: issue \$ISSUE_NUM (defer #\${_DEFER_COUNT[\$ISSUE_NUM]}) files=\${_OVERLAP_FILES}"
+  echo "STATUS:\${ISSUE_STATUS[\$ISSUE_NUM]:-UNSET}"
+  echo "ISSUE_LIST_LEN_BEFORE:\${_list_len_before}"
+  echo "ISSUE_LIST_LEN_AFTER:\${#ISSUE_LIST[@]}"
+  echo "DEFER_COUNT:\${_DEFER_COUNT[\$ISSUE_NUM]}"
+elif [ -n "\${_OVERLAP_FILES:-}" ]; then
+  echo "OVERLAP_WARN_IN_PLACE: issue \$ISSUE_NUM files=\${_OVERLAP_FILES}"
+  echo "STATUS:cap_exhausted"
 else
   echo "PROCEEDED: issue \$ISSUE_NUM"
   echo "STATUS:proceeded"
@@ -319,6 +337,46 @@ BODY
   }
 }
 
+@test "behavioral: ISSUE_LIST re-appended and _DEFER_COUNT incremented by production function" {
+  # Exercises the two load-bearing mutations inside _apply_overlap_defer_or_warn
+  # that _build_overlap_script previously duplicated in a heredoc:
+  #   1. ISSUE_LIST+=($ISSUE_NUM)  — the deferral mechanism (drop it → issue never re-runs)
+  #   2. _DEFER_COUNT increment    — the anti-cycle cap guard (invert -lt → wrong boundary)
+  # Both are now exercised via the production function, so any regression is caught here.
+  _parts=$(_setup_wt_repo "lib/core/batch-process-issues.sh")
+  _repo="${_parts%%:*}"
+  _body="$BATS_TEST_TMPDIR/body-production-state.md"
+  cat > "$_body" <<'BODY'
+**Files to Modify:**
+- `lib/core/batch-process-issues.sh` — overlap target
+BODY
+
+  # defer_count=1, unique_count=3 → below cap → should defer
+  _script=$(_build_overlap_script "$_repo" "$_body" 1 3)
+  run bash "$_script"
+
+  [ "$status" -eq 0 ] || {
+    echo "Script exited $status: $output" >&2; return 1
+  }
+  echo "$output" | grep -q "OVERLAP_DEFERRED" || {
+    echo "FAIL: expected OVERLAP_DEFERRED; got: $output" >&2; return 1
+  }
+  # ISSUE_LIST must grow by at least 1 (the re-append is the deferral mechanism)
+  _before=$(echo "$output" | grep "^ISSUE_LIST_LEN_BEFORE:" | cut -d: -f2 || true)
+  _after=$(echo "$output"  | grep "^ISSUE_LIST_LEN_AFTER:"  | cut -d: -f2 || true)
+  [ -n "$_before" ] && [ -n "$_after" ] || {
+    echo "FAIL: diagnostic output missing ISSUE_LIST_LEN_BEFORE/AFTER; got: $output" >&2; return 1
+  }
+  [ "$_after" -gt "$_before" ] || {
+    echo "FAIL: ISSUE_LIST must grow after deferral (before=$_before after=$_after) — drop of ISSUE_LIST+= would pass silently without this assertion; got: $output" >&2
+    return 1
+  }
+  # _DEFER_COUNT must increment from 1 to 2 (inverted -lt guard would break cap boundary)
+  echo "$output" | grep -q "DEFER_COUNT:2" || {
+    echo "FAIL: _DEFER_COUNT must increment from 1 to 2; got: $output" >&2; return 1
+  }
+}
+
 # =============================================================================
 # STRUCTURAL
 # =============================================================================
@@ -391,5 +449,11 @@ BODY
 @test "structural: _ftm_file_overlap function present in batch source" {
   grep -q "_ftm_file_overlap()" "$BATCH_PROCESSOR" || {
     echo "FAIL: _ftm_file_overlap not found in $BATCH_PROCESSOR" >&2; return 1
+  }
+}
+
+@test "structural: _apply_overlap_defer_or_warn function present in batch source" {
+  grep -q "_apply_overlap_defer_or_warn()" "$BATCH_PROCESSOR" || {
+    echo "FAIL: _apply_overlap_defer_or_warn not found in $BATCH_PROCESSOR" >&2; return 1
   }
 }
