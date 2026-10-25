@@ -3588,7 +3588,7 @@ ${_end_tok}\\
 # writes to stdout.
 # =============================================================================
 _canon_title() {
-  sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
+  sed 's/<!--rite-end-esc-->/---END---/g; s/<!--rite-issue-esc-->/---ISSUE---/g; s/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
 }
 
 # =============================================================================
@@ -5385,6 +5385,8 @@ create_issues() {
         # Unescape interior markers escaped at the stream boundary (findings 1 & 2).
         current_body="${current_body//<!--rite-end-esc-->/---END---}"
         current_body="${current_body//<!--rite-issue-esc-->/---ISSUE---}"
+        current_title="${current_title//<!--rite-end-esc-->/---END---}"
+        current_title="${current_title//<!--rite-issue-esc-->/---ISSUE---}"
 
         # Strip operator-local rtk wrapper commands before publishing to GitHub.
         if declare -f sanitize_generated_commands >/dev/null 2>&1; then
