@@ -3,22 +3,26 @@
 #
 # Deterministic docs-map builder. Inventories user documentation —
 #   docs/**/*.md, README.md, CLAUDE.md (each only if present)
-# — into .rite/state/docs-map.tsv, recording each file's headings and
-# the HEAD SHA they were captured at.
+# — into .rite/state/docs-map.tsv, recording each file's sections with
+# content fingerprints and the HEAD SHA they were captured at.
 #
 # TSV format:
-#   Line 1 (comment header): # docs-map v1 sha=<HEAD sha> built=<ISO-8601 UTC>
-#   Remaining rows:           file_path<TAB>last_verified_sha<TAB>adr_flag<TAB>heading_level<TAB>heading_text
+#   Line 1 (comment header): # docs-map v2 sha=<HEAD sha> built=<ISO-8601 UTC>
+#   Remaining rows:           file_path<TAB>last_verified_sha<TAB>adr_flag<TAB>heading_level<TAB>heading_text<TAB>fingerprint
 #
 # Columns:
 #   file_path          — project-relative path, e.g. README.md
 #   last_verified_sha  — HEAD SHA at build time (later cluster-B issues update per-file)
 #   adr_flag           — "adr" or "-"
-#   heading_level      — 1-6 (number of leading # characters), or empty for files with no headings
-#   heading_text       — heading text with leading #s and whitespace stripped; tabs stripped
+#   heading_level      — 1-6 (number of leading # characters), or empty for headingless sections
+#   heading_text       — heading text with leading #s and whitespace stripped; tabs stripped;
+#                        empty for preamble sections and headingless files
+#   fingerprint        — sha256 of the normalized section content (heading line + body);
+#                        normalization: trailing whitespace stripped per line
 #
-# Files with zero headings get one row with empty heading_level and heading_text so
-# they still appear in the inventory.
+# One row per heading-delimited section. Preamble content (before the first heading)
+# and headingless files each get one row with empty heading_level and heading_text.
+# Every file produces at least one row so it always appears in the inventory.
 #
 # No LLM involvement: the builder is fully deterministic.
 # No consent-mode gating: builds regardless of RITE_DOC_MODE.
@@ -158,6 +162,37 @@ _docs_map_heading_text() {
 }
 
 # ---------------------------------------------------------------------------
+# _docs_map_sha256
+#
+# Portable sha256: reads stdin, writes the hex digest to stdout.
+# Tries shasum -a 256 first (present on macOS and most Linux distros via
+# perl), then falls back to sha256sum (Linux coreutils).
+# ---------------------------------------------------------------------------
+_docs_map_sha256() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    # No sha256 tool available: drain stdin and return a placeholder.
+    cat > /dev/null; echo "none"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# _docs_map_section_fingerprint CONTENT
+#
+# Compute the sha256 fingerprint of CONTENT after normalizing:
+#   - trailing whitespace stripped from each line
+# Outputs the hex digest (64 characters).
+# ---------------------------------------------------------------------------
+_docs_map_section_fingerprint() {
+  local content="$1"
+  # Strip trailing whitespace from every line, then hash.
+  printf '%s\n' "$content" | sed 's/[[:space:]]*$//' | _docs_map_sha256 || true
+}
+
+# ---------------------------------------------------------------------------
 # docs_map_build
 #
 # Full rebuild of the docs-map TSV. Atomic: writes to a temp file and then
@@ -199,7 +234,7 @@ docs_map_build() {
   #  the trap is fine in a library function but we use a local var for simplicity)
 
   # Line 1: comment header
-  printf '# docs-map v1 sha=%s built=%s\n' "$head_sha" "$built_ts" > "$tmp_file"
+  printf '# docs-map v2 sha=%s built=%s\n' "$head_sha" "$built_ts" > "$tmp_file"
 
   # -------------------------------------------------------------------------
   # Collect inventory: docs/**/*.md + README.md + CLAUDE.md
@@ -226,7 +261,15 @@ docs_map_build() {
   fi
 
   # -------------------------------------------------------------------------
-  # Process each file: harvest headings and emit TSV rows
+  # Process each file: enumerate heading-delimited sections, compute a
+  # content fingerprint per section, and emit one TSV row per section.
+  #
+  # Section boundaries: a valid Markdown heading line (outside a fenced code
+  # block) starts a new section. The heading line is the first line of the
+  # new section's content (included in its fingerprint).
+  #
+  # Preamble (lines before the first heading) is emitted as its own row when
+  # it contains non-empty content. Headingless files always emit one row.
   # -------------------------------------------------------------------------
   local file_path
   for file_path in "${inventory_files[@]+"${inventory_files[@]}"}"; do
@@ -239,48 +282,99 @@ docs_map_build() {
       adr_flag="adr"
     fi
 
-    # Harvest headings: read line-by-line tracking fenced code blocks so that
-    # '#' lines inside ``` or ~~~ fences (shebangs, code comments) are not
-    # misclassified as Markdown headings.
-    local heading_count=0
-    local in_fence=0      # 0 = prose, 1 = inside a fenced code block
-    local raw_line
+    # Per-section state: current section's heading and accumulated content.
+    local _sec_h_level=""   # "" = preamble or headingless
+    local _sec_h_text=""
+    local _sec_content=""   # accumulates lines, joined with newlines
+    local _rows_written=0
+    local _in_fence=0
+
+    # Helper (inline via function call): flush the current section to tmp_file.
+    # Emits a row when: the section has a heading (always) OR the preamble
+    # content is non-empty. Resets state variables after writing.
+    _flush_section() {
+      local _h_lv="$1" _h_tx="$2" _content="$3" _rp="$4" _sha="$5" _af="$6"
+      local _emit=0
+      if [ -n "$_h_lv" ]; then
+        # Heading section — always emit
+        _emit=1
+      elif [ -n "$_content" ]; then
+        # Preamble/headingless — emit only when there is content
+        _emit=1
+      fi
+      if [ "$_emit" -eq 1 ]; then
+        local _fp
+        _fp="$(_docs_map_section_fingerprint "$_content")"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$_rp" "$_sha" "$_af" "$_h_lv" "$_h_tx" "$_fp" >> "$tmp_file"
+        _rows_written=$((_rows_written + 1))
+      fi
+    }
+
+    local raw_line h_level h_text
     while IFS= read -r raw_line; do
-      # Detect fence open/close: lines starting with ``` or ~~~.
+      # Fence boundary detection: lines starting with ``` or ~~~.
       case "$raw_line" in
         '```'* | '~~~'*)
-          if [ "$in_fence" -eq 0 ]; then
-            in_fence=1
+          if [ "$_in_fence" -eq 0 ]; then
+            _in_fence=1
           else
-            in_fence=0
+            _in_fence=0
+          fi
+          # Fence boundary lines are content — append and continue.
+          if [ -z "$_sec_content" ]; then
+            _sec_content="$raw_line"
+          else
+            _sec_content="${_sec_content}
+${raw_line}"
           fi
           continue
           ;;
       esac
-      # Skip lines inside a fenced code block
-      [ "$in_fence" -eq 0 ] || continue
-      # Only process lines that start with '#' (potential Markdown headings)
-      case "$raw_line" in
-        '#'*)
-          local h_level h_text
-          h_level="$(_docs_map_heading_level "$raw_line")"
-          h_text="$(_docs_map_heading_text "$raw_line")"
-          # _docs_map_heading_level returns empty for >6 '#' (not a valid heading)
-          [ -n "$h_level" ] || continue
-          printf '%s\t%s\t%s\t%s\t%s\n' \
-            "$rel_path" "$head_sha" "$adr_flag" "$h_level" "$h_text" >> "$tmp_file"
-          heading_count=$((heading_count + 1))
-          ;;
-      esac
+
+      if [ "$_in_fence" -eq 0 ]; then
+        # Outside a fence: check for a valid Markdown heading.
+        case "$raw_line" in
+          '#'*)
+            h_level="$(_docs_map_heading_level "$raw_line")"
+            if [ -n "$h_level" ]; then
+              # Valid heading — flush the current section, start a new one.
+              h_text="$(_docs_map_heading_text "$raw_line")"
+              _flush_section "$_sec_h_level" "$_sec_h_text" "$_sec_content" \
+                "$rel_path" "$head_sha" "$adr_flag"
+              _sec_h_level="$h_level"
+              _sec_h_text="$h_text"
+              _sec_content="$raw_line"   # heading line is first content of new section
+              continue
+            fi
+            ;;
+        esac
+      fi
+
+      # All other lines (body, fence content, non-heading # lines) accumulate.
+      if [ -z "$_sec_content" ]; then
+        _sec_content="$raw_line"
+      else
+        _sec_content="${_sec_content}
+${raw_line}"
+      fi
     done < "$file_path"
 
-    if [ "$heading_count" -eq 0 ]; then
-      # File has zero headings: emit one row with empty level/heading so the
-      # file still appears in the inventory (per spec).
-      printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$rel_path" "$head_sha" "$adr_flag" "" "" >> "$tmp_file"
+    # Flush the last section.
+    _flush_section "$_sec_h_level" "$_sec_h_text" "$_sec_content" \
+      "$rel_path" "$head_sha" "$adr_flag"
+
+    # Every file must have at least one row (headingless empty files fall here).
+    if [ "$_rows_written" -eq 0 ]; then
+      local _fp
+      _fp="$(_docs_map_section_fingerprint "")"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rel_path" "$head_sha" "$adr_flag" "" "" "$_fp" >> "$tmp_file"
     fi
   done
+
+  # Unset the inner helper to avoid leaking it into the caller's shell.
+  unset -f _flush_section 2>/dev/null || true
 
   # Atomic replace
   mv "$tmp_file" "$map_file"
