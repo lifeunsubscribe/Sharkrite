@@ -900,6 +900,15 @@ init_session "batch-${ISSUE_LIST[0]}-$(date +%s)"
 
 # Batch processing state
 BATCH_START_TIME=$(date +%s)
+
+# One line per finished issue: this issue's time and the batch's wall clock so
+# far. BATCH_START_TIME is this process's own variable, so nothing a child or a
+# test does to the session state file can move it.
+_print_issue_duration() {
+  local _now
+  _now=$(date +%s)
+  print_info "Duration: $(_format_elapsed "$ISSUE_DURATION") this issue · $(_format_elapsed $((_now - BATCH_START_TIME))) batch so far (${CURRENT_ISSUE:-?}/${TOTAL_ISSUES:-?})"
+}
 TOTAL_ISSUES=${#ISSUE_LIST[@]}
 # Freeze unique-issue count for reporting. TOTAL_ISSUES may grow as deferred
 # issues are appended to ISSUE_LIST — _UNIQUE_ISSUE_COUNT stays at the
@@ -1697,7 +1706,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         NEW_ISSUES_CREATED+=("Issue #$NEW_DEBT_ISSUE (from PR #$PR_NUMBER)")
       fi
     fi
-    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+    _print_issue_duration
     echo ""
 
     COMPLETED_ISSUES=$((COMPLETED_ISSUES + 1))
@@ -1726,7 +1735,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     print_info "Issue #$ISSUE_NUM was already closed — no new work this session"
-    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+    _print_issue_duration
     echo ""
 
     SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -1748,7 +1757,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     print_info "⏭️  Issue #$ISSUE_NUM skipped — already being processed by another session"
-    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+    _print_issue_duration
     echo ""
 
     SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -1768,7 +1777,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     print_info "⏭️  #$ISSUE_NUM skipped — number refers to a PR, not an issue"
-    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+    _print_issue_duration
     echo ""
 
     SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -1788,7 +1797,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     ISSUE_TIME["$ISSUE_NUM"]=$ISSUE_DURATION
 
     print_info "⏭️  #$ISSUE_NUM skipped — PR base branch does not match effective target (see corrected command above)"
-    print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+    _print_issue_duration
     echo ""
 
     SKIPPED_ISSUES+=("$ISSUE_NUM")
@@ -1806,7 +1815,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     if [ $EXIT_CODE -eq 6 ]; then
       # Merge succeeded but cleanup failed — work IS on remote
       print_warning "Issue #$ISSUE_NUM: merge succeeded but cleanup failed (exit code: 6)"
-      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+      _print_issue_duration
       echo ""
       MERGED_CLEANUP_FAILED+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="merged_cleanup_failed"
@@ -1833,7 +1842,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       # See: docs/architecture/exit-codes.md (exit 13 — invariant violated)
       print_error "Issue #$ISSUE_NUM: workflow invariant violated — no commits and no PR produced (exit code: 13)"
       print_error "This is a workflow logic bug, not a user-actionable failure — check logs above"
-      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+      _print_issue_duration
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="invariant_violated"
@@ -1922,7 +1931,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         print_info "Cap ${_reset_display}"
       fi
       print_info "Resume with: $_resume_cmd"
-      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+      _print_issue_duration
       echo ""
       _CAP_ABORT=true
       break
@@ -1943,7 +1952,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       print_error "$(provider_name) is logged out — run: claude /login"
       print_info "All remaining issues will be recorded as skipped:auth."
       print_info "Re-run this batch after logging in."
-      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+      _print_issue_duration
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="auth_failure"
@@ -1955,7 +1964,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     elif [ $EXIT_CODE -eq 10 ]; then
       # Blocker detected - defer instead of stopping
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
-      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+      _print_issue_duration
       echo ""
       print_warning "Blocker detected - deferring issue #$ISSUE_NUM"
       BLOCKED_ISSUES+=("$ISSUE_NUM")
@@ -1971,7 +1980,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
     else
       # Other failure (dev or merge actually failed)
       print_error "Issue #$ISSUE_NUM failed (exit code: $EXIT_CODE)"
-      print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
+      _print_issue_duration
       echo ""
       FAILED_ISSUES+=("$ISSUE_NUM")
       ISSUE_STATUS["$ISSUE_NUM"]="failed"

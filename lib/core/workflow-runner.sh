@@ -2102,9 +2102,15 @@ phase_completion() {
   # Send completion notification
   send_completion_notification "$issue_number" "$pr_number" "$pr_title" "$files_changed" "$followup_issues"
 
-  # Show session summary
+  # Show session summary — single-issue runs only. In a batch the session is
+  # the batch's: its overall time prints on each issue's Duration line and in
+  # the batch summary at the end, so a "Session Summary" block here would show
+  # a batch total mid-batch under a per-issue heading. Display only — no
+  # per-issue side effect differs (Batch ↔ Single-Issue Parity Contract).
   echo ""
-  get_session_summary
+  if [ "${BATCH_MODE:-false}" != "true" ]; then
+    get_session_summary
+  fi
 
   # Show rtk token savings if available
   local rtk_summary
