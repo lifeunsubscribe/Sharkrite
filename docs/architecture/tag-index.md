@@ -46,10 +46,3 @@
 
 
 
-## Created
-- behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
-
-
-## Updated
-- behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
-
