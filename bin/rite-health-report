@@ -134,8 +134,8 @@ if [ -d "$LOGS_DIR" ]; then
     fi
   done < <(find "$LOGS_DIR" -name "rite-*.log" -type f 2>/dev/null | sort)
 fi
-# Testing seam: explicit log-file list overrides the filesystem scan.
-if [ -n "${RITE_HEALTH_LOGFILES:-}" ]; then
+# Testing seam: explicit log-file list overrides the filesystem scan (--compute-rf-block mode only).
+if [ "$_COMPUTE_RF_ONLY" = "true" ] && [ -n "${RITE_HEALTH_LOGFILES:-}" ]; then
   RECENT_LOGS=()
   for _rf_logfile in $RITE_HEALTH_LOGFILES; do
     RECENT_LOGS+=("$_rf_logfile")
