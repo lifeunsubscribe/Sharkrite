@@ -4477,6 +4477,21 @@ _detect_unverified_integrations() {
       if [ "${#_display_name}" -gt "$_spike_name_budget" ]; then
         _display_name="${_display_name:0:$((_spike_name_budget - 3))}..."
       fi
+      # Dedup loop: if the key-based fallback is also taken (≥3 prefix-sharing
+      # candidates produce an identical truncated key prefix), add a numeric suffix
+      # until the display name is unique within the title budget.
+      local _sfx_n=2
+      while printf '%s\n' "$seen_spike_titles" | grep -qxF "$_display_name" 2>/dev/null; do
+        local _sfx="-${_sfx_n}"
+        local _base_budget=$((_spike_name_budget - ${#_sfx}))
+        if [ "${#_key}" -gt "$_base_budget" ]; then
+          _display_name="${_key:0:$_base_budget}${_sfx}"
+        else
+          _display_name="${_key}${_sfx}"
+        fi
+        _sfx_n=$((_sfx_n + 1))
+        [ "$_sfx_n" -le 99 ] || break
+      done
     fi
     seen_spike_titles="${seen_spike_titles}${_display_name}
 "
