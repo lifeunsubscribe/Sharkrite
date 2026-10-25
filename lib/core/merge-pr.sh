@@ -420,11 +420,13 @@ update_security_guide_from_pr() {
     return 0
   fi
 
-  # Check if comments contain security findings by parsing structured Findings line
-  # Review format: "Findings: [CRITICAL: N | HIGH: N | MEDIUM: N | LOW: N]"
-  # Parse the structured summary instead of bare-word matching (avoids false positives
-  # from reasoning text like "no critical issues found")
-  FINDINGS_LINE=$(echo "$REVIEW_COMMENTS" | grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+" | head -1 || true)
+  # Check if comments contain security findings by parsing structured Findings line.
+  # Emoji-tolerant: production reviews emit emoji between fields, e.g.:
+  #   "Findings: 🔴 CRITICAL: 0 | 🟠 HIGH: 2 | 🟡 MEDIUM: 1 | 🟢 LOW: 0"
+  # Use .* between anchored field patterns (same as parse_review_severity_counts
+  # Tier 2 in lib/utils/format-review.sh) instead of requiring adjacent bare-pipe
+  # delimiters, which break silently when any emoji is present.
+  FINDINGS_LINE=$(echo "$REVIEW_COMMENTS" | grep -E "CRITICAL: *[0-9]+.*HIGH: *[0-9]+.*MEDIUM: *[0-9]+" | head -1 || true)
 
   if [ -z "$FINDINGS_LINE" ]; then
     print_info "No findings summary detected in review"
@@ -432,9 +434,9 @@ update_security_guide_from_pr() {
   fi
 
   # Extract severity counts from structured line
-  CRITICAL_NUM=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: [0-9]+" | grep -oE "[0-9]+" || echo "0")
-  HIGH_NUM=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: [0-9]+" | grep -oE "[0-9]+" || echo "0")
-  MEDIUM_NUM=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: [0-9]+" | grep -oE "[0-9]+" || echo "0")
+  CRITICAL_NUM=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
+  HIGH_NUM=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: *[0-9]+"     | grep -oE "[0-9]+" | head -1 || echo "0")
+  MEDIUM_NUM=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: *[0-9]+"  | grep -oE "[0-9]+" | head -1 || echo "0")
 
   # Sum severity counts to check if any security findings exist
   SEVERITY_SUM=$((CRITICAL_NUM + HIGH_NUM + MEDIUM_NUM))

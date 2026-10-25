@@ -62,5 +62,5 @@ setup() {
 @test "resolution success re-checks mergeable state rather than assuming it" {
   local _region
   _region=$(sed -n '/Conflicts resolved and pushed/,/could not be auto-resolved/p' "$SUT")
-  echo "$_region" | grep -q 'pr view "\$PR_NUMBER" --json mergeable'
+  echo "$_region" | grep -q '_mpr_await_mergeable.*PR_NUMBER'
 }

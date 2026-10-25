@@ -112,3 +112,46 @@ _make_venv_stub() {
 
   [ "$status" -eq 0 ]
 }
+
+@test "successful provision exposes venv python path in _RITE_PYTEST_VENV_PYTHON" {
+  # Pre-mark testmon as installed so the first probe succeeds.
+  _make_venv_stub "$FIXTURE_DIR" ".venv" 0
+  touch "$FIXTURE_DIR/testmon-installed.marker"
+
+  _RITE_PYTEST_VENV_PYTHON=""
+  _provision_pytest_testmon "$FIXTURE_DIR" /dev/null
+
+  [ "$_RITE_PYTEST_VENV_PYTHON" = "$FIXTURE_DIR/.venv/bin/python" ]
+}
+
+@test "failed provision (no venv) leaves _RITE_PYTEST_VENV_PYTHON empty" {
+  # No venv — provision returns 1 and must not set _RITE_PYTEST_VENV_PYTHON.
+  _RITE_PYTEST_VENV_PYTHON="stale-value"
+
+  _provision_pytest_testmon "$FIXTURE_DIR" /dev/null || true
+
+  [ -z "$_RITE_PYTEST_VENV_PYTHON" ]
+}
+
+@test "pip failure leaves _RITE_PYTEST_VENV_PYTHON empty" {
+  # Venv present but pip exits non-zero; testmon never importable.
+  _make_venv_stub "$FIXTURE_DIR" ".venv" 1
+  _RITE_PYTEST_VENV_PYTHON="stale-value"
+
+  _provision_pytest_testmon "$FIXTURE_DIR" /dev/null || true
+
+  [ -z "$_RITE_PYTEST_VENV_PYTHON" ]
+}
+
+@test "fresh install (pip exit 0) exposes venv python path in _RITE_PYTEST_VENV_PYTHON" {
+  # Fresh-install re-probe path (gate-runners.sh:535): venv exists but testmon
+  # not yet installed; pip succeeds; re-probe confirms importable.
+  # Uses a direct call (not run) so _RITE_PYTEST_VENV_PYTHON mutation is visible.
+  _make_venv_stub "$FIXTURE_DIR" ".venv" 0
+  # No marker pre-created — first probe will fail, triggering pip install.
+  _RITE_PYTEST_VENV_PYTHON=""
+
+  _provision_pytest_testmon "$FIXTURE_DIR" /dev/null
+
+  [ "$_RITE_PYTEST_VENV_PYTHON" = "$FIXTURE_DIR/.venv/bin/python" ]
+}

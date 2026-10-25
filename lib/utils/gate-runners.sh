@@ -471,10 +471,18 @@ _node_workspace_patterns() {
 }
 
 # ---------------------------------------------------------------------------
+# Output variable: set to the venv python path by _provision_pytest_testmon on
+# success; empty string on failure or when the function has not yet been called.
+# Successor issues #1306/#1168 read this to wire the venv interpreter and
+# --testmon into the gate invocation.
+_RITE_PYTEST_VENV_PYTHON=""
+
 # _provision_pytest_testmon — ensure pytest-testmon is installed in the repo
 # venv for per-cycle scoped gating (#1127 / #975).
 # Args: $1=project_root  $2=sink (log file, default /dev/null)
 # Returns: 0 = testmon available  1 = no venv found, or install failed
+# Side-effect: sets _RITE_PYTEST_VENV_PYTHON to the venv python path on success
+#              (empty on failure) so callers can use the right interpreter.
 #
 # Venv detection order mirrors post-merge-verify.sh:256-264 verbatim.
 # conda/poetry envs fall through to return 1 (the caller runs unscoped —
@@ -485,6 +493,8 @@ _node_workspace_patterns() {
 _provision_pytest_testmon() {
   local _pr="$1"
   local _sink="${2:-/dev/null}"
+
+  _RITE_PYTEST_VENV_PYTHON=""  # reset on each call; set only on success below
 
   # Detect venv by pip binary — same order as post-merge-verify.sh:256-264.
   local _pip=""
@@ -504,6 +514,7 @@ _provision_pytest_testmon() {
 
   # Probe: already installed?
   if "$_venv_python" -c "import testmon" >/dev/null 2>&1; then
+    _RITE_PYTEST_VENV_PYTHON="$_venv_python"
     return 0
   fi
 
@@ -521,6 +532,7 @@ _provision_pytest_testmon() {
   # Re-probe: confirm install landed
   if "$_venv_python" -c "import testmon" >/dev/null 2>&1; then
     echo "[test-gate] pytest-testmon: installed successfully" >> "$_sink"
+    _RITE_PYTEST_VENV_PYTHON="$_venv_python"
     return 0
   fi
 

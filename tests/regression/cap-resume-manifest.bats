@@ -40,6 +40,10 @@
 #   PARALLEL ISOLATION (per-batch filename prevents race under concurrent batches):
 #    16.  claude.sh uses RITE_BATCH_ID suffix so batch mode produces per-batch filenames
 #    17.  startup cleanup removes only the fixed-name fallback (no glob that re-introduces race)
+#
+#   AGE-BASED RECLAMATION (per-batch orphan files cleaned up after 7 days):
+#    18.  batch-process-issues.sh has age-based reclamation (find -mtime +7 -delete) for both file types
+#    19.  age-based reclamation deletes 7+ day old files and preserves fresh files
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 DATE_HELPERS="$REPO_ROOT/lib/utils/date-helpers.sh"
@@ -358,6 +362,10 @@ EOF
   # single-issue-mode fallback) — NOT a wildcard that would delete a concurrent
   # batch's per-batch file.  A glob like 'cap-reset-line-*.txt' at startup would
   # re-introduce the race in the other direction.
+  #
+  # Note: this pin covers only the rm -f line for live-session cleanup.  The
+  # age-gated find commands added for orphan reclamation (tests 18-19) are
+  # correctly exempt from the no-glob rule — see test 19 for the rationale.
   _cleanup_line=$(grep -n 'rm -f.*cap-reset-line' "$BATCH_PROCESSOR" | head -1 | cut -d: -f2- || true)
   case "${_cleanup_line:-}" in
     *cap-reset-line.txt*) ;;
@@ -369,4 +377,79 @@ EOF
       echo "FAIL: startup cleanup for cap-reset-line.txt not found in batch-process-issues.sh" >&2
       return 1 ;;
   esac
+}
+
+# =============================================================================
+# AGE-BASED RECLAMATION: orphaned per-batch state files cleaned up after 7 days
+# =============================================================================
+
+@test "18. structural: batch-process-issues.sh has age-based reclamation for both per-batch state file types" {
+  # Pin that both cap-reset-line-*.txt and cap-resume-*.json have find -mtime +7 -delete reclamation.
+  # Anchoring both -mtime +7 and -delete ensures a sign flip (-mtime -7, which would delete
+  # fresh files instead of old ones) or a missing -delete cannot silently pass this test.
+  grep -qE 'find.*cap-reset-line.*-mtime \+7.*-delete|-delete.*-mtime \+7.*cap-reset-line' "$BATCH_PROCESSOR" || {
+    echo "FAIL: age-based reclamation for cap-reset-line-*.txt not found in batch-process-issues.sh" >&2
+    echo "      expected: find ... -name 'cap-reset-line-*.txt' -mtime +7 -delete" >&2
+    echo "      (must use -mtime +7 with positive sign to delete files OLDER than 7 days)" >&2
+    return 1
+  }
+  grep -qE 'find.*cap-resume.*-mtime \+7.*-delete|-delete.*-mtime \+7.*cap-resume' "$BATCH_PROCESSOR" || {
+    echo "FAIL: age-based reclamation for cap-resume-*.json not found in batch-process-issues.sh" >&2
+    echo "      expected: find ... -name 'cap-resume-*.json' -mtime +7 -delete" >&2
+    echo "      (must use -mtime +7 with positive sign to delete files OLDER than 7 days)" >&2
+    return 1
+  }
+}
+
+@test "19. age-based reclamation deletes 7+ day old files and preserves fresh files" {
+  # Behavioral pin for the find -mtime +7 -delete reclamation strategy.
+  #
+  # NOTE on the no-glob rule: test 17 pins that the live-session startup cleanup
+  # (rm -f cap-reset-line.txt) must NOT use a glob — a concurrent live batch's
+  # per-batch file could be deleted.  The no-glob restriction applies only to
+  # that live-session rm.  Age-gated reclamation is different: a file 7+ days old
+  # predates the current run by definition, and RITE_BATCH_ID was generated
+  # (epoch+PID+RANDOM) at batch startup, so the current batch's files are seconds
+  # old, never 7+ days old.  A glob is therefore the only way to reach orphaned
+  # corpses from prior batches whose IDs are no longer known — it is intentional,
+  # not a race.
+  _state="$_tmpdir/state"
+  mkdir -p "$_state"
+
+  # Old orphaned files from a long-gone batch (touch to a fixed date in 2020)
+  _old_resume="$_state/cap-resume-1577836800-999-1.json"
+  _old_resetline="$_state/cap-reset-line-1577836800-999-1.txt"
+  printf '{}' > "$_old_resume"
+  printf 'old reset text' > "$_old_resetline"
+  touch -t 202001010000.00 "$_old_resume" "$_old_resetline"
+
+  # Fresh files for the current batch (just now — default mtime)
+  _fresh_resume="$_state/cap-resume-$(date +%s)-$$-2.json"
+  _fresh_resetline="$_state/cap-reset-line-$(date +%s)-$$-2.txt"
+  printf '{}' > "$_fresh_resume"
+  printf 'fresh reset text' > "$_fresh_resetline"
+
+  # Run the reclamation (mirrors what batch-process-issues.sh does at startup)
+  find "$_state" -maxdepth 1 -name 'cap-reset-line-*.txt' -mtime +7 -delete 2>/dev/null || true
+  find "$_state" -maxdepth 1 -name 'cap-resume-*.json'    -mtime +7 -delete 2>/dev/null || true
+
+  # Old files must be gone
+  [ ! -f "$_old_resume" ] || {
+    echo "FAIL: old cap-resume file was not removed by age-based reclamation" >&2
+    return 1
+  }
+  [ ! -f "$_old_resetline" ] || {
+    echo "FAIL: old cap-reset-line file was not removed by age-based reclamation" >&2
+    return 1
+  }
+
+  # Fresh files must be preserved
+  [ -f "$_fresh_resume" ] || {
+    echo "FAIL: fresh cap-resume file was incorrectly deleted (reclamation must not affect current batch)" >&2
+    return 1
+  }
+  [ -f "$_fresh_resetline" ] || {
+    echo "FAIL: fresh cap-reset-line file was incorrectly deleted (reclamation must not affect current batch)" >&2
+    return 1
+  }
 }
