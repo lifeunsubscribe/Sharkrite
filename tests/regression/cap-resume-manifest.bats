@@ -384,14 +384,18 @@ EOF
 
 @test "18. structural: batch-process-issues.sh has age-based reclamation for both per-batch state file types" {
   # Pin that both cap-reset-line-*.txt and cap-resume-*.json have find -mtime +7 -delete reclamation.
-  grep -qE 'find.*cap-reset-line.*mtime|cap-reset-line.*find.*mtime' "$BATCH_PROCESSOR" || {
+  # Anchoring both -mtime +7 and -delete ensures a sign flip (-mtime -7, which would delete
+  # fresh files instead of old ones) or a missing -delete cannot silently pass this test.
+  grep -qE 'find.*cap-reset-line.*-mtime \+7.*-delete|-delete.*-mtime \+7.*cap-reset-line' "$BATCH_PROCESSOR" || {
     echo "FAIL: age-based reclamation for cap-reset-line-*.txt not found in batch-process-issues.sh" >&2
     echo "      expected: find ... -name 'cap-reset-line-*.txt' -mtime +7 -delete" >&2
+    echo "      (must use -mtime +7 with positive sign to delete files OLDER than 7 days)" >&2
     return 1
   }
-  grep -qE 'find.*cap-resume.*mtime|cap-resume.*find.*mtime' "$BATCH_PROCESSOR" || {
+  grep -qE 'find.*cap-resume.*-mtime \+7.*-delete|-delete.*-mtime \+7.*cap-resume' "$BATCH_PROCESSOR" || {
     echo "FAIL: age-based reclamation for cap-resume-*.json not found in batch-process-issues.sh" >&2
     echo "      expected: find ... -name 'cap-resume-*.json' -mtime +7 -delete" >&2
+    echo "      (must use -mtime +7 with positive sign to delete files OLDER than 7 days)" >&2
     return 1
   }
 }
