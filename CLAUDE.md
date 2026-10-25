@@ -38,14 +38,13 @@ lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + 
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
-lib/utils/adr-generator.sh        # generate_adr_for_ref helper (shared by bootstrap-docs.sh + assess-documentation.sh)
 lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/integration-ledger.sh   # Integration branch ledger (issue↔SHA record, append/entries/mark_promoted)
-lib/utils/doc-consent.sh          # Doc-mode consent helpers (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog)
+lib/utils/doc-consent.sh          # Doc-drift opt-in (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; unset = never asked, records nothing)
 lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → .rite/state/docs-map.tsv)
-lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — changelog mode)
+lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — written per merge only with recorded consent)
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
@@ -497,6 +496,7 @@ Only content-aware and practical conditions block merges:
 - **Session limits** — dual-cap model (issue #283):
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
   - **Cumulative session cap** (`RITE_MAX_SESSION_HOURS`, default 12h): fires when total active work time across all issues in this session exceeds the threshold. Measures actual work, not wall-clock age of the state file — a zombie file from a prior crash contributes 0h.
+  - **Opt-in cap auto-resume** (`RITE_CAP_AUTORESUME=true`): on a usage-cap abort with a parsed reset time, holds the machine awake (macOS AC only, via `caffeinate`) and re-invokes the remaining batch after the cap resets — one resume per manifest (second cap aborts normally). See `lib/utils/cap-resume.sh`.
 - **AWS credentials expired** — deployment credentials invalid
 - **Integration-branch guard** — `merge-pr.sh` exits 1 when the PR targets `main` but the session's resolved target (state file → `RITE_TARGET_BRANCH` → default) is a non-main integration branch. Substitutes for GitHub branch protection (unavailable on the free plan). Override with `--allow-main-base`: `rite <issue> --allow-main-base`. Implemented in `lib/core/merge-pr.sh`; forwarded by `lib/core/workflow-runner.sh`.
 - **Supervised mode**: Interactive `read -p` prompt for approval; the assess gate also offers `(a)ccept / (f)eedback / (s)top` — free-text feedback (multiple `f` entries accumulate, separated by `---`) is written to a per-PR state file; the next fix session reads it, injects it as an **Operator guidance** block, and deletes the file — so the feedback reaches exactly one fix session and does not linger for later assess runs. Also posted as a PR comment addendum for traceability
@@ -556,16 +556,16 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
-rite docs                  # Doc consent/audit: enable doc-sync or audit drift on demand;
+rite docs                  # Doc consent/audit: turn on drift tracking or audit drift on demand;
                            # after consent, if drift entries exist, offers to reconcile them
                            # via the same per-entry preview loop (zero entries → no-op)
 rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file creations;
                            # per-proposal preview → (y)approve / (n)skip / (f)eedback loop;
                            # approved changes applied as a dedicated docs PR on
                            # ${RITE_TARGET_BRANCH:-main} — NO auto-merge (human review required).
-                           # Works in both doc-sync and changelog consent modes — explicit
-                           # command + preview approval IS consent (Layer 2 gate not checked
-                           # on the approved-apply path). Can CREATE new docs (e.g. ADRs).
+                           # Works in any consent mode — explicit command + preview approval
+                           # IS consent. Can CREATE new docs (e.g. ADRs). Nothing in sharkrite
+                           # edits docs without this approval loop (per-merge doc-sync retired).
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)

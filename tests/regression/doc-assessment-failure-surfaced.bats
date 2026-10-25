@@ -5,8 +5,8 @@
 #
 # Bug: the waiter captured a PID for a background doc-assessment process
 # but on failure the warning did not go to stderr and the log tail was not
-# shown as error context. Additionally, assess-documentation.sh's parallel
-# wait loops used `|| true`, masking which individual assessment failed.
+# shown as error context. (The parallel sub-assessment wait loops this file
+# also pinned were deleted with the internal-docs layer, 2026-10-21.)
 #
 # This test verifies:
 # 1. When DOC_ASSESSMENT_SCRIPT exits non-zero, the waiter surfaces a warning
@@ -172,65 +172,4 @@ _wait_and_report_inline='
 
   # Must wait on the captured doc PID (not silently skip)
   [[ "$_wait_block" == *'wait "$pid"'* ]]
-}
-
-# -----------------------------------------------------------------------
-# Test 5: Static check — assess-documentation.sh reports individual failures
-# -----------------------------------------------------------------------
-
-@test "assess-documentation.sh: parallel assessment wait loop reports individual failures" {
-  _assess_doc="$PROJECT_ROOT/lib/core/assess-documentation.sh"
-
-  # The _assess_pids loop must not use `|| true` to mask failures
-  # (the old pattern was: wait "$_pid" 2>/dev/null || true)
-  # The new pattern captures the exit code and reports it.
-
-  # Extract the assess_pids section.
-  # End-anchor matches the actual `unset _assess_pids _assess_names` line
-  # (regex uses `unset _assess_pids` as a stable prefix so it isn't coupled
-  # to the exact variable list that follows on the same line).
-  _assess_section=$(awk '
-    /Claude-calling assessments run in parallel/ { in_block=1 }
-    in_block { print }
-    in_block && /unset _assess_pids/ { in_block=0 }
-  ' "$_assess_doc")
-
-  [ -n "$_assess_section" ]
-
-  # Must NOT use the silent `|| true` pattern in the wait loop
-  # (check that the old single-line for loop is gone)
-  _silent_wait_count=$(echo "$_assess_section" | grep -c 'wait.*|| true' || true)
-  [ "$_silent_wait_count" -eq 0 ]
-
-  # Must capture exit code and report failures
-  [[ "$_assess_section" == *"_pid_exit"* ]]
-  [[ "$_assess_section" == *"print_warning"* ]]
-}
-
-# -----------------------------------------------------------------------
-# Test 6: Static check — assess-documentation.sh reconcile loop also fixed
-# -----------------------------------------------------------------------
-
-@test "assess-documentation.sh: parallel reconcile wait loop reports individual failures" {
-  _assess_doc="$PROJECT_ROOT/lib/core/assess-documentation.sh"
-
-  # Extract the reconcile_pids section.
-  # End-anchor matches the actual `unset _reconcile_pids _reconcile_names` line
-  # (regex uses `unset _reconcile_pids` as a stable prefix so it isn't coupled
-  # to the exact variable list that follows on the same line).
-  _reconcile_section=$(awk '
-    /Run reconciliation in parallel/ { in_block=1 }
-    in_block { print }
-    in_block && /unset _reconcile_pids/ { in_block=0 }
-  ' "$_assess_doc")
-
-  [ -n "$_reconcile_section" ]
-
-  # Must NOT use the silent `|| true` pattern
-  _silent_wait_count=$(echo "$_reconcile_section" | grep -c 'wait.*|| true' || true)
-  [ "$_silent_wait_count" -eq 0 ]
-
-  # Must capture exit code and report failures
-  [[ "$_reconcile_section" == *"_pid_exit"* ]]
-  [[ "$_reconcile_section" == *"print_warning"* ]]
 }

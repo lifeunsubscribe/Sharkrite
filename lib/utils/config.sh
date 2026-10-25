@@ -242,12 +242,11 @@ RITE_MAX_FINDINGS_PER_RUN="${RITE_MAX_FINDINGS_PER_RUN:-20}"
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
-# Doc-mode consent: records whether the user consented to sharkrite updating
-# files in docs/ when code changes make them inaccurate.
-# Values: "sync" (yes — .rite/doc-sync.md scaffolded, Layer 2 active) or
-#         "changelog" (no — drift notes only).
-# EMPTY DEFAULT IS INTENTIONAL: empty means "not yet recorded"; defaulting to
-# "changelog" here would break the ask-once logic in ensure_doc_mode().
+# Doc-drift consent (opt-in). Values: "sync" (record drift per merge; `rite docs`
+# reconciles), "changelog" (legacy: record drift per merge), "off" (declined).
+# Nothing edits docs/ automatically in any mode. See doc-consent.sh.
+# EMPTY DEFAULT IS INTENTIONAL: empty means "not yet asked" — nothing is
+# recorded, and a supervised run or `rite docs` asks.
 # Set via `rite --init` or a supervised workflow run.
 RITE_DOC_MODE="${RITE_DOC_MODE:-}"
 
@@ -266,9 +265,6 @@ if [ "$RITE_NOTIFICATIONS" != "true" ]; then
   EMAIL_NOTIFICATION_ADDRESS=""
   RITE_SNS_TOPIC_ARN=""
 fi
-
-# Internal docs directory
-RITE_INTERNAL_DOCS_DIR="${RITE_INTERNAL_DOCS_DIR:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/docs}"
 
 # Scratchpad
 SCRATCHPAD_FILE="${SCRATCHPAD_FILE:-$RITE_PROJECT_ROOT/$RITE_DATA_DIR/scratch.md}"
@@ -438,7 +434,6 @@ export RITE_SNS_TOPIC_ARN
 export RITE_EMAIL_FROM
 export SLACK_WEBHOOK
 export EMAIL_NOTIFICATION_ADDRESS
-export RITE_INTERNAL_DOCS_DIR
 export SCRATCHPAD_FILE
 export RITE_LOCK_DIR
 export RITE_STATE_DIR

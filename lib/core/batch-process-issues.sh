@@ -56,6 +56,7 @@ source "$RITE_LIB_DIR/utils/pr-detection.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
+source "$RITE_LIB_DIR/utils/cap-resume.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -870,6 +871,10 @@ AUTH_FAILURE_ISSUES=()           # Exit 18: provider auth failure — batch halt
 # Auth-halt flag: set to true when exit 18 triggers a batch halt so the
 # post-loop pass can mark remaining unprocessed issues as skipped:auth.
 _BATCH_AUTH_HALT=false
+
+# Cap-abort flag: set to true when exit 5 breaks the issue loop so the
+# post-loop path can attempt an opt-in auto-resume (lib/utils/cap-resume.sh).
+_CAP_ABORT=false
 
 # Circuit-breaker state (issue #823): consecutive identical gate failures.
 # Tracks the last-seen gate failure signature and the run length so the batch
@@ -1808,13 +1813,18 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         [ -n "$_issues_json" ] && _issues_json="${_issues_json},"
         _issues_json="${_issues_json}${_ri}"
       done
+      # Propagate resumed=true when already in a resumed run so a second cap in
+      # the resumed batch does not trigger another auto-resume loop.
+      _resumed_val="false"
+      [ "${_RITE_CAP_RESUMED:-}" = "1" ] && _resumed_val="true"
       jq -n \
         --argjson issues "[${_issues_json}]" \
         --arg flags "$_batch_flags" \
         --argjson reset_epoch "$_cap_reset_epoch" \
         --arg reset_text "${_cap_reset_text:-}" \
         --argjson written "$_written_epoch" \
-        '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written}' \
+        --argjson resumed "$_resumed_val" \
+        '{issues: $issues, flags: $flags, reset_epoch: $reset_epoch, reset_text: $reset_text, written: $written, resumed: $resumed}' \
         > "$_manifest_path"
 
       # Print enhanced abort message
@@ -1829,6 +1839,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       print_info "Resume with: $_resume_cmd"
       print_info "Duration: $(_format_elapsed "$ISSUE_DURATION")"
       echo ""
+      _CAP_ABORT=true
       break
 
     elif [ $EXIT_CODE -eq 18 ]; then
@@ -2174,6 +2185,14 @@ if [ "$SESSION_DURATION" != "0" ]; then
 fi
 
 send_notification_all "$NOTIFICATION_MESSAGE" "normal"
+
+# Opt-in auto-resume: if a cap abort occurred and RITE_CAP_AUTORESUME=true,
+# wait for the reset time and exec a fresh rite invocation with the remaining
+# issues.  attempt_cap_autoresume either execs (and does not return) or
+# returns 1 when not eligible — fall through to the normal exit path.
+if [ "${_CAP_ABORT:-false}" = "true" ]; then
+  attempt_cap_autoresume "${_manifest_path:-}" || true
+fi
 
 # Exit with appropriate code
 # Circuit-breaker trip takes priority — it is a distinct failure mode that

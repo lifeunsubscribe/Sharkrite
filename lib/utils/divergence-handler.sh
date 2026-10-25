@@ -112,7 +112,7 @@ detect_divergence() {
   local local_head
   local_head=$(git rev-parse HEAD 2>/dev/null || echo "")
   local remote_head
-  remote_head=$(git rev-parse "origin/$branch_name" 2>/dev/null || echo "")
+  remote_head=$(git rev-parse --verify --quiet "origin/$branch_name" 2>/dev/null || echo "")
 
   if [ -z "$remote_head" ] || [ -z "$local_head" ]; then
     return 1  # Can't determine state

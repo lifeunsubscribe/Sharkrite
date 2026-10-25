@@ -15,10 +15,10 @@
 # 1. gh_safe retries 5xx automatically (inherited from gh-retry.sh behavior).
 # 2. When gh returns 500 on the first two attempts then succeeds on the third,
 #    assess-documentation.sh completes successfully (exit 0).
-# 3. When gh exhausts all retries on pr diff, assessment exits 0 with a clear
+# 3. (pr diff criteria removed 2026-10-21: the script no longer fetches the
+#    diff — its only consumer, the per-merge doc-sync rewrite, was retired.)
+# 4. When gh exhausts all retries on pr view, assessment exits 0 with a clear
 #    "Doc assessment skipped for PR #N" message.
-# 4. When gh exhausts all retries on pr view, assessment exits 0 with the same
-#    clear message.
 # 5. Static check: the gh calls in assess-documentation.sh use gh_safe (not
 #    bare gh), confirming the retry layer is in place.
 # 6. Static check: the "skipped" message text is present in
@@ -100,77 +100,6 @@ EOF
 }
 
 # ===========================================================================
-# Test 2: gh exhausts all retries on pr diff — assess-documentation exits 0
-#          with a clear "skipped" message
-# ===========================================================================
-
-@test "doc-assessment: exhausted retries on pr diff — exits 0 with skipped message" {
-  # Stub: always returns 500 (simulates a persistent outage past retry budget)
-  cat > "$STUB_BIN/gh" <<'EOF'
-#!/bin/bash
-if [ "$1" = "pr" ] && [ "$2" = "diff" ]; then
-  echo "HTTP 500: Server Error: Sorry, this diff is temporarily unavailable due to heavy server load." >&2
-  exit 1
-fi
-# pr view succeeds (returns minimal JSON)
-if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
-  echo '{"title":"Fix something","body":"","files":[{"path":"lib/foo.sh"}],"commits":[],"reviews":[],"comments":[]}'
-  exit 0
-fi
-exit 0
-EOF
-  chmod +x "$STUB_BIN/gh"
-
-  # Extract and exercise only the shared-data section of assess-documentation.sh,
-  # which is where the gh_safe calls live. We source gh_safe and simulate the
-  # exact retry-and-exit-0 pattern from lines ~61-95 of assess-documentation.sh.
-  #
-  # This avoids needing a full git+config environment while still testing the
-  # actual control-flow logic added by this issue.
-  export RITE_GH_MAX_RETRIES=2
-  export RITE_GH_RETRY_MAX_SLEEP=0
-
-  run bash -c "
-    export PATH='$STUB_BIN:$PATH'
-    source '$GH_RETRY_SH'
-    sleep() { :; }
-    export -f sleep
-    RITE_GH_MAX_RETRIES=2
-    PR_NUMBER=42
-
-    # Simulate the pr view fetch (succeeds in this test)
-    _pr_data_exit=0
-    PR_DATA=\$(gh_safe pr view \"\$PR_NUMBER\" --json title,body,files,commits,reviews,comments) || _pr_data_exit=\$?
-    if [ \"\$_pr_data_exit\" -ne 0 ]; then
-      echo \"Doc assessment skipped for PR #\${PR_NUMBER}: GitHub API unavailable after \${RITE_GH_MAX_RETRIES:-3} attempts\"
-      exit 0
-    fi
-
-    # Simulate the pr diff fetch (persistently fails in this test)
-    # Uses the same if ! gh_safe idiom as assess-documentation.sh:
-    # hardcode 1 on failure (mirrors source — $? after if ! is always 0,
-    # not the underlying exit code).
-    _diff_raw_file=\$(mktemp)
-    _pr_diff_exit=0
-    if ! gh_safe pr diff \"\$PR_NUMBER\" > \"\$_diff_raw_file\"; then
-      _pr_diff_exit=1
-    fi
-    PR_DIFF=\$(head -500 \"\$_diff_raw_file\" || true)
-    rm -f \"\$_diff_raw_file\"
-    if [ \"\${_pr_diff_exit}\" -ne 0 ]; then
-      echo \"Doc assessment skipped for PR #\${PR_NUMBER}: GitHub API unavailable after \${RITE_GH_MAX_RETRIES:-3} attempts\"
-      exit 0
-    fi
-
-    echo 'assessment completed'
-  "
-
-  [ "$status" -eq 0 ]
-  [[ "$output" =~ "Doc assessment skipped for PR #42" ]]
-  [[ "$output" != *"assessment completed"* ]]
-}
-
-# ===========================================================================
 # Test 3: gh exhausts all retries on pr view — assess-documentation exits 0
 #          with a clear "skipped" message
 # ===========================================================================
@@ -214,63 +143,6 @@ EOF
 }
 
 # ===========================================================================
-# Test 4: pr diff returns 500 twice then succeeds — gh_safe retries and
-#          the diff content is captured correctly
-# ===========================================================================
-
-@test "doc-assessment: pr diff 500 twice then success — diff content captured correctly" {
-  local attempt_file="$TEST_TMPDIR/diff-attempts"
-  echo "0" > "$attempt_file"
-
-  cat > "$STUB_BIN/gh" <<EOF
-#!/bin/bash
-if [ "\$1" = "pr" ] && [ "\$2" = "diff" ]; then
-  count=\$(cat "$attempt_file")
-  count=\$((count + 1))
-  echo "\$count" > "$attempt_file"
-  if [ "\$count" -le 2 ]; then
-    echo "HTTP 500: Server Error: Sorry, this diff is temporarily unavailable." >&2
-    exit 1
-  fi
-  echo "diff --git a/lib/retry.sh b/lib/retry.sh"
-  echo "+retried line"
-  exit 0
-fi
-exit 0
-EOF
-  chmod +x "$STUB_BIN/gh"
-
-  export RITE_GH_MAX_RETRIES=3
-  export RITE_GH_RETRY_MAX_SLEEP=0
-
-  run bash -c "
-    export PATH='$STUB_BIN:$PATH'
-    source '$GH_RETRY_SH'
-    sleep() { :; }
-    export -f sleep
-    RITE_GH_MAX_RETRIES=3
-    PR_NUMBER=42
-
-    # Uses the same if ! gh_safe idiom as assess-documentation.sh lines 95-99
-    _diff_raw_file=\$(mktemp)
-    _pr_diff_exit=0
-    if ! gh_safe pr diff \"\$PR_NUMBER\" > \"\$_diff_raw_file\"; then
-      _pr_diff_exit=\$?
-    fi
-    PR_DIFF=\$(head -500 \"\$_diff_raw_file\" || true)
-    rm -f \"\$_diff_raw_file\"
-
-    echo \"exit:\$_pr_diff_exit\"
-    echo \"diff_content:\$PR_DIFF\"
-  "
-
-  [ "$status" -eq 0 ]
-  [[ "$output" =~ "exit:0" ]]
-  [[ "$output" =~ "diff --git" ]]
-  [[ "$output" =~ "retried line" ]]
-}
-
-# ===========================================================================
 # Test 5: Static check — assess-documentation.sh uses gh_safe (not bare gh)
 # ===========================================================================
 
@@ -281,11 +153,6 @@ EOF
   local pr_view_line
   pr_view_line=$(grep "pr view.*--json" "$assess_doc")
   [[ "$pr_view_line" =~ "gh_safe" ]]
-
-  # Check for gh_safe usage on the pr diff line
-  local pr_diff_line
-  pr_diff_line=$(grep "pr diff" "$assess_doc")
-  [[ "$pr_diff_line" =~ "gh_safe" ]]
 
   # Verify no bare `gh pr diff` or `gh pr view` calls (raw gh, not wrapped)
   local bare_gh_count
@@ -311,42 +178,3 @@ EOF
   [ "$rerun_count" -ge 1 ]
 }
 
-# ===========================================================================
-# Test 7: Static check — pr diff fetch uses exit-code capture pattern
-# ===========================================================================
-
-@test "assess-documentation.sh: pr diff uses if ! gh_safe idiom to capture exit code" {
-  local assess_doc="$PROJECT_ROOT/lib/core/assess-documentation.sh"
-
-  # Must use the `if ! gh_safe pr diff` idiom: `if` is exempt from set -e, so
-  # the exit code is captured correctly without || true swallowing it.
-  local if_idiom_count
-  if_idiom_count=$(grep -c 'if ! gh_safe pr diff' "$assess_doc" || true)
-  [ "$if_idiom_count" -ge 1 ]
-
-  # The gh_safe pr diff call must NOT use the old `|| true` inside $() pattern
-  # that masked the exit code
-  local old_pattern_count
-  old_pattern_count=$(grep -c 'gh_safe pr diff.*|| true' "$assess_doc" || true)
-  [ "$old_pattern_count" -eq 0 ]
-}
-
-# ===========================================================================
-# Test 8: Static check — pr diff exit variable uses non-inverted naming
-# Issue #254: _pr_diff_failed boolean naming inverts success/failure semantics
-# ===========================================================================
-
-@test "assess-documentation.sh: pr diff uses _pr_diff_exit not _pr_diff_failed" {
-  local assess_doc="$PROJECT_ROOT/lib/core/assess-documentation.sh"
-
-  # The variable must NOT use the old inverted name (_pr_diff_failed=0 reads as
-  # "failed is false/zero" which confused reviewers expecting exit-code semantics)
-  local failed_name_count
-  failed_name_count=$(grep -c '_pr_diff_failed' "$assess_doc" || true)
-  [ "$failed_name_count" -eq 0 ]
-
-  # The variable MUST use the exit-code-aligned name that mirrors _pr_data_exit
-  local exit_name_count
-  exit_name_count=$(grep -c '_pr_diff_exit' "$assess_doc" || true)
-  [ "$exit_name_count" -ge 1 ]
-}

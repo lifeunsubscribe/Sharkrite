@@ -195,3 +195,104 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -n "$output" ]
 }
+
+# ---------------------------------------------------------------------------
+# 15-19. Meta-command passthrough (issue #1372)
+#   rtk meta-commands have no underlying command — stripping "rtk " would
+#   leave a nonexistent bare word. All five meta-commands must pass through
+#   unchanged at every command position.
+# ---------------------------------------------------------------------------
+
+@test "sanitize_generated_commands: rtk gain passes through unchanged (line-start)" {
+  run sanitize_generated_commands "$(printf 'rtk gain')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'rtk gain' ]]
+}
+
+@test "sanitize_generated_commands: rtk discover passes through unchanged" {
+  run sanitize_generated_commands "$(printf 'rtk discover')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'rtk discover' ]]
+}
+
+@test "sanitize_generated_commands: rtk stats passes through unchanged" {
+  run sanitize_generated_commands "$(printf 'rtk stats')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'rtk stats' ]]
+}
+
+@test "sanitize_generated_commands: rtk init passes through unchanged" {
+  run sanitize_generated_commands "$(printf 'rtk init')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'rtk init' ]]
+}
+
+@test "sanitize_generated_commands: rtk read passes through unchanged" {
+  run sanitize_generated_commands "$(printf 'rtk read')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'rtk read' ]]
+}
+
+@test "sanitize_generated_commands: rtk gain --history passes through unchanged" {
+  run sanitize_generated_commands "$(printf 'rtk gain --history')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'rtk gain --history' ]]
+}
+
+@test "sanitize_generated_commands: rtk stats --detail passes through unchanged" {
+  run sanitize_generated_commands "$(printf 'rtk stats --detail')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'rtk stats --detail' ]]
+}
+
+@test "sanitize_generated_commands: rtk gain survives at all command positions" {
+  local body
+  body=$(printf 'See `rtk gain` for savings\nresult=$(rtk gain)\nrake clean | rtk gain\ncd repo && rtk gain')
+  run sanitize_generated_commands "$body"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'`rtk gain`'* ]]
+  [[ "$output" == *'$(rtk gain)'* ]]
+  [[ "$output" == *'| rtk gain'* ]]
+  [[ "$output" == *'&& rtk gain'* ]]
+}
+
+@test "sanitize_generated_commands: rtk stats --detail survives at all command positions" {
+  local body
+  body=$(printf 'See `rtk stats --detail`\nresult=$(rtk stats --detail)\npipe | rtk stats --detail\ncd repo && rtk stats --detail')
+  run sanitize_generated_commands "$body"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'`rtk stats --detail`'* ]]
+  [[ "$output" == *'$(rtk stats --detail)'* ]]
+  [[ "$output" == *'| rtk stats --detail'* ]]
+  [[ "$output" == *'&& rtk stats --detail'* ]]
+}
+
+@test "sanitize_generated_commands: wrapper stripped but meta-command preserved in same body" {
+  local body
+  body=$(printf 'rtk gain\nrtk grep -rn "foo" src/')
+  run sanitize_generated_commands "$body"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'rtk gain'* ]]
+  [[ "$output" == *'grep -rn "foo" src/'* ]]
+  [[ "$output" != *'rtk grep'* ]]
+}
+
+@test "sanitize_generated_commands: rtk readlink still stripped (not a meta-command)" {
+  run sanitize_generated_commands "$(printf 'rtk readlink /some/path')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'readlink /some/path' ]]
+}
+
+@test "sanitize_generated_commands: rtk initdb still stripped (not a meta-command)" {
+  run sanitize_generated_commands "$(printf 'rtk initdb --auth=md5')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'initdb --auth=md5' ]]
+}
+
+@test "sanitize_generated_commands: rtk stats-collector stripped (hyphen-continued word is not a meta-command)" {
+  # Regression: [^[:alnum:]_-] boundary fix — a hyphen after 'rtk stats' must not
+  # cause 'rtk stats-collector' to be treated as a meta-command continuation.
+  run sanitize_generated_commands "$(printf 'rtk stats-collector --run')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == 'stats-collector --run' ]]
+}

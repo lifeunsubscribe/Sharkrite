@@ -7,13 +7,15 @@
 
 set -euo pipefail
 
-# Bash 3.2 (macOS system /bin/bash) cannot parse nested process substitutions
-# of the form used in this file (case + <(...) inside an outer <(...)).
-# This file is always sourced; the caller must run under bash 4+.
-if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
-  echo "ERROR: lib/utils/gate-runners.sh requires bash 4+. Install via: brew install bash" >&2
-  return 1 2>/dev/null || exit 1
-fi
+# Bash 3.2 (macOS system /bin/bash) contract: this file MUST parse and load
+# under 3.2. It briefly did not — #1361 nested `case` statements inside process
+# substitutions, which 3.2's parser rejects, and added a hard "requires bash 4+"
+# refusal here. That refusal took out every #!/bin/bash caller that reached this
+# file (two live batches, 2026-10-20) and was patched over with re-exec guards
+# in #1374/#1378. The unparseable shape is gone (the four copies collapsed into
+# _expand_workspace_dirs, issue #1351), so the refusal is gone with it.
+# Pinned by tests/regression/workspace-pattern-expansion.bats and
+# tests/regression/bin-bash-32-parse-sweep.bats.
 
 # Re-source guard: skip if already loaded (idempotent sourcing)
 # Sentinel is _node_pkg_manager (not _gate_status: _gate_status is stub-attractive
@@ -575,6 +577,135 @@ _node_install_deps() {
 # Conservative: with no jq or no package.json it returns 1 (not a workspaces
 # monorepo) so the single-package #807 path is preserved unchanged.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# _expand_workspace_dirs <project_root> <patterns>
+#
+# Expand a newline-separated list of workspace patterns into absolute
+# directories: deduplicated, sorted, with !exclusion patterns applied.
+#
+# This is the single implementation of logic that previously existed in four
+# near-identical copies (_node_workspace_runners_resolvable,
+# _node_workspace_has_missing_entry_points, _node_build_workspace_packages,
+# _changed_files_to_workspace_dirs — issue #1351; #1349's mid-pattern-star
+# bug lived in all four). Three of those carried only
+# two pattern arms; _changed_files_to_workspace_dirs carried a third for literal
+# paths. The union is implemented here, so the three sites that lacked the
+# literal arm gain it.
+#
+# It also exists as a function for a parsing reason. The old copies nested their
+# `case` statements INSIDE a process substitution (`done < <( ... case ... esac
+# ... )`), which bash 3.2 — macOS /bin/bash — cannot parse at all. That is what
+# made gate-runners.sh refuse to load under 3.2 and took out two live batches
+# (#1361 fallout, patched over by #1374 and #1378). Here the `case` statements
+# sit in a plain function body and only `find` runs inside a substitution, so
+# the file parses under 3.2 again.
+#
+# Pattern arms:
+#   packages/**      recursive — find below the first literal segment, then
+#                    glob-match the relative path (so apps/*/pkg/** works, #1349)
+#   packages/*       bounded   — find at exactly the depth the pattern implies,
+#                               then post-filter by the full glob so
+#                               `packages/*-utils` matches only *-utils
+#   packages/legacy  literal   — the directory itself, if it exists
+#
+# node_modules is pruned in every arm. The old bounded arm did not prune, so a
+# monorepo with installed dependencies could surface a package's vendored copy
+# as a workspace. Pruning everywhere is the intended behavior and is cheaper.
+#
+# Exclusions keep the three-way match introduced by #1344: a pattern matches a
+# directory exactly, matches it with a trailing slash, or names a prefix of it
+# (`!packages/legacy` excludes packages/legacy and everything beneath it).
+#
+# Always returns 0 — callers run it inside $(...) under `set -e`, so a non-zero
+# exit from a final failed test would take the caller down with it.
+# ---------------------------------------------------------------------------
+_expand_workspace_dirs() {
+  local _ewd_root="$1"
+  local _ewd_patterns="$2"
+  [ -n "$_ewd_patterns" ] || return 0
+
+  local _ewd_incl="" _ewd_excl="" _ewd_p
+  while IFS= read -r _ewd_p; do
+    [ -n "$_ewd_p" ] || continue
+    case "$_ewd_p" in
+      !*) _ewd_excl="${_ewd_excl}${_ewd_p#!}"$'\n' ;;
+      *)  _ewd_incl="${_ewd_incl}${_ewd_p}"$'\n' ;;
+    esac
+  done < <(printf '%s\n' "$_ewd_patterns")
+
+  local _ewd_hits="" _ewd_pat _ewd_base _ewd_suffix _ewd_depth _ewd_d _ewd_rel
+  while IFS= read -r _ewd_pat; do
+    [ -n "$_ewd_pat" ] || continue
+    case "$_ewd_pat" in
+      *"**"*)
+        # Base is the parent of the first wildcard segment, so apps/*/pkg/**
+        # searches under apps/ rather than the literal path apps/*/pkg.
+        _ewd_base="${_ewd_root}/${_ewd_pat%%\**}"
+        _ewd_base="${_ewd_base%/*}"
+        [ -d "$_ewd_base" ] || continue
+        while IFS= read -r _ewd_d; do
+          [ -n "$_ewd_d" ] || continue
+          _ewd_rel="${_ewd_d#"$_ewd_root/"}"
+          # Glob-match the RELATIVE path, never a quoted literal prefix: a quoted
+          # prefix makes a mid-pattern * literal, so apps/*/pkg/** could never
+          # match apps/web/pkg/core (issue #1349 — inherited by every old copy).
+          # Inside [[ ]] a * matches '/', so ** reaches any depth with no
+          # globstar needed.
+          # shellcheck disable=SC2053
+          if [[ "$_ewd_rel" == $_ewd_pat ]]; then
+            _ewd_hits="${_ewd_hits}${_ewd_d}"$'\n'
+          fi
+        done < <(find "$_ewd_base" -mindepth 1 -name node_modules -prune -o -type d -print 2>/dev/null || true)
+        ;;
+      *"*"*)
+        _ewd_base="${_ewd_root}/${_ewd_pat%%\**}"
+        _ewd_base="${_ewd_base%/*}"
+        [ -d "$_ewd_base" ] || continue
+        _ewd_suffix="${_ewd_pat#"${_ewd_pat%%\**}"}"
+        _ewd_depth=$(printf '%s' "$_ewd_suffix" | tr -cd '/' | wc -c || true)
+        _ewd_depth=$(( _ewd_depth + 1 ))
+        while IFS= read -r _ewd_d; do
+          [ -n "$_ewd_d" ] || continue
+          _ewd_rel="${_ewd_d#"$_ewd_root/"}"
+          # shellcheck disable=SC2053
+          if [[ "$_ewd_rel" == $_ewd_pat ]]; then
+            _ewd_hits="${_ewd_hits}${_ewd_d}"$'\n'
+          fi
+        done < <(find "$_ewd_base" -mindepth "$_ewd_depth" -maxdepth "$_ewd_depth" -name node_modules -prune -o -type d -print 2>/dev/null || true)
+        ;;
+      *)
+        _ewd_base="${_ewd_root}/${_ewd_pat}"
+        [ -d "$_ewd_base" ] && _ewd_hits="${_ewd_hits}${_ewd_base}"$'\n'
+        ;;
+    esac
+  done < <(printf '%s\n' "$_ewd_incl")
+
+  [ -n "$_ewd_hits" ] || return 0
+
+  local _ewd_sorted _ewd_ex _ewd_skip
+  _ewd_sorted=$(printf '%s' "$_ewd_hits" | grep -v '^$' | sort -u || true)
+  [ -n "$_ewd_sorted" ] || return 0
+
+  while IFS= read -r _ewd_d; do
+    [ -n "$_ewd_d" ] || continue
+    _ewd_rel="${_ewd_d#"$_ewd_root/"}"
+    _ewd_skip=false
+    while IFS= read -r _ewd_ex; do
+      [ -n "$_ewd_ex" ] || continue
+      # shellcheck disable=SC2053
+      if [[ "$_ewd_rel" == $_ewd_ex || "$_ewd_rel/" == $_ewd_ex || "$_ewd_rel" == "$_ewd_ex/"* ]]; then
+        _ewd_skip=true
+        break
+      fi
+    done < <(printf '%s\n' "${_ewd_excl:-}")
+    if [ "$_ewd_skip" = "false" ]; then
+      printf '%s\n' "$_ewd_d"
+    fi
+  done < <(printf '%s\n' "$_ewd_sorted")
+
+  return 0
+}
+
 _node_is_workspaces_monorepo() {
   local _pr="$1"
   local _pkg="$_pr/package.json"
@@ -643,99 +774,37 @@ _node_workspace_runners_resolvable() {
 
   local _root_bin="$_pr/node_modules/.bin"
 
-  # Expand the workspace glob patterns to concrete directories. jq emits one
-  # pattern per line (array or object form); the shell expands each glob.
-  # Workspace patterns from pnpm-workspace.yaml or package.json (issue #1097).
+  # Workspace patterns from pnpm-workspace.yaml or package.json (issue #1097),
+  # expanded by the shared _expand_workspace_dirs (issue #1351) which handles
+  # **, bounded globs, literal paths, !exclusions and node_modules pruning.
   local _patterns
   _patterns=$(_node_workspace_patterns "$_pr")
   [ -n "$_patterns" ] || return 1
 
-  # Pre-collect !exclusion patterns so include-pattern dir enumeration can skip them.
-  local _nwr_excl_pats=""
-  while IFS= read -r _nwr_ep; do
-    case "$_nwr_ep" in
-      !*) _nwr_excl_pats="${_nwr_excl_pats}${_nwr_ep#!}"$'\n' ;;
-    esac
-  done <<EOF
-$_patterns
-EOF
-
   local _saw_any_ws=false
-  local _pattern _dir _pkg _runner _ws_bin _nwr_rel _nwr_excl _nwr_skip
-  while IFS= read -r _pattern; do
-    [ -n "$_pattern" ] || continue
-    case "$_pattern" in !*) continue ;; esac
-    # Use find-based expansion so ** traverses any depth and mid-segment-star
-    # patterns (e.g. packages/eslint-config-*) resolve correctly.
-    while IFS= read -r _dir; do
-      [ -d "$_dir" ] || continue
-      # Apply !exclusion patterns before processing this workspace.
-      _nwr_rel="${_dir#"$_pr/"}"
-      _nwr_skip=false
-      while IFS= read -r _nwr_excl; do
-        [ -n "$_nwr_excl" ] || continue
-        # shellcheck disable=SC2053
-        if [[ "$_nwr_rel" == $_nwr_excl || "$_nwr_rel/" == $_nwr_excl || "$_nwr_rel" == "$_nwr_excl/"* ]]; then
-          _nwr_skip=true; break
-        fi
-      done < <(printf '%s\n' "${_nwr_excl_pats:-}")
-      [ "$_nwr_skip" = "true" ] && continue
-      _pkg="$_dir/package.json"
-      [ -f "$_pkg" ] || continue
-      _saw_any_ws=true
-      _runner=$(_resolve_node_test_runner "$_dir")
-      # Unknown workspace runner (no test script, or unresolvable extraction) —
-      # we cannot positively confirm it. Treat as unresolvable → bootstrap.
-      [ -n "$_runner" ] || return 1
-      _ws_bin="$_dir/node_modules/.bin"
-      if [ -x "$_ws_bin/$_runner" ]; then
-        continue
-      fi
-      if [ -x "$_root_bin/$_runner" ]; then
-        continue
-      fi
-      if command -v "$_runner" >/dev/null 2>&1; then
-        continue
-      fi
-      # This workspace's runner is not resolvable anywhere → bootstrap.
-      return 1
-    done < <(
-      case "$_pattern" in
-        *"**"*)
-          _nwr_base="${_pr}/${_pattern%%\**}"
-          _nwr_base="${_nwr_base%/*}"
-          if [ -d "$_nwr_base" ]; then
-            _nwr_pat_prefix="${_pr}/${_pattern%%\*\**}"
-            while IFS= read -r _nwr_fd; do
-              [ -n "$_nwr_fd" ] || continue
-              case "$_nwr_fd" in
-                "$_nwr_pat_prefix"*) printf '%s\n' "$_nwr_fd" ;;
-              esac
-            done < <(find "$_nwr_base" -mindepth 1 -name node_modules -prune -o -type d -print 2>/dev/null || true)
-          fi
-          ;;
-        *)
-          _nwr_base="${_pr}/${_pattern%%\**}"
-          _nwr_base="${_nwr_base%/*}"
-          if [ -d "$_nwr_base" ]; then
-            _nwr_suffix="${_pattern#"${_pattern%%\**}"}"
-            _nwr_depth=$(printf '%s' "$_nwr_suffix" | tr -cd '/' | wc -c || true)
-            _nwr_depth=$(( _nwr_depth + 1 ))
-            while IFS= read -r _nwr_d; do
-              [ -n "$_nwr_d" ] || continue
-              _nwr_d_rel="${_nwr_d#"$_pr/"}"
-              # shellcheck disable=SC2053
-              if [[ "$_nwr_d_rel" == $_pattern ]]; then
-                printf '%s\n' "$_nwr_d"
-              fi
-            done < <(find "$_nwr_base" -mindepth "$_nwr_depth" -maxdepth "$_nwr_depth" -name node_modules -prune -o -type d -print 2>/dev/null || true)
-          fi
-          ;;
-      esac
-    )
-  done <<EOF
-$_patterns
-EOF
+  local _dir _pkg _runner _ws_bin
+  while IFS= read -r _dir; do
+    [ -d "$_dir" ] || continue
+    _pkg="$_dir/package.json"
+    [ -f "$_pkg" ] || continue
+    _saw_any_ws=true
+    _runner=$(_resolve_node_test_runner "$_dir")
+    # Unknown workspace runner (no test script, or unresolvable extraction) —
+    # we cannot positively confirm it. Treat as unresolvable -> bootstrap.
+    [ -n "$_runner" ] || return 1
+    _ws_bin="$_dir/node_modules/.bin"
+    if [ -x "$_ws_bin/$_runner" ]; then
+      continue
+    fi
+    if [ -x "$_root_bin/$_runner" ]; then
+      continue
+    fi
+    if command -v "$_runner" >/dev/null 2>&1; then
+      continue
+    fi
+    # This workspace's runner is not resolvable anywhere -> bootstrap.
+    return 1
+  done < <(_expand_workspace_dirs "$_pr" "$_patterns")
 
   # If no workspace package.json was found at all, we cannot confirm anything —
   # bootstrap rather than assume (correctness over a redundant install).
@@ -761,104 +830,41 @@ EOF
 # ---------------------------------------------------------------------------
 _node_workspace_has_missing_entry_points() {
   local _pr="$1"
-  local _root_pkg="$_pr/package.json"
-  [ -f "$_root_pkg" ] || return 1
+  [ -f "$_pr/package.json" ] || return 1
   command -v jq >/dev/null 2>&1 || return 1
 
-  # Workspace patterns from pnpm-workspace.yaml or package.json (issue #1097).
   local _patterns
   _patterns=$(_node_workspace_patterns "$_pr")
   [ -n "$_patterns" ] || return 1
 
-  # Pre-collect !exclusion patterns so include-pattern dir enumeration can skip them.
-  local _nhme_excl_pats=""
-  while IFS= read -r _nhme_ep; do
-    case "$_nhme_ep" in
-      !*) _nhme_excl_pats="${_nhme_excl_pats}${_nhme_ep#!}"$'\n' ;;
-    esac
-  done <<EOF
-$_patterns
-EOF
-
   local _found_missing=false
-  local _pattern _dir _pkg _entry _build_script _nhme_rel _nhme_excl _nhme_skip
-  while IFS= read -r _pattern; do
-    [ -n "$_pattern" ] || continue
-    case "$_pattern" in !*) continue ;; esac
-    while IFS= read -r _dir; do
-      [ -d "$_dir" ] || continue
-      # Apply !exclusion patterns before processing this workspace.
-      _nhme_rel="${_dir#"$_pr/"}"
-      _nhme_skip=false
-      while IFS= read -r _nhme_excl; do
-        [ -n "$_nhme_excl" ] || continue
-        # shellcheck disable=SC2053
-        if [[ "$_nhme_rel" == $_nhme_excl || "$_nhme_rel/" == $_nhme_excl || "$_nhme_rel" == "$_nhme_excl/"* ]]; then
-          _nhme_skip=true; break
-        fi
-      done < <(printf '%s\n' "${_nhme_excl_pats:-}")
-      [ "$_nhme_skip" = "true" ] && continue
-      _pkg="$_dir/package.json"
-      [ -f "$_pkg" ] || continue
+  local _dir _pkg _entry _build_script
+  while IFS= read -r _dir; do
+    [ -d "$_dir" ] || continue
+    _pkg="$_dir/package.json"
+    [ -f "$_pkg" ] || continue
 
-      # Only care about packages that define a build script.
-      _build_script=$(jq -r '.scripts.build // ""' "$_pkg" 2>/dev/null || echo "")
-      [ -n "$_build_script" ] || continue
+    # Only care about packages that define a build script.
+    _build_script=$(jq -r '.scripts.build // ""' "$_pkg" 2>/dev/null || echo "")
+    [ -n "$_build_script" ] || continue
 
-      # Check main field first.
-      _entry=$(jq -r '.main // ""' "$_pkg" 2>/dev/null || echo "")
-      if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
-        _found_missing=true
-        break 2
-      fi
+    # Check main field first.
+    _entry=$(jq -r '.main // ""' "$_pkg" 2>/dev/null || echo "")
+    if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
+      _found_missing=true
+      break
+    fi
 
-      # Check exports field (string form only — object/array forms are more
-      # complex; treat them as "unknown" and skip rather than mis-parse).
-      _entry=$(jq -r 'if (.exports | type) == "string" then .exports else "" end' "$_pkg" 2>/dev/null || echo "")
-      if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
-        _found_missing=true
-        break 2
-      fi
-    done < <(
-      case "$_pattern" in
-        *"**"*)
-          _nhme_base="${_pr}/${_pattern%%\**}"
-          _nhme_base="${_nhme_base%/*}"
-          if [ -d "$_nhme_base" ]; then
-            _nhme_pat_prefix="${_pr}/${_pattern%%\*\**}"
-            while IFS= read -r _nhme_fd; do
-              [ -n "$_nhme_fd" ] || continue
-              case "$_nhme_fd" in
-                "$_nhme_pat_prefix"*) printf '%s\n' "$_nhme_fd" ;;
-              esac
-            done < <(find "$_nhme_base" -mindepth 1 -name node_modules -prune -o -type d -print 2>/dev/null || true)
-          fi
-          ;;
-        *)
-          _nhme_base="${_pr}/${_pattern%%\**}"
-          _nhme_base="${_nhme_base%/*}"
-          if [ -d "$_nhme_base" ]; then
-            _nhme_suffix="${_pattern#"${_pattern%%\**}"}"
-            _nhme_depth=$(printf '%s' "$_nhme_suffix" | tr -cd '/' | wc -c || true)
-            _nhme_depth=$(( _nhme_depth + 1 ))
-            while IFS= read -r _nhme_d; do
-              [ -n "$_nhme_d" ] || continue
-              _nhme_d_rel="${_nhme_d#"$_pr/"}"
-              # shellcheck disable=SC2053
-              if [[ "$_nhme_d_rel" == $_pattern ]]; then
-                printf '%s\n' "$_nhme_d"
-              fi
-            done < <(find "$_nhme_base" -mindepth "$_nhme_depth" -maxdepth "$_nhme_depth" -name node_modules -prune -o -type d -print 2>/dev/null || true)
-          fi
-          ;;
-      esac
-    )
-  done <<EOF
-$_patterns
-EOF
+    # Check exports field (string form only — object/array forms are more
+    # complex; treat them as "unknown" and skip rather than mis-parse).
+    _entry=$(jq -r 'if (.exports | type) == "string" then .exports else "" end' "$_pkg" 2>/dev/null || echo "")
+    if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
+      _found_missing=true
+      break
+    fi
+  done < <(_expand_workspace_dirs "$_pr" "$_patterns")
 
-  [ "$_found_missing" = "true" ] || return 1
-  return 0
+  [ "$_found_missing" = "true" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -890,123 +896,64 @@ _node_build_workspace_packages() {
   ' "$_root_pkg" 2>/dev/null || echo "")
   [ -n "$_patterns" ] || return 0
 
-  # Pre-collect !exclusion patterns so include-pattern dir enumeration can skip them.
-  local _nbwp_excl_pats=""
-  while IFS= read -r _nbwp_ep; do
-    case "$_nbwp_ep" in
-      !*) _nbwp_excl_pats="${_nbwp_excl_pats}${_nbwp_ep#!}"$'\n' ;;
-    esac
-  done <<EOF
-$_patterns
-EOF
 
   local _any_failed=false
-  local _pattern _dir _pkg _entry _build_script _pkg_name _entry_exports
-  local _nbwp_rel _nbwp_excl _nbwp_skip
-  while IFS= read -r _pattern; do
-    [ -n "$_pattern" ] || continue
-    case "$_pattern" in !*) continue ;; esac
-    while IFS= read -r _dir; do
-      [ -d "$_dir" ] || continue
-      # Apply !exclusion patterns before processing this workspace.
-      _nbwp_rel="${_dir#"$_pr/"}"
-      _nbwp_skip=false
-      while IFS= read -r _nbwp_excl; do
-        [ -n "$_nbwp_excl" ] || continue
-        # shellcheck disable=SC2053
-        if [[ "$_nbwp_rel" == $_nbwp_excl || "$_nbwp_rel/" == $_nbwp_excl || "$_nbwp_rel" == "$_nbwp_excl/"* ]]; then
-          _nbwp_skip=true; break
-        fi
-      done < <(printf '%s\n' "${_nbwp_excl_pats:-}")
-      [ "$_nbwp_skip" = "true" ] && continue
-      _pkg="$_dir/package.json"
-      [ -f "$_pkg" ] || continue
+  local _dir _pkg _entry _build_script _pkg_name _entry_exports
+  local
+  while IFS= read -r _dir; do
+    [ -d "$_dir" ] || continue
+    _pkg="$_dir/package.json"
+    [ -f "$_pkg" ] || continue
 
-      _build_script=$(jq -r '.scripts.build // ""' "$_pkg" 2>/dev/null || echo "")
-      [ -n "$_build_script" ] || continue
+    _build_script=$(jq -r '.scripts.build // ""' "$_pkg" 2>/dev/null || echo "")
+    [ -n "$_build_script" ] || continue
 
-      _entry=$(jq -r '.main // ""' "$_pkg" 2>/dev/null || echo "")
-      _entry_exports=$(jq -r 'if (.exports | type) == "string" then .exports else "" end' "$_pkg" 2>/dev/null || echo "")
+    _entry=$(jq -r '.main // ""' "$_pkg" 2>/dev/null || echo "")
+    _entry_exports=$(jq -r 'if (.exports | type) == "string" then .exports else "" end' "$_pkg" 2>/dev/null || echo "")
 
-      # Determine if this package needs a build: either the main or string-form
-      # exports entry point is absent.
-      local _needs_build=false
-      if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
-        _needs_build=true
-      elif [ -n "$_entry_exports" ] && [ ! -e "$_dir/$_entry_exports" ]; then
-        _needs_build=true
-      fi
-      [ "$_needs_build" = "true" ] || continue
+    # Determine if this package needs a build: either the main or string-form
+    # exports entry point is absent.
+    local _needs_build=false
+    if [ -n "$_entry" ] && [ ! -e "$_dir/$_entry" ]; then
+      _needs_build=true
+    elif [ -n "$_entry_exports" ] && [ ! -e "$_dir/$_entry_exports" ]; then
+      _needs_build=true
+    fi
+    [ "$_needs_build" = "true" ] || continue
 
-      _pkg_name=$(jq -r '.name // ""' "$_pkg" 2>/dev/null || echo "")
-      if [ -z "$_pkg_name" ]; then
-        echo "[test-gate] WARNING: workspace package at '$_dir' has no 'name' field — cannot run targeted build; skipping" >> "$_sink"
-        continue
-      fi
+    _pkg_name=$(jq -r '.name // ""' "$_pkg" 2>/dev/null || echo "")
+    if [ -z "$_pkg_name" ]; then
+      echo "[test-gate] WARNING: workspace package at '$_dir' has no 'name' field — cannot run targeted build; skipping" >> "$_sink"
+      continue
+    fi
 
-      # Remove stale tsconfig.tsbuildinfo to prevent tsc --build from treating
-      # a deleted dist/ as "already up to date" and producing a no-op build.
-      local _buildinfo="$_dir/tsconfig.tsbuildinfo"
-      if [ -f "$_buildinfo" ]; then
-        echo "[test-gate] Removing stale $(_dir_rel "$_pr" "$_buildinfo") to prevent tsc --build no-op" >> "$_sink"
-        rm -f "$_buildinfo" || true
-      fi
-      # Also remove root-level tsconfig.tsbuildinfo that may reference the package.
-      local _root_buildinfo="$_pr/tsconfig.tsbuildinfo"
-      if [ -f "$_root_buildinfo" ]; then
-        echo "[test-gate] Removing stale root tsconfig.tsbuildinfo to prevent tsc --build no-op" >> "$_sink"
-        rm -f "$_root_buildinfo" || true
-      fi
+    # Remove stale tsconfig.tsbuildinfo to prevent tsc --build from treating
+    # a deleted dist/ as "already up to date" and producing a no-op build.
+    local _buildinfo="$_dir/tsconfig.tsbuildinfo"
+    if [ -f "$_buildinfo" ]; then
+      echo "[test-gate] Removing stale $(_dir_rel "$_pr" "$_buildinfo") to prevent tsc --build no-op" >> "$_sink"
+      rm -f "$_buildinfo" || true
+    fi
+    # Also remove root-level tsconfig.tsbuildinfo that may reference the package.
+    local _root_buildinfo="$_pr/tsconfig.tsbuildinfo"
+    if [ -f "$_root_buildinfo" ]; then
+      echo "[test-gate] Removing stale root tsconfig.tsbuildinfo to prevent tsc --build no-op" >> "$_sink"
+      rm -f "$_root_buildinfo" || true
+    fi
 
-      echo "[test-gate] Building workspace package '$_pkg_name' (entry point missing: ${_entry:-$_entry_exports})..." >> "$_sink"
-      local _build_exit_file _build_exit
-      _build_exit_file=$(mktemp "/tmp/rite_gate_build_exit_${PR_NUMBER:-0}_$$_XXXXXX")
-      { (cd "$_pr" && npm run build -w "$_pkg_name" 2>&1); echo $? > "$_build_exit_file"; } >> "$_sink" || true
-      _build_exit=$(cat "$_build_exit_file" 2>/dev/null || echo "1")
-      rm -f "$_build_exit_file"
-      if [ "$_build_exit" -ne 0 ]; then
-        echo "[test-gate] ERROR: build of workspace package '$_pkg_name' failed (exit $_build_exit)" >> "$_sink"
-        _any_failed=true
-      else
-        echo "[test-gate] workspace package '$_pkg_name' built successfully" >> "$_sink"
-      fi
-    done < <(
-      case "$_pattern" in
-        *"**"*)
-          _nbwp_base="${_pr}/${_pattern%%\**}"
-          _nbwp_base="${_nbwp_base%/*}"
-          if [ -d "$_nbwp_base" ]; then
-            _nbwp_pat_prefix="${_pr}/${_pattern%%\*\**}"
-            while IFS= read -r _nbwp_fd; do
-              [ -n "$_nbwp_fd" ] || continue
-              case "$_nbwp_fd" in
-                "$_nbwp_pat_prefix"*) printf '%s\n' "$_nbwp_fd" ;;
-              esac
-            done < <(find "$_nbwp_base" -mindepth 1 -name node_modules -prune -o -type d -print 2>/dev/null || true)
-          fi
-          ;;
-        *)
-          _nbwp_base="${_pr}/${_pattern%%\**}"
-          _nbwp_base="${_nbwp_base%/*}"
-          if [ -d "$_nbwp_base" ]; then
-            _nbwp_suffix="${_pattern#"${_pattern%%\**}"}"
-            _nbwp_depth=$(printf '%s' "$_nbwp_suffix" | tr -cd '/' | wc -c || true)
-            _nbwp_depth=$(( _nbwp_depth + 1 ))
-            while IFS= read -r _nbwp_d; do
-              [ -n "$_nbwp_d" ] || continue
-              _nbwp_d_rel="${_nbwp_d#"$_pr/"}"
-              # shellcheck disable=SC2053
-              if [[ "$_nbwp_d_rel" == $_pattern ]]; then
-                printf '%s\n' "$_nbwp_d"
-              fi
-            done < <(find "$_nbwp_base" -mindepth "$_nbwp_depth" -maxdepth "$_nbwp_depth" -name node_modules -prune -o -type d -print 2>/dev/null || true)
-          fi
-          ;;
-      esac
-    )
-  done <<EOF
-$_patterns
-EOF
+    echo "[test-gate] Building workspace package '$_pkg_name' (entry point missing: ${_entry:-$_entry_exports})..." >> "$_sink"
+    local _build_exit_file _build_exit
+    _build_exit_file=$(mktemp "/tmp/rite_gate_build_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+    { (cd "$_pr" && npm run build -w "$_pkg_name" 2>&1); echo $? > "$_build_exit_file"; } >> "$_sink" || true
+    _build_exit=$(cat "$_build_exit_file" 2>/dev/null || echo "1")
+    rm -f "$_build_exit_file"
+    if [ "$_build_exit" -ne 0 ]; then
+      echo "[test-gate] ERROR: build of workspace package '$_pkg_name' failed (exit $_build_exit)" >> "$_sink"
+      _any_failed=true
+    else
+      echo "[test-gate] workspace package '$_pkg_name' built successfully" >> "$_sink"
+    fi
+  done < <(_expand_workspace_dirs "$_pr" "$_patterns")
 
   [ "$_any_failed" = "false" ] || return 1
   return 0
@@ -1095,105 +1042,22 @@ _changed_files_to_workspace_dirs() {
   _cfd_patterns=$(_node_workspace_patterns "$_cfd_root")
   [ -n "$_cfd_patterns" ] || return 0
 
-  # Split patterns into include (normal) and exclude (!-prefixed) lists.
-  # Bash glob expansion is not used here because:
-  #   1. ** without `set -o globstar` only matches one level — pnpm's dominant
-  #      `packages/**` layout silently misses nested workspaces (e.g.
-  #      packages/scope/component). find handles any depth correctly.
-  #   2. !exclusion patterns like `!packages/legacy` would need to expand a path
-  #      starting with `!`, which never matches a real directory — the exclusion
-  #      semantics are lost entirely under glob expansion.
-  local _cfd_include_pats="" _cfd_exclude_pats="" _cfd_p
-  while IFS= read -r _cfd_p; do
-    [ -n "$_cfd_p" ] || continue
-    case "$_cfd_p" in
-      !*) _cfd_exclude_pats="${_cfd_exclude_pats}${_cfd_p#!}"$'\n' ;;
-      *)  _cfd_include_pats="${_cfd_include_pats}${_cfd_p}"$'\n' ;;
-    esac
-  done < <(printf '%s\n' "$_cfd_patterns")
-
-  local _cfd_seen="" _cfd_pattern _cfd_dir _cfd_rel _cfd_base _cfd_dirs
-
-  while IFS= read -r _cfd_pattern; do
-    [ -n "$_cfd_pattern" ] || continue
-
-    # Expand the include pattern using find rather than bash glob expansion so
-    # that ** correctly matches any depth and * matches only one level.
-    # Patterns typically take the form `packages/**`, `apps/*`, or a literal path.
-    case "$_cfd_pattern" in
-      *"**"*)
-        # Strip from first * onward, take parent dir so patterns like apps/*/pkg/**
-        # use apps/ as base (not the non-existent literal-star path apps/*/pkg).
-        _cfd_base="${_cfd_root}/${_cfd_pattern%%\**}"
-        _cfd_base="${_cfd_base%/*}"
-        [ -d "$_cfd_base" ] || continue
-        _cfd_pat_prefix="${_cfd_root}/${_cfd_pattern%%\*\**}"
-        _cfd_dirs=""
-        while IFS= read -r _cfd_fd; do
-          [ -n "$_cfd_fd" ] || continue
-          case "$_cfd_fd" in
-            "$_cfd_pat_prefix"*) _cfd_dirs="${_cfd_dirs}${_cfd_fd}"$'\n' ;;
-          esac
-        done < <(find "$_cfd_base" -mindepth 1 -name node_modules -prune -o -type d -print 2>/dev/null || true)
-        ;;
-      *"*"*)
-        # Single-level or multi-segment wildcard (no **): compute exact depth and
-        # post-filter by the full glob so packages/*-utils only matches *-utils
-        # dirs and packages/*/* reaches depth-2 workspaces.
-        _cfd_base="${_cfd_root}/${_cfd_pattern%%\**}"
-        _cfd_base="${_cfd_base%/*}"
-        [ -d "$_cfd_base" ] || continue
-        local _cfd_suffix _cfd_dir_depth _cfd_found _cfd_found_rel
-        _cfd_suffix="${_cfd_pattern#"${_cfd_pattern%%\**}"}"
-        _cfd_dir_depth=$(printf '%s' "$_cfd_suffix" | tr -cd '/' | wc -c || true)
-        _cfd_dir_depth=$(( _cfd_dir_depth + 1 ))
-        _cfd_dirs=""
-        while IFS= read -r _cfd_found; do
-          [ -n "$_cfd_found" ] || continue
-          _cfd_found_rel="${_cfd_found#"$_cfd_root/"}"
-          # shellcheck disable=SC2053
-          if [[ "$_cfd_found_rel" == $_cfd_pattern ]]; then
-            _cfd_dirs="${_cfd_dirs}${_cfd_found}"$'\n'
-          fi
-        done < <(find "$_cfd_base" -mindepth "$_cfd_dir_depth" -maxdepth "$_cfd_dir_depth" -type d 2>/dev/null || true)
-        ;;
-      *)
-        # Literal path (no glob) — treat as an exact workspace directory
-        _cfd_base="${_cfd_root}/${_cfd_pattern}"
-        [ -d "$_cfd_base" ] || continue
-        _cfd_dirs="$_cfd_base"
-        ;;
-    esac
-
-    [ -n "$_cfd_dirs" ] || continue
-
-    while IFS= read -r _cfd_dir; do
-      [ -n "$_cfd_dir" ] || continue
-      [ -d "$_cfd_dir" ] || continue
-      [ -f "$_cfd_dir/package.json" ] || continue
-      _cfd_rel="${_cfd_dir#"$_cfd_root/"}"
-
-      # Skip directories that match a !exclusion pattern.
-      local _cfd_excl _cfd_skip=false
-      while IFS= read -r _cfd_excl; do
-        [ -n "$_cfd_excl" ] || continue
-        # shellcheck disable=SC2053
-        if [[ "$_cfd_rel" == $_cfd_excl || "$_cfd_rel/" == $_cfd_excl || "$_cfd_rel" == "$_cfd_excl/"* ]]; then
-          _cfd_skip=true; break
-        fi
-      done < <(printf '%s\n' "${_cfd_exclude_pats:-}")
-      [ "$_cfd_skip" = "true" ] && continue
-
-      # Dedup across patterns
-      case "$_cfd_seen" in *":${_cfd_rel}:"*) continue ;; esac
-
-      if printf '%s\n' "$_cfd_files" | grep -q "^${_cfd_rel}/"; then
-        echo "$_cfd_rel"
-        _cfd_seen="${_cfd_seen}:${_cfd_rel}:"
-      fi
-    done < <(printf '%s\n' "$_cfd_dirs")
-
-  done < <(printf '%s\n' "$_cfd_include_pats")
+  # Pattern expansion — **, bounded globs, literal paths, !exclusions,
+  # node_modules pruning — is the shared _expand_workspace_dirs (issue #1351),
+  # which also carries the rationale for find over bash globbing. What is
+  # specific to this caller: require a package.json, keep only dirs a changed
+  # file lives under, and emit project-relative paths. Output is already
+  # deduplicated and sorted by the expander.
+  local _cfd_dir _cfd_rel
+  while IFS= read -r _cfd_dir; do
+    [ -n "$_cfd_dir" ] || continue
+    [ -d "$_cfd_dir" ] || continue
+    [ -f "$_cfd_dir/package.json" ] || continue
+    _cfd_rel="${_cfd_dir#"$_cfd_root/"}"
+    if printf '%s\n' "$_cfd_files" | grep -q "^${_cfd_rel}/"; then
+      echo "$_cfd_rel"
+    fi
+  done < <(_expand_workspace_dirs "$_cfd_root" "$_cfd_patterns")
   return 0
 }
 

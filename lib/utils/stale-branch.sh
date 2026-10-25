@@ -545,7 +545,7 @@ _stale_classify_after_push_rejection() {
   local local_head
   local_head=$(git rev-parse HEAD 2>/dev/null || echo "")
   local remote_head
-  remote_head=$(git rev-parse "origin/$branch_name" 2>/dev/null || echo "")
+  remote_head=$(git rev-parse --verify --quiet "origin/$branch_name" 2>/dev/null || echo "")
 
   if [ -z "$local_head" ] || [ -z "$remote_head" ]; then
     print_error "Cannot determine HEAD state after push rejection"

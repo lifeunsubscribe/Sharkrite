@@ -40,12 +40,6 @@ setup() {
 
   export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
-  export RITE_INTERNAL_DOCS_DIR="${RITE_TEST_TMPDIR}/.rite/docs"
-  mkdir -p "$RITE_INTERNAL_DOCS_DIR"
-
-  # _MARKER_DIR is used by _mark_updated() inside the function
-  export _MARKER_DIR
-  _MARKER_DIR="$(mktemp -d "${BATS_TEST_TMPDIR}/markers.XXXXXX")"
 
   # Load marker constants (RITE_MARKER_CONVENTION) so the function uses the
   # correct marker string when building open/close awk patterns.
@@ -73,18 +67,9 @@ setup() {
   verbose_info()  { :; }
   export -f print_warning print_info verbose_info
 
-  # Extract _mark_updated() and update_conventions_from_marker() from
-  # assess-documentation.sh via awk, same pattern as changelog-ordering.bats.
+  # Extract update_conventions_from_marker() from assess-documentation.sh
+  # via awk so the script's top-level body does not run.
   eval "$(awk '
-    /^_mark_updated[(][)]/ { in_fn=1; depth=0 }
-    in_fn {
-      for (i=1; i<=length($0); i++) {
-        c=substr($0,i,1)
-        if (c=="{") depth++
-        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
-      }
-      print; next
-    }
     /^update_conventions_from_marker[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {

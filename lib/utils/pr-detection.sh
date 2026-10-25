@@ -254,7 +254,7 @@ detect_review_state() {
     local local_head remote_head branch_name
     branch_name=$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
     local_head=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null || echo "")
-    remote_head=$(git -C "$worktree_path" rev-parse "origin/$branch_name" 2>/dev/null || echo "")
+    remote_head=$(git -C "$worktree_path" rev-parse --verify --quiet "origin/$branch_name" 2>/dev/null || echo "")
 
     if [ "$local_head" != "$remote_head" ]; then
       # Unpushed commits — review is stale

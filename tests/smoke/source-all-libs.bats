@@ -32,7 +32,7 @@ teardown() {
     # The 3 guard-supporting executables (claude-workflow.sh, assess-and-resolve.sh,
     # local-review.sh) stay in coverage and source cleanly under the guard below.
     case "$(basename "$lib_file")" in
-      workflow-runner.sh|assess-documentation.sh|bootstrap-docs.sh|batch-process-issues.sh|undo-workflow.sh|assess-review-issues.sh|merge-pr.sh|create-pr.sh) continue ;;
+      workflow-runner.sh|assess-documentation.sh|batch-process-issues.sh|undo-workflow.sh|assess-review-issues.sh|merge-pr.sh|create-pr.sh) continue ;;
     esac
 
     # Try to source in a subshell (isolate side effects)

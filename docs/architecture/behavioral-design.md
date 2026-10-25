@@ -596,7 +596,7 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — `_run_dev_test_gate` runs the gate unconditionally for all non-orchestrated runs (auto and supervised standalone alike); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
 
-**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a function — deferred to a future refactoring issue; structural verification is the current coverage.
+**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a callable function — tracked by issue #1368, which also covers the `RITE_GATE_FINDINGS` builder extraction deferred in `tests/regression/test-gate-parallel.bats`; structural verification is the current coverage.
 
 ### Supervised standalone full-suite carve-out (2026-10-20, issue #1273)
 
@@ -635,17 +635,15 @@ When `claude --print` hits the user's spending cap mid-session, it emits a messa
 
 **Why this matters — 2026-06-04:** the spend cap fired at the start of issue #321 in a batch of 8. Six subsequent issues (#321, #324, #328, #330, #331, #333) each cascaded through ~35-50s of dev-session startup before hitting the cap and failing. That's ~4 minutes of wasted dev-startup time + 6 false "failed" entries in the batch summary. The cap was already wired in 9 other paths (conflict resolver, divergence handler, fix-review push divergence, merge-time divergence, stale-branch handler) — the plain dev-session path was the gap.
 
-### ADR generation helper lives in lib/utils/, not lib/core/
+### A file that is both a library and a script needs a mode guard
 
-`generate_adr_for_ref` is in [lib/utils/adr-generator.sh](../../lib/utils/adr-generator.sh). Two callers source it: `lib/core/assess-documentation.sh` (post-merge doc assessment) and `lib/core/bootstrap-docs.sh` (one-time bootstrap of internal docs). The helper has no side effects on source — it only defines the function plus an `ADR_GENERATOR_TIMEOUT` default.
-
-**Why it's not inline in assess-documentation.sh anymore:** `assess-documentation.sh` is a script with top-level executable code (it parses `$1` as `PR_NUMBER`, calls `gh pr view`, runs through the full post-merge assessment, and ends with `exit 0`). Anything that sources it runs that entire flow as a side effect — and the `exit 0` terminates the *parent* shell.
+`assess-documentation.sh` is a script with top-level executable code (it parses `$1` as `PR_NUMBER`, calls `gh pr view`, runs the whole assessment, and ends with `exit 0`). Anything that sources it runs that entire flow as a side effect — and the `exit 0` terminates the *parent* shell.
 
 **Live regression — 2026-06-04, finance-glance batch `rite 1 2 3 4 5 6 7`:** `bootstrap-docs.sh` used to `source assess-documentation.sh` just to use `generate_adr_for_ref`. On a fresh repo (no PRs), the sourced top-level called `gh pr view $1` (with `$1`= issue number), got back JSON missing `.files` and `.commits`, hit `jq: error (at <stdin>:1): Cannot iterate over null (null)`, continued into the post-merge documentation summary, then hit `exit 0`. That terminated workflow-runner.sh with status 0. The batch reporter saw exit 0 and logged `✅ Issue #1 → PR #1 (167s)` — except issue #1 was still open, no branch existed, no PR existed.
 
 **Pattern lesson:** Same class of bug as [Test stubs MUST NOT live in production paths](#test-stubs-must-not-live-in-production-paths-critical) below: a file that's BOTH a library (defines functions other code wants) AND a script (runs top-level code on source/execute) without a guard separating the two modes. Sharkrite's options for handling this:
 
-1. **Extract the function** to its own file in `lib/utils/` (or another helpers location). The library file has no top-level executable code. *This is what was done for `generate_adr_for_ref`.*
+1. **Extract the function** to its own file in `lib/utils/` (or another helpers location). The library file has no top-level executable code. *This is what was done for `generate_adr_for_ref` (since retired with the internal-docs layer, 2026-10-21).*
 2. Use `RITE_SOURCE_FUNCTIONS_ONLY=1` guard pattern (see `lib/core/local-review.sh` as the in-repo example) — caller sets the env var before sourcing; the script's executable body checks it and returns early.
 
 Option 1 is preferred when the function is reusable. Option 2 fits when the script is dominated by a single workflow that doesn't decompose cleanly.
@@ -761,30 +759,39 @@ The necessity bar governs *non-essential* findings; the **SCOPE BAR** (added #79
 
 ---
 
-## Doc Assessment Fan-out / Fan-in (assess-documentation.sh, merge-pr.sh)
+## Doc Assessment (assess-documentation.sh, workflow-runner.sh)
 
-Post-merge doc assessment runs as a background subprocess launched by `merge-pr.sh`. Within that subprocess, `assess-documentation.sh` makes multiple Claude provider calls. The sub-assessments are structured as a fan-out / fan-in: four calls run in parallel, then dependent calls run sequentially.
+`workflow-runner.sh` spawns `assess-documentation.sh` in the background during
+the fix loop (`phase_spawn_doc_assessment`) and waits for it before merge
+(`phase_wait_doc_assessment`). Two layers:
 
-### Independent sub-assessments (fan-out)
+1. **Catalog maintenance (always)** — `update_conventions_from_marker`,
+   `reconcile_tag_index`, `commit_catalog_files`. Deterministic, except the
+   tag-dedup similarity/coverage checks in `reconcile_tag_index`, which call the
+   `doc_assessment` model only when a PR declares new tags.
+2. **Drift recording (opt-in)** — when doc consent is recorded
+   (`RITE_DOC_MODE=sync|changelog`), one drift-log entry per merge. Never edits
+   the user's docs. Unset or `off` records nothing; unattended runs never opt a
+   repo in (`ensure_doc_mode` only asks in supervised interactive runs).
 
-These four sub-assessments each evaluate the **same diff** against a **different internal doc**. They have no data dependency on each other:
+**Retired 2026-10-21:** the internal `.rite/docs/` layer — four parallel
+sub-assessments (changelog/security/architecture/api) plus keyword-triggered
+ADRs, a reconcile pass, cross-doc validation, and the `bootstrap-docs.sh`
+first-run bootstrap. Nothing read its output, and it cost ~5 min and ~100k
+tokens per merge plus a 5–6 min bootstrap on a repo's first issue.
 
-| Sub-assessment | Output doc | What it captures |
-|---|---|---|
-| `assess_internal_security` | `.rite/docs/security.md` | Auth, credential, infra changes in the diff |
-| `assess_internal_architecture` | `.rite/docs/architecture.md` | New/removed files, config vars, entry points |
-| `assess_internal_api` | `.rite/docs/api.md` | CLI flag, config var, exit code changes |
-| `assess_internal_adr` | `.rite/docs/adr/*.md` | Architectural decisions worth recording |
+**Retired 2026-10-21, same day:** the per-merge doc-sync rewrite
+(`.rite/doc-sync.md`). It edited the user's docs on every merge with no approval
+step, and saved the model's full response — stderr included — as the file. In
+orrery (PRs #14/#15/#17) that put Claude CLI permission warnings with local
+paths, the model's narration and a wrapping ```` ```markdown ```` fence into the
+README on main. Also gone with it: the `gh pr diff` fetch (its only consumer)
+and the per-merge `provider_validate_cli` health prompt. And the unattended
+fallback that defaulted an unconsented repo to changelog mode — it had recorded
+74 unreviewed entries, each with a model call, in sharkrite's own drift log.
 
-Implementation: all four are launched via `&` and collected into `_assess_pids`. A `wait` loop then collects exit codes individually — a failing sub-assessment logs a warning but does NOT prevent the others from completing or the reconcile step from running.
-
-### Dependent steps (fan-in / sequential)
-
-These run after the fan-out wait completes, because they consume the sub-assessment outputs:
-
-1. **Reconcile** (`reconcile_internal_doc`) — when a doc accumulates 3+ PR delta sections, merges incremental deltas back into the baseline. Runs in parallel per-doc (each doc is independent), but after the fan-out wait. Each reconcile call is one Claude provider call.
-2. **Cross-doc consistency validation** (`_validate_cross_doc_consistency`) — only fires when a reconciliation actually happened. Makes one Claude provider call to find contradictions across security/arch/api docs, then one provider call per file that needs a correction.
-3. **Layer 2 (user project docs)** — if `.rite/doc-sync.md` exists, runs one assessment call then one update call per doc needing changes. Sequential because the assessment's output drives the update calls.
+See "Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On
+Demand" below.
 
 ### Model Selection Per Task
 
@@ -795,7 +802,7 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 | Code review (`local-review.sh`) | Catching subtle bugs, security issues, bash idiom edge cases | `RITE_REVIEW_MODEL` (default: `claude-opus-4-8`) | Deep reasoning, broad context retention — opus catches the corner cases that matter |
 | Finding assessment (`assess-review-issues.sh`) | Classifying each review finding into ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED | `RITE_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Three-state classification of already-structured findings — not the reasoning that generated them. Before #1187 it inherited the review model from the review marker, so pinning review to fable-5 silently ran every assessment (the highest-count LLM call in the loop) on fable too |
 | Issue planning (`plan-issues.sh`) | Generating GitHub issues from ADRs / architectural docs | `RITE_PLAN_MODEL` (default: `claude-opus-4-8`) | Highest-stakes reasoning stage — it must honor ADRs and never hallucinate fixtures. Kept on opus, but with its OWN var so it can't silently ride (or downgrade with) review |
-| Doc assessment (`assess-documentation.sh`) | "Did this diff change API surface X? Update api.md accordingly." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
+| Doc assessment (`assess-documentation.sh` drift entries, `rite docs`, tag dedup) | "Did this diff change what doc X says? Propose the edit." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
 | Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
 | Triage / classify (`triage-classify.sh`, doc auto-discovery in `bin/rite`) | Trivial-vs-substantive diff; doc categorization | `RITE_TRIAGE_MODEL` (default: `claude-haiku-4-5`) | Narrow bucket classification — haiku's job, not opus's |
 
@@ -820,34 +827,11 @@ Note `plan` defaults to the same model as `review` (opus) *today*, but the point
 
 **New tasks must pick a role explicitly.** Never pass `""` as the model arg to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on provider defaults — defaults may change, and an empty model silently resolves to the `review` model. Use the provider-agnostic **`provider_resolve_model <role>`** — code in `lib/core`/`lib/utils` must not call the claude-prefixed `claude_provider_resolve_model` directly (enforced by Rule 32, `DIRECT_PROVIDER_CALL`). Pick the role by nature: doc-like (pattern matching, summarization) → `doc_assessment`; bug-detection or nuanced reasoning → `review`; classifying review findings (NOW/LATER/DISMISSED or similar structured verdicts on existing findings) → `assessment`; issue generation → `plan`; bucket classification → `triage`.
 
-### Wall-clock impact
+### Wait timeout
 
-Before parallelization (if it were sequential): `t_sec + t_arch + t_api + t_adr + t_reconcile` ≈ 80-120s with sonnet; ≈ 200-360s with opus.
-
-After parallelization + sonnet default: `max(t_sec, t_arch, t_api, t_adr) + t_reconcile` ≈ 20-30s + 20-30s ≈ 40-60s. Typical end-to-end: ~90-120s.
-
-### Merge-tail timeout watchdog
-
-`merge-pr.sh` starts the doc assessment background subprocess before cleanup, then waits for it after cleanup. The wait is bounded by `RITE_DOC_ASSESSMENT_TIMEOUT` (default 300s):
-
-```
-( sleep $timeout && kill -TERM $DOC_PID ) &   # watchdog
-watchdog_pid=$!
-
-wait $DOC_PID || doc_exit=$?
-
-kill -TERM $watchdog_pid                        # cancel watchdog if doc finished first
-wait $watchdog_pid
-
-if doc_exit == 143 (SIGTERM) or 137 (SIGKILL):
-    harvest partial_complete: lines from _DOC_LOG
-    print warning with count of completed sub-assessments
-    continue (exit 0 from merge-pr.sh)
-```
-
-On timeout: completed sub-assessments are preserved (their doc files were already written to disk before the kill). The warning message distinguishes "N sub-assessments preserved" from "no progress to preserve". Workflow exits 0 regardless — doc assessment results are not a merge blocker.
-
-**Why 300s default:** With sonnet, fan-out wall-clock is ~20-30s; reconcile ~20-30s; validate ~20-30s. Typical total: ~90-120s. 300s gives 2.5× headroom for big diffs and slow API responses without firing on normal runs. Previous default was 180s (set when opus was the model — that's why it fired regularly).
+`phase_wait_doc_assessment` bounds the wait with `RITE_DOC_ASSESSMENT_TIMEOUT`
+(default 300s): a watchdog sends SIGTERM, the workflow warns and continues.
+Doc assessment is never a merge blocker.
 
 ### DO NOT skip the assessment based on diff content
 
@@ -1187,9 +1171,9 @@ Tried extracting significant words from feature names and matching against the d
 Generalizes the deferral-detection lesson into a project-wide rule. **Sharkrite must never use keyword/substring matching to decide whether a piece of text qualifies for some downstream behavior.** This pattern has bitten us repeatedly:
 
 - **Deferral detection** (above) — words vary, semantic match needed
-- **ADR auto-creation** (`assess-documentation.sh:470-471`) — matched on `"decision\|tradeoff\|alternative"`. Captures issue bodies that mention these words conversationally and misses architectural decisions that don't use the vocabulary
+- **ADR auto-creation** (`assess-documentation.sh`, retired 2026-10-21) — matched on `"decision\|tradeoff\|alternative"`. Captures issue bodies that mention these words conversationally and misses architectural decisions that don't use the vocabulary
 - **Parent-PR marker detection** (`batch-process-issues.sh:327`, fixed in `206f2be`) — matched on `"sharkrite-parent-pr:"` without anchoring on digits. Issue #34's body documented the marker format as an example and tripped the guard, killing the batch silently
-- **ADR backfill** (`bootstrap-docs.sh`) — matches commit messages on `"refactor\|feat\|breaking\|migrate"` to decide ADR-worthiness. Same class of false positives and false negatives
+- **ADR backfill** (`bootstrap-docs.sh`, retired 2026-10-21) — matched commit messages on `"refactor\|feat\|breaking\|migrate\|switch\|drop"` to decide ADR-worthiness. Same class of false positives and false negatives (last live case: orrery's first batch turned "Rename the switch and tab" — a UI toggle — into an ADR)
 - **Severity grep** in review/assessment (`merge-pr.sh:227`, fixed in milestone #28) — matched on bare `"CRITICAL\|HIGH\|MEDIUM"` and got triggered by phrases like "no critical issues found"
 
 **Why keyword matching fails for this tool specifically:**
@@ -1222,9 +1206,6 @@ Sharkrite maintains three docs in `docs/architecture/`, each with a single purpo
 
 Existing automation continues unchanged:
 
-- `.rite/docs/changelog.md` — per-PR one-line entries on every merge
-- `.rite/docs/architecture.md` — auto-summarized internal architecture overview (different from this file; meant for in-issue context not narrative)
-- `.rite/docs/adr/` — ADRs created when a PR opts in via `<!-- sharkrite-adr -->` marker (replaces the current keyword-matching auto-creation)
 - `docs/architecture/exit-codes.md` — auto-maintained from script comments
 
 **Loading order at workflow start:** every Claude dev session loads in this order: `CLAUDE.md` → `behavioral-design.md` → `conventions.md` → `encountered-issues.md` → issue-specific context. The first three together constitute "what every Claude session must know about this codebase."
@@ -1320,57 +1301,6 @@ Rule 21 (`BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT`) in `tools/sharkrite-lint.sh` scans
 
 ---
 
-## ADR Backfill (bootstrap-docs.sh)
-
-### Backfill Behavior
-
-When `rite --init` runs, bootstrap searches git history for architectural commits (refactor, feat, breaking, migrate, etc.) and generates ADRs for them. This ensures new repos start with decision records for major historical changes, not just future PRs.
-
-**Default:** Backfill up to 5 ADRs from the last 50 commits matching the pattern.
-
-**CLI Flags:**
-- `--no-backfill-adrs` — Skip backfill entirely (prints skip message)
-- `--backfill-count N` — Generate up to N ADRs (default: 5)
-
-**Environment Variables:**
-- `RITE_NO_BACKFILL_ADRS=true` — Skip backfill
-- `RITE_BACKFILL_ADR_COUNT=N` — Set backfill limit
-
-### Metadata Format
-
-ADRs generated from commits use `**Commit:** <sha>` metadata instead of `**PR:** #N`.
-
-**Example:**
-```markdown
-# ADR-001: Provider Abstraction
-
-**Date:** 2026-05-26
-**Commit:** bd61485
-**Files:** lib/providers/provider-interface.sh, lib/providers/claude.sh
-**Context:** ...
-**Decision:** ...
-**Tradeoffs:** ...
-```
-
-### Deduplication
-
-The `generate_adr_for_ref()` function checks for existing ADRs by searching for:
-- `PR: #<number>` (for PR-based ADRs)
-- `Commit: <sha>` (for commit-based ADRs)
-
-Re-running bootstrap is idempotent — existing ADRs are preserved, only commits without an ADR get one.
-
-### Empty Responses
-
-When Claude judges a commit NOT architecturally significant, it returns empty output. Bootstrap prints:
-```
-- Skipped <sha> — Claude judged not ADR-worthy
-```
-
-No file is created for that commit. This prevents cluttering `.rite/docs/adr/` with trivial decisions.
-
----
-
 ## Deterministic over Model-Policing-Model
 
 **Principle:** When a workflow step is a deterministic check expressible as a comparison or lookup, implement it deterministically. Do not use an LLM to "police" another LLM's output.
@@ -1443,16 +1373,44 @@ The original H5 planning proposal called for a self-critique LLM pass after issu
 | No dangling `#N` refs | Every dep ref resolves to a batch issue or existing open issue | ERROR (exit 1) |
 | Verification path sanity | Verification commands reference paths in Files to Modify or the repo | WARNING (exit 0) |
 | Deferral citation | Each `⏭️` deferral entry cites evidence (`> text`, `file:line`, or quoted phrase) | WARNING (exit 0) |
+| Concurrent file overlap (Check 7) | Derived-concurrent pairs sharing Files to Modify are auto-chained or warned | WARNING (exit 0) + auto-rewrite |
 
-The complete four-linter chain (in call order within `generate_issues`):
+**Check 7 Auto-Chain Contract (issue #1388, 2026-10-21):** Two issues are *derived-concurrent* when neither is reachable from the other via the `_rev_adj` adjacency already built by Check 2's Kahn pass — no parallel annotation is required for detection. For each derived-concurrent pair sharing a file in `Files to Modify`, Check 7 either auto-chains the later issue (lower non-spike ordinal → `After #N` added to the later issue's `Dependencies` line, both-way parallel annotations stripped) or warns when either side carries a `parallel-file-overlap` suppression marker (disjoint-functions escape hatch). The loop runs to fixpoint: after each auto-chain, `_rev_adj` is updated in memory and reachability is recomputed — this avoids re-chaining pairs already covered by earlier rewrites (e.g. once A→B and B→C are both in `_rev_adj`, A→C is transitively covered, so a direct A→C edge is not added if the pair is seen as sequential before it fires). Annotations in `_parallel_with` are consumed only for annotation-stripping, never for detection.
+
+The complete linter chain (in call order within `generate_issues`):
 1. `_detect_unverified_integrations` — external dependency grounding (#351)
 2. `_dedup_issues` — title deduplication
 3. `_validate_coverage` — coverage checklist 1:1 invariant (#348)
 4. `_lint_issues` — service-layer anti-patterns
 5. `_lint_provenance_flags` — provenance table signal quality (#367)
-6. `_lint_issues_strict` — graph checks, dangling refs, verification paths, deferral citations (#353)
+6. `_lint_issues_strict` — graph checks, dangling refs, verification paths, deferral citations (#353); **zero-LLM contract**
+7. `_lint_negative_existence_claims` — two-stage negative-existence check (#1390); see below
 
-**If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match.
+**Fifth application — two-stage negative-existence claim lint (#1390, 2026-10):**
+
+Two orrery planning rounds were blocked by the planner asserting repo-state negatives that were false: round 3 ("no `adult_confirmed_at` migration" while the column existed at `init.sql:17`) and round 6 ("there is no `find_profile_by_username` function yet" while the function was defined at `init.sql:363`). Both were caught only by human review.
+
+`_lint_negative_existence_claims` in `lib/core/plan-issues.sh` addresses this with a two-stage design:
+
+**Stage 1 — deterministic gate (zero LLM):** for each body line matching a negative-existence phrase (`no <X> yet`, `does not exist` / `doesn't exist`, `no migration`, `no schema change`, `not in the schema`, `missing`), extract identifier-shaped tokens (backtick-quoted, snake_case, camelCase) and run `git grep -nw <ident> -- ':!*.md'` from `RITE_PROJECT_ROOT`. No hit → silent pass, no LLM call. This gate ensures the LLM is only invoked for raw hits — cost is zero on the common clean-plan path.
+
+**Stage 2 — triage validation (haiku, narrow binary):** each Stage 1 hit is classified by `provider_resolve_model triage` (the haiku role — narrow binary classification, not deep reasoning). The prompt gives the claim line, identifier, and the first hit's `file:line` context, and asks: `CONTRADICTED` or `CONSISTENT`?
+
+| Stage 2 verdict | Action |
+|---|---|
+| `CONTRADICTED` | `negex-lint: WARNING: negative-existence: '<ident>' claimed absent in '<title>' but defined at <file:line>` |
+| `CONSISTENT` | Drop silently (claim is scoped to a different layer/component) |
+| Provider unavailable / no parseable verdict | `negex-lint: WARNING: … (unvalidated)` — findings degrade, never disappear |
+
+The function is **separate from `_lint_issues_strict`** so its triage model call does not violate that function's zero-LLM contract. It is also **non-fatal** (always exits 0, warn-only) — the preview feedback loop owns the fix.
+
+**Suppression (per issue):**
+```
+<!-- sharkrite-plan-lint disable negative-existence - Reason: ... -->
+```
+`Reason:` field is required; a marker without `Reason:` is rejected and the check runs anyway.
+
+**If you find yourself wanting to add an LLM critique pass to the planning pipeline:** list the items on the checklist, then pull each into code first. The pattern is: parse the relevant section from the issue block, run a deterministic comparison or lookup, emit `WARNING:` or `ERROR:` to stderr. No model call required. The only time a model is justified is when the question genuinely requires language understanding that cannot be reduced to a membership test or structural match. The two-stage design above (`_lint_negative_existence_claims`) is the canonical example: Stage 1 is fully deterministic and gates LLM cost to the non-common case; Stage 2 uses only the triage role (haiku) for a narrow binary classification.
 
 **Suppression markers (inline per item, not env-var flags):**
 
@@ -2291,3 +2249,330 @@ rtk and the project's tracked files reference it).
 - `lib/utils/promotion-composer.sh` — LLM narrative before `printf` emits it to stdout
 
 **Extension point.** The helper is intentionally rtk-specific (rtk is the live failure class; a generic "unknown tool" detector is unbounded). To handle another operator-local tool, add a parallel check inside `sanitize_generated_commands` — see the comment in `lib/utils/sanitize-output.sh`.
+
+
+## Documentation Drift: Detect Per-Merge, Correct Per-Promote, Align On Demand
+
+**Status:** design locked 2026-10-21, amended 2026-10-22 (on/off via
+`align-docs`, `rite docs` as the `main` path, code-first promote, editing
+rules, per-type rubrics, docs map as a committed navigation document);
+implementation planned as an issue set.
+The retirement landed first (2026-10-21): the internal `.rite/docs/` layer and
+its first-run bootstrap are gone, and "Doc Assessment" above now describes only
+what remains.
+
+**What this replaces, and the evidence.** The merge-phase documentation
+assessment (`assess-documentation.sh`) maintained four sharkrite-internal files
+under `.rite/docs/` — `architecture.md`, `api.md`, `security.md`,
+`changelog.md` — and never touched the repo's own `docs/`. Measured on
+2026-10-20: `phase4_merge` clustered at 4m39s–5m54s against the assessment's
+own 300s cap, on nearly every merge. The dominant cost was `reconcile_internal_doc`,
+which embeds the *entire* current file in its prompt (~42k tokens for
+`architecture.md`) and refuses to write back unless the model folds **every**
+accumulated `## PR #` section into the baseline and emits zero of them. The
+files held 133, 121 and 82 such sections against a reconcile threshold of 3 —
+proof it had fired ~130 times and written back ~0, each run leaving the input
+larger and the next success less likely. A ratchet. And nothing read the output:
+the only consumer of those files was an existence check in
+`phase_pre_start_checks`. Roughly five minutes and ~100k tokens per merge to
+maintain prose with no reader.
+
+**The principle.** Documentation is a human management responsibility. AI
+generates and proposes; a human approves, at a cadence the human chose, against
+assertions the human wrote, enforced by tests the human named. Every mechanism
+below is that principle applied, and every rejected approach is a way of
+violating it.
+
+### Units
+
+- **The branch is the feature.** An integration branch (`rite --branch X`) is a
+  related issue set and the unit of documentation correction. Individual issues
+  are never associated with a feature doc — that is how a doc bloats with
+  one-off entries from pigeon-holed issues filling a documentation quota.
+- **Work that goes straight to `main` has no branch.** Its drift entries carry
+  `branch=main` and are corrected through `rite docs`, which runs the same
+  Tier 2 pass promote runs. This is the common case: all of the last 40 merged
+  sharkrite PRs targeted `main` (measured 2026-10-22), so promote alone would
+  almost never fire.
+- **Feature doc association is declared, never inferred.** `--branch X --doc
+  docs/features/foo.md` (or an equivalent plan-log line) names the doc.
+  Absence is a warning, not a block. Inference is the fuzzy-targeting failure
+  the test gate already taught us.
+- **The ADR→feature-doc map is parsed from the ADR's own links**, which is
+  deterministic, and used for the *just-in-case* pass (below). The ADR is
+  never the declared doc of a branch.
+- **Tests are the bridge for everything else.** A feature doc declares the
+  tests that enforce it (`<!-- sharkrite-enforced-by: tests/regression/a.bats,
+  tests/regression/b.bats -->`; the existing `Enforcement:` lines in this file
+  are the informal precedent). The doc declares its tests, not the reverse: the
+  doc is the human artifact, and the human decides what counts as enforcement.
+  This is `sharkrite-test-covers` pointed the other way.
+
+### On, off, and what each state does
+
+`rite align-docs` is the switch. It replaces the consent prompts in
+`rite docs`, `rite --init` and supervised runs.
+
+- **First run** (never enabled): asks whether to turn doc tracking on, and says
+  plainly that the audit runs either way. Then runs the restructure assessment
+  and the assertion audit — there are no drift entries yet. When the repo has no
+  clear doc structure, it offers to scaffold one; the scaffolder is the
+  separately designed ground-up bootstrap (test suites → feature docs → ADR).
+  Until that exists the offer is omitted, not improvised.
+- **`rite align-docs --disable`** turns tracking off. The next plain run asks
+  again, as on the first run.
+- **On:** Tier 1 records entries on every merge; promote and `rite docs`
+  correct them.
+- **Off or never enabled:** nothing is recorded and nothing runs
+  automatically — so nothing piles up. `rite align-docs` and directed
+  `rite docs "<instructions>"` still work: they check docs against the code
+  directly and need no entries.
+- **Unattended runs never turn tracking on.** (Before 2026-10-21 they silently
+  did: 74 unreviewed entries, each with a model call, in sharkrite's own log.)
+
+### Tier 1 — detection, per merge, deterministic, zero model calls
+
+Runs on every PR merge while tracking is on, whether or not the issue is on a
+branch.
+
+Triggers: the PR's changed files intersect a feature doc's enforcing test set,
+or intersect code those tests exercise, or the PR is on a branch with a
+declared doc. A one-off fix that touches no enforcing test creates nothing.
+
+Records a **drift entry**, per doc and per branch (not one global file), with
+fields — prose is for human review, fields are for consolidation:
+
+| field | meaning |
+|---|---|
+| `doc` | the feature doc implicated |
+| `branch` | integration branch, or `main` |
+| `pr`, `issue` | provenance (a list, see below) |
+| `assertion` | the doc assertion whose referenced code/test changed, when identifiable |
+| `kind` | `addition` \| `refinement` \| `contradiction` \| `test-scope` \| `reference-missing` |
+| `evidence` | changed paths, test names, the grep that fired |
+| `recorded` | timestamp |
+
+What Tier 1 may assert is exactly what a grep can answer: a referenced flag,
+function, file or test still exists; an enforcing test still exists and still
+names the asserted scope; the PR added or refined something in the doc's
+territory. **Whether an assertion is still *true* is a judgement and belongs to
+Tier 2.** Letting "still true" into Tier 1 reintroduces a model call per merge,
+which is the failure mode this design exists to end.
+
+Entries stay bounded:
+
+- **Accumulate in place.** One entry per (doc, assertion); a repeat hit appends
+  its PR to that entry — the conventions catalog's rule. Volume tracks affected
+  assertions, not merges.
+- **Consumed or cleared.** Tier 2 consumes the entries it corrects;
+  `align-docs` clears every entry for a doc it audits, because it just
+  re-verified that doc against the code.
+- **Visible.** A batch that leaves entries ends with one line —
+  `N drift entries pending across M docs — run 'rite docs'` — and never waits.
+
+### Tier 2 — correction: one bounded model pass, human-approved
+
+One pass, two entry points:
+
+- **Promote** (`rite --promote`). Everything up to and including the merge runs
+  automatically — review, gate, assessment, merge. **The code merges first.**
+  Then the doc pass runs and waits for the operator: accept / reject /
+  feedback. With no terminal attached it saves the proposal and prints the
+  exact resume command (`rite docs --resume <branch>`). Docs never gate the
+  merge, and no doc change lands without a human.
+- **`rite docs`** for work on `main`: the same pass over `branch=main` entries.
+
+Both use the loop `rite docs` already has for directed updates (propose →
+preview → approve → dedicated docs PR); there is no second doc-editing UX.
+
+**Bounded input:** the declared feature doc's affected sections (located
+through the docs map, read by anchor), the ADR section that references the
+doc, the entries, and a diff summary. **Output:** a narrative of what changed
+and why the doc should change, *and* the explicit list of proposed edits. Both
+are required; narrative alone is not reviewable and a diff alone is not
+readable.
+
+Contract:
+
+- **Propose, never write.** Accepted edits land through the docs-PR path.
+- **Doc rejection never blocks anything.** The code already merged. On reject,
+  the entries persist and `align-docs` sees them later.
+- **One update per branch promotion.** The feature doc changes at most once per
+  promote. Accepted entries are **folded into the docs PR body**, the permanent
+  record of why the doc changed, then removed from the entry store. Entries are
+  consumed, not deleted into nothing.
+- **Just-in-case pass.** The diff is intersected with every *other* feature
+  doc's enforcing tests and referenced files (set intersection first; model only
+  for the residue). Hits produce drift entries for those docs — never edits.
+- **Nondeterministic assertions are flagged, not fixed.** When the pass cannot
+  verify an assertion deterministically ("the sync experience is smooth"), it
+  records a `refinement` entry proposing enforceable wording. Each accepted
+  rewording makes the next pass cheaper.
+
+### Editing rules — every pass that proposes doc text
+
+- **Model.** A dedicated `doc_update` role (`RITE_DOC_UPDATE_MODEL`), defaulting
+  to the deepest-reasoning model (fable where available). It is separate from
+  `doc_assessment`, which stays classification-grade for tag dedup and audit
+  triage — a doc edit is read by a human as the product's description; a tag
+  merge is not.
+- **Length-neutral by default.** Improving prose must not grow the section.
+  Each proposed edit carries its computed size change; an edit that grows a
+  section past a threshold (order of 15%) must state why in the preview — new
+  behavior, new constraint, a real addition. Computed, not trusted to the model.
+- **Only the shipped product.** No deadlines, temporary setbacks, company
+  decisions, people, or anything else that stops being true without the code
+  changing. A prompt rule, plus a flag-only check that highlights dates and git
+  committer names in proposed text. The human decides; the check never
+  auto-rejects (keyword matching may flag, never decide).
+
+### Rubrics — every doc is checked twice
+
+1. **Accuracy, every doc including the ADR:** each assertion matches the code.
+2. **Role, by doc type:**
+   - *Feature doc* — stays within one feature; every assertion names an
+     enforcing test or is flagged; no overlap with sibling feature docs.
+   - *ADR* — links every feature doc; no feature doc contradicts it; no area of
+     the code is covered by zero feature docs; its decisions still hold.
+
+Sharkrite ships a default rubric per type; a repo overrides it in the docs
+map. The ADR is audited no less than any other doc — its role check is simply
+the one that compares *across* docs.
+
+### The ADR: never edited at promote
+
+Promote sees one branch's slice; the ADR describes the whole product, so an
+ADR edit needs the whole picture, which only `align-docs` has. Promote's
+observations about the ADR — a feature that contradicts it, a reference it
+lacks, scope it no longer matches — go to a **separate ADR drift log**. A wrong
+feature-doc edit is a bad paragraph; a wrong ADR edit is a wrong product.
+
+### `rite align-docs` — the full audit, on demand
+
+There is no cheap mode: the per-change path is Tier 2.
+
+- **Scope.** `rite align-docs [doc ...]` takes doc names with or without the
+  extension (`behavioral-design`, `behavioral-design.md`). No names → every doc.
+- **Restructure assessment first.** Should any doc split, merge, or
+  consolidate? An oversized doc can split into an ADR plus feature docs (this
+  file, at the time of writing: ~2,550 lines and 37 top-level sections, the ADR
+  and every feature doc concatenated), and the result can be consolidated with
+  an existing ADR and feature docs — merging overlapping sections,
+  de-duplicating assertions, re-linking the ADR, re-pointing
+  `sharkrite-enforced-by` markers. Few comprehensive docs beat many thin ones.
+  **Stable by rule:** every restructure decision, accepted or rejected, goes in
+  the approval history, and the same proposal returns only if the doc has grown
+  materially since (order of +25%).
+- **Assertion audit.** Every assertion in every in-scope doc against the code,
+  plus each doc's role rubric. Chunked by docs-map section: one call per
+  section, reading that section and the code it references. Before running it
+  shows the section and call count and asks.
+- **ADR drift log reconcile**, with an **approval history** (question,
+  decision, date, rationale; human-editable) injected so the same architectural
+  question is never asked twice.
+- **Apply** through the same propose/approve loop, narrative and explicit.
+  Then clear drift entries for the audited docs and rebuild the docs map.
+
+Quality-of-vision judgements (philosophy, budget vs scale, security posture,
+complexity vs reliability) are out of scope: a contradiction may be surfaced, a
+resolution may not be proposed. A separate, curated analysis command is their
+home and is a later design.
+
+### The docs map — sharkrite's navigation document
+
+A sharkrite-maintained file, **committed** to the repo (the team uses it, and
+its tags and notes cost model calls to regenerate). It is the index every pass
+queries — Tier 1, Tier 2, `align-docs`, `rite plan`:
+
+- **Every doc and section, with a per-section content fingerprint.** Sections
+  without headings are addressed by content fingerprint, not line numbers
+  (which shift on every edit). Users' docs never need headers or markers added.
+- **Tags and short notes per section** — the context that would be clutter in
+  the docs themselves. It absorbs the tag index (`tag-index.md`): one
+  navigation file, not two.
+- **Doc type (ADR / feature doc) and rubric overrides.**
+- **Self-checking on every doc edit.** Structure — files, sections,
+  fingerprints — refreshes deterministically; tags and notes regenerate only
+  for sections whose fingerprint changed.
+
+No pass reads a whole document to learn whether something is in it: it
+consults the map, then reads only the sections it needs, by anchor. A byte cap
+bounds *content loaded per pass*, never *what is discoverable* — `rite plan`'s
+50 KB auto-discovery cap applying to discovery itself (a 240 KB design doc
+loaded whole or not seen) is the oversight this corrects. Today's
+`.rite/state/docs-map.tsv` (headings + one per-file SHA, rebuilt only by
+`rite docs`, measured 64 commits stale) is the starting point.
+
+### Keeping it lean over time
+
+- **Every model pass emits a diag**: `[diag] DOC_PASS kind=promote|docs|align
+  doc=<path> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`.
+  The retired layer rotted for ~130 runs because nothing measured it.
+- **Oversized docs split.** When a pass's measured duration exceeds a
+  configured threshold (order of a minute or two), the workflow suggests
+  `rite align-docs <doc>`, whose restructure assessment proposes the split. The
+  trigger is the diag, never a feeling.
+
+### Retirement and migration
+
+- **Done 2026-10-21:** `assess-documentation.sh`'s internal layer,
+  `bootstrap-docs.sh`, `lib/utils/adr-generator.sh` and the `--no-backfill-adrs`
+  / `--backfill-count` flags are deleted; nothing writes `.rite/docs/` any more.
+  Existing `.rite/docs/` directories are inert and can be deleted by hand.
+  The interim `RITE_DOC_ASSESSMENT_TIMEOUT=1` did not stop the work — it killed
+  only the parent script, and the backgrounded sub-assessments kept running and
+  spending tokens — which is why retirement went first.
+- **Done 2026-10-21:** the per-merge doc-sync rewrite (`.rite/doc-sync.md`,
+  `templates/doc-sync.md.example`) is deleted; `RITE_DOC_MODE` no longer depends
+  on that file and gains `off`. No-consent now records nothing. Interim meaning
+  until `align-docs` owns enable/disable: `sync` = record drift per merge and
+  reconcile through `rite docs`; `changelog` = legacy, record only.
+- `docs/sharkrite-drift-log.md` (global, free-form) converts to per-doc,
+  per-branch entries with the schema above on the first `align-docs`.
+
+### Rejected approaches
+
+- **Per-merge model reconcile over the whole doc** — the ratchet described
+  above. Unbounded input, all-or-nothing write-back, no reader.
+- **Per-merge edits to user docs** — the retired doc-sync rewrite committed raw
+  model output into orrery's README (CLI warnings with local paths, narration,
+  a wrapping fence). Detection may be automatic; edits never are.
+- **Inferring which doc a branch or issue relates to** — fuzzy targeting; the
+  test gate's lesson, relearned. Declared or nothing.
+- **Tests declaring their doc** — scatters doc references across test files
+  and moves the enforcement decision away from the human artifact.
+- **Auto-writing accepted docs** — violates propose-never-write; the human
+  approves a diff, not a fait accompli.
+- **Docs as a merge gate** — gets accepted to unblock. That includes making
+  promote wait for doc feedback *before* merging: the code merges first.
+- **Unsupervised doc correction** — promote and `rite docs` are where the human
+  reads the feature's story; removing the human removes the point.
+- **Unattended runs opting a repo in** — consent recorded by default is not
+  consent; it produced 74 unreviewed entries.
+- **A cheap mode for `align-docs`** — the cheap path is Tier 2. Two cheap paths
+  drift apart.
+- **Associating individual issues with feature docs** — quota-driven bloat.
+- **An open-ended "review the architecture" prompt inside `align-docs`** —
+  the unbounded input in a new costume. The rubric is per doc type, in the map.
+- **Whole-document loading under a byte cap as the discovery mechanism** —
+  what the cap should bound is content read, not content findable. Query the
+  map; read by anchor.
+- **Line-number section anchors** — they move on every edit above them.
+
+**Enforcement:** to be pinned per issue as the set lands. Planned:
+`doc-drift-entry-schema.bats` (fields, per-doc/per-branch layout,
+accumulate-in-place), `doc-drift-tier1-deterministic.bats` (no provider call on
+the merge path — structural grep plus a stubbed-provider run that must make zero
+calls), `doc-tracking-off-records-nothing.bats`,
+`promote-docs-after-merge.bats` (the code merges before the doc prompt; no TTY
+saves the proposal and prints the resume command; reject never blocks;
+accepted entries fold into the docs PR body), `rite-docs-main-entries.bats`,
+`doc-edit-length-delta.bats`, `doc-update-model-role.bats`,
+`align-docs-scope-by-name.bats`, `align-docs-restructure-stability.bats`,
+`align-docs-approval-history.bats`, `align-docs-restructure-proposes-not-writes.bats`,
+the `DOC_PASS` diag presence check, and `sharkrite-enforced-by` marker parsing.
+Docs map: `docs-map-section-fingerprints.bats` (headingless sections addressed
+by fingerprint; tags regenerate only for changed sections),
+`docs-map-rebuild-on-doc-change.bats`, and `plan-reads-docs-map.bats` (`rite
+plan` consults the map before loading any content; a section past the byte cap
+is still discoverable).

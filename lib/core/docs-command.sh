@@ -2,10 +2,10 @@
 # lib/core/docs-command.sh
 #
 # rite docs [instructions] — circumstantial dispatch entry point for cluster-B
-# doc-sync features.
+# doc features (consent, drift audit/reconcile, directed updates).
 #
 # Dispatches based on effective documentation state:
-#   never-run   → consent/enable flow (ask once, scaffold .rite/doc-sync.md)
+#   never-run   → consent/enable flow (unset or off: ask, record sync|off)
 #   run-before  → drift audit (report potential inaccuracies vs current code)
 #   input given → directed-update seam (engine lands with #1049)
 #
@@ -45,32 +45,17 @@ load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 # ---------------------------------------------------------------------------
 # _docs_resolve_state
 #
-# Determine effective doc state from file presence + RITE_DOC_MODE env.
-# Uses .rite/doc-sync.md existence as the canonical Layer 2 activation switch
-# (assess-documentation.sh line 1958 — same gate, no parallel mechanism).
+# Determine effective doc state from RITE_DOC_MODE alone. (It used to key on
+# .rite/doc-sync.md, the switch for the per-merge doc-sync rewrite retired
+# 2026-10-21; a leftover file is now ignored.)
 #
-# Echoes one of: "never-run", "sync", "changelog", "mismatch"
+# Echoes one of: "never-run" (unset or off — ask again), "sync", "changelog"
 # ---------------------------------------------------------------------------
 _docs_resolve_state() {
-  local doc_sync_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md"
-
-  if [ -f "$doc_sync_file" ]; then
-    echo "sync"
-    return 0
-  fi
-
   case "${RITE_DOC_MODE:-}" in
-    sync)
-      # Mode is sync but the file is missing — config/file are out of sync
-      echo "mismatch"
-      ;;
-    changelog)
-      echo "changelog"
-      ;;
-    *)
-      # Neither var nor file → never been configured
-      echo "never-run"
-      ;;
+    sync)      echo "sync" ;;
+    changelog) echo "changelog" ;;
+    *)         echo "never-run" ;;
   esac
 }
 
@@ -889,44 +874,31 @@ docs_reconcile_drift() {
 # ---------------------------------------------------------------------------
 # _docs_enable_flow [instructions]
 #
-# Never-run path: ask the consent question, scaffold .rite/doc-sync.md on yes,
-# record RITE_DOC_MODE, and build the docs map.
-# If instructions are also provided, they are passed to docs_directed_update
-# after the enable flow completes.
+# Never-run path (mode unset or off): ask the consent question, record
+# sync on yes / off on no, and build the docs map. If instructions are also
+# provided, they are passed to docs_directed_update after the flow completes
+# (an explicit directed update is its own consent).
 #
 # Prompt is default-no; non-TTY takes the "no" branch (never hangs).
 # ---------------------------------------------------------------------------
 _docs_enable_flow() {
   local instructions="${1:-}"
 
-  local doc_sync_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md"
-  local doc_sync_example_local="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md.example"
-  local doc_sync_example_install="${RITE_INSTALL_DIR:-${RITE_LIB_DIR%/lib}}/templates/doc-sync.md.example"
-
   echo "" >&2
-  echo "  Sharkrite can update files in docs/ when code changes make them inaccurate." >&2
+  echo "  Sharkrite can track which docs a merge may have made inaccurate and" >&2
+  echo "  propose fixes here for your approval. Docs are never edited automatically." >&2
 
   local reply_val="N"
   if [ -t 0 ]; then
-    read -p "  Enable doc-sync and keep docs/ accurate after each merge? [y/N] " -n 1 -r
+    read -p "  Track doc drift for this repo? [y/N] " -n 1 -r
     echo
     reply_val="${REPLY:-N}"
   fi
 
   if [[ "$reply_val" =~ ^[Yy]$ ]]; then
-    # Yes: scaffold doc-sync.md from template + record sync + build map
-    if [ ! -f "$doc_sync_file" ]; then
-      if [ -f "$doc_sync_example_local" ]; then
-        cp "$doc_sync_example_local" "$doc_sync_file"
-      elif [ -f "$doc_sync_example_install" ]; then
-        cp "$doc_sync_example_install" "$doc_sync_file"
-      else
-        print_warning "No template found — create .rite/doc-sync.md manually"
-        return 1
-      fi
-    fi
+    # Yes: record sync + build map
     record_doc_mode "sync"
-    print_success "Doc-sync enabled — .rite/doc-sync.md created (edit to customize)"
+    print_success "Doc drift tracking on"
     docs_map_build
     print_success "Docs map built"
 
@@ -957,9 +929,9 @@ _docs_enable_flow() {
       docs_directed_update "$instructions" || true
     fi
   else
-    # No: record changelog mode + build map
-    record_doc_mode "changelog"
-    print_info "Changelog mode — drift notes only; run 'rite docs' again to audit"
+    # No: record off + build map (directed updates still work)
+    record_doc_mode "off"
+    print_info "Doc drift tracking off — run 'rite docs' again to turn it on"
     docs_map_build
     print_info "Docs map built"
 
@@ -1163,17 +1135,19 @@ EOF_AUDIT
       "${_suspected_all:-On-demand audit via rite docs — $_finding_count potential inaccuracy(ies)}" || true
     print_info "Findings recorded in drift log"
 
-    # Tail-offer: enable doc-sync and reconcile?
+    # Tail-offer: switch to sync and reconcile?
     echo ""
     local _enable_reply="N"
     if [ -t 0 ]; then
-      read -p "  Enable doc-sync and reconcile these $_finding_count entries now? [y/N] " -n 1 -r
+      read -p "  Reconcile these $_finding_count entries now? [y/N] " -n 1 -r
       echo
       _enable_reply="${REPLY:-N}"
     fi
     if [[ "$_enable_reply" =~ ^[Yy]$ ]]; then
-      # _docs_enable_flow will offer reconcile interactively after enabling
-      _docs_enable_flow ""
+      # Reconciling here is the opt-in to the interactive loop: move the
+      # repo from legacy changelog to sync, then run it.
+      record_doc_mode "sync"
+      docs_reconcile_drift || true
     fi
   else
     # sync mode: drift reported — offer to reconcile via the engine
@@ -1200,43 +1174,6 @@ rite_docs() {
     never-run)
       # First-ever run: ask consent, then optionally route input
       _docs_enable_flow "$instructions"
-      ;;
-
-    mismatch)
-      # RITE_DOC_MODE=sync but .rite/doc-sync.md is missing
-      local doc_sync_file="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md"
-      local doc_sync_example_local="${RITE_PROJECT_ROOT}/${RITE_DATA_DIR}/doc-sync.md.example"
-      local doc_sync_example_install="${RITE_INSTALL_DIR:-${RITE_LIB_DIR%/lib}}/templates/doc-sync.md.example"
-
-      print_warning "RITE_DOC_MODE=sync is recorded but .rite/doc-sync.md is missing"
-
-      local _rescaffold_reply="N"
-      if [ -t 0 ]; then
-        read -p "  Re-scaffold .rite/doc-sync.md from the template? [y/N] " -n 1 -r
-        echo
-        _rescaffold_reply="${REPLY:-N}"
-      fi
-
-      if [[ "$_rescaffold_reply" =~ ^[Yy]$ ]]; then
-        if [ -f "$doc_sync_example_local" ]; then
-          cp "$doc_sync_example_local" "$doc_sync_file"
-        elif [ -f "$doc_sync_example_install" ]; then
-          cp "$doc_sync_example_install" "$doc_sync_file"
-        else
-          print_warning "No template found — create .rite/doc-sync.md manually"
-          exit 1
-        fi
-        print_success ".rite/doc-sync.md re-scaffolded from template"
-        # After scaffolding, route to audit or directed-update if input given
-        if [ -n "$instructions" ]; then
-          docs_directed_update "$instructions" || true
-        else
-          _docs_run_audit "sync"
-        fi
-      else
-        echo "  To fix: re-run 'rite docs', or set RITE_DOC_MODE=changelog in .rite/config" >&2
-        exit 1
-      fi
       ;;
 
     sync|changelog)

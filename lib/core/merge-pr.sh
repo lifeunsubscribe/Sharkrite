@@ -735,15 +735,53 @@ if [ "$PR_IS_DRAFT" = "true" ]; then
 fi
 
 # Check 3: PR must be mergeable
+# ---------------------------------------------------------------------------
+# _mpr_await_mergeable <pr_number> [attempts]
+#
+# Echo the PR's mergeable state, waiting while GitHub still reports UNKNOWN.
+#
+# GitHub computes mergeability lazily and a PUSH INVALIDATES it, so UNKNOWN
+# means "not computed yet", never "conflicting". The post-push re-checks need
+# this far more than the initial read does: they ask immediately after the push
+# that just invalidated the answer.
+#
+# Live failure: issue #1273, PR #1336. The conflict resolver succeeded, its
+# resolutions were committed and pushed, and the single `sleep 3` + one read
+# that followed came back UNKNOWN. That was reported as "PR still not mergeable
+# after resolution" and the issue failed after 17m30s of real work. The PR was
+# MERGEABLE the whole time.
+#
+# Always exits 0 and echoes a state — callers branch on the string, and a
+# non-zero return here would take them down under `set -e`.
+# ---------------------------------------------------------------------------
+_mpr_await_mergeable() {
+  local _awm_pr="$1"
+  local _awm_max="${2:-8}"
+  local _awm_i=0
+  local _awm_state="UNKNOWN"
+
+  while [ "$_awm_i" -lt "$_awm_max" ]; do
+    # Sleep BEFORE the first read: immediately after a push GitHub can still
+    # serve the pre-push value, so reading at once risks a stale answer rather
+    # than merely an uncomputed one.
+    sleep 3
+    _awm_state=$(gh_safe pr view "$_awm_pr" --json mergeable --jq '.mergeable' 2>/dev/null || true)
+    _awm_state="${_awm_state:-UNKNOWN}"
+    if [ "$_awm_state" != "UNKNOWN" ]; then
+      printf '%s\n' "$_awm_state"
+      return 0
+    fi
+    _awm_i=$(( _awm_i + 1 ))
+  done
+
+  printf '%s\n' "UNKNOWN"
+  return 0
+}
+
 # GitHub computes mergeability lazily — UNKNOWN means not computed yet. Retry a few times.
 if [ "$PR_MERGEABLE" = "UNKNOWN" ]; then
   print_status "Waiting for GitHub to compute mergeability..."
-  for _i in 1 2 3; do
-    sleep 3
-    PR_MERGEABLE=$(gh_safe pr view "$PR_NUMBER" --json mergeable --jq '.mergeable')
-    PR_MERGEABLE="${PR_MERGEABLE:-UNKNOWN}"
-    [ "$PR_MERGEABLE" != "UNKNOWN" ] && break
-  done
+  PR_MERGEABLE=$(_mpr_await_mergeable "$PR_NUMBER" 3)
 fi
 
 if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
@@ -758,10 +796,8 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
     elif git merge "origin/$PR_BASE" --no-edit 2>/dev/null; then
       if git push origin "$PR_HEAD" 2>/dev/null; then
         print_success "Merged $PR_BASE into branch and pushed — re-checking mergeable state"
-        # Give GitHub a moment to update mergeable state
-        sleep 3
-        PR_MERGEABLE=$(gh_safe pr view "$PR_NUMBER" --json mergeable --jq '.mergeable')
-        PR_MERGEABLE="${PR_MERGEABLE:-UNKNOWN}"
+        # The push just invalidated GitHub's cached answer; wait for the new one.
+        PR_MERGEABLE=$(_mpr_await_mergeable "$PR_NUMBER")
         if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
           print_success "PR is now mergeable"
         else
@@ -813,9 +849,9 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
           if commit_resolved_conflicts "$(pwd)"; then
             if git push origin "$PR_HEAD" 2>/dev/null; then
               print_success "Conflicts resolved and pushed — re-checking mergeable state"
-              sleep 3
-              PR_MERGEABLE=$(gh_safe pr view "$PR_NUMBER" --json mergeable --jq '.mergeable')
-              PR_MERGEABLE="${PR_MERGEABLE:-UNKNOWN}"
+              # The push just invalidated GitHub's cached answer; wait for the
+              # new one. A single read here cost issue #1273 its whole run.
+              PR_MERGEABLE=$(_mpr_await_mergeable "$PR_NUMBER")
               if [ "$PR_MERGEABLE" = "MERGEABLE" ]; then
                 print_success "PR is now mergeable"
                 _mpr_resolved=true
@@ -1222,7 +1258,7 @@ elif [ $MERGE_EXIT_CODE -eq 0 ]; then
         # Last resort: branch tip — validated as this PR's squash commit to guard
         # against a concurrent merge having moved the tip.
         git_fetch_safe origin "$PR_BASE" || true
-        SQUASH_SHA=$(git rev-parse "origin/$PR_BASE" 2>/dev/null || true)
+        SQUASH_SHA=$(git rev-parse --verify --quiet "origin/$PR_BASE" 2>/dev/null || true)
         _tip_subject=$(git log -1 --format=%s "${SQUASH_SHA:-HEAD}" 2>/dev/null || true)
         case "$_tip_subject" in
           *"(#$PR_NUMBER)"*) : ;;          # subject carries (#PRNUM) — tip is this PR's squash commit

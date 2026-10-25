@@ -14,8 +14,6 @@
 #      the merge-pr.sh call (NOT at the top of phase_merge_pr — placement matters
 #      so doc work overlaps with the pre-merge gate).
 #   5. merge-pr.sh no longer spawns or waits on assess-documentation.sh.
-#   6. The PR-diff filter strips .rite/docs/ and docs/ hunks so prior doc commits
-#      don't recursively appear in the next iteration's doc assessment input.
 #
 # Regression target: a future refactor that "centralizes" doc assessment back into
 # merge-pr.sh would silently undo the parallelization gain (~60-120s saved per
@@ -85,18 +83,6 @@ setup() {
   # Output should contain the temp worktree path (proves cd happened)
   # and NOT the project root (proves we didn't fall through to the default).
   [[ "$output" == *"$_tmp_wt"* ]]
-}
-
-# -----------------------------------------------------------------------
-# assess-documentation.sh — PR diff filtering
-# -----------------------------------------------------------------------
-
-@test "assess-documentation.sh: filters .rite/docs/ and docs/ hunks from PR diff input" {
-  # Static check: the awk filter must reference both doc roots. We use grep -F
-  # with a fixed-string excerpt of the awk pattern to avoid the regex-escaping
-  # contortions a regex grep would require. Slashes inside awk's /.../ regex
-  # delimiters are backslash-escaped in the source, hence \/ rather than /.
-  grep -F -q '(\.rite\/docs|docs)\/' "$ASSESS_DOC_SCRIPT"
 }
 
 # -----------------------------------------------------------------------
