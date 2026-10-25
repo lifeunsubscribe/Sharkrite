@@ -63,6 +63,58 @@ claude_provider_validate_cli() {
 }
 
 # =============================================================================
+# Workspace Trust Preflight
+# =============================================================================
+
+# Check whether the current project root is trusted in ~/.claude.json.
+#
+# Claude CLI ≥2.1.284 emits "this workspace has not been trusted" on stderr for
+# every non-interactive session when permissions.allow entries exist but the
+# workspace hasn't been trusted — ignoring all allow-list grants and degrading
+# the session until it fails.  Live incident 2026-10-25: a mid-day auto-update
+# burned 38 min in #1423's fix loop before the root cause surfaced in a [DIAG]
+# tail.  This preflight catches the condition at batch start, before any LLM
+# work, and prints the exact fix command.
+#
+# Implementation: reads ~/.claude.json directly (zero API/LLM cost, instant) and
+# checks the exact flag the CLI checks.
+#
+# Returns 0 when trusted (or trust-check not applicable — config file absent, or
+# jq unavailable).  Returns 1 when untrusted; PROVIDER_PREFLIGHT diag emitted in
+# both cases.
+#
+# Args: [project_root]  (default: $RITE_PROJECT_ROOT or pwd)
+claude_provider_healthcheck() {
+  local _project_root="${1:-${RITE_PROJECT_ROOT:-$(pwd)}}"
+  local _cfg="${HOME:-$HOME}/.claude.json"
+
+  # No config file → pre-2.1.284 CLI or pristine CI install: no trust requirement.
+  if [ ! -f "$_cfg" ]; then
+    { _diag "PROVIDER_PREFLIGHT outcome=trusted reason=no_config_file" 2>/dev/null || true; }
+    return 0
+  fi
+
+  # jq is a hard dep throughout sharkrite (gh --json calls); available everywhere.
+  # If somehow absent, skip the check rather than crash the preflight.
+  if ! command -v jq >/dev/null 2>&1; then
+    { _diag "PROVIDER_PREFLIGHT outcome=trusted reason=jq_not_available" 2>/dev/null || true; }
+    return 0
+  fi
+
+  local _trusted
+  _trusted=$(jq -r --arg p "$_project_root" \
+    '.projects[$p].hasTrustDialogAccepted // false' "$_cfg" 2>/dev/null || echo "false")
+
+  if [ "$_trusted" = "true" ]; then
+    { _diag "PROVIDER_PREFLIGHT outcome=trusted" 2>/dev/null || true; }
+    return 0
+  fi
+
+  { _diag "PROVIDER_PREFLIGHT outcome=untrusted_workspace" 2>/dev/null || true; }
+  return 1
+}
+
+# =============================================================================
 # Streaming Filters (internal helpers)
 # =============================================================================
 

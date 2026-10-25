@@ -41,6 +41,13 @@ fi
 # provider_validate_cli()
 #   Verify the CLI is authenticated and functional. Return 0/1.
 #
+# provider_healthcheck([project_root])
+#   Verify the CLI can run non-interactive sessions for the given project root.
+#   Return 0 if healthy, 1 if a session-invariant precondition fails (e.g.
+#   untrusted workspace on Claude CLI ≥2.1.284).  Emits PROVIDER_PREFLIGHT diag.
+#   Zero LLM cost — reads local config only.  Called once per batch/single-issue
+#   run before any issue processing.
+#
 # --- Invocation ---
 #
 # provider_run_agentic_session(prompt, timeout, auto_mode, stderr_file)
@@ -132,7 +139,7 @@ load_provider() {
   # Alias <name>_provider_* -> provider_*
   local fn
   for fn in \
-    detect_cli validate_cli \
+    detect_cli validate_cli healthcheck \
     run_agentic_session run_prompt run_prompt_with_timeout \
     run_streaming_prompt run_classify run_uncached \
     detect_error \

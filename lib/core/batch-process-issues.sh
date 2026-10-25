@@ -623,6 +623,47 @@ _apply_overlap_defer_or_warn() {
 }
 
 # ---------------------------------------------------------------------------
+# Preflight: provider workspace trust check (runs for ALL batches)
+#
+# Claude CLI ≥2.1.284 requires the project root to be trusted in ~/.claude.json
+# before any non-interactive session honours permissions.allow entries.  Without
+# the trust flag, every session silently ignores the allow list and eventually
+# fails — surfacing as per-issue/per-retry flakiness deep inside runs.
+#
+# Live incident 2026-10-25 (#1423/#1424/#1430/#1473): a mid-day CLI auto-update
+# burned 38m in a fix loop before the trust warning scrolled past in a [DIAG]
+# tail.  One preflight check at batch start names the condition and its fix.
+#
+# This check runs before any issue processing, for all batch modes and filter
+# types.  It is intentionally NOT gated on FILTER_TYPE so numeric-list batches
+# (`rite N1 N2 N3`) also get it.  It has zero LLM cost (reads ~/.claude.json).
+# Single-issue parity: workflow-runner.sh::main() runs the same check once.
+#
+# DO NOT gate rite --status or other read-only commands on this check — they
+# never start provider sessions and the trust requirement is irrelevant.
+# ---------------------------------------------------------------------------
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
+load_provider "${RITE_UTILITY_PROVIDER:-claude}"
+_trust_preflight_exit=0
+provider_healthcheck "${RITE_PROJECT_ROOT:-$(pwd)}" || _trust_preflight_exit=$?
+if [ "$_trust_preflight_exit" -ne 0 ]; then
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  print_error "Provider preflight failed — workspace not trusted (aborting batch)"
+  print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  print_error "Claude CLI ≥2.1.284 requires the project to be trusted before"
+  print_error "non-interactive sessions can use permissions.allow entries."
+  echo ""
+  print_info "Fix: accept the trust dialog by running claude interactively once, OR"
+  print_info "set the trust flag manually in ~/.claude.json:"
+  echo ""
+  echo "  projects[\"${RITE_PROJECT_ROOT:-$(pwd)}\"].hasTrustDialogAccepted: true"
+  echo ""
+  print_info "Then re-run this batch."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
 #
 # Problem: `rite --label X` selects issues by label only. When a dependency

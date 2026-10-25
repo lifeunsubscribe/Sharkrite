@@ -3862,6 +3862,29 @@ main() {
     set_current_worktree "$WORKTREE_PATH"
   fi
 
+  # Provider workspace trust preflight — single-issue parity with batch-process-issues.sh.
+  # Batch mode runs this check once in its own preflight section (before any issue
+  # processing); single-issue mode runs it here, once, before the first phase.
+  # Skip in batch mode: the batch already ran provider_healthcheck and would abort
+  # before reaching here on an untrusted workspace.
+  # DO NOT gate rite --status or other read-only paths on this — they never
+  # start provider sessions and do not reach main() in this script.
+  if [ "${BATCH_MODE:-false}" != "true" ]; then
+    load_provider "${RITE_DEV_PROVIDER:-claude}"
+    _wf_trust_exit=0
+    provider_healthcheck "${RITE_PROJECT_ROOT:-$(pwd)}" || _wf_trust_exit=$?
+    if [ "$_wf_trust_exit" -ne 0 ]; then
+      print_error "Provider preflight failed — workspace not trusted"
+      print_error "Claude CLI ≥2.1.284: non-interactive sessions ignore permissions.allow entries."
+      echo ""
+      print_info "Fix: run claude interactively once (trust dialog), or set in ~/.claude.json:"
+      echo ""
+      echo "  projects[\"${RITE_PROJECT_ROOT:-$(pwd)}\"].hasTrustDialogAccepted: true"
+      echo ""
+      exit 1
+    fi
+  fi
+
   # Start per-issue duration tracking for single-issue path (issue #283 — Option 1).
   # In batch mode, batch-process-issues.sh handles this around the workflow-runner call.
   if [ "${BATCH_MODE:-false}" != "true" ]; then
