@@ -3536,7 +3536,7 @@ _normalize_issue_markers() {
     # their own lines. Use a two-step approach to avoid BSD sed dynamic-pattern
     # portability issues (sed -e with a shell variable inside the pattern).
     local _esc_tok
-    _esc_tok=$(printf '%s' "$_end_tok" | sed 's/[]\[\\.*^$]/\\&/g')
+    _esc_tok=$(printf '%s' "$_end_tok" | sed 's/[]\[\\.*^$]/\\&/g' || true)
     sed \
       -e 's/---ISSUE---/\
 ---ISSUE---\
