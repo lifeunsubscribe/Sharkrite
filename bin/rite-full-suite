@@ -351,6 +351,20 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
     _serial_file_exit=$?
     set -e
 
+    # Fast-path: entire file passed serially — all originally-failing tests from it are cleared
+    if [ "$_serial_file_exit" -eq 0 ]; then
+      while IFS= read -r _t_name; do
+        [ -z "$_t_name" ] && continue
+        _t_canonical_src=$(grep -rlF "@test \"${_t_name}\"" "$_bats_file" 2>/dev/null | head -1 || true)
+        if [ -z "$_t_canonical_src" ]; then
+          _t_canonical_src=$(grep -rlF "@test '${_t_name}'" "$_bats_file" 2>/dev/null | head -1 || true)
+        fi
+        [ -z "$_t_canonical_src" ] && continue
+        printf '%s\t%s\n' "$_t_name" "$_bats_file" >> "$_cleared_tsv"
+      done < "$_failing_names_file"
+      continue
+    fi
+
     # For each originally-failing test from this file, classify persistent vs cleared
     while IFS= read -r _t_name; do
       [ -z "$_t_name" ] && continue
@@ -361,16 +375,14 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
       fi
       [ -z "$_t_canonical_src" ] && continue
 
-      # Check whether this test still fails in serial run: pipe lines that
-      # contain the test name (fixed-string) into a check for "not ok" so a
-      # multi-test file where only a sibling fails does not misclassify this
-      # test as persistent.
-      if grep -F "$_t_name" "$_serial_results_raw" 2>/dev/null | grep -qF "not ok" 2>/dev/null; then
-        # Persistent: extract first # assertion line after the not-ok line for
-        # this test.  awk's index() is a fixed-string lookup — safe for any
-        # test name containing regex metacharacters.
+      # Match the exact TAP line "not ok N test-name" by anchoring to end-of-line.
+      # Prevents substring collisions: a test named "foo" must not match "not ok 1 foo-bar".
+      if awk -v name="$_t_name" \
+           'BEGIN{f=0} /^not ok/ && substr($0,length($0)-length(name)+1)==name{f=1} END{exit(1-f)}' \
+           "$_serial_results_raw" 2>/dev/null; then
+        # Persistent: extract first # assertion line after the exact not-ok line.
         _assert_line=$(awk -v name="$_t_name" '
-          index($0, name) && /not ok/ { found=1; next }
+          /^not ok/ && substr($0, length($0) - length(name) + 1) == name { found=1; next }
           found && /^#/ { sub(/^# */, ""); print; exit }
           found && !/^#/ { found=0 }
         ' "$_serial_results_raw" 2>/dev/null | head -1 || true)
@@ -652,7 +664,7 @@ PROMPT_HDR
         echo ""
         echo "## Done Definition"
         echo ""
-        echo "Done when all persistent failures listed above pass on a fresh \`rite --full-suite\` run."
+        echo "Done when all failures listed in the acceptance criteria pass on a fresh \`rite --full-suite\` run."
         echo ""
         echo "## Scope Boundary"
         echo ""

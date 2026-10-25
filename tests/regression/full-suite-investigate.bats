@@ -514,14 +514,84 @@ EOF
   # Since temp files are deleted, verify indirectly via the report which mirrors
   # the persistent set.
   grep -q "$persist_name" "$_report"
-  # The cleared test must NOT appear under Persistent Failures in the report.
-  # The report section heading is "## Persistent Failures".
-  # grep for clear_name on a line that also sits under that section is complex;
-  # a simpler guard: if clear_name appears, it must appear under the Cleared
-  # section and not the Persistent section (rely on section ordering).
-  if grep -q "$clear_name" "$_report"; then
-    grep -q "Cleared" "$_report"
-  fi
+  # The cleared test must NOT appear in the "## Persistent Failures" section.
+  # Extract that section (lines between the heading and the next ## heading)
+  # and assert the clear name is absent. This is discriminating: reverting to
+  # the old substring-match classification leaves this assertion failing because
+  # clear_name would appear under Persistent Failures.
+  ! awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
+      | grep -qF "$clear_name"
+}
+
+# ---------------------------------------------------------------------------
+# Test 6b: name-collision guard — a cleared test whose name is a prefix of a
+# persistent test's name must still be classified as cleared, not persistent.
+# Regression test for the substring-match bug: grep -F "foo" matched "not ok 1 foo-bar"
+# causing "foo" to be misclassified as persistent when only "foo-bar" persisted.
+# ---------------------------------------------------------------------------
+@test "investigate: cleared test with name that is prefix of persistent test is not misclassified" {
+  _write_lib_stubs
+  _write_make_stub
+
+  local persist_name="prefix-collision-test-6b-extended"
+  local clear_name="prefix-collision-test-6b"
+
+  # Write a two-test bats file
+  local bats_file="$_FAKE_PROJECT/tests/collision.bats"
+  printf '#!/usr/bin/env bats\n@test "%s" { false; }\n@test "%s" { true; }\n' \
+    "$persist_name" "$clear_name" > "$bats_file"
+
+  mkdir -p "$_FAKE_PROJECT/bin"
+
+  # bats stub:
+  #   parallel run → both fail
+  #   serial run → only persist_name fails; clear_name passes
+  cat > "$_FAKE_PROJECT/bin/bats" << EOF
+#!/bin/bash
+if echo "\$*" | grep -q -- "-r tests/"; then
+  printf '1..2\nnot ok 1 %s\nnot ok 2 %s\n' "$persist_name" "$clear_name"
+  exit 1
+else
+  printf '1..2\nnot ok 1 %s\n  # assertion: false\nok 2 %s\n' "$persist_name" "$clear_name"
+  exit 1
+fi
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  cat > "$_FAKE_PROJECT/bin/gh" << EOF
+#!/bin/bash
+echo "\$@" >> "$_GH_CALL_LOG"
+if echo "\$*" | grep -q "issue list"; then
+  echo "null"
+  exit 0
+fi
+if echo "\$*" | grep -q "issue create"; then
+  echo "https://github.com/owner/repo/issues/67"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/gh"
+
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash "$_FULL_SUITE_SCRIPT" --investigate
+
+  local _report
+  _report=$(find "$_FAKE_PROJECT/.rite/reports" -name "full-suite-*.md" | head -1 || true)
+  [ -n "$_report" ]
+
+  # persist_name must be in the Persistent Failures section
+  awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
+      | grep -qF "$persist_name"
+
+  # clear_name must NOT appear in the Persistent Failures section
+  ! awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
+      | grep -qF "$clear_name"
 }
 
 # ---------------------------------------------------------------------------
