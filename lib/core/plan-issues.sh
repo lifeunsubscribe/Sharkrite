@@ -1018,9 +1018,7 @@ PROMPT_EOF
               seen[title] = 1
             }
             if ($0 == end_tok) {
-              # Do NOT normalise end_tok to ---END--- here: downstream parsers use
-              # _RITE_PLAN_END_TOKEN so body text containing ---END--- does not
-              # cause premature block termination.
+              gsub(end_tok, "---END---", buf)
               in_issue = 0; printf "%s", buf; buf = ""
             }
             next
@@ -1051,7 +1049,7 @@ PROMPT_EOF
 
       # Normalize markers now so the checklist-vs-emitted comparison below is
       # reliable (jq join mode can concatenate markers with surrounding text).
-      _normalize_issue_markers "$temp_file"
+      _normalize_issue_markers "$temp_file" "---END---"
 
       # Completeness guard: the COVERAGE checklist lists N issues; compare against
       # the ---ISSUE--- blocks actually emitted. Any ✅ entry with no matching block
@@ -1908,7 +1906,7 @@ _lint_issues_strict() {
 
   # First pass: parse blocks
   while IFS= read -r _line; do
-    if [ "$_line" = "---ISSUE---" ]; then
+    if [ "$_in_issue" = false ] && [ "$_line" = "---ISSUE---" ]; then
       _in_issue=true
       _issue_block=""
       continue
@@ -3713,6 +3711,7 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
     in_issue {
       buf = buf $0 "\n"
       if ($0 == end_tok) {
+        gsub(end_tok, "---END---", buf)
         in_issue = 0; printf "%s", buf; buf = ""
       }
       next
@@ -3749,7 +3748,7 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
       _blk_buf="${_line}"$'\n'
     elif [ "$_in_blk" = true ]; then
       _blk_buf="${_blk_buf}${_line}"$'\n'
-      if [ "$_line" = "$_end_token" ]; then
+      if [ "$_line" = "---END---" ]; then
         _in_blk=false
         local _blk_title
         _blk_title=$(printf '%s' "$_blk_buf" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
@@ -4632,7 +4631,7 @@ No documentation updates required — the fixture artifact is this spike's deliv
   local _current_block=""
 
   while IFS= read -r line; do
-    if [[ "$line" == "---ISSUE---" ]]; then
+    if [ "$_in_issue" = false ] && [[ "$line" == "---ISSUE---" ]]; then
       _in_issue=true
       _current_block="$line"$'\n'
       continue
@@ -4731,7 +4730,7 @@ _dedup_issues() {
   local preamble_done=false
 
   while IFS= read -r line; do
-    if [[ "$line" == "---ISSUE---" ]]; then
+    if [ "$in_issue" = false ] && [[ "$line" == "---ISSUE---" ]]; then
       in_issue=true
       preamble_done=true
       current_block="$line"$'\n'

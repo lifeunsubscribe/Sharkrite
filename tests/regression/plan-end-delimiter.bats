@@ -165,11 +165,11 @@
   # The hardcoded literal ---END--- must NOT appear alone on an output line
   # in the prompt format template within the function body.
   # (It would if the prompt still had a hardcoded ---END--- example line.)
-  echo "$fn_body" | grep -qE '^\s*---END---\s*$' && {
+  if echo "$fn_body" | grep -qE '^\s*---END---\s*$'; then
     echo "FAIL: generate_issues still has a bare hardcoded ---END--- line in the prompt template" >&2
     echo "$fn_body" | grep -n -- "---END---" >&2
     false
-  }
+  fi
 }
 
 # ---------------------------------------------------------------------------
