@@ -2914,3 +2914,149 @@ FIXTURE
 
   rm -f "$stderr_out"
 }
+
+# ---------------------------------------------------------------------------
+# Title-collision guard — 2-way and ≥3-way truncated prefix collision
+#
+# Regression tests for the title-space collision guard in
+# _detect_unverified_integrations.  When truncation of the display name
+# produces a collision in seen_spike_titles, the guard falls back to the
+# sanitized key.  When the key fallback also collides (≥3 prefix-sharing
+# candidates with a long shared key prefix), the dedup loop appends a numeric
+# suffix until the title is unique.
+# ---------------------------------------------------------------------------
+
+@test "title-collision guard: 2-way truncated-display collision produces distinct spike titles" {
+  # Two packages that share the same 21-char display prefix (both > 24 chars):
+  #   "@scope/reallylongname1234" and "@scope/reallylongnameABCD"
+  # Both names[:21] = "@scope/reallylongname" → display = "@scope/reallylongname..." (budget 24).
+  # Their sanitized keys are "scope-reallylongname1234" and "scope-reallylongnameabcd"
+  # (both 24 chars, NOT truncated), so the key fallback produces distinct titles.
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "fixture-project",
+  "dependencies": { "express": "^4.18.0" }
+}
+JSON
+  local issues_file="$RITE_TEST_TMPDIR/issues-title-collision-2way.txt"
+  write_issues_file "$issues_file" \
+    "Integrate two similar packages" \
+    "Use require('@scope/reallylongname1234') and require('@scope/reallylongnameABCD') together."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # Both packages ungrounded — must produce 2 spikes + 1 original = 3 issues.
+  # If the collision guard is absent the 2nd spike gets the same title and
+  # _dedup_issues would silently drop it (leaving only 2 issues).
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 3 ] || {
+    echo "FAIL: expected 3 issues (2 spikes + 1 original), got $issue_count — title-collision guard may have suppressed a spike" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # All spike titles must be distinct — a collision means one would be deduped away.
+  local spike_titles title_count unique_title_count
+  spike_titles=$(grep "^TITLE: Capture " "$issues_file" || true)
+  title_count=$(echo "$spike_titles" | grep -c "^TITLE: " || true)
+  unique_title_count=$(echo "$spike_titles" | sort -u | grep -c "^TITLE: " || true)
+  [ "$title_count" -eq "$unique_title_count" ] || {
+    echo "FAIL: spike titles not distinct — 2-way collision guard did not resolve truncated-prefix collision" >&2
+    echo "$spike_titles" >&2
+    false
+  }
+
+  # All spike title lines must produce an issue title ≤ 50 chars ("TITLE: " is 7 chars).
+  local overlimit_count=0
+  while IFS= read -r _line; do
+    [ -z "$_line" ] && continue
+    local _title="${_line#TITLE: }"
+    [ "${#_title}" -le 50 ] || overlimit_count=$(( overlimit_count + 1 ))
+  done <<< "$spike_titles"
+  [ "$overlimit_count" -eq 0 ] || {
+    echo "FAIL: $overlimit_count spike title(s) exceed 50-char issue title limit" >&2
+    echo "$spike_titles" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
+
+@test "title-collision guard: ≥3-way truncated-key-prefix collision produces distinct spike titles" {
+  # Three packages where BOTH the display name AND the key fallback truncate identically:
+  #   "@myorg/cloudformation-extra1", "...extra2", "...extra3" (28 chars each, > budget 24).
+  # All names[:21] = "@myorg/cloudformatio" + "n" → display = "@myorg/cloudformation..."
+  # Sanitized keys: "myorg-cloudformation-extraN" (27 chars > budget):
+  #   key[:21] = "myorg-cloudformation-" → truncated key = "myorg-cloudformation-..." — identical.
+  # Without the dedup loop: the 3rd spike gets the same title as the 2nd,
+  # _dedup_issues silently drops it, and its #SPIKE-<key3> placeholder dangles.
+  # This is the aws-sdk client family shape (≥3 prefix-sharing candidates).
+  cat > "$RITE_TEST_TMPDIR/package.json" <<'JSON'
+{
+  "name": "fixture-project",
+  "dependencies": { "express": "^4.18.0" }
+}
+JSON
+  local issues_file="$RITE_TEST_TMPDIR/issues-title-collision-3way.txt"
+  write_issues_file "$issues_file" \
+    "Integrate three similar packages" \
+    "Use require('@myorg/cloudformation-extra1'), require('@myorg/cloudformation-extra2'), and require('@myorg/cloudformation-extra3')."
+
+  local stderr_out
+  stderr_out=$(mktemp)
+  _detect_unverified_integrations "$issues_file" 2>"$stderr_out"
+  local exit_code=$?
+
+  [ "$exit_code" -eq 0 ] || {
+    echo "FAIL: expected exit 0, got $exit_code" >&2
+    cat "$stderr_out" >&2
+    false
+  }
+
+  # All three packages ungrounded — must produce 3 spikes + 1 original = 4 issues.
+  # Without the dedup loop the 3rd candidate re-uses the 2nd's key-fallback title,
+  # causing _dedup_issues to silently drop the 3rd spike.
+  local issue_count
+  issue_count=$(grep -c "^---ISSUE---$" "$issues_file" || true)
+  [ "$issue_count" -eq 4 ] || {
+    echo "FAIL: expected 4 issues (3 spikes + 1 original), got $issue_count — dedup loop may not be resolving ≥3-way key-prefix collision" >&2
+    cat "$issues_file" >&2
+    false
+  }
+
+  # All three spike titles must be distinct.
+  local spike_titles title_count unique_title_count
+  spike_titles=$(grep "^TITLE: Capture " "$issues_file" || true)
+  title_count=$(echo "$spike_titles" | grep -c "^TITLE: " || true)
+  unique_title_count=$(echo "$spike_titles" | sort -u | grep -c "^TITLE: " || true)
+  [ "$title_count" -eq "$unique_title_count" ] || {
+    echo "FAIL: spike titles not distinct — dedup loop failed to resolve ≥3-way truncated-key-prefix collision" >&2
+    echo "$spike_titles" >&2
+    false
+  }
+
+  # All spike titles must be ≤ 50 chars (dedup-loop suffix must fit within budget).
+  local overlimit_count=0
+  while IFS= read -r _line; do
+    [ -z "$_line" ] && continue
+    local _title="${_line#TITLE: }"
+    [ "${#_title}" -le 50 ] || overlimit_count=$(( overlimit_count + 1 ))
+  done <<< "$spike_titles"
+  [ "$overlimit_count" -eq 0 ] || {
+    echo "FAIL: $overlimit_count spike title(s) exceed 50-char issue title limit after dedup-loop suffix" >&2
+    echo "$spike_titles" >&2
+    false
+  }
+
+  rm -f "$stderr_out"
+}
