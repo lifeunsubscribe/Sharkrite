@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks
+# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks
 #
 # Regression tests for ---END--- delimiter collision in plan-issues.sh.
 #
@@ -240,6 +240,204 @@
   # Completion awk must normalise back to ---END--- via gsub
   echo "$fn_body" | grep -q 'gsub(end_tok, "---END---"' || {
     echo "FAIL: _request_missing_blocks completion awk does not normalise end_tok to ---END--- via gsub" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# F — behavioral: interior ---END--- in body is escaped, not misread as
+# block terminator by downstream parsers (#1342 truncation regression)
+#
+# Drives colliding body through the streaming-awk boundary and then through
+# the standard block-parsing awk to assert: (1) only 1 block is emitted (no
+# spurious split), (2) the interior marker is escaped to <!--rite-end-esc-->,
+# (3) after unescaping (as the create loop does) the original ---END--- is
+# restored, and (4) the line after the interior marker survives intact.
+# ---------------------------------------------------------------------------
+
+@test "F: interior ---END--- in body is escaped at stream boundary, not split downstream" {
+  local _tok="---END-TESTTOKEN---"
+  local input
+  input=$(printf '%s\n' \
+    "---ISSUE---" \
+    "TITLE: Issue quoting bats fixture" \
+    "BODY:" \
+    "A bats fixture file contains this line alone:" \
+    "---END---" \
+    "which used to terminate the block early." \
+    "$_tok")
+
+  local output
+  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
+    !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 ~ /^TITLE: /) {
+        title = substr($0, 8)
+        if (title in seen) { exit }
+        seen[title] = 1
+      }
+      if ($0 == end_tok) {
+        gsub("---END---",   "<!--rite-end-esc-->",   buf)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
+        gsub(end_tok, "---END---", buf)
+        in_issue = 0; printf "%s", buf; buf = ""
+      }
+      next
+    }
+    { print }
+  ')
+
+  # The interior ---END--- must be escaped (not passed through as raw ---END---)
+  echo "$output" | grep -q "<!--rite-end-esc-->" || {
+    echo "FAIL: interior ---END--- was not escaped to <!--rite-end-esc-->" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+
+  # The line after the interior marker must survive (block was not truncated)
+  echo "$output" | grep -q "which used to terminate the block early" || {
+    echo "FAIL: block was truncated — line after interior ---END--- is missing" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+
+  # Exactly 1 canonical ---END--- must appear (the terminal marker)
+  local _end_count
+  _end_count=$(printf '%s\n' "$output" | grep -c "^---END---$" || true)
+  [ "$_end_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 canonical ---END--- in output, got $_end_count" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+
+  # Downstream block parser extracts exactly 1 block from the escaped output
+  local _block_count
+  _block_count=$(printf '%s\n' "$output" | awk '
+    !in_issue && /^---ISSUE---$/ { in_issue=1; next }
+    in_issue && $0 == "---END---" { in_issue=0; count++ }
+  END { print count+0 }
+  ')
+  [ "$_block_count" -eq 1 ] || {
+    echo "FAIL: downstream parser found $_block_count block(s), expected 1" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+
+  # After unescaping (as create_issues does), the body contains the original ---END---
+  local _unescaped
+  _unescaped="${output//<!--rite-end-esc-->/---END---}"
+  _unescaped="${_unescaped//<!--rite-issue-esc-->/---ISSUE---}"
+  echo "$_unescaped" | grep -q "^---END---$" || {
+    echo "FAIL: after unescaping, the original ---END--- body line is missing" >&2
+    printf '%s\n' "$_unescaped" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# G — behavioral: interior ---ISSUE--- in body is escaped at stream boundary
+# ---------------------------------------------------------------------------
+
+@test "G: interior ---ISSUE--- in body is escaped at stream boundary, not misread as block start" {
+  local _tok="---END-TESTTOKEN---"
+  local input
+  input=$(printf '%s\n' \
+    "---ISSUE---" \
+    "TITLE: Issue quoting ---ISSUE--- marker" \
+    "BODY:" \
+    "The format uses ---ISSUE--- as a separator." \
+    "$_tok")
+
+  local output
+  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
+    !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 ~ /^TITLE: /) {
+        title = substr($0, 8)
+        if (title in seen) { exit }
+        seen[title] = 1
+      }
+      if ($0 == end_tok) {
+        gsub("---END---",   "<!--rite-end-esc-->",   buf)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
+        gsub(end_tok, "---END---", buf)
+        in_issue = 0; printf "%s", buf; buf = ""
+      }
+      next
+    }
+    { print }
+  ')
+
+  # The interior ---ISSUE--- must be escaped (not passed through)
+  echo "$output" | grep -q "<!--rite-issue-esc-->" || {
+    echo "FAIL: interior ---ISSUE--- was not escaped to <!--rite-issue-esc-->" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+
+  # Exactly 1 canonical ---ISSUE--- must appear (the block start)
+  local _issue_count
+  _issue_count=$(printf '%s\n' "$output" | grep -c "^---ISSUE---$" || true)
+  [ "$_issue_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 canonical ---ISSUE--- in output, got $_issue_count" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# H — behavioral: _emitted_blocks reads from a normalized file using
+# "---END---" literally (not the unique token). Regression for finding 3
+# where _emitted_blocks always returned empty because it matched end_tok
+# (the unique token) against a file that already has canonical ---END---.
+# ---------------------------------------------------------------------------
+
+@test "H: _emitted_blocks awk matches canonical ---END--- in already-normalized file" {
+  local normalized_file
+  normalized_file=$(mktemp)
+  # Simulate a file after streaming-awk normalization: canonical ---END--- markers
+  printf '%s\n' \
+    "---ISSUE---" \
+    "TITLE: First issue" \
+    "BODY:" \
+    "First body." \
+    "---END---" \
+    "---ISSUE---" \
+    "TITLE: Second issue" \
+    "BODY:" \
+    "Second body." \
+    "---END---" > "$normalized_file"
+
+  # Run the _emitted_blocks awk from _request_missing_blocks using "---END---" (the fix)
+  local blocks
+  blocks=$(awk '
+    !in_issue && /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf="" }
+      next
+    }
+  ' "$normalized_file" || true)
+
+  rm -f "$normalized_file"
+
+  # Both blocks must be found (not empty)
+  [ -n "$blocks" ] || {
+    echo "FAIL: _emitted_blocks returned empty — fix did not work" >&2
+    false
+  }
+
+  echo "$blocks" | grep -q "TITLE: First issue" || {
+    echo "FAIL: first block missing from _emitted_blocks output" >&2
+    printf '%s\n' "$blocks" >&2
+    false
+  }
+
+  echo "$blocks" | grep -q "TITLE: Second issue" || {
+    echo "FAIL: second block missing from _emitted_blocks output" >&2
+    printf '%s\n' "$blocks" >&2
     false
   }
 }

@@ -1018,6 +1018,8 @@ PROMPT_EOF
               seen[title] = 1
             }
             if ($0 == end_tok) {
+              gsub("---END---",   "<!--rite-end-esc-->",   buf)
+              gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
               gsub(end_tok, "---END---", buf)
               in_issue = 0; printf "%s", buf; buf = ""
             }
@@ -3345,7 +3347,7 @@ REGEN_PROMPT_EOF
     return 0
   fi
 
-  _normalize_issue_markers "$_regen_out"
+  _normalize_issue_markers "$_regen_out" "---END---"
 
   # Extract the first well-formed ---ISSUE---...---END--- block; discard prose.
   local _extracted_block
@@ -3505,7 +3507,7 @@ _normalize_issue_markers() {
   local _f="$1"
   # Accept end token as arg 2; fall back to the session-global set by generate_issues.
   # When neither is set (caller outside a plan session), default to ---END---.
-  local _end_tok="${2:-${_RITE_PLAN_END_TOKEN:-"---END---"}}"
+  local _end_tok="${2:-"---END---"}"
   local _norm
   _norm=$(mktemp)
 
@@ -3656,11 +3658,11 @@ _request_missing_blocks() {
   # Extract the full already-emitted blocks so the completion call sees the same
   # file-path and naming conventions the primary generation established.
   local _emitted_blocks
-  _emitted_blocks=$(awk -v end_tok="$_end_token" '
+  _emitted_blocks=$(awk '
     !in_issue && /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
     in_issue {
       buf = buf $0 "\n"
-      if ($0 == end_tok) { in_issue=0; printf "%s", buf; buf="" }
+      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf="" }
       next
     }
   ' "$issues_file" || true)
@@ -3711,6 +3713,8 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
     in_issue {
       buf = buf $0 "\n"
       if ($0 == end_tok) {
+        gsub("---END---",   "<!--rite-end-esc-->",   buf)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", buf)
         gsub(end_tok, "---END---", buf)
         in_issue = 0; printf "%s", buf; buf = ""
       }
@@ -5361,6 +5365,10 @@ create_issues() {
           done
           gh_args+=(--label "$current_labels")
         fi
+
+        # Unescape interior markers escaped at the stream boundary (findings 1 & 2).
+        current_body="${current_body//<!--rite-end-esc-->/---END---}"
+        current_body="${current_body//<!--rite-issue-esc-->/---ISSUE---}"
 
         # Strip operator-local rtk wrapper commands before publishing to GitHub.
         if declare -f sanitize_generated_commands >/dev/null 2>&1; then
