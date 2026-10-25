@@ -652,6 +652,10 @@ generate_issues() {
   # Per-generation unique end token prevents content containing ---END--- from
   # being mistaken for the issue block delimiter (same fix as docs-command.sh, issue #1233).
   local _plan_end_token="---END-${RANDOM}${RANDOM}---"
+  # Expose token via global so all downstream parsers (lint, display, create) can
+  # use it as the block terminator instead of the literal ---END--- string.
+  # Fallback "---END---" ensures callers outside a plan session still work.
+  _RITE_PLAN_END_TOKEN="$_plan_end_token"
 
   local prompt
   # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
@@ -1003,8 +1007,9 @@ PROMPT_EOF
     provider_run_streaming_prompt "$_active_prompt" "$(provider_resolve_model plan)" 2>"$claude_stderr" \
       | awk -v end_tok="$_plan_end_token" '
           # Truncate output on first duplicate issue (Claude sometimes regenerates the full set).
-          # Buffer each ---ISSUE--- block; only emit (normalized to ---END---) on end_tok if title is new.
-          /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
+          # Buffer each ---ISSUE--- block; emit (with end_tok preserved) on end_tok if title is new.
+          # !in_issue guard: body content that is ---ISSUE--- does not reset the current block.
+          !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
           in_issue {
             buf = buf $0 "\n"
             if ($0 ~ /^TITLE: /) {
@@ -1013,7 +1018,9 @@ PROMPT_EOF
               seen[title] = 1
             }
             if ($0 == end_tok) {
-              gsub(end_tok, "---END---", buf)
+              # Do NOT normalise end_tok to ---END--- here: downstream parsers use
+              # _RITE_PLAN_END_TOKEN so body text containing ---END--- does not
+              # cause premature block termination.
               in_issue = 0; printf "%s", buf; buf = ""
             }
             next
@@ -3498,31 +3505,52 @@ _lint_issues_sections() {
 # format errors.
 _normalize_issue_markers() {
   local _f="$1"
+  # Accept end token as arg 2; fall back to the session-global set by generate_issues.
+  # When neither is set (caller outside a plan session), default to ---END---.
+  local _end_tok="${2:-${_RITE_PLAN_END_TOKEN:-"---END---"}}"
   local _norm
   _norm=$(mktemp)
 
-  # Pass 1: Force ---ISSUE--- / ---END--- markers onto their own lines.
-  sed \
-    -e 's/---ISSUE---/\
+  # Pass 1: Force ---ISSUE--- and end-token markers onto their own lines.
+  # This repairs jq -rj-concatenated output where the marker runs together with
+  # surrounding content (e.g. "body text---END-12345---" → separate lines).
+  if [ "$_end_tok" = "---END---" ]; then
+    sed \
+      -e 's/---ISSUE---/\
 ---ISSUE---\
 /g' \
-    -e 's/---END---/\
+      -e 's/---END---/\
 ---END---\
 /g' \
-    "$_f" > "$_norm"
+      "$_f" > "$_norm"
+  else
+    # Unique end token active: force both ---ISSUE--- and the unique token onto
+    # their own lines. Use a two-step approach to avoid BSD sed dynamic-pattern
+    # portability issues (sed -e with a shell variable inside the pattern).
+    local _esc_tok
+    _esc_tok=$(printf '%s' "$_end_tok" | sed 's/[]\[\\.*^$]/\\&/g')
+    sed \
+      -e 's/---ISSUE---/\
+---ISSUE---\
+/g' \
+      "$_f" | sed \
+      -e "s/${_esc_tok}/\\
+${_end_tok}\\
+/g" > "$_norm"
+  fi
 
   # Pass 2: Relocate a Split rationale: line from header position (before BODY:)
   # to immediately after BODY:. Idempotent: a rationale already after BODY: is
   # passed through unchanged because body_seen=1 when it is encountered.
   local _norm2
   _norm2=$(mktemp)
-  awk '
+  awk -v end_tok="$_end_tok" '
     BEGIN { in_block=0; body_seen=0; saved_rat="" }
     /^---ISSUE---$/ {
       in_block=1; body_seen=0; saved_rat=""
       print; next
     }
-    /^---END---$/ {
+    $0 == end_tok {
       if (saved_rat != "") { print saved_rat; saved_rat="" }
       in_block=0; body_seen=0
       print; next
@@ -3630,11 +3658,11 @@ _request_missing_blocks() {
   # Extract the full already-emitted blocks so the completion call sees the same
   # file-path and naming conventions the primary generation established.
   local _emitted_blocks
-  _emitted_blocks=$(awk '
-    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+  _emitted_blocks=$(awk -v end_tok="$_end_token" '
+    !in_issue && /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
     in_issue {
       buf = buf $0 "\n"
-      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf="" }
+      if ($0 == end_tok) { in_issue=0; printf "%s", buf; buf="" }
       next
     }
   ' "$issues_file" || true)
@@ -3675,18 +3703,16 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
     return 0
   fi
 
-  _normalize_issue_markers "$_completion_file"
+  _normalize_issue_markers "$_completion_file" "$_end_token"
 
-  # Append ONLY well-formed ---ISSUE---...---END--- blocks — any surrounding
+  # Append ONLY well-formed ---ISSUE---...end_tok blocks — any surrounding
   # prose or a re-emitted checklist must not leak into the slate.
-  # Normalise _end_token → ---END--- so downstream parsers see the canonical marker.
   local _blocks
   _blocks=$(awk -v end_tok="$_end_token" '
-    /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; next }
+    !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; next }
     in_issue {
       buf = buf $0 "\n"
       if ($0 == end_tok) {
-        gsub(end_tok, "---END---", buf)
         in_issue = 0; printf "%s", buf; buf = ""
       }
       next
@@ -3723,7 +3749,7 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
       _blk_buf="${_line}"$'\n'
     elif [ "$_in_blk" = true ]; then
       _blk_buf="${_blk_buf}${_line}"$'\n'
-      if [ "$_line" = "---END---" ]; then
+      if [ "$_line" = "$_end_token" ]; then
         _in_blk=false
         local _blk_title
         _blk_title=$(printf '%s' "$_blk_buf" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
