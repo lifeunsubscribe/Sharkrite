@@ -1789,6 +1789,7 @@ case "$_DISPATCH_KEY" in
   _reject_if_pr_number "$STATUS_ISSUE"
 
   source "$RITE_LIB_DIR/utils/pr-detection.sh"
+  source "$RITE_LIB_DIR/utils/format-review.sh"
 
   # ── Issue info ──
   ISSUE_JSON=$(gh_safe issue view "$STATUS_ISSUE" --json title,state,createdAt,closedAt,labels,url || true)
@@ -1910,9 +1911,13 @@ case "$_DISPATCH_KEY" in
         echo "  Review:     Stale ($REVIEW_MODEL, $REVIEW_DATE) — code pushed since"
       fi
 
-      # Extract findings summary from review body
-      FINDINGS_LINE=$(echo "$REVIEW_BODY" | grep -oE "CRITICAL: [0-9]+ \| HIGH: [0-9]+ \| MEDIUM: [0-9]+ \| LOW: [0-9]+" | head -1 || echo "")
-      [ -n "$FINDINGS_LINE" ] && echo "  Findings:   $FINDINGS_LINE"
+      # Extract findings summary — 3-tier parse handles the modern emoji-separated
+      # format ("🔴 CRITICAL: N | 🟠 HIGH: N | …") that the old adjacent-fields
+      # regex silently missed (issue #1347).
+      parse_review_severity_counts "$REVIEW_BODY"
+      if [ "${_PRC_TIER:-0}" -gt 0 ]; then
+        echo "  Findings:   CRITICAL: $_PRC_CRITICAL | HIGH: $_PRC_HIGH | MEDIUM: $_PRC_MEDIUM | LOW: $_PRC_LOW"
+      fi
     else
       echo "  Review:     None"
     fi
