@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh::batch_suffix_matches_issue|_ftm_file_overlap, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/core/batch-process-issues.sh, lib/core/workflow-runner.sh
 # Regression test: batch-suffix self-skip in overlap guard (#1460)
 #
 # Bug: The cross-batch overlap guard's self-skip pattern (*[-_]N[-_]*|*[-_]N)
@@ -134,5 +134,70 @@ _bsm() {
   # fix-issue-runbook_b1470-1471 must NOT match issue 147 — _b1470 contains the
   # digits 1,4,7 but is not the whole-token _b147 suffix.
   run _bsm "fix-issue-runbook_b1470-1471" "147"
+  [ "$status" -ne 0 ]
+}
+
+# =============================================================================
+# STRUCTURAL: verify grep-E sites carry ([^0-9]|$) trailing anchor on issue.?N and #N
+# =============================================================================
+
+@test "structural: workflow-runner.sh all three worktree-discover sites have anchored issue[^0-9]?N pattern" {
+  # Three sites: PR-exists-but-no-worktree recovery (line ~964), initial fresh
+  # discover (~1011), and retry re-discover (~1053); all must carry [^0-9]? and
+  # the trailing ([^0-9]|$) anchor to prevent substring collisions.
+  local _count
+  _count=$(grep -cF 'issue[^0-9]?${issue_number}([^0-9]|$)' "$WORKFLOW_RUNNER" || true)
+  [ "$_count" -ge 3 ]
+}
+
+@test "structural: workflow-runner.sh has no unanchored issue/# worktree-discover grep (old form absent)" {
+  # The old unanchored form '(issue.?${issue_number}|#${issue_number})' must be
+  # gone; any match here means a site was not updated.
+  local _count
+  _count=$(grep -cF 'issue.?${issue_number}|#${issue_number})' "$WORKFLOW_RUNNER" || true)
+  [ "$_count" -eq 0 ]
+}
+
+@test "structural: batch-process-issues.sh active-wt detect has trailing non-digit anchor on issue[^0-9]?N" {
+  grep -qF 'issue[^0-9]?${ISSUE_NUM}([^0-9]|$)' "$BATCH_PROCESSOR"
+}
+
+# =============================================================================
+# BEHAVIORAL: grep-E pattern substring-collision prevention (issue.?N and #N)
+# =============================================================================
+
+# Helper: run the same grep-E used at the three worktree-discover sites.
+# Args: <path> <issue_num>
+# Returns 0 if the path matches, 1 if not.
+_wt_grep() {
+  local _path="$1" _n="$2"
+  printf '%s\n' "$_path" | \
+    grep -qE "(issue[^0-9]?${_n}([^0-9]|\$)|#${_n}([^0-9]|\$)|[-_]${_n}[-_]|[-_]${_n}\$|_b${_n}[-_]|_b${_n}\$)"
+}
+
+@test "grep-E behavioral: issue-141 matches issue 141" {
+  run _wt_grep "fix-issue-141" "141"
+  [ "$status" -eq 0 ]
+}
+
+@test "grep-E behavioral: issue-1419 must NOT match issue 141 (substring collision)" {
+  run _wt_grep "fix-issue-1419" "141"
+  [ "$status" -ne 0 ]
+}
+
+@test "grep-E behavioral: #141 matches issue 141" {
+  run _wt_grep "branch#141" "141"
+  [ "$status" -eq 0 ]
+}
+
+@test "grep-E behavioral: #1419 must NOT match issue 141 (substring collision on # prefix)" {
+  run _wt_grep "branch#1419" "141"
+  [ "$status" -ne 0 ]
+}
+
+@test "grep-E behavioral: issue2141 must NOT match issue 141 (leading-digit-swallow via .?)" {
+  # .? matches any character including a digit, so issue2141 could match
+  # issue + (any char) + 141. [^0-9]? prevents this.
+  run _wt_grep "fix-issue2141" "141"
   [ "$status" -ne 0 ]
 }

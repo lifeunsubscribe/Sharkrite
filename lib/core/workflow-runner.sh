@@ -961,7 +961,8 @@ EOF
         fi
         if [ -z "${WORKTREE_PATH:-}" ]; then
           local _main_wt=$(git rev-parse --show-toplevel)
-          WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | grep -E "(issue.?${issue_number}|#${issue_number})" | head -1 || true)
+          WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | \
+            grep -E "(issue[^0-9]?${issue_number}([^0-9]|$)|#${issue_number}([^0-9]|$)|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
         fi
         if [ -n "${WORKTREE_PATH:-}" ]; then
           set_current_worktree "$WORKTREE_PATH"
@@ -1008,7 +1009,7 @@ EOF
       if [ -z "${WORKTREE_PATH:-}" ]; then
         MAIN_WORKTREE=$(git rev-parse --show-toplevel)
         WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
-          grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
+          grep -E "(issue[^0-9]?${issue_number}([^0-9]|$)|#${issue_number}([^0-9]|$)|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
       fi
 
       # Last resort: read handoff file written by claude-workflow.sh
@@ -1050,7 +1051,7 @@ EOF
         if [ -z "${WORKTREE_PATH:-}" ]; then
           MAIN_WORKTREE=$(git rev-parse --show-toplevel)
           WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
-            grep -E "(issue.?${issue_number}|#${issue_number}|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
+            grep -E "(issue[^0-9]?${issue_number}([^0-9]|$)|#${issue_number}([^0-9]|$)|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
         fi
 
         if [ $workflow_exit -eq 4 ]; then
