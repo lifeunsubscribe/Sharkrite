@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/batch-process-issues.sh::batch_suffix_matches_issue, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/core/batch-process-issues.sh::batch_suffix_matches_issue|_ftm_file_overlap, lib/core/workflow-runner.sh
 # Regression test: batch-suffix self-skip in overlap guard (#1460)
 #
 # Bug: The cross-batch overlap guard's self-skip pattern (*[-_]N[-_]*|*[-_]N)
@@ -120,5 +120,19 @@ _bsm() {
 
 @test "behavioral: unrelated worktree does NOT match" {
   run _bsm "fix-unrelated-feature-1234" "1419"
+  [ "$status" -ne 0 ]
+}
+
+@test "behavioral: slug containing 'issue' with colliding number does NOT match (no false positive)" {
+  # fix-issue-queue-99 must NOT match issue 9 — the word "issue" followed by a
+  # digit containing 9 was matched by the now-removed *"issue"?*N* alternate.
+  run _bsm "fix-issue-queue-99" "9"
+  [ "$status" -ne 0 ]
+}
+
+@test "behavioral: batch slug with colliding number in later position does NOT match (no false positive)" {
+  # fix-issue-runbook_b1470-1471 must NOT match issue 147 — _b1470 contains the
+  # digits 1,4,7 but is not the whole-token _b147 suffix.
+  run _bsm "fix-issue-runbook_b1470-1471" "147"
   [ "$status" -ne 0 ]
 }

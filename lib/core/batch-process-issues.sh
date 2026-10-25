@@ -462,8 +462,6 @@ _check_dep_queued_later() {
 batch_suffix_matches_issue() {
   local _bsm_path="$1" _bsm_n="$2"
   case "$_bsm_path" in
-    *"issue"?*"${_bsm_n}"*|\
-    *"#${_bsm_n}"*|\
     *[-_]"${_bsm_n}"[-_]*|\
     *[-_]"${_bsm_n}"|\
     *"_b${_bsm_n}"[-_]*|\
