@@ -189,6 +189,8 @@ The same `_DEFER_COUNT[ISSUE_NUM]` counter and `_UNIQUE_ISSUE_COUNT` bound used 
 
 **Deliberate batch-only divergence:** Single-issue mode has no queue to defer into, so `_ftm_file_overlap` is only called from the per-slot batch loop.
 
+**Skipped for CLOSED issues:** The guard is not run when `ISSUE_STATE=CLOSED`. Closed-issue processing is cleanup-only (worktree removal, branch deletion) and touches no source files, so it cannot conflict with another worktree's diff. Deferring a closed issue would only delay that cleanup while burning the defer cap. The parity contract (`batch-process-issues.sh` "do NOT short-circuit here" comment, referencing this doc) owns closed-issue handling via `run_workflow()` → `handle_closed_issue()`.
+
 **Diag line:** `[diag] OVERLAP_DEFER issue=N files=... worktree=...` emitted on each deferral (and on cap-exhausted in-place runs with `cap_exhausted=true`).
 
 **Motivation (live incident, 2026-10-11):** Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`. The concurrent worktrees caused rebase churn and extra fix rounds on the second batch. This check catches the overlap before Phase 1 starts, deferring until the first batch has cleared its worktrees.
