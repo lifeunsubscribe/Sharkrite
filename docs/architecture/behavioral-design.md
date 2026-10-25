@@ -861,7 +861,7 @@ The token is injected into the `DOC_UPDATE_EOF` prompt heredoc so the LLM knows 
 
 **Why this approach over escaping:** An escaping scheme (e.g. replace `---END---` in content with `\---END---`, unescape on parse) requires the LLM to reliably apply the escaping rule — which it may not do when the content contains `---END---` in a code block or diff output. The per-generation token approach eliminates the collision opportunity entirely: the token is never in any existing document, so content cannot accidentally match it.
 
-**Scope:** only the `_docs_update_engine` LLM-output parser and its prompt. The saved proposal files (written by the parser, read by `_docs_apply_approved`) use EOF as their implicit delimiter and are unaffected.
+**Scope:** `_docs_update_engine` (docs-command.sh) and — via the same fix class in issue #1342 — all three LLM-output parsers in `plan-issues.sh`: the primary generation streaming awk (`generate_issues`), the targeted completion parser (`_request_missing_blocks`), and the section-repair parser (`_regen_block_sections`). The saved proposal/issue files (written by the parsers, read by downstream steps) use `---END---` as their internal delimiter and are unaffected; only the LLM-facing wire protocol uses the unique token.
 
 ### Mid-Run Drift: Decide on Conflict, Not Distance (#433/#439 incident)
 

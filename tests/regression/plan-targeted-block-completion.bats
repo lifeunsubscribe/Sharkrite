@@ -56,11 +56,19 @@ setup() {
 
   # Provider stub: records the prompt it was called with, replies with a
   # canned response file. Existence of STUB_PROMPT_FILE == "provider called".
+  # Extracts the per-call end token from the prompt and replaces @@END@@ in the
+  # response file so stubs work with the unique-token extraction awk (#1342).
   export STUB_PROMPT_FILE="$RITE_TEST_TMPDIR/stub-prompt.txt"
   export STUB_RESPONSE_FILE="$RITE_TEST_TMPDIR/stub-response.txt"
   provider_run_streaming_prompt() {
     printf '%s' "$1" > "$STUB_PROMPT_FILE"
-    cat "$STUB_RESPONSE_FILE" 2>/dev/null || true
+    local _tok
+    _tok="$(printf '%s\n' "$1" | grep -oE -- '---END-[0-9]+---' | head -1 || true)"
+    if [ -n "$_tok" ] && [ -f "$STUB_RESPONSE_FILE" ]; then
+      sed "s/@@END@@/${_tok}/" "$STUB_RESPONSE_FILE"
+    else
+      cat "$STUB_RESPONSE_FILE" 2>/dev/null || true
+    fi
   }
 }
 
@@ -116,7 +124,7 @@ TIME: 1hr
 BODY:
 **Description**: End-to-end validation.
 **Dependencies**: After #1, #2
----END---
+@@END@@
 RESPONSE
 
   local stderr_out
@@ -161,7 +169,7 @@ TIME: 1hr
 BODY:
 **Description**: End-to-end validation.
 **Dependencies**: After #1, #2
----END---
+@@END@@
 RESPONSE
 
   _request_missing_blocks "$slate" "BASE PROMPT" 2>/dev/null
@@ -297,7 +305,7 @@ TIME: 1hr
 BODY:
 **Description**: End-to-end validation.
 **Dependencies**: After #1, #2
----END---
+@@END@@
 RESPONSE
 
   _request_missing_blocks "$slate" "BASE PROMPT" 2>/dev/null
@@ -325,7 +333,7 @@ TIME: 1hr
 BODY:
 **Description**: End-to-end validation.
 **Dependencies**: After #1, #2
----END---
+@@END@@
 RESPONSE
 
   local stderr_out
@@ -386,7 +394,7 @@ TIME: 1hr
 BODY:
 **Description**: End-to-end validation.
 **Dependencies**: After #1, #2
----END---
+@@END@@
 ---ISSUE---
 TITLE: Add export features (echo with drift)
 LABELS: phase-3,frontend,priority-medium
@@ -394,7 +402,7 @@ TIME: 1hr
 BODY:
 **Description**: Export.
 **Dependencies**: After #1
----END---
+@@END@@
 RESPONSE
 
   local stderr_out
