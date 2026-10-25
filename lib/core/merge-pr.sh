@@ -434,9 +434,9 @@ update_security_guide_from_pr() {
   fi
 
   # Extract severity counts from structured line
-  CRITICAL_NUM=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: *[0-9]+" | grep -oE "[0-9]+" || echo "0")
-  HIGH_NUM=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: *[0-9]+"     | grep -oE "[0-9]+" || echo "0")
-  MEDIUM_NUM=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: *[0-9]+"  | grep -oE "[0-9]+" || echo "0")
+  CRITICAL_NUM=$(echo "$FINDINGS_LINE" | grep -oE "CRITICAL: *[0-9]+" | grep -oE "[0-9]+" | head -1 || echo "0")
+  HIGH_NUM=$(echo "$FINDINGS_LINE" | grep -oE "HIGH: *[0-9]+"     | grep -oE "[0-9]+" | head -1 || echo "0")
+  MEDIUM_NUM=$(echo "$FINDINGS_LINE" | grep -oE "MEDIUM: *[0-9]+"  | grep -oE "[0-9]+" | head -1 || echo "0")
 
   # Sum severity counts to check if any security findings exist
   SEVERITY_SUM=$((CRITICAL_NUM + HIGH_NUM + MEDIUM_NUM))
