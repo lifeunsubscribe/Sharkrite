@@ -29,7 +29,7 @@ setup() {
 @test "bin/rite --status no longer contains the broken adjacent-fields regex" {
   # The old pattern required a literal '| HIGH' separator — emoji between the
   # pipe and the field name breaks it.  This structural pin prevents regression.
-  ! grep -q 'grep -oE "CRITICAL: \[0-9\]+ \\\\| HIGH: \[0-9\]+ \\\\| MEDIUM' "$RITE_BIN"
+  ! grep -q 'grep -oE "CRITICAL: \[0-9\]+ \\| HIGH: \[0-9\]+ \\| MEDIUM' "$RITE_BIN"
 }
 
 @test "bin/rite --status calls parse_review_severity_counts for findings extraction" {
