@@ -161,3 +161,15 @@ RITE_MARKER_DOC_DRIFT="sharkrite-doc-drift"
 #   <!-- sharkrite-plan-lint disable <rule> - Reason: ... -->
 # Used by lib/core/plan-issues.sh provenance lint gate.
 RITE_MARKER_PLAN_LINT="sharkrite-plan-lint"
+
+# ---------------------------------------------------------------------------
+# Full-suite safety net markers (issue #1228)
+# ---------------------------------------------------------------------------
+
+# Full-suite remediation dedup marker — embedded in the body of an open issue
+# filed by `rite --full-suite --investigate` to record the failure-set hash.
+# Guards against filing a duplicate issue on subsequent runs with the same
+# persistent failures. The search query anchors on the hash so bare-prefix
+# collision with documentation examples is impossible.
+# Format in issue body: <!-- sharkrite-full-suite-remediation:<cksum-hash> -->
+RITE_MARKER_FULL_SUITE_REMEDIATION="sharkrite-full-suite-remediation"

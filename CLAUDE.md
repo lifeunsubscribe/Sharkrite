@@ -114,6 +114,7 @@ Each task uses the model that fits its nature. Every role has its own independen
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
 | Triage / classify | `RITE_TRIAGE_MODEL` | `claude-haiku-4-5` | Narrow binary/bucket classification (trivial-vs-substantive diff; doc categorization) — haiku's job |
 | Health report | `RITE_HEALTH_MODEL` | `claude-sonnet-4-6` | Mostly templating pre-computed stats + fixed-threshold checks; thin interpretive tail. Decoupled from review so the report stops riding opus. A/B (2026-06-15) showed sonnet at coverage parity with opus; opus's only edge was calibration on ambiguous signals (it correctly hedged a phantom-CRITICAL that sonnet over-escalated). If the future chunk-split lands, put the Insights/prioritization tail on opus. |
+| Full-suite report | `RITE_FULL_SUITE_REPORT_MODEL` | `claude-sonnet-4-6` | Interprets overnight run failure data (persistent/cleared classification, assertion lines, lint violations) and produces a short markdown diagnosis. Mostly templating pre-computed facts with a thin interpretive tail — sonnet's job. Own var: moving review off opus must never silently touch the overnight report path. |
 | Promotion PR body | `RITE_PROMOTE_MODEL` | `claude-opus-4-8` | Narrative synthesis across many issues for a production-code-review audience — the promotion PR is the management-facing review artifact for an entire integration branch. Opus because output quality directly affects the human review gate. Own var: moving review off opus must never silently downgrade promotion narratives with it. |
 
 **Never pass `""` as the model arg** to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on defaults — an empty model silently falls through to `resolve_model "review"` (opus). Pass an explicit role via the provider-agnostic **`provider_resolve_model <role>`** (not the claude-prefixed `claude_provider_resolve_model` — `lib/core`/`lib/utils` must stay provider-agnostic). Both invariants are enforced by lint: `PROVIDER_MODEL_FALLTHROUGH` (Rule 31) rejects the bare `""`, `DIRECT_PROVIDER_CALL` (Rule 32) rejects direct `claude_provider_*` calls. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
@@ -888,7 +889,15 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 - Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
-**Scheduling (recommended: weekly Sunday 3 AM):**
+**`--investigate` flag (used by the scheduled plist):** When passed to a failing run, triggers three additional steps after the failure flag is written:
+
+1. **Investigate** — re-runs each failing `.bats` file *serially* (no `--jobs`). A serial run distinguishes genuine failures from parallel-starvation timeouts (the class that false-halted batches 2026-10-12/13). Each originally-failing test is classified as `persistent` (still fails serially) or `cleared-on-serial-rerun` (flake). Lint violations are always `persistent` (deterministic, no parallelism involved).
+
+2. **Report** — writes `.rite/reports/full-suite-YYYYMMDD.md` with counts, the persistent/cleared split, per-test file and assertion lines, and a short interpretation generated via `provider_run_prompt` on the `full_suite_report` role (`RITE_FULL_SUITE_REPORT_MODEL`, default sonnet). The report is written even if the provider call fails (the interpretation section is omitted).
+
+3. **Remediate** — if any persistent failures exist, files ONE issue carrying `<!-- sharkrite-full-suite-remediation:<hash> -->` (hash = `cksum` of sorted persistent test names + lint count, anchored in the dedup search so the guard matches the hash not the bare prefix). A second run with the same failing set detects the existing issue and skips creation. If `gh issue create` fails, an orphan artifact is appended to `.rite/orphaned-followup-items.md` so findings are not silently lost. Purely-cleared (all-flake) runs file no issue.
+
+**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). Manual runs without `--investigate` keep today's behavior (run + flag, no investigation).
 
 macOS (launchd):
 ```bash
@@ -910,13 +919,16 @@ systemctl --user list-timers | grep sharkrite
 
 **Configuration:**
 - `RITE_BATS_JOBS=N` — parallelism override (auto-detects via GNU parallel by default)
+- `RITE_FULL_SUITE_REPORT_MODEL` — model for the investigation report interpretation (default: `claude-sonnet-4-6`)
 - Parallelism: auto-detected (uses `nproc`/`sysctl hw.ncpu` when GNU parallel is installed)
 
 **Health report integration:** `rite --health-report` aggregates `FULL_SUITE_RUN` diag lines from `full-suite-*.log` files. Any `outcome=failed` in the reporting period promotes to a WARNING section. The failure flag is checked at report time and surfaced as an action item.
 
 ```bash
-rite --full-suite                 # Run now (manual or cron invocation)
-cat .rite/state/full-suite-failure.flag   # See current failure details if any
+rite --full-suite                       # Run now (no investigation)
+rite --full-suite --investigate         # Run + investigate + report + remediation issue
+cat .rite/state/full-suite-failure.flag # See current failure details if any
+cat .rite/reports/full-suite-$(date +%Y%m%d).md  # See today's investigation report
 ```
 
 ### Log files

@@ -15,9 +15,10 @@
     4. Verify:
          launchctl list | grep sharkrite
 
-  SCHEDULE: default is Sunday 3 AM (Weekday=0, Hour=3, Minute=0).
-  Change Hour/Minute/Weekday to taste. Omit StartCalendarInterval entirely
-  to run at login instead (useful for high-drift environments).
+  SCHEDULE: default is nightly at 3 AM (no Weekday key = every day).
+  Add a Weekday key (0=Sunday…6=Saturday) to restrict to one day per week.
+  Omit StartCalendarInterval entirely to run at login instead (useful for
+  high-drift environments).
 
   OUTPUT: appended to .rite/logs/full-suite-YYYYMMDD.log (managed by bin/rite-full-suite).
   The StandardOutPath/StandardErrorPath here capture launchd startup errors only;
@@ -45,9 +46,9 @@
 
     # /etc/systemd/user/sharkrite-full-suite.timer
     [Unit]
-    Description=Sharkrite Full-Suite Weekly Timer
+    Description=Sharkrite Full-Suite Nightly Timer
     [Timer]
-    OnCalendar=Sun *-*-* 03:00:00
+    OnCalendar=*-*-* 03:00:00
     Persistent=true
     [Install]
     WantedBy=timers.target
@@ -69,6 +70,7 @@
 	<key>ProgramArguments</key>
 	<array>
 		<string>/path/to/PLACEHOLDER/sharkrite/bin/rite-full-suite</string>
+		<string>--investigate</string>
 	</array>
 	<key>RunAtLoad</key>
 	<false/>
@@ -76,11 +78,9 @@
 	<string>/tmp/sharkrite-full-suite-launchd.log</string>
 	<key>StandardOutPath</key>
 	<string>/tmp/sharkrite-full-suite-launchd.log</string>
-	<!-- Default: Sunday at 3:00 AM. Weekday 0=Sunday, 1=Monday, ..., 6=Saturday -->
+	<!-- Default: nightly at 3:00 AM. Add a Weekday key to restrict to one day. -->
 	<key>StartCalendarInterval</key>
 	<dict>
-		<key>Weekday</key>
-		<integer>0</integer>
 		<key>Hour</key>
 		<integer>3</integer>
 		<key>Minute</key>
