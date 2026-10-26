@@ -6,6 +6,7 @@
 
 
 ## Created
+- behavioral-design.md → Follow-up Issue Context
 - behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
 
 
@@ -66,6 +67,7 @@
 
 
 
+
 ## DO
-- encountered-issues.md → Dev session deletes unrelated regression tests — scope boundary not enforced
+- behavioral-design.md → DO NOT skip the assessment based on diff content
 
