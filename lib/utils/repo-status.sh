@@ -71,6 +71,41 @@ WT_PATHS=()
 WT_BEHIND_MAIN=()
 WORKTREE_COUNT=0
 STALE_WORKTREE_COUNT=0
+WT_AGE_DISPLAY=""
+
+# compute_worktree_age <path>
+# Sets global WT_AGE_DISPLAY.
+# Increments STALE_WORKTREE_COUNT when age exceeds 168h (7 days).
+# Sets WT_AGE_DISPLAY="unknown age (prunable)" when git linkage is unresolvable
+# (empty git log output means the .git link file was reaped; epoch=0 would produce
+# a bogus ~20000d age instead of signalling the broken state).
+compute_worktree_age() {
+  local wt_path="$1"
+  local last_commit_epoch
+  last_commit_epoch=$(git -C "$wt_path" log -1 --format='%ct' 2>/dev/null || true)
+
+  if [ -z "$last_commit_epoch" ]; then
+    WT_AGE_DISPLAY="unknown age (prunable)"
+    return 0
+  fi
+
+  local now_epoch
+  now_epoch=$(date +%s)
+  local age_hours=$(( (now_epoch - last_commit_epoch) / 3600 ))
+
+  if [ "$age_hours" -ge 48 ]; then
+    WT_AGE_DISPLAY="$((age_hours / 24))d old"
+  elif [ "$age_hours" -ge 1 ]; then
+    WT_AGE_DISPLAY="${age_hours}h old"
+  else
+    WT_AGE_DISPLAY="<1h old"
+  fi
+
+  if [ "$age_hours" -gt 168 ]; then
+    STALE_WORKTREE_COUNT=$((STALE_WORKTREE_COUNT + 1))
+    WT_AGE_DISPLAY="${WT_AGE_DISPLAY} (stale)"
+  fi
+}
 
 scan_worktrees() {
   local worktree_lines
@@ -105,25 +140,7 @@ scan_worktrees() {
         fi
 
         # Staleness: last commit age
-        local last_commit_epoch
-        last_commit_epoch=$(git -C "$current_path" log -1 --format='%ct' 2>/dev/null || echo "0")
-        local now_epoch
-        now_epoch=$(date +%s)
-        local age_hours=$(( (now_epoch - last_commit_epoch) / 3600 ))
-        local age_display
-        if [ "$age_hours" -ge 48 ]; then
-          age_display="$((age_hours / 24))d old"
-        elif [ "$age_hours" -ge 1 ]; then
-          age_display="${age_hours}h old"
-        else
-          age_display="<1h old"
-        fi
-
-        # 7 days = stale
-        if [ "$age_hours" -gt 168 ]; then
-          STALE_WORKTREE_COUNT=$((STALE_WORKTREE_COUNT + 1))
-          age_display="${age_display} (stale)"
-        fi
+        compute_worktree_age "$current_path"
 
         # Build status string
         local status_parts=""
@@ -144,7 +161,7 @@ scan_worktrees() {
 
         WT_BRANCHES+=("$branch")
         WT_STATUSES+=("$status_parts")
-        WT_AGES+=("$age_display")
+        WT_AGES+=("$WT_AGE_DISPLAY")
         WT_PATHS+=("$current_path")
         WT_BEHIND_MAIN+=("$behind_main")
       fi
@@ -165,23 +182,7 @@ scan_worktrees() {
     if [ -n "$remote_exists" ]; then
       unpushed=$(git -C "$current_path" log --oneline "origin/$branch..HEAD" 2>/dev/null | wc -l | tr -d ' ' || true)
     fi
-    local last_commit_epoch
-    last_commit_epoch=$(git -C "$current_path" log -1 --format='%ct' 2>/dev/null || echo "0")
-    local now_epoch
-    now_epoch=$(date +%s)
-    local age_hours=$(( (now_epoch - last_commit_epoch) / 3600 ))
-    local age_display
-    if [ "$age_hours" -ge 48 ]; then
-      age_display="$((age_hours / 24))d old"
-    elif [ "$age_hours" -ge 1 ]; then
-      age_display="${age_hours}h old"
-    else
-      age_display="<1h old"
-    fi
-    if [ "$age_hours" -gt 168 ]; then
-      STALE_WORKTREE_COUNT=$((STALE_WORKTREE_COUNT + 1))
-      age_display="${age_display} (stale)"
-    fi
+    compute_worktree_age "$current_path"
     local status_parts=""
     if [ "$uncommitted" -gt 0 ]; then
       status_parts="${uncommitted} uncommitted"
@@ -198,7 +199,7 @@ scan_worktrees() {
 
     WT_BRANCHES+=("$branch")
     WT_STATUSES+=("$status_parts")
-    WT_AGES+=("$age_display")
+    WT_AGES+=("$WT_AGE_DISPLAY")
     WT_PATHS+=("$current_path")
     WT_BEHIND_MAIN+=("$behind_main")
   fi
