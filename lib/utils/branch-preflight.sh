@@ -141,8 +141,9 @@ _preflight_has_only_init_commit() {
     return 1
   fi
 
-  # Exactly one commit — check if it's the init commit
-  if echo "$commits_ahead" | grep -qE "chore: initialize work on #${issue_number}"; then
+  # Exactly one commit — check if it's the init commit.
+  # Trailing ([^0-9]|$) prevents #141 from matching a #1419 commit subject.
+  if echo "$commits_ahead" | grep -qE "chore: initialize work on #${issue_number}([^0-9]|$)"; then
     return 0
   fi
 
