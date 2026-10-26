@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks
+# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks|create_issues|_coverage_missing_titles|_canon_title
 #
 # Regression tests for ---END--- delimiter collision in plan-issues.sh.
 #
@@ -31,6 +31,13 @@
 #      via a deterministic frame rebuild (substr body carve-out) before printing.
 #   E. Structural: _request_missing_blocks accepts a third argument (_end_token)
 #      and uses it in both the completion prompt and the completion awk.
+#   I. Behavioral: TITLE line containing ---ISSUE--- is escaped at the stream
+#      boundary (same as body content) and the create-loop unescape pattern
+#      restores the original title (#1484).
+#   J. Behavioral: _canon_title canonicalization is symmetric — an escaped
+#      title <!--rite-issue-esc--> and an unescaped ---ISSUE--- title produce
+#      the same canonical string, so the completeness guard does not spuriously
+#      fire on escaped TITLE lines (#1484).
 
 # ---------------------------------------------------------------------------
 # A + B — behavioral: simulate the streaming-awk with a unique token
@@ -488,6 +495,151 @@
   echo "$blocks" | grep -q "TITLE: Second issue" || {
     echo "FAIL: second block missing from _emitted_blocks output" >&2
     printf '%s\n' "$blocks" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# I — behavioral: TITLE line containing ---ISSUE--- is escaped at the stream
+# boundary, and the create-loop unescape pattern restores the original title
+# (#1484 — both the escaping and the unescape are exercised end-to-end).
+#
+# The streaming-awk body carve-out includes the TITLE line, so any ---ISSUE---
+# or ---END--- literal in a title is escaped to <!--rite-issue-esc--> /
+# <!--rite-end-esc--> just like body content. create_issues unescapes via
+# bash parameter expansion before publishing to GitHub (lines 5388-5389).
+# ---------------------------------------------------------------------------
+
+@test "I: TITLE line containing ---ISSUE--- is escaped at stream boundary and unescaped by create-loop pattern" {
+  local _tok="---END-TESTTOKEN---"
+  local input
+  input=$(printf '%s\n' \
+    "---ISSUE---" \
+    "TITLE: Implement the ---ISSUE--- parser" \
+    "BODY:" \
+    "Body text." \
+    "$_tok")
+
+  local output
+  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
+    !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 ~ /^TITLE: /) {
+        title = substr($0, 8)
+        if (title in seen) { exit }
+        seen[title] = 1
+      }
+      if ($0 == end_tok) {
+        head_len = length("---ISSUE---\n")
+        tail_len = length($0) + 1
+        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+        gsub("---END---",   "<!--rite-end-esc-->",   body)
+        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+        buf = "---ISSUE---\n" body "---END---\n"
+        in_issue = 0; printf "%s", buf; buf = ""
+      }
+      next
+    }
+    { print }
+  ')
+
+  # The TITLE line in the output must have the marker escaped
+  echo "$output" | grep -q "TITLE: Implement the <!--rite-issue-esc--> parser" || {
+    echo "FAIL: TITLE line marker was not escaped to <!--rite-issue-esc-->" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+
+  # The block opener must remain an unescaped ---ISSUE--- (exactly 1)
+  local _issue_count
+  _issue_count=$(printf '%s\n' "$output" | grep -c "^---ISSUE---$" || true)
+  [ "$_issue_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 canonical ---ISSUE--- block opener, got $_issue_count" >&2
+    printf '%s\n' "$output" >&2
+    false
+  }
+
+  # The create-loop unescape pattern (lines 5388-5389 in plan-issues.sh) restores
+  # the original title from the escaped TITLE line.
+  local _escaped_title
+  _escaped_title=$(printf '%s\n' "$output" | grep "^TITLE: " | sed 's/^TITLE: //' || true)
+  local _unescaped_title
+  _unescaped_title="${_escaped_title//<!--rite-end-esc-->/---END---}"
+  _unescaped_title="${_unescaped_title//<!--rite-issue-esc-->/---ISSUE---}"
+  [ "$_unescaped_title" = "Implement the ---ISSUE--- parser" ] || {
+    echo "FAIL: create-loop unescape did not restore original title" >&2
+    echo "  escaped:   $_escaped_title" >&2
+    echo "  unescaped: $_unescaped_title" >&2
+    false
+  }
+
+  # Structural pin: the behavioral assertions above inline the unescape pattern,
+  # so removing lines 5388-5389 from plan-issues.sh would leave them green.
+  # These greps make removal of those lines fail this test (#1484 regression pin).
+  local _plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
+  grep -qF 'current_title="${current_title//<!--rite-end-esc-->/---END---}"' "$_plan_issues_sh" || {
+    echo "FAIL: current_title rite-end-esc unescape missing from plan-issues.sh (regression for #1484)" >&2
+    false
+  }
+  grep -qF 'current_title="${current_title//<!--rite-issue-esc-->/---ISSUE---}"' "$_plan_issues_sh" || {
+    echo "FAIL: current_title rite-issue-esc unescape missing from plan-issues.sh (regression for #1484)" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# J — behavioral: _canon_title canonicalization is symmetric for escaped and
+# unescaped marker forms, so the completeness guard (_coverage_missing_titles)
+# does not spuriously report a missing block when the TITLE line carries an
+# escaped marker and the checklist entry carries the unescaped original (#1484).
+#
+# The _canon_title function runs:
+#   sed 's/<!--rite-end-esc-->/---END---/g; s/<!--rite-issue-esc-->/---ISSUE---/g;
+#        s/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
+# This test inlines that transform so it runs without sourcing plan-issues.sh.
+# ---------------------------------------------------------------------------
+
+@test "J: _canon_title canonicalization is symmetric for escaped and unescaped marker forms" {
+  _do_canon() {
+    printf '%s' "$1" | \
+      sed 's/<!--rite-end-esc-->/---END---/g; s/<!--rite-issue-esc-->/---ISSUE---/g; s/^[[:space:]]*//;s/[[:space:]]*$//' | \
+      tr '[:upper:]' '[:lower:]'
+  }
+
+  # Escaped form (as it appears in the TITLE: line after streaming-awk escaping)
+  local _escaped_canon
+  _escaped_canon=$(_do_canon "Implement the <!--rite-issue-esc--> parser")
+
+  # Unescaped form (as it appears in the coverage checklist text)
+  local _unescaped_canon
+  _unescaped_canon=$(_do_canon "Implement the ---ISSUE--- parser")
+
+  [ "$_escaped_canon" = "$_unescaped_canon" ] || {
+    echo "FAIL: escaped and unescaped forms do not canonicalize to the same string" >&2
+    echo "  escaped canonical:   $_escaped_canon" >&2
+    echo "  unescaped canonical: $_unescaped_canon" >&2
+    false
+  }
+
+  # Sanity: the canonical form is lowercase and uses the unescaped marker text
+  [ "$_unescaped_canon" = "implement the ---issue--- parser" ] || {
+    echo "FAIL: canonical form was not 'implement the ---issue--- parser'" >&2
+    echo "  got: $_unescaped_canon" >&2
+    false
+  }
+
+  # Structural pin: _do_canon above inlines the _canon_title transform, so
+  # removing the unescape substitutions from _canon_title in plan-issues.sh
+  # leaves the behavioral assertions green. These greps make that removal fail
+  # (#1484 regression pin).
+  local _plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
+  grep -qF "s/<!--rite-end-esc-->/---END---/g" "$_plan_issues_sh" || {
+    echo "FAIL: _canon_title sed unescape for rite-end-esc missing from plan-issues.sh (regression for #1484)" >&2
+    false
+  }
+  grep -qF "s/<!--rite-issue-esc-->/---ISSUE---/g" "$_plan_issues_sh" || {
+    echo "FAIL: _canon_title sed unescape for rite-issue-esc missing from plan-issues.sh (regression for #1484)" >&2
     false
   }
 }
