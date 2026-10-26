@@ -59,6 +59,7 @@ source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/cap-resume.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Summary computation + stats-output functions (sourceable by regression tests)
 source "$_SCRIPT_DIR/batch-reporter.sh"
@@ -621,6 +622,25 @@ _apply_overlap_defer_or_warn() {
     return 0
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+#
+# Claude CLI 2.1.284 ignores every permissions.allow entry in untrusted
+# workspaces and emits "has not been trusted" to stderr. Every provider
+# session (dev, review, assessment) then fails individually — the batch
+# burns time per issue discovering the same environment problem.
+#
+# Run one cheap provider session before any issue is processed. If the
+# trust signal is detected, abort with the exact fix command and exit 1.
+# Emits [diag] PROVIDER_PREFLIGHT for health-report aggregation.
+# ---------------------------------------------------------------------------
+load_provider "${RITE_DEV_PROVIDER:-claude}"
+provider_detect_cli || true
+if ! provider_healthcheck; then
+  print_error "Batch aborted at pre-flight. Fix workspace trust and retry."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)

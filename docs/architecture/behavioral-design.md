@@ -2634,3 +2634,24 @@ by fingerprint; tags regenerate only for changed sections),
 `docs-map-rebuild-on-doc-change.bats`, and `plan-reads-docs-map.bats` (`rite
 plan` consults the map before loading any content; a section past the byte cap
 is still discoverable).
+
+## Provider Preflight Parity Contract
+
+`provider_healthcheck` runs once before any real provider work to detect
+workspace trust failures (Claude CLI >=2.1.284 — see CLAUDE.md "Workspace trust
+requirement"). The contract:
+
+- **Batch mode:** `batch-process-issues.sh` calls it once before the first issue
+  (after the dry-run refusal at line ~190, before the issue loop at line ~638).
+  `BATCH_MODE=true` is exported, so the per-issue path in `workflow-runner.sh`
+  skips the check to avoid a redundant call per issue.
+- **Single-issue mode:** `workflow-runner.sh::main` calls it once when
+  `BATCH_MODE` is unset or false, and only when `RITE_DRY_RUN` is false.
+  Dry-run never fires a real provider call.
+- **Fail-open on timeout:** the call is bounded at 120s via `run_with_timeout`;
+  a hung CLI returns 0 (trusted) so a network stall does not abort a batch.
+- **Non-claude providers:** providers without a `*_provider_healthcheck`
+  implementation (e.g. gemini-mock) expose a stub that returns 0 unconditionally;
+  `load_provider` aliases it as `provider_healthcheck` via the standard dispatch.
+
+**Enforcement:** `tests/regression/provider-trust-preflight.bats`.
