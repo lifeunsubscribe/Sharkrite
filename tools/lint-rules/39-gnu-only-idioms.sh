@@ -40,6 +40,37 @@ _gnu_check_suppressed() {
   echo "$_gc_prev_text" | grep -qE '#.*sharkrite-lint.*disable.*GNU_ONLY_IDIOM'
 }
 
+# Shared helper: blank the contents of string literals ('...' and "...") on a
+# single source line so that keywords inside human-readable message strings do
+# not trigger command-position checks.  Single-quotes are processed first
+# because they can contain unescaped double-quotes.  Between the single-quote
+# and double-quote passes, "$(...)" command substitutions are unwrapped so that
+# a real command inside the canonical capture idiom VAR="$(cmd)" is exposed for
+# command-position checks and not erased by the double-quote strip (#1504).
+#
+# Known gaps (general shell lexer is out of scope per #1504):
+# 1. Apostrophe-crossing: the single-pass s/'[^']*'/''/g pairs the first and
+#    second unescaped apostrophes on the line regardless of double-quote context.
+#    A line like: echo "a's b"; real_cmd; echo "c's d" — the apostrophe inside
+#    each double-quoted string pairs across them, swallowing real_cmd.  Pattern:
+#    two flanking double-quoted strings each containing one apostrophe with the
+#    real command sitting between them.  An awk state-walker would fix this but
+#    would constitute a general lexer.
+# 2. Partial cmd-sub: "$(...more text...)" is not unwrapped — the unwrap step
+#    only handles the exact form "$(...)" where the outer double-quotes wrap only
+#    the command substitution with no surrounding text.
+_r39_strip_quoted() {
+  local _sq_line
+  _sq_line=$(printf '%s' "$1" | sed "s/'[^']*'/''/g" || true)
+  # Unwrap "$(...)" before stripping double-quoted strings so that command
+  # substitutions in the canonical capture idiom VAR="$(cmd)" survive and
+  # are visible for command-position checks.  [$] matches a literal $ in both
+  # GNU and BSD BRE without end-of-line anchor ambiguity.
+  _sq_line=$(printf '%s' "$_sq_line" | sed 's/"[$](\([^)]*\))"/$(\1)/g' || true)
+  _sq_line=$(printf '%s' "$_sq_line" | sed 's/"[^"]*"/""/g' || true)
+  printf '%s\n' "$_sq_line"
+}
+
 # ---------------------------------------------------------------------------
 # A. sed BRE alternation/quantifiers (\|/\+/\?)
 # ---------------------------------------------------------------------------
@@ -55,8 +86,11 @@ for _r39_file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r _r39_lnum _r39_ltext; do
     # Skip full-line comments
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
-    # Only flag if this is a sed invocation
-    echo "$_r39_ltext" | grep -qE '\bsed\b' || continue
+    # Only flag if sed appears in command position — strip quoted string contents
+    # first so that 'sed' inside a message string (e.g. print_info "use sed …")
+    # does not satisfy this guard (#1504 shared fix).
+    _r39_a_stripped=$(_r39_strip_quoted "$_r39_ltext")
+    echo "$_r39_a_stripped" | grep -qE '\bsed\b' || continue
     # Skip if sed is in ERE mode (-E or any flag cluster containing E)
     echo "$_r39_ltext" | grep -qE '\bsed\b[^|&;#]*-[a-zA-Z]*E' && continue
     # Scope to the sed-expression portion of the line: strip everything before
@@ -102,7 +136,10 @@ echo "Rule 39B: Checking for sed case-conversion escapes (\\u \\l \\U \\L) — G
 for _r39_file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r _r39_lnum _r39_ltext; do
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
-    echo "$_r39_ltext" | grep -qE '\bsed\b' || continue
+    # Only flag if sed appears in command position — strip quoted string contents
+    # first so that 'sed' inside a message string does not satisfy this guard (#1504).
+    _r39_b_stripped=$(_r39_strip_quoted "$_r39_ltext")
+    echo "$_r39_b_stripped" | grep -qE '\bsed\b' || continue
     _gnu_check_suppressed "$_r39_file" "$_r39_lnum" && continue
     print_violation "$_r39_file" "$_r39_lnum" "GNU_ONLY_IDIOM" \
       "sed case-conversion escape (\\u/\\l/\\U/\\L) is a GNU-only replacement extension; BSD sed emits garbage — use awk toupper()/tolower() or tr instead"
@@ -192,8 +229,11 @@ for _r39_file in "${SHELL_FILES[@]}"; do
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
     # run_with_timeout is the portable wrapper — skip
     echo "$_r39_ltext" | grep -qF 'run_with_timeout' && continue
-    # Skip: timeout inside a quoted echo/print diagnostic string (e.g. "...timeout 30s...")
-    echo "$_r39_ltext" | grep -qE '^[[:space:]]*(echo|print_[a-zA-Z_]+)[[:space:]]+"[^"]*\btimeout\b' && continue
+    # Re-verify the match is in command position after stripping quoted string
+    # literals.  printf/echo/variable-assignment message strings that mention
+    # "timeout Ns" in human-readable text fired as false positives (#1504).
+    _r39_f_stripped=$(_r39_strip_quoted "$_r39_ltext")
+    echo "$_r39_f_stripped" | grep -qE '(^|[[:space:];|&(])(timeout)[[:space:]]+[-0-9$]' || continue
     # command -v timeout / gtimeout guard on this line
     echo "$_r39_ltext" | grep -qE 'command -v (timeout|gtimeout)' && continue
     _r39_start=$(( _r39_lnum > 3 ? _r39_lnum - 3 : 1 ))
