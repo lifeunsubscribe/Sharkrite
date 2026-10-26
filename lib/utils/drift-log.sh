@@ -23,11 +23,12 @@
 #   <!-- /sharkrite-doc-drift -->
 #
 # Public API:
-#   drift_log_path         — echo the absolute path to docs/sharkrite-drift-log.md
-#   drift_log_relpath      — repo-relative form of drift_log_path
-#   drift_log_append       — append or accumulate-in-place one structured entry
-#   drift_log_entry_count  — count entries (per-doc, per-branch, or total)
-#   drift_log_union_merge  — deterministic union-merge of a conflicted drift log
+#   drift_log_path          — echo the absolute path to docs/sharkrite-drift-log.md
+#   drift_log_relpath       — repo-relative form of drift_log_path
+#   drift_log_append        — append or accumulate-in-place one structured entry
+#   drift_log_entry_count   — count entries (per-doc, per-branch, or total)
+#   drift_log_remove_entry  — remove exactly one (doc, branch, assertion) entry
+#   drift_log_union_merge   — deterministic union-merge of a conflicted drift log
 #
 # All functions are re-source safe. Sentinel: drift_log_append.
 
@@ -456,6 +457,77 @@ drift_log_entry_count() {
 
   # Total: all entries across the entire store.
   _dlc_sum_dir "$drift_base" "*.log"
+}
+
+# ---------------------------------------------------------------------------
+# drift_log_remove_entry DOC BRANCH ASSERTION
+#
+# Remove exactly the (DOC, BRANCH, ASSERTION) entry from the structured
+# entry store.  Acquires the per-file lock (same as drift_log_append).
+# No-op when the file does not exist or no matching entry is found.
+# Returns 0 always — a missing entry or file is not an error.
+# ---------------------------------------------------------------------------
+drift_log_remove_entry() {
+  local doc="$1"
+  local branch="$2"
+  local assertion="$3"
+
+  if [ -z "${RITE_STATE_DIR:-}" ]; then
+    return 0
+  fi
+
+  # Normalize assertion (same transforms as drift_log_append so the key matches)
+  local assertion_norm="${assertion//$'\t'/ }"
+  assertion_norm="${assertion_norm//$'\n'/ }"
+  assertion_norm="${assertion_norm//\\/}"
+
+  local entry_file
+  entry_file="$(_drift_entry_path "$doc" "$branch")"
+  [ -f "$entry_file" ] || return 0
+
+  local lock_path="${entry_file}.lock"
+  if ! lock_acquire "$lock_path" 30; then
+    printf 'drift_log_remove_entry: could not acquire lock for "%s" within 30s\n' \
+      "$entry_file" >&2
+    return 0
+  fi
+
+  # Trap ensures lock is released even under set -e.
+  # shellcheck disable=SC2064
+  trap "lock_release '$lock_path'" RETURN
+
+  local _dlre_tmp="${entry_file}.tmp.$$"
+  local _dlre_awk_exit=0
+  # Rewrite file omitting the one line where both doc= and assertion= match.
+  awk -F'\t' '
+    {
+      hasdoc=0; hasassert=0
+      for (i=1; i<=NF; i++) {
+        if ($i == "doc=" _doc)             hasdoc=1
+        if ($i == "assertion=" _assertion) hasassert=1
+      }
+      if (hasdoc && hasassert) next
+      print
+    }
+  ' _doc="$doc" _assertion="$assertion_norm" \
+    "$entry_file" > "$_dlre_tmp" || _dlre_awk_exit=$?
+
+  if [ "$_dlre_awk_exit" -ne 0 ]; then
+    rm -f "$_dlre_tmp"
+    lock_release "$lock_path"
+    trap - RETURN
+    return 0
+  fi
+
+  mv "$_dlre_tmp" "$entry_file"
+
+  # Delete file when all entries drained
+  local _dlre_remaining
+  _dlre_remaining="$(grep -c '^doc=' "$entry_file" || true)"
+  [ "$_dlre_remaining" -eq 0 ] && rm -f "$entry_file"
+
+  lock_release "$lock_path"
+  trap - RETURN
 }
 
 # ===================================================================
