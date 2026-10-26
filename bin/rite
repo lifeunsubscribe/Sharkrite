@@ -831,7 +831,7 @@ if [ -n "${RITE_DECLARED_DOC:-}" ]; then
   _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
   _doc_state_file="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
   _doc_is_no_target=false
-  if [ "$MODE" = "full" ] && [ "${#ARGS[@]}" -eq 0 ] && [ "${#BATCH_FILTER_ARGS[@]}" -eq 0 ] && [ -z "${PR_INPUT:-}" ]; then
+  if [ "$MODE" = "full" ] && [ "${#ARGS[@]}" -eq 0 ] && [ "${#BATCH_FILTER_ARGS[@]}" -eq 0 ] && [ -z "${PR_INPUT:-}" ] && [ "${_RITE_VERSION_REQUESTED:-}" != "true" ]; then
     _doc_is_no_target=true
   fi
   if [ "${RITE_DRY_RUN:-}" != "true" ] && [ "$_doc_is_no_target" != "true" ]; then
