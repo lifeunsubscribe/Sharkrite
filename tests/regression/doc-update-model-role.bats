@@ -68,8 +68,8 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "claude_provider_resolve_model: RITE_DOC_UPDATE_MODEL does not affect doc_assessment" {
-  run env RITE_DOC_UPDATE_MODEL=claude-haiku-4-5 \
-    -u RITE_DOC_ASSESSMENT_MODEL \
+  run env -u RITE_DOC_ASSESSMENT_MODEL \
+    RITE_DOC_UPDATE_MODEL=claude-haiku-4-5 \
     bash "$_helper_script" "doc_assessment"
   [ "$status" -eq 0 ]
   [ "$output" = "claude-sonnet-4-6" ]
@@ -80,8 +80,8 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "claude_provider_resolve_model: RITE_DOC_ASSESSMENT_MODEL does not affect doc_update" {
-  run env RITE_DOC_ASSESSMENT_MODEL=claude-opus-4-8 \
-    -u RITE_DOC_UPDATE_MODEL \
+  run env -u RITE_DOC_UPDATE_MODEL \
+    RITE_DOC_ASSESSMENT_MODEL=claude-opus-4-8 \
     bash "$_helper_script" "doc_update"
   [ "$status" -eq 0 ]
   [ "$output" = "claude-fable-5" ]
