@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/stale-branch.sh::get_commits_behind_main, lib/utils/branch-preflight.sh::classify_branch_health
+# sharkrite-test-covers: lib/utils/stale-branch.sh::get_commits_behind_main|check_stale_branch, lib/utils/branch-preflight.sh::classify_branch_health, lib/utils/integration-sync.sh::sync_issue_branch
 # tests/regression/commits-behind-unmeasurable.bats
 #
 # Verifies that an unmeasurable behind-count is distinguishable from zero.
@@ -206,4 +206,62 @@ teardown() {
   # Unmeasurable should be treated as STALE (2) so the stale-branch handler
   # can perform a definitive check with its own hard fetch.
   [ "$rc" -eq 2 ]
+}
+
+# ── integration-sync caller test ─────────────────────────────────────────────
+
+@test "sync_issue_branch: returns 1 with fetch_failed outcome when behind-count is unmeasurable" {
+  # Pre-define dependency stubs before sourcing integration-sync.sh so its
+  # declare-f guards skip the real source files (issue-lock.sh, pr-detection.sh,
+  # post-merge-verify.sh, conflict-resolver.sh).
+  get_locked_issue_numbers() { return 0; }
+  detect_pr_for_issue() { return 1; }
+  detect_worktree_for_pr() { return 1; }
+  verify_post_merge() { return 0; }
+  attempt_claude_merge_resolution() { return 1; }
+
+  source "$RITE_LIB_DIR/utils/integration-sync.sh"
+  set +u; set +o pipefail
+
+  # Create a feature branch and worktree for the test issue.
+  local branch_name="fix/issue-52"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "work" > work.txt
+  git add work.txt
+  git commit -m "Feature work" >/dev/null 2>&1
+  git push origin "$branch_name" >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
+
+  local worktree_path="$RITE_WORKTREE_DIR/issue-52"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Provide worktree discovery via lock-dir cwd fallback (detect_pr_for_issue
+  # stub returns 1 above, so the lock-dir path is the only discovery route).
+  export RITE_LOCK_DIR="${BATS_TEST_TMPDIR}/locks"
+  mkdir -p "${RITE_LOCK_DIR}/issue-52.lock"
+  echo "$worktree_path" > "${RITE_LOCK_DIR}/issue-52.lock/cwd"
+
+  # Re-define after source to ensure the correct behavior regardless of what
+  # integration-sync.sh's transitive sources may have installed.
+  get_locked_issue_numbers() { return 0; }
+  detect_pr_for_issue() { return 1; }
+  git_fetch_safe() { return 0; }
+  resolve_target_branch() { echo "main"; }
+
+  # Override get_commits_behind_main to simulate unmeasurable.
+  # Re-defined after source so the env-var guard does not overwrite it.
+  get_commits_behind_main() {
+    COMMITS_BEHIND_MAIN=""
+    return 1
+  }
+
+  set +e
+  sync_issue_branch "52"
+  local rc=$?
+  set -e
+
+  # Must return 1 with fetch_failed outcome — callers treat unmeasurable as a
+  # failed fetch so they skip the sync rather than proceeding with stale data.
+  [ "$rc" -eq 1 ]
+  [ "${_SYNC_ISSUE_OUTCOME}" = "fetch_failed" ]
 }
