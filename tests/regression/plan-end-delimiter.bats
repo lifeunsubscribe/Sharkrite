@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks|create_issues|_coverage_missing_titles
+# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks|create_issues|_coverage_missing_titles|_canon_title
 #
 # Regression tests for ---END--- delimiter collision in plan-issues.sh.
 #
@@ -573,6 +573,19 @@
     echo "  unescaped: $_unescaped_title" >&2
     false
   }
+
+  # Structural pin: the behavioral assertions above inline the unescape pattern,
+  # so removing lines 5388-5389 from plan-issues.sh would leave them green.
+  # These greps make removal of those lines fail this test (#1484 regression pin).
+  local _plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
+  grep -qF 'current_title="${current_title//<!--rite-end-esc-->/---END---}"' "$_plan_issues_sh" || {
+    echo "FAIL: current_title rite-end-esc unescape missing from plan-issues.sh (regression for #1484)" >&2
+    false
+  }
+  grep -qF 'current_title="${current_title//<!--rite-issue-esc-->/---ISSUE---}"' "$_plan_issues_sh" || {
+    echo "FAIL: current_title rite-issue-esc unescape missing from plan-issues.sh (regression for #1484)" >&2
+    false
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -613,6 +626,20 @@
   [ "$_unescaped_canon" = "implement the ---issue--- parser" ] || {
     echo "FAIL: canonical form was not 'implement the ---issue--- parser'" >&2
     echo "  got: $_unescaped_canon" >&2
+    false
+  }
+
+  # Structural pin: _do_canon above inlines the _canon_title transform, so
+  # removing the unescape substitutions from _canon_title in plan-issues.sh
+  # leaves the behavioral assertions green. These greps make that removal fail
+  # (#1484 regression pin).
+  local _plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
+  grep -qF "s/<!--rite-end-esc-->/---END---/g" "$_plan_issues_sh" || {
+    echo "FAIL: _canon_title sed unescape for rite-end-esc missing from plan-issues.sh (regression for #1484)" >&2
+    false
+  }
+  grep -qF "s/<!--rite-issue-esc-->/---ISSUE---/g" "$_plan_issues_sh" || {
+    echo "FAIL: _canon_title sed unescape for rite-issue-esc missing from plan-issues.sh (regression for #1484)" >&2
     false
   }
 }
