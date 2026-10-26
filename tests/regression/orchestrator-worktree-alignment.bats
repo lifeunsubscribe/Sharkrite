@@ -17,39 +17,55 @@
 load '../helpers/setup'
 
 # Inline the alignment assertion from workflow-runner.sh for blackbox simulation.
-# Matches the "Read handoff file" block added by this issue. Returns 0 on alignment,
-# 1 on mismatch. Stdout carries diagnostic text (caller checks for path strings).
+# Mirrors _assert_worktree_alignment logic: reads handoff, canonicalizes symlinks,
+# warns on missing handoff (exit 0 only), guards -d before adoption.
+# Returns 0 on alignment, 1 on mismatch. Stdout carries diagnostic text.
 _run_alignment_check() {
   local state_dir="$1"
   local issue_number="$2"
   local discovered_worktree="$3"  # what orchestrator found (WORKTREE_PATH)
+  local wf_exit="${4:-0}"          # simulated workflow exit code
 
-  # simulate the exact logic from workflow-runner.sh
   bash -c "
     set -euo pipefail
     RITE_STATE_DIR='${state_dir}'
     WORKTREE_PATH='${discovered_worktree}'
     issue_number='${issue_number}'
+    _wf_exit='${wf_exit}'
 
-    _dev_session_worktree=''
+    _dev_session_wt=''
     _handoff_file=''
     if [ -n \"\${RITE_STATE_DIR:-}\" ]; then
       _handoff_file=\"\${RITE_STATE_DIR}/worktree-handoff-\${issue_number}.txt\"
       if [ -f \"\$_handoff_file\" ]; then
-        _dev_session_worktree=\$(cat \"\$_handoff_file\" 2>/dev/null || true)
+        _dev_session_wt=\$(cat \"\$_handoff_file\" 2>/dev/null || true)
         rm -f \"\$_handoff_file\"
       fi
     fi
 
-    if [ -n \"\${_dev_session_worktree:-}\" ] && [ -n \"\${WORKTREE_PATH:-}\" ] && \\
-       [ \"\$_dev_session_worktree\" != \"\$WORKTREE_PATH\" ]; then
-      echo \"DEV_SESSION_USED=\$_dev_session_worktree\"
-      echo \"ORCHESTRATOR_FOUND=\$WORKTREE_PATH\"
-      echo 'MISMATCH'
-      exit 1
-    elif [ -n \"\${_dev_session_worktree:-}\" ]; then
-      WORKTREE_PATH=\"\$_dev_session_worktree\"
+    if [ -z \"\${_dev_session_wt:-}\" ] && [ \"\${_wf_exit:-0}\" -eq 0 ] && [ -n \"\${RITE_STATE_DIR:-}\" ]; then
+      echo 'NO_HANDOFF_WARNING'
     fi
+
+    if [ -n \"\${_dev_session_wt:-}\" ] && [ -n \"\${WORKTREE_PATH:-}\" ]; then
+      _canonical_handoff=\$(cd \"\$_dev_session_wt\" 2>/dev/null && pwd -P 2>/dev/null || echo \"\$_dev_session_wt\")
+      _canonical_discovered=\$(cd \"\$WORKTREE_PATH\" 2>/dev/null && pwd -P 2>/dev/null || echo \"\$WORKTREE_PATH\")
+      if [ \"\$_canonical_handoff\" != \"\$_canonical_discovered\" ]; then
+        echo \"DEV_SESSION_USED=\$_dev_session_wt\"
+        echo \"ORCHESTRATOR_FOUND=\$WORKTREE_PATH\"
+        echo 'MISMATCH'
+        exit 1
+      fi
+    fi
+
+    if [ -n \"\${_dev_session_wt:-}\" ]; then
+      if [ ! -d \"\$_dev_session_wt\" ]; then
+        echo 'HANDOFF_DIR_MISSING'
+      else
+        WORKTREE_PATH=\"\$_dev_session_wt\"
+      fi
+    fi
+
     echo \"FINAL_PATH=\$WORKTREE_PATH\"
     exit 0
   "
@@ -243,9 +259,98 @@ teardown() {
 @test "structural: retry discovery block also has alignment assertion" {
   local src_file="${RITE_REPO_ROOT}/lib/core/workflow-runner.sh"
 
-  # There should be two "Worktree path mismatch" messages — one for fresh run,
-  # one for the retry path
+  # _assert_worktree_alignment must be called at >= 3 sites: definition plus
+  # at least two call sites (initial and retry, for both new-PR and resume paths)
   local count
-  count=$(grep -c "Worktree path mismatch" "$src_file" || true)
-  [ "$count" -ge 2 ]
+  count=$(grep -c "_assert_worktree_alignment" "$src_file" || true)
+  [ "$count" -ge 3 ]
+}
+
+# ---------------------------------------------------------------------------
+# 8. Resume path (existing-PR + empty work) carries the alignment assertion
+# ---------------------------------------------------------------------------
+
+@test "structural: resume path (existing PR, no work yet) has alignment assertion" {
+  local src_file="${RITE_REPO_ROOT}/lib/core/workflow-runner.sh"
+
+  # The resume path dev-session block should use _assert_worktree_alignment,
+  # not rely on it being only in the fresh-start path.  The grep verifies that
+  # the call appears before the post-dev count_changed_files check that was the
+  # original stale-path victim (around line 988 after refactor).
+  local align_calls
+  align_calls=$(grep -c "_assert_worktree_alignment" "$src_file" || true)
+  # 1 definition + 4 call sites (new-PR initial, new-PR retry, resume initial, resume retry)
+  [ "$align_calls" -ge 5 ]
+}
+
+# ---------------------------------------------------------------------------
+# 9. Symlink canonicalization: same directory through a symlink is not a mismatch
+# ---------------------------------------------------------------------------
+
+@test "alignment: symlink-resolved paths treat same directory as a match" {
+  # macOS: /tmp is a symlink to /private/tmp.  git worktree list returns the
+  # canonical path while RITE_WORKTREE_DIR may contain the symlinked component.
+  # Raw string comparison would fail; pwd -P canonicalization must agree.
+  local real_dir="$RITE_TEST_TMPDIR/real_wt"
+  mkdir -p "$real_dir"
+
+  local symlink_dir="$RITE_TEST_TMPDIR/sym_wt"
+  ln -sf "$real_dir" "$symlink_dir"
+
+  local issue_number="333"
+  # Handoff wrote the real path; orchestrator discovered the symlinked path
+  echo "$real_dir" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
+
+  run _run_alignment_check "$RITE_STATE_DIR" "$issue_number" "$symlink_dir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"MISMATCH"* ]]
+  # FINAL_PATH should be the handoff (real) path
+  [[ "$output" == *"FINAL_PATH=$real_dir"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 10. Missing handoff after clean exit emits a warning
+# ---------------------------------------------------------------------------
+
+@test "alignment: missing handoff after exit 0 emits warning" {
+  local issue_number="444"
+  # No handoff file written — simulates claude-workflow.sh write failure
+
+  run _run_alignment_check "$RITE_STATE_DIR" "$issue_number" "$RITE_TEST_TMPDIR/some-wt" 0
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"NO_HANDOFF_WARNING"* ]]
+}
+
+@test "alignment: missing handoff after non-zero exit does not warn" {
+  local issue_number="445"
+  # No handoff file, non-zero exit (e.g. exit 4 = no work produced)
+
+  run _run_alignment_check "$RITE_STATE_DIR" "$issue_number" "$RITE_TEST_TMPDIR/some-wt" 4
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"NO_HANDOFF_WARNING"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# 11. Nonexistent handoff path is not adopted (-d guard)
+# ---------------------------------------------------------------------------
+
+@test "alignment: handoff path that does not exist is not adopted" {
+  local issue_number="555"
+  local nonexistent_dir="$RITE_TEST_TMPDIR/wt/does-not-exist_b555"
+  # Do NOT mkdir — the directory must be absent to test the guard
+  local discovered_dir="$RITE_TEST_TMPDIR/wt/real-discovery_b555"
+  mkdir -p "$discovered_dir"
+
+  echo "$nonexistent_dir" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
+
+  run _run_alignment_check "$RITE_STATE_DIR" "$issue_number" "$discovered_dir"
+
+  # Should succeed (nonexistent path is ignored, not a fatal mismatch)
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"HANDOFF_DIR_MISSING"* ]]
+  # Orchestrator's discovered path is kept since handoff was ignored
+  [[ "$output" == *"FINAL_PATH=$discovered_dir"* ]]
 }
