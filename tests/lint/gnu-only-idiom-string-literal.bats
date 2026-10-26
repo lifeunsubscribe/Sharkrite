@@ -112,6 +112,18 @@ fi'
   [[ "$r39" == *"tp-bare-timeout-if"* ]]
 }
 
+@test "39F fires: timeout inside double-quoted command substitution VAR=\"\$(timeout N cmd)\" detected" {
+  # Regression for the canonical capture idiom VAR="$(timeout 30 cmd)".
+  # Before the "$(...)" unwrap step, the double-quote stripper erased the entire
+  # "$(timeout 30 some_command)" block, producing a false negative (#1504).
+  _run_lint "tp-dq-cmdsub-timeout" '#!/usr/bin/env bash
+set -euo pipefail
+RESULT="$(timeout 30 some_command)"'
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"tp-dq-cmdsub-timeout"* ]]
+}
+
 # ===========================================================================
 # 39F — existing guards still pass (regression protection)
 # ===========================================================================
@@ -134,4 +146,21 @@ fi'
   local r39
   r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
   [[ "$r39" != *"guard-command-v-timeout"* ]]
+}
+
+# ===========================================================================
+# 39B — false-positive case: 'sed \u' in a message string must NOT fire
+# ===========================================================================
+
+@test "39B passes: message string containing 'sed \\u' does not fire" {
+  # Before the _r39_strip_quoted guard was applied to 39B, a double-quoted
+  # message string containing 'sed \u' (e.g. a help text or error message)
+  # would produce an unfixable false positive — the same #1504 failure mode
+  # fixed for 39A and 39F (#1504).
+  _run_lint "fp-39b-sed-u-string" '#!/usr/bin/env bash
+set -euo pipefail
+echo "use sed \u for uppercase conversion (GNU only, not portable)"'
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" != *"fp-39b-sed-u-string"* ]]
 }
