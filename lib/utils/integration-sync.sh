@@ -368,9 +368,15 @@ sync_issue_branch() {
 
   # ── Resolve staleness count ──────────────────────────────────────────────────
   # Needed by Rails 3–4 and the merge-tree precheck.
-  get_commits_behind_main "$_wt_path" "$_base"
-  local _behind="$COMMITS_BEHIND_MAIN"
   local _threshold="${RITE_STALE_BRANCH_THRESHOLD:-10}"
+  local _behind
+  if ! get_commits_behind_main "$_wt_path" "$_base"; then
+    print_warning "Issue #${_issue_n}: could not measure commits behind origin/${_base} — skipping sync"
+    _SYNC_ISSUE_OUTCOME="fetch_failed"
+    _diag "SYNC_ISSUE issue=${_issue_n} outcome=fetch_failed"
+    return 1
+  fi
+  _behind="$COMMITS_BEHIND_MAIN"
 
   # ── Rail 4: already current ──────────────────────────────────────────────────
   if [ "$_behind" -eq 0 ]; then

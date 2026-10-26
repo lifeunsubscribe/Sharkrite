@@ -293,22 +293,35 @@ ensure_target_branch_exists() {
 
 # get_commits_behind_main WORKTREE_PATH BASE_BRANCH
 #
-# Sets: COMMITS_BEHIND_MAIN (integer)
+# Sets:    COMMITS_BEHIND_MAIN (integer on success; empty on failure)
+# Returns: 0 on success, 1 when the count cannot be measured
+#          (e.g. no common ancestor, remote ref not available locally).
 # Does NOT fetch — caller must ensure the remote base branch ref is up to date.
 # BASE_BRANCH defaults to "main" when omitted.
+#
+# Callers MUST check the return code and treat rc=1 as "skip with warning"
+# rather than "zero commits behind". Zero is a valid in-band value ("current");
+# empty is the out-of-band sentinel for "could not measure".
 get_commits_behind_main() {
   local worktree_path="$1"
   local base_branch="${2:-main}"
-  COMMITS_BEHIND_MAIN=0
+  COMMITS_BEHIND_MAIN=""
 
   local merge_base
-  merge_base=$(git -C "$worktree_path" merge-base HEAD "origin/$base_branch" 2>/dev/null || echo "")
+  merge_base=$(git -C "$worktree_path" merge-base HEAD "origin/$base_branch" 2>/dev/null || true)
 
   if [ -z "$merge_base" ]; then
-    return 0
+    # No common ancestor or ref unavailable — cannot measure.
+    return 1
   fi
 
-  COMMITS_BEHIND_MAIN=$(git -C "$worktree_path" rev-list --count "${merge_base}..origin/$base_branch" 2>/dev/null || echo "0")
+  local _count
+  _count=$(git -C "$worktree_path" rev-list --count "${merge_base}..origin/$base_branch" 2>/dev/null || true)
+  if [ -z "$_count" ]; then
+    return 1
+  fi
+
+  COMMITS_BEHIND_MAIN="$_count"
   return 0
 }
 
@@ -352,7 +365,10 @@ check_stale_branch() {
     return 0
   fi
 
-  get_commits_behind_main "$worktree_path" "$base_branch"
+  if ! get_commits_behind_main "$worktree_path" "$base_branch"; then
+    print_warning "Could not measure commits behind $base_branch — skipping stale check"
+    return 0
+  fi
   local behind="$COMMITS_BEHIND_MAIN"
 
   if [ "$behind" -eq 0 ]; then
