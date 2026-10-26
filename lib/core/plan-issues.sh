@@ -3321,8 +3321,13 @@ _regen_block_sections() {
   local _regen_existing_block="$2"
   local _regen_base_prompt="$3"
 
+  # Per-regen unique end token prevents a block body that contains ---END--- on
+  # its own line from being mistaken for the block terminator (same fix as the
+  # main stream path in generate_issues / _request_missing_blocks, issue #1493).
+  local _regen_end_token="---END-${RANDOM}${RANDOM}---"
+
   local _regen_prompt
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (title, block)
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (title, block, token)
   _regen_prompt=$(cat <<REGEN_PROMPT_EOF
 ${_regen_base_prompt}
 
@@ -3347,7 +3352,7 @@ If the LABELS line includes the word "bug", also include:
 - **Bug Class Analysis**: (sibling instances, reuse check)
 
 Preserve the issue's original intent and existing valid fields from the block above.
-Output ONLY the single ---ISSUE--- ... ---END--- block. Start with ---ISSUE--- and end with ---END---. No commentary before or after.
+Output ONLY the single ---ISSUE--- ... ${_regen_end_token} block. Start with ---ISSUE--- and end with ${_regen_end_token}. No commentary before or after.
 REGEN_PROMPT_EOF
 )
 
@@ -3356,8 +3361,10 @@ REGEN_PROMPT_EOF
   _regen_err=$(mktemp)
 
   # Explicit "plan" role — same reasoning stage as the primary generation call.
+  # Pipe through _plan_streaming_awk so interior ---END--- in the body is escaped
+  # to <!--rite-end-esc--> and the unique token is normalised to canonical ---END---.
   if ! provider_run_streaming_prompt "$_regen_prompt" "$(provider_resolve_model plan)" \
-       2>"$_regen_err" | tee "$_regen_out" >&2; then
+       2>"$_regen_err" | _plan_streaming_awk "$_regen_end_token" | tee "$_regen_out" >&2; then
     print_warning "sections-lint: section-repair provider call failed for '${_regen_title}'" >&2
   fi
 
