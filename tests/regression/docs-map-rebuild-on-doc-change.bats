@@ -79,14 +79,14 @@ _source_docs_map() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Map header is v3 format
+# 3. Map header is v4 format
 # ---------------------------------------------------------------------------
-@test "docs-map path: built map has v3 header" {
+@test "docs-map path: built map has v4 header" {
   _source_docs_map
   docs_map_build
   local header
   header="$(head -1 "$MAP_FILE")"
-  [[ "$header" == "# docs-map v3 sha="* ]]
+  [[ "$header" == "# docs-map v4 sha="* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -173,10 +173,10 @@ _source_docs_map() {
   [ -f "$MAP_FILE" ]
   # Legacy must be gone
   [ ! -f "$LEGACY_MAP" ]
-  # New map must be v3
+  # New map must be v4
   local header
   header="$(head -1 "$MAP_FILE")"
-  [[ "$header" == "# docs-map v3"* ]]
+  [[ "$header" == "# docs-map v4"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -185,12 +185,12 @@ _source_docs_map() {
 # ---------------------------------------------------------------------------
 @test "docs-map rebuild: docs_map_build contains no provider_run_prompt call" {
   # Structural grep: the rebuild path must not invoke provider_run_prompt.
-  # We grep the source file for any call to provider_run_prompt inside
-  # docs_map_build (the function spans from the function definition to the
-  # closing brace; a simple grep across the whole file suffices because
-  # provider_run_prompt does not appear anywhere in docs-map.sh).
+  # Scope to docs_map_build function body (stops before docs_map_ensure).
+  # docs_map_populate_tags (a separate LLM-enrichment function) does call
+  # provider_run_prompt_with_timeout, so we must not grep the whole file.
   local hits
-  hits="$(grep -c 'provider_run_prompt' "$RITE_REPO_ROOT/lib/utils/docs-map.sh" || true)"
+  hits="$(awk '/^docs_map_build\(\)/{f=1} /^docs_map_ensure\(\)/{f=0} f{print}' \
+    "$RITE_REPO_ROOT/lib/utils/docs-map.sh" | grep -c 'provider_run_prompt' || true)"
   [ "$hits" -eq 0 ]
 }
 

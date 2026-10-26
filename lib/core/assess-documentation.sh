@@ -907,12 +907,14 @@ COVERAGE_EOF
             _cov_file="${_cov_target%%#*}"
             _cov_heading="${_cov_target#*#}"
 
-            # Ensure the tag's section exists so the section-safe insert has an
-            # anchor (mirrors update_tag_index_from_block). No-op if present.
-            tag_index_ensure_file
-            tag_index_ensure_heading "$_cov_tag"
-
-            if tag_index_add_coverage_pointer "$_cov_tag" "$_cov_target"; then
+            # Absorption: write tag data into the map (single store) rather than
+            # directly into tag-index.md. docs_map_render_tag_index renders
+            # tag-index.md from the map after all coverage writes complete.
+            # Only log history when the pointer was actually written; return 1
+            # means nothing was written (map absent, mktemp failure, malformed
+            # target, or no matching row) — pointer silently skipped, no false
+            # audit entry.
+            if docs_map_tag_section_by_pointer "$_cov_target" "$_cov_tag"; then
               tag_index_log_history added "$pr_number" "$_cov_tag" "$_cov_file" "$_cov_heading"
             fi
           done <<< "$_pointers"
@@ -920,6 +922,11 @@ COVERAGE_EOF
       fi
     fi
   fi
+
+  # Render tag-index.md from the map (tag-index.md is now a generated view).
+  # Uses tag_index_ensure_heading + tag_index_add_pointer so existing entries
+  # from update_tag_index_from_block are preserved; map-derived entries are merged in.
+  docs_map_render_tag_index || true
 
   return 0
 }

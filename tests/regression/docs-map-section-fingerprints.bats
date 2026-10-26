@@ -59,26 +59,26 @@ _source_docs_map() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Map header is v3 format
+# 1. Map header is v4 format
 # ---------------------------------------------------------------------------
-@test "docs-map fingerprints: header is docs-map v3" {
+@test "docs-map fingerprints: header is docs-map v4" {
   _source_docs_map
   docs_map_build
   local header
   header="$(head -1 "$MAP_FILE")"
-  [[ "$header" == "# docs-map v3 sha="* ]]
+  [[ "$header" == "# docs-map v4 sha="* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 2. Every data row has exactly 8 tab-separated columns
+# 2. Every data row has exactly 10 tab-separated columns
 # ---------------------------------------------------------------------------
-@test "docs-map fingerprints: every data row has 8 columns" {
+@test "docs-map fingerprints: every data row has 10 columns" {
   _source_docs_map
   docs_map_build
-  # Count rows that do NOT have exactly 8 tab-separated fields
+  # Count rows that do NOT have exactly 10 tab-separated fields
   local bad_rows
   bad_rows="$(grep -v '^#' "$MAP_FILE" | \
-    awk -F'\t' 'NF != 8' || true)"
+    awk -F'\t' 'NF != 10' || true)"
   [ -z "$bad_rows" ]
 }
 
@@ -287,21 +287,21 @@ _source_docs_map() {
 }
 
 # ---------------------------------------------------------------------------
-# 13. docs_map_ensure upgrades a pre-v3 map to v3
+# 13. docs_map_ensure upgrades a pre-v4 map to v4
 # ---------------------------------------------------------------------------
-@test "docs-map ensure: pre-v3 map triggers a rebuild to v3" {
+@test "docs-map ensure: pre-v4 map triggers a rebuild to v4" {
   _source_docs_map
-  # Write a v2-style header to simulate a pre-existing map that pre-dates v3.
+  # Write a v2-style header to simulate a pre-existing map that pre-dates v4.
   local map_file
   map_file="$(docs_map_path)"
   mkdir -p "$(dirname "$map_file")"
   printf '# docs-map v2 sha=abc built=2026-01-01\n' > "$map_file"
   printf 'docs/headingless.md\tabc\t-\t\t\tabc123\n' >> "$map_file"
 
-  # docs_map_ensure should detect v2 (non-v3) and rebuild.
+  # docs_map_ensure should detect v2 (non-v4) and rebuild.
   docs_map_ensure
 
   local header
   header="$(head -1 "$map_file")"
-  [[ "$header" == "# docs-map v3"* ]]
+  [[ "$header" == "# docs-map v4"* ]]
 }
