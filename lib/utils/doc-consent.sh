@@ -11,17 +11,17 @@
 #   sync      — opted in: each merge records a drift entry; `rite docs`
 #               offers to reconcile entries interactively
 #   changelog — legacy opt-in: each merge records a drift entry
-#   off       — asked and declined: nothing is recorded
-#   (unset)   — never asked: nothing is recorded; a supervised run or
-#               `rite docs` asks
+#   off       — asked and declined: nothing is recorded; `rite align-docs`
+#               prompts again (first-run semantics restored)
+#   (unset)   — never asked: nothing is recorded
 #
 # The per-merge doc-sync rewrite that `sync` used to switch on (.rite/doc-sync.md)
 # was retired 2026-10-21 — it committed raw model output into orrery's README.
 #
 # Public API:
-#   record_doc_mode <sync|changelog|off> — write to .rite/config + export
-#   ensure_doc_mode                    — ask once in supervised non-batch TTY
-#                                        runs; no-op when already recorded
+#   record_doc_mode <sync|changelog|off>  — write to .rite/config + export
+#   ensure_doc_mode                       — no-op (consent owned by `rite align-docs`)
+#   run_align_docs_switch [--disable]     — the single on/off entry point
 
 set -euo pipefail
 
@@ -91,52 +91,95 @@ record_doc_mode() {
 #
 # Pre-existing-repo hook: called early in run_workflow() before the issue fetch.
 #
-# Behaviour:
-#   - No-op when RITE_DOC_MODE is already set (recorded at init or by env).
-#   - In supervised non-batch TTY runs: ask once (default no) and record
-#     sync on yes, off on no.
-#   - In all other contexts (unsupervised, batch, non-TTY): do nothing. Doc
-#     tracking is opt-in; an unattended run must not opt the repo in. (It used
-#     to default the session to changelog, which recorded a drift entry — and
-#     made a model call — on every merge without consent: 74 unreviewed
-#     entries in sharkrite's own drift log by 2026-10-21.)
-#
-# Map building is NOT this hook's job — docs_map_ensure (#1032) self-heals
-# missing maps when consumers need them.
+# Consent is now owned by `rite align-docs`. This function is a permanent no-op
+# so that unattended workflow runs never prompt or record consent. (It used to
+# prompt in supervised TTY runs, which silently accumulated 74 unreviewed drift
+# entries in sharkrite's own log by 2026-10-21.)
 # ---------------------------------------------------------------------------
 ensure_doc_mode() {
-  # No-op when mode is already recorded
-  if [ -n "${RITE_DOC_MODE:-}" ]; then
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# run_align_docs_switch [--disable]
+#
+# The single on/off entry point for doc drift tracking. Called by `rite align-docs`.
+#
+# Behaviour:
+#   --disable   Record off; print confirmation. The next plain `rite align-docs`
+#               will ask again (off maps to never-run in _docs_resolve_state).
+#   (no args)   If already enabled (sync/changelog): report state, no prompt.
+#               If non-TTY: print a message, never enable, exit 0.
+#               If TTY + never enabled: ask y/n; prompt text states the audit
+#               runs either way. Records sync on yes, off on no.
+#               After enabling: print "Audit not yet implemented" and exit 0.
+#
+# Degrades gracefully in non-TTY ([ -t 0 ] false) — never enables unattended.
+# ---------------------------------------------------------------------------
+run_align_docs_switch() {
+  local _disable_flag="${1:-}"
+
+  if [ "$_disable_flag" = "--disable" ]; then
+    record_doc_mode "off"
+    if declare -f print_info >/dev/null 2>&1; then
+      print_info "Doc drift tracking disabled. Run 'rite align-docs' to re-enable."
+    else
+      echo "  Doc drift tracking disabled. Run 'rite align-docs' to re-enable." >&2
+    fi
     return 0
   fi
 
-  # Only a supervised, non-batch, interactive run may ask
-  if [ "${WORKFLOW_MODE:-supervised}" != "supervised" ] \
-     || [ "${BATCH_MODE:-false}" = "true" ] \
-     || [ ! -t 0 ]; then
+  # Already enabled: report and exit without re-prompting
+  case "${RITE_DOC_MODE:-}" in
+    sync|changelog)
+      if declare -f print_info >/dev/null 2>&1; then
+        print_info "Doc drift tracking is on (mode: ${RITE_DOC_MODE}). Run 'rite align-docs --disable' to turn it off."
+      else
+        echo "  Doc drift tracking is on (mode: ${RITE_DOC_MODE}). Run 'rite align-docs --disable' to turn it off." >&2
+      fi
+      if declare -f print_info >/dev/null 2>&1; then
+        print_info "Audit not yet implemented."
+      fi
+      return 0
+      ;;
+  esac
+
+  # Mode is unset or off — first-run path
+  if [ ! -t 0 ]; then
+    if declare -f print_info >/dev/null 2>&1; then
+      print_info "Not an interactive terminal — run 'rite align-docs' interactively to configure doc drift tracking."
+    else
+      echo "  Not an interactive terminal — run 'rite align-docs' interactively to configure doc drift tracking." >&2
+    fi
     return 0
   fi
 
-  echo ""
-  echo "  Sharkrite can track which docs a merge may have made inaccurate, and"
-  echo "  'rite docs' then proposes fixes for your approval. Docs are never edited"
-  echo "  automatically."
-  read -p "  Track doc drift for this repo? [y/N] " -n 1 -r
-  echo
+  echo "" >&2
+  echo "  Sharkrite can track which docs a merge may have made inaccurate." >&2
+  echo "  The audit (checking docs against code) runs either way." >&2
+  local _reply_val="N"
+  read -p "  Enable doc drift tracking? [y/N] " -n 1 -r
+  echo >&2
+  _reply_val="${REPLY:-N}"
 
-  if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
+  if [[ "$_reply_val" =~ ^[Yy]$ ]]; then
     record_doc_mode "sync"
     if declare -f print_success >/dev/null 2>&1; then
-      print_success "Doc drift tracking on (review with 'rite docs')"
+      print_success "Doc drift tracking enabled."
     else
-      echo "  Doc mode recorded: sync"
+      echo "  Doc drift tracking enabled." >&2
+    fi
+    if declare -f print_info >/dev/null 2>&1; then
+      print_info "Audit not yet implemented — run 'rite docs' to check docs against code."
+    else
+      echo "  Audit not yet implemented — run 'rite docs' to check docs against code." >&2
     fi
   else
     record_doc_mode "off"
     if declare -f print_info >/dev/null 2>&1; then
-      print_info "Doc drift tracking off (run 'rite docs' to turn it on)"
+      print_info "Doc drift tracking off. Run 'rite align-docs' to turn it on."
     else
-      echo "  Doc mode recorded: off"
+      echo "  Doc drift tracking off. Run 'rite align-docs' to turn it on." >&2
     fi
   fi
 }
