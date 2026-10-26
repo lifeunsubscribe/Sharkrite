@@ -641,6 +641,12 @@ claude_provider_resolve_model() {
     # matching and comparison, not the deep reasoning needed for code review.
     # See: docs/architecture/behavioral-design.md → "Model Selection Per Task"
     doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    # doc_update generates human-facing doc edits — Tier 2 align-docs editing
+    # passes and `rite docs "<instructions>"` proposals. A doc edit is read by a
+    # human as the product's description; a tag merge is not. Own var so the edit
+    # quality can be tuned without touching the classification-grade doc_assessment
+    # var. See: "Model Selection Per Task" in docs/architecture/behavioral-design.md.
+    doc_update)     echo "${RITE_DOC_UPDATE_MODEL:-claude-fable-5}" ;;
     # plan generates GitHub issues from architectural docs (rite plan). It is the
     # highest-stakes reasoning stage — it must honor ADRs and never hallucinate
     # fixtures — so it defaults to opus. Its OWN var, decoupled from review: moving

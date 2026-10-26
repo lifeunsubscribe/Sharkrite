@@ -253,6 +253,13 @@
 # Set to "false" to suppress auto-rebuild (e.g. when the map is managed externally).
 # RITE_DOCS_MAP_AUTO=true
 
+# Model for the doc_update role (pending wiring to `rite docs` Tier-2 editing passes
+# and align-docs reconcile — consumer wiring forthcoming in Tier 2 issues). A doc edit
+# is read by a human as the product's description — quality justifies fable. Independent
+# of RITE_DOC_ASSESSMENT_MODEL (tag dedup, structured comparison). Override to trade
+# quality for speed when drafting or iterating quickly.
+# RITE_DOC_UPDATE_MODEL="claude-fable-5"
+
 # Doc drift consent (opt-in) — nothing edits docs/ automatically in any mode.
 #
 # Values:

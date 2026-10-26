@@ -805,6 +805,7 @@ Each workflow task uses the model that fits its nature — not the adjacent role
 | Finding assessment (`assess-review-issues.sh`) | Classifying each review finding into ACTIONABLE_NOW / ACTIONABLE_LATER / DISMISSED | `RITE_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Three-state classification of already-structured findings — not the reasoning that generated them. Before #1187 it inherited the review model from the review marker, so pinning review to fable-5 silently ran every assessment (the highest-count LLM call in the loop) on fable too |
 | Issue planning (`plan-issues.sh`) | Generating GitHub issues from ADRs / architectural docs | `RITE_PLAN_MODEL` (default: `claude-opus-4-8`) | Highest-stakes reasoning stage — it must honor ADRs and never hallucinate fixtures. Kept on opus, but with its OWN var so it can't silently ride (or downgrade with) review |
 | Doc assessment (`assess-documentation.sh` drift entries, `rite docs`, tag dedup) | "Did this diff change what doc X says? Propose the edit." | `RITE_DOC_ASSESSMENT_MODEL` (default: `claude-sonnet-4-6`) | Pattern matching, structured comparison, summarization — sonnet's sweet spot |
+| Doc update (pending wiring to `docs-command.sh` Tier-2 editing pass; forthcoming in Tier 2 issues) | Proposing and applying prose edits for human review | `RITE_DOC_UPDATE_MODEL` (default: `claude-fable-5`) | Doc edits are read by humans as the product's description — quality justifies fable. Separate from `doc_assessment`: a tag merge is not read like a feature description. Role added; consumer wiring to `docs-command.sh` is pending. |
 | Development (`claude-workflow.sh`) | Implementing code changes | `RITE_CLAUDE_MODEL` (default: `claude-sonnet-4-6`) | General dev work |
 | Triage / classify (`triage-classify.sh`, doc auto-discovery in `bin/rite`) | Trivial-vs-substantive diff; doc categorization | `RITE_TRIAGE_MODEL` (default: `claude-haiku-4-5`) | Narrow bucket classification — haiku's job, not opus's |
 
@@ -819,6 +820,7 @@ claude_provider_resolve_model() {
     assessment)     echo "${RITE_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
     plan)           echo "${RITE_PLAN_MODEL:-claude-opus-4-8}" ;;
     doc_assessment) echo "${RITE_DOC_ASSESSMENT_MODEL:-claude-sonnet-4-6}" ;;
+    doc_update)     echo "${RITE_DOC_UPDATE_MODEL:-claude-fable-5}" ;;
     triage)         echo "${RITE_TRIAGE_MODEL:-claude-haiku-4-5}" ;;
     dev)            echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
