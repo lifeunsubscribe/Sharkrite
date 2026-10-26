@@ -47,6 +47,11 @@ _run_alignment_check() {
       echo 'NO_HANDOFF_WARNING'
     fi
 
+    if [ -n \"\${_dev_session_wt:-}\" ] && [ ! -d \"\$_dev_session_wt\" ]; then
+      echo 'HANDOFF_DIR_MISSING'
+      _dev_session_wt=''
+    fi
+
     if [ -n \"\${_dev_session_wt:-}\" ] && [ -n \"\${WORKTREE_PATH:-}\" ]; then
       _canonical_handoff=\$(cd \"\$_dev_session_wt\" 2>/dev/null && pwd -P 2>/dev/null || echo \"\$_dev_session_wt\")
       _canonical_discovered=\$(cd \"\$WORKTREE_PATH\" 2>/dev/null && pwd -P 2>/dev/null || echo \"\$WORKTREE_PATH\")
@@ -59,11 +64,7 @@ _run_alignment_check() {
     fi
 
     if [ -n \"\${_dev_session_wt:-}\" ]; then
-      if [ ! -d \"\$_dev_session_wt\" ]; then
-        echo 'HANDOFF_DIR_MISSING'
-      else
-        WORKTREE_PATH=\"\$_dev_session_wt\"
-      fi
+      WORKTREE_PATH=\"\$_dev_session_wt\"
     fi
 
     echo \"FINAL_PATH=\$WORKTREE_PATH\"

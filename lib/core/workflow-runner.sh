@@ -747,6 +747,13 @@ _assert_worktree_alignment() {
     print_warning "Dev session wrote no worktree handoff — alignment check skipped (stale-path risk active)"
   fi
 
+  # Guard existence before comparison — a nonexistent handoff path is silently
+  # ignored (stale state), not treated as a fatal mismatch.
+  if [ -n "${_dev_session_wt:-}" ] && [ ! -d "$_dev_session_wt" ]; then
+    print_warning "Dev session handoff path does not exist: $_dev_session_wt — ignoring handoff"
+    _dev_session_wt=""
+  fi
+
   if [ -n "${_dev_session_wt:-}" ] && [ -n "${WORKTREE_PATH:-}" ]; then
     # Canonicalize both paths before comparison to avoid symlink false-mismatches
     # (macOS /tmp is a symlink to /private/tmp; git worktree list returns the
@@ -765,11 +772,7 @@ _assert_worktree_alignment() {
   fi
 
   if [ -n "${_dev_session_wt:-}" ]; then
-    if [ ! -d "$_dev_session_wt" ]; then
-      print_warning "Dev session handoff path does not exist: $_dev_session_wt — ignoring handoff"
-    else
-      WORKTREE_PATH="$_dev_session_wt"
-    fi
+    WORKTREE_PATH="$_dev_session_wt"
   fi
 
   return 0
