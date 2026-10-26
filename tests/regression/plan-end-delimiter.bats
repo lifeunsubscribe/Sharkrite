@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks|create_issues|_coverage_missing_titles|_canon_title
+# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks|create_issues|_coverage_missing_titles|_canon_title|_plan_streaming_awk
 #
 # Regression tests for ---END--- delimiter collision in plan-issues.sh.
 #
@@ -40,12 +40,25 @@
 #      fire on escaped TITLE lines (#1484).
 
 # ---------------------------------------------------------------------------
-# A + B — behavioral: simulate the streaming-awk with a unique token
+# setup: source plan-issues.sh to make _plan_streaming_awk available
 #
-# We run the exact awk body from generate_issues with a known test token,
-# feeding it fixture data that has ---END--- inside a block body. The awk
-# must emit the complete block (body preserved, no truncation) and normalise
-# the end token to canonical ---END--- in its output.
+# RITE_LIB_DIR is unset so none of the conditional lib sources inside
+# plan-issues.sh execute (they are all guarded by [ -n "${RITE_LIB_DIR:-}" ]).
+# _plan_streaming_awk has no lib dependencies — it wraps awk only.
+# ---------------------------------------------------------------------------
+
+setup() {
+  unset RITE_LIB_DIR
+  local _plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
+  source "$_plan_issues_sh"
+  set +u; set +o pipefail
+}
+
+# ---------------------------------------------------------------------------
+# A + B — behavioral: exercise production _plan_streaming_awk with a unique token
+#
+# Sources plan-issues.sh (via setup) and calls _plan_streaming_awk directly,
+# feeding it fixture data. This exercises the production awk rather than a copy.
 # ---------------------------------------------------------------------------
 
 @test "A: block body containing ---END--- is not prematurely terminated when unique token used" {
@@ -63,33 +76,7 @@
     "$_tok")
 
   local output
-  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
-    /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 ~ /^TITLE: /) {
-        title = substr($0, 8)
-        if (title in seen) { exit }
-        seen[title] = 1
-      }
-      if ($0 == end_tok) {
-        # Escape canonical markers ONLY in the body: carve off the structural
-        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
-        # rebuild it with a literal canonical terminator. gsub over the whole
-        # buf destroyed the opening marker (#1483); the all-occurrences token
-        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
-        head_len = length("---ISSUE---\n")
-        tail_len = length($0) + 1
-        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
-        gsub("---END---",   "<!--rite-end-esc-->",   body)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
-        buf = "---ISSUE---\n" body "---END---\n"
-        in_issue = 0; printf "%s", buf; buf = ""
-      }
-      next
-    }
-    { print }
-  ')
+  output=$(printf '%s\n' "$input" | _plan_streaming_awk "$_tok")
 
   # The block TITLE must be present in output (block was not dropped)
   echo "$output" | grep -q "TITLE: Issue with" || {
@@ -117,33 +104,7 @@
     "$_tok")
 
   local output
-  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
-    /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 ~ /^TITLE: /) {
-        title = substr($0, 8)
-        if (title in seen) { exit }
-        seen[title] = 1
-      }
-      if ($0 == end_tok) {
-        # Escape canonical markers ONLY in the body: carve off the structural
-        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
-        # rebuild it with a literal canonical terminator. gsub over the whole
-        # buf destroyed the opening marker (#1483); the all-occurrences token
-        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
-        head_len = length("---ISSUE---\n")
-        tail_len = length($0) + 1
-        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
-        gsub("---END---",   "<!--rite-end-esc-->",   body)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
-        buf = "---ISSUE---\n" body "---END---\n"
-        in_issue = 0; printf "%s", buf; buf = ""
-      }
-      next
-    }
-    { print }
-  ')
+  output=$(printf '%s\n' "$input" | _plan_streaming_awk "$_tok")
 
   # The unique token must NOT appear in output (it was normalised away)
   echo "$output" | grep -q "$_tok" && {
@@ -208,7 +169,7 @@
 
   local fn_body
   fn_body=$(awk '
-    /^generate_issues[(][)]/ { in_fn=1; depth=0 }
+    /^_plan_streaming_awk[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
@@ -309,33 +270,7 @@
     "$_tok")
 
   local output
-  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
-    !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 ~ /^TITLE: /) {
-        title = substr($0, 8)
-        if (title in seen) { exit }
-        seen[title] = 1
-      }
-      if ($0 == end_tok) {
-        # Escape canonical markers ONLY in the body: carve off the structural
-        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
-        # rebuild it with a literal canonical terminator. gsub over the whole
-        # buf destroyed the opening marker (#1483); the all-occurrences token
-        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
-        head_len = length("---ISSUE---\n")
-        tail_len = length($0) + 1
-        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
-        gsub("---END---",   "<!--rite-end-esc-->",   body)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
-        buf = "---ISSUE---\n" body "---END---\n"
-        in_issue = 0; printf "%s", buf; buf = ""
-      }
-      next
-    }
-    { print }
-  ')
+  output=$(printf '%s\n' "$input" | _plan_streaming_awk "$_tok")
 
   # The interior ---END--- must be escaped (not passed through as raw ---END---)
   echo "$output" | grep -q "<!--rite-end-esc-->" || {
@@ -399,33 +334,7 @@
     "$_tok")
 
   local output
-  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
-    !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 ~ /^TITLE: /) {
-        title = substr($0, 8)
-        if (title in seen) { exit }
-        seen[title] = 1
-      }
-      if ($0 == end_tok) {
-        # Escape canonical markers ONLY in the body: carve off the structural
-        # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
-        # rebuild it with a literal canonical terminator. gsub over the whole
-        # buf destroyed the opening marker (#1483); the all-occurrences token
-        # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
-        head_len = length("---ISSUE---\n")
-        tail_len = length($0) + 1
-        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
-        gsub("---END---",   "<!--rite-end-esc-->",   body)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
-        buf = "---ISSUE---\n" body "---END---\n"
-        in_issue = 0; printf "%s", buf; buf = ""
-      }
-      next
-    }
-    { print }
-  ')
+  output=$(printf '%s\n' "$input" | _plan_streaming_awk "$_tok")
 
   # The interior ---ISSUE--- must be escaped (not passed through)
   echo "$output" | grep -q "<!--rite-issue-esc-->" || {
@@ -521,28 +430,7 @@
     "$_tok")
 
   local output
-  output=$(printf '%s\n' "$input" | awk -v end_tok="$_tok" '
-    !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 ~ /^TITLE: /) {
-        title = substr($0, 8)
-        if (title in seen) { exit }
-        seen[title] = 1
-      }
-      if ($0 == end_tok) {
-        head_len = length("---ISSUE---\n")
-        tail_len = length($0) + 1
-        body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
-        gsub("---END---",   "<!--rite-end-esc-->",   body)
-        gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
-        buf = "---ISSUE---\n" body "---END---\n"
-        in_issue = 0; printf "%s", buf; buf = ""
-      }
-      next
-    }
-    { print }
-  ')
+  output=$(printf '%s\n' "$input" | _plan_streaming_awk "$_tok")
 
   # The TITLE line in the output must have the marker escaped
   echo "$output" | grep -q "TITLE: Implement the <!--rite-issue-esc--> parser" || {

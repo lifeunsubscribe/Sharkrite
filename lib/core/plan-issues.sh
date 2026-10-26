@@ -620,6 +620,54 @@ _build_available_tags_context() {
 }
 
 # =============================================================================
+# _plan_streaming_awk: streaming awk processor for generate_issues output
+#
+# Reads from stdin; arg 1 is the unique end token for the current run.
+# Each ---ISSUE--- block is buffered, deduplicated by title (first wins), and
+# the unique token is normalised to canonical ---END--- before printing.
+# Interior ---END--- and ---ISSUE--- strings in block bodies are escaped to
+# <!--rite-end-esc--> / <!--rite-issue-esc--> so downstream parsers only see
+# structural markers at the block boundary.
+#
+# Extracted from generate_issues so tests can source plan-issues.sh and call
+# this function directly, exercising the production awk rather than a copy.
+#
+# Usage: <stream> | _plan_streaming_awk <end_tok>
+# =============================================================================
+
+_plan_streaming_awk() {
+  local _end_tok="$1"
+  awk -v end_tok="$_end_tok" '
+      # !in_issue guard: body content that is ---ISSUE--- does not reset the current block.
+      !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
+      in_issue {
+        buf = buf $0 "\n"
+        if ($0 ~ /^TITLE: /) {
+          title = substr($0, 8)
+          if (title in seen) { exit }
+          seen[title] = 1
+        }
+        if ($0 == end_tok) {
+          # Escape canonical markers ONLY in the body: carve off the structural
+          # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+          # rebuild it with a literal canonical terminator. gsub over the whole
+          # buf destroyed the opening marker (#1483); the all-occurrences token
+          # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+          head_len = length("---ISSUE---\n")
+          tail_len = length($0) + 1
+          body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+          gsub("---END---",   "<!--rite-end-esc-->",   body)
+          gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+          buf = "---ISSUE---\n" body "---END---\n"
+          in_issue = 0; printf "%s", buf; buf = ""
+        }
+        next
+      }
+      { print }
+    '
+}
+
+# =============================================================================
 # Generate issues using Claude
 # =============================================================================
 
@@ -1005,36 +1053,7 @@ PROMPT_EOF
     # Use streaming prompt for real-time output visibility.
     # Explicit "plan" role (opus) — never "" (which falls through to the review model).
     provider_run_streaming_prompt "$_active_prompt" "$(provider_resolve_model plan)" 2>"$claude_stderr" \
-      | awk -v end_tok="$_plan_end_token" '
-          # Truncate output on first duplicate issue (Claude sometimes regenerates the full set).
-          # Buffer each ---ISSUE--- block; emit (with end_tok preserved) on end_tok if title is new.
-          # !in_issue guard: body content that is ---ISSUE--- does not reset the current block.
-          !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
-          in_issue {
-            buf = buf $0 "\n"
-            if ($0 ~ /^TITLE: /) {
-              title = substr($0, 8)
-              if (title in seen) { exit }
-              seen[title] = 1
-            }
-            if ($0 == end_tok) {
-              # Escape canonical markers ONLY in the body: carve off the structural
-              # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
-              # rebuild it with a literal canonical terminator. gsub over the whole
-              # buf destroyed the opening marker (#1483); the all-occurrences token
-              # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
-              head_len = length("---ISSUE---\n")
-              tail_len = length($0) + 1
-              body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
-              gsub("---END---",   "<!--rite-end-esc-->",   body)
-              gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
-              buf = "---ISSUE---\n" body "---END---\n"
-              in_issue = 0; printf "%s", buf; buf = ""
-            }
-            next
-          }
-          { print }
-        ' \
+      | _plan_streaming_awk "$_plan_end_token" \
       | tee "$temp_file" >&2
 
     local exit_code=${PIPESTATUS[0]:-$?}
