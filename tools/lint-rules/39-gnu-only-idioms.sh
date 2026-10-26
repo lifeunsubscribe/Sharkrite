@@ -40,6 +40,20 @@ _gnu_check_suppressed() {
   echo "$_gc_prev_text" | grep -qE '#.*sharkrite-lint.*disable.*GNU_ONLY_IDIOM'
 }
 
+# Shared helper: blank the contents of string literals ('...' and "...") on a
+# single source line so that keywords inside human-readable message strings do
+# not trigger command-position checks.  Single-quotes are processed first
+# because they can contain unescaped double-quotes.  Does not handle $()
+# inside "..." — a bare command inside "$(cmd)" would not be detected, but
+# that pattern is rare; the goal is false-positive reduction, not a complete
+# shell tokenizer (#1504).
+_r39_strip_quoted() {
+  local _sq_line
+  _sq_line=$(printf '%s' "$1" | sed "s/'[^']*'/''/g" || true)
+  _sq_line=$(printf '%s' "$_sq_line" | sed 's/"[^"]*"/""/g' || true)
+  printf '%s\n' "$_sq_line"
+}
+
 # ---------------------------------------------------------------------------
 # A. sed BRE alternation/quantifiers (\|/\+/\?)
 # ---------------------------------------------------------------------------
@@ -55,8 +69,11 @@ for _r39_file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r _r39_lnum _r39_ltext; do
     # Skip full-line comments
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
-    # Only flag if this is a sed invocation
-    echo "$_r39_ltext" | grep -qE '\bsed\b' || continue
+    # Only flag if sed appears in command position — strip quoted string contents
+    # first so that 'sed' inside a message string (e.g. print_info "use sed …")
+    # does not satisfy this guard (#1504 shared fix).
+    _r39_a_stripped=$(_r39_strip_quoted "$_r39_ltext")
+    echo "$_r39_a_stripped" | grep -qE '\bsed\b' || continue
     # Skip if sed is in ERE mode (-E or any flag cluster containing E)
     echo "$_r39_ltext" | grep -qE '\bsed\b[^|&;#]*-[a-zA-Z]*E' && continue
     # Scope to the sed-expression portion of the line: strip everything before
@@ -192,8 +209,11 @@ for _r39_file in "${SHELL_FILES[@]}"; do
     echo "$_r39_ltext" | grep -qE '^[[:space:]]*#' && continue
     # run_with_timeout is the portable wrapper — skip
     echo "$_r39_ltext" | grep -qF 'run_with_timeout' && continue
-    # Skip: timeout inside a quoted echo/print diagnostic string (e.g. "...timeout 30s...")
-    echo "$_r39_ltext" | grep -qE '^[[:space:]]*(echo|print_[a-zA-Z_]+)[[:space:]]+"[^"]*\btimeout\b' && continue
+    # Re-verify the match is in command position after stripping quoted string
+    # literals.  printf/echo/variable-assignment message strings that mention
+    # "timeout Ns" in human-readable text fired as false positives (#1504).
+    _r39_f_stripped=$(_r39_strip_quoted "$_r39_ltext")
+    echo "$_r39_f_stripped" | grep -qE '(^|[[:space:];|&(])(timeout)[[:space:]]+[-0-9$]' || continue
     # command -v timeout / gtimeout guard on this line
     echo "$_r39_ltext" | grep -qE 'command -v (timeout|gtimeout)' && continue
     _r39_start=$(( _r39_lnum > 3 ? _r39_lnum - 3 : 1 ))
