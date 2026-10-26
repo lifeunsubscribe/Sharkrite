@@ -9,7 +9,7 @@ fi
 #
 # Deterministic docs-map builder. Inventories user documentation —
 #   docs/**/*.md, README.md, CLAUDE.md (each only if present)
-# — into docs/docs-map.tsv (committed to the repo), recording each file's
+# — into .rite/state/docs-map.tsv (gitignored), recording each file's
 # sections with content fingerprints and the HEAD SHA they were captured at.
 #
 # TSV format:
@@ -95,11 +95,11 @@ RITE_DOCS_MAP_AUTO="${RITE_DOCS_MAP_AUTO:-true}"
 # docs_map_path
 #
 # Echo the absolute path to the docs-map TSV file.
-# The file lives at docs/docs-map.tsv (committed to the repo, not in .rite/).
+# The file lives in .rite/state/ (gitignored — not a committed artifact).
 # ---------------------------------------------------------------------------
 docs_map_path() {
-  local project_root="${RITE_PROJECT_ROOT:-.}"
-  echo "${project_root}/docs/docs-map.tsv"
+  local state_dir="${RITE_STATE_DIR:-${RITE_PROJECT_ROOT:-.}/.rite/state}"
+  echo "${state_dir}/docs-map.tsv"
 }
 
 # ---------------------------------------------------------------------------
@@ -242,7 +242,7 @@ docs_map_build() {
   local docs_dir
   docs_dir="$(dirname "$map_file")"
 
-  # Ensure docs/ directory exists (committed dir; mkdir -p is idempotent)
+  # Ensure state dir exists (gitignored; mkdir -p is idempotent)
   mkdir -p "$docs_dir"
 
   # Capture HEAD SHA (no -e guard: git rev-parse HEAD fails only in a non-repo,
@@ -460,14 +460,6 @@ ${raw_line}"
   # Atomic replace
   mv "$tmp_file" "$map_file"
   tmp_file=""  # already moved
-
-  # Migrate: remove legacy .rite/state/docs-map.tsv if it still exists.
-  # The file moved to docs/docs-map.tsv (committed path); the old location
-  # is gitignored, so removing it is safe and prevents stale reads.
-  local _legacy_map="${project_root}/.rite/state/docs-map.tsv"
-  if [ -f "$_legacy_map" ]; then
-    rm -f "$_legacy_map"
-  fi
 }
 
 # ---------------------------------------------------------------------------

@@ -146,9 +146,9 @@ _record_tier1_drift_entries() {
       done <<< "$_t1_enforcing"
 
       if [ -n "$_ta_et" ]; then
-        drift_log_append "$_t1_docpath" "$_t1_branch" \
-          "$pr_number" "$_t1_issue" \
-          "$_ta_et" "test-scope" \
+        drift_log_append "$pr_number" "$_t1_issue" \
+          "$_ta_et" \
+          "- ${_t1_docpath}" \
           "changed: ${_ta_et}; enforces: ${_t1_docpath}" || true
         _t1_any=true
         continue
@@ -188,9 +188,9 @@ _record_tier1_drift_entries() {
       done <<< "$_t1_enforcing"
 
       if [ -n "$_tb_changed" ]; then
-        drift_log_append "$_t1_docpath" "$_t1_branch" \
-          "$pr_number" "$_t1_issue" \
-          "$_tb_pat" "test-scope" \
+        drift_log_append "$pr_number" "$_t1_issue" \
+          "$_tb_changed" \
+          "- ${_t1_docpath}" \
           "changed: ${_tb_changed}; covers: ${_tb_pat}; enforces-via: ${_tb_et}" || true
         _t1_any=true
       fi
@@ -207,9 +207,9 @@ _record_tier1_drift_entries() {
       if [ -n "$_tc_doc" ]; then
         local _tc_first
         _tc_first="$(echo "$changed_files" | head -1 || true)"
-        drift_log_append "$_tc_doc" "$_t1_branch" \
-          "$pr_number" "$_t1_issue" \
-          "" "addition" \
+        drift_log_append "$pr_number" "$_t1_issue" \
+          "$_tc_first" \
+          "- ${_tc_doc}" \
           "branch: ${pr_head_branch}; declared-doc: ${_tc_doc}; changed: ${_tc_first}" || true
         _t1_any=true
       fi
@@ -218,6 +218,19 @@ _record_tier1_drift_entries() {
 
   if [ "$_t1_any" = "true" ]; then
     print_info "  drift-log: recorded tier-1 drift entry/entries for PR #${pr_number}"
+    # Commit + push the drift log. Mirrors the Layer-2 commit block pattern.
+    local _t1_log_path
+    _t1_log_path="$(drift_log_path)" || { print_warning "drift-log: could not resolve path for commit"; return 0; }
+    git add "$_t1_log_path" 2>/dev/null || { print_warning "drift-log: git add failed — entry written but not committed"; return 0; }
+    if git commit -m "docs: record tier-1 drift entry/entries for PR #${pr_number}" 2>/dev/null; then
+      if git push origin "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" 2>/dev/null; then
+        print_info "  drift-log: committed and pushed"
+      else
+        print_info "  drift-log: committed (push failed — local only)"
+      fi
+    else
+      verbose_info "  drift-log: nothing to commit (entry may already exist)"
+    fi
   else
     verbose_info "  drift-log: PR #${pr_number} — no tier-1 trigger fired; skipping"
   fi
