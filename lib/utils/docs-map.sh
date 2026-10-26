@@ -46,7 +46,7 @@ fi
 #   docs_map_build             — full rebuild; atomic write via temp file + mv;
 #                                migrates legacy .rite/state/docs-map.tsv on first run;
 #                                carries forward tags/note for unchanged sections (by fingerprint)
-#   docs_map_ensure            — rebuilds when map is missing or is pre-v3 format; no-op on SHA mismatch —
+#   docs_map_ensure            — rebuilds when map is missing or is pre-v4 format; no-op on SHA mismatch —
 #                                cluster-B issues update last_verified_sha per-file and a
 #                                full rebuild would clobber those audit records)
 #   docs_map_populate_tags     — LLM enrichment pass: fills tags/note for rows where tags="-";
@@ -265,8 +265,6 @@ docs_map_build() {
   # -------------------------------------------------------------------------
   local _cache_file=""
   local tmp_file=""
-  # RETURN trap: clean up temp files on early exit or error
-  trap '[ -n "$_cache_file" ] && rm -f "$_cache_file" || true; [ -n "$tmp_file" ] && rm -f "$tmp_file" || true' RETURN
   if [ -f "$map_file" ]; then
     _cache_file="$(mktemp "${docs_dir}/docs-map-cache.XXXXXX" 2>/dev/null || true)"
     if [ -n "$_cache_file" ]; then
@@ -461,7 +459,7 @@ ${raw_line}"
 
   # Atomic replace
   mv "$tmp_file" "$map_file"
-  tmp_file=""  # already moved; prevent RETURN trap from attempting removal
+  tmp_file=""  # already moved
 
   # Migrate: remove legacy .rite/state/docs-map.tsv if it still exists.
   # The file moved to docs/docs-map.tsv (committed path); the old location
@@ -494,7 +492,7 @@ docs_map_ensure() {
     return 0
   fi
 
-  # Rebuild when the map is missing OR is a pre-v3 format.
+  # Rebuild when the map is missing OR is a pre-v4 format.
   local _needs_rebuild=0
   if [ ! -f "$map_file" ]; then
     _needs_rebuild=1
@@ -546,7 +544,6 @@ docs_map_populate_tags() {
   _map_dir="$(dirname "$map_file")"
   local _tmp=""
   _tmp="$(mktemp "${_map_dir}/docs-map.tsv.XXXXXX" 2>/dev/null)" || return 0
-  trap '[ -n "$_tmp" ] && rm -f "$_tmp" || true' RETURN
 
   # Copy comment header unchanged
   head -1 "$map_file" > "$_tmp"
@@ -606,7 +603,7 @@ Heading: ${_ht:-<untitled>}"
 
   if [ "$_changes" -gt 0 ]; then
     mv "$_tmp" "$map_file"
-    _tmp=""  # already moved; prevent RETURN trap from attempting removal
+    _tmp=""  # already moved
   else
     rm -f "$_tmp"
     _tmp=""
@@ -633,25 +630,24 @@ docs_map_tag_section_by_pointer() {
   local _target="$1"
   local _tag="$2"
 
-  [ -z "$_target" ] && return 0
-  [ -z "$_tag" ] && return 0
+  [ -z "$_target" ] && return 1
+  [ -z "$_tag" ] && return 1
 
   # Split on the FIRST '#' (same logic as tag_index_add_coverage_pointer)
   local _file="${_target%%#*}"
   local _heading="${_target#*#}"
   if [ -z "$_file" ] || [ -z "$_heading" ] || [ "$_file" = "$_target" ]; then
-    return 0
+    return 1
   fi
 
   local map_file
   map_file="$(docs_map_path)"
-  [ -f "$map_file" ] || return 0
+  [ -f "$map_file" ] || return 1
 
   local _map_dir
   _map_dir="$(dirname "$map_file")"
   local _tmp=""
-  _tmp="$(mktemp "${_map_dir}/docs-map.tsv.XXXXXX" 2>/dev/null)" || return 0
-  trap '[ -n "$_tmp" ] && rm -f "$_tmp" || true' RETURN
+  _tmp="$(mktemp "${_map_dir}/docs-map.tsv.XXXXXX" 2>/dev/null)" || return 1
 
   # Copy comment header unchanged
   head -1 "$map_file" > "$_tmp"
@@ -688,7 +684,7 @@ docs_map_tag_section_by_pointer() {
   done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$map_file" || true)
 
   mv "$_tmp" "$map_file"
-  _tmp=""  # already moved; prevent RETURN trap from attempting removal
+  _tmp=""  # already moved
   [ "$_matched" -eq 1 ] || return 1
   return 0
 }
