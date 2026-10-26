@@ -290,7 +290,7 @@ drift_log_append() {
   local lock_path="${entry_file}.lock"
 
   if ! lock_acquire "$lock_path" 30; then
-    printf 'drift_log_append: could not acquire lock for "%s" (timeout 30s)\n' \
+    printf 'drift_log_append: could not acquire lock for "%s" within 30s\n' \
       "$entry_file" >&2
     return 0
   fi
