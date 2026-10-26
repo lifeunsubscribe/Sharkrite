@@ -64,6 +64,7 @@ SUPERVISED=false
 SYNC_ARGS=()
 PROMOTE_BRANCH=""
 PROMOTE_ISSUE=""
+RITE_DECLARED_DOC=""
 _INVOCATION_FLAGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -204,6 +205,16 @@ while [[ $# -gt 0 ]]; do
       _INVOCATION_FLAGS+=("--branch" "$2")
       shift 2
       ;;
+    --doc)
+      # Declare the feature doc associated with the target integration branch.
+      # Absence is a warning, never a block. Association is declared, never inferred.
+      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+        print_error "--doc requires a file path"
+        exit 1
+      fi
+      RITE_DECLARED_DOC="$2"
+      shift 2
+      ;;
     --promote)
       # Open a promotion PR for an integration branch and merge it to main.
       # Optional trailing issue number: --promote <branch> <issue>
@@ -316,6 +327,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --bypass-blockers          Skip hard gates in unsupervised mode (CRITICAL findings, session limits)"
       echo "  --allow-main-base          Allow merging a main-based PR when session target is non-main (overrides integration-branch guard)"
       echo "  --branch <name>            Target integration branch (default: main; inert until #1033)"
+      echo "  --doc <path>               Feature doc for the integration branch (e.g. docs/features/foo.md)"
       echo "  --no-log                   Disable logging (logs are on by default)"
       echo "  --verbose                  Show extra detail (branch cleanup explanations, etc.)"
       echo "  --log=FILE                 Log to a specific file instead of auto-generated path"
@@ -422,6 +434,13 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# --doc requires --branch: the declared doc is per-integration-branch, not per-issue.
+if [ -n "${RITE_DECLARED_DOC:-}" ] && [ "${RITE_TARGET_BRANCH:-main}" = "main" ]; then
+  print_error "--doc requires --branch (doc declaration is per integration branch)"
+  echo "  Re-run with: rite --branch <name> --doc ${RITE_DECLARED_DOC} ..." >&2
+  exit 1
+fi
 
 # --- resolve_dispatch_key (pure) ---------------------------------------------
 # Maps the dispatch tuple (MODE, batch filter, PR input, issue args) to a
@@ -1693,6 +1712,52 @@ record_run() {
 # the routing logic has exactly one source of truth shared with the dry-run
 # printer. No independent routing conditionals may appear in this section.
 _DISPATCH_KEY=$(resolve_dispatch_key "$MODE" "${BATCH_FILTER_ARGS[*]:-}" "${PR_INPUT:-}" ${ARGS[@]+"${ARGS[@]}"})
+
+# --doc validation, persistence, and missing-doc warning.
+# Runs after config.sh (RITE_STATE_DIR available) and before any LLM work.
+if [ -n "${RITE_DECLARED_DOC:-}" ]; then
+  # Validate: must end in .md
+  case "$RITE_DECLARED_DOC" in
+    *.md) ;;
+    *)
+      print_error "--doc path must be a .md file (got: $RITE_DECLARED_DOC)"
+      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <path>.md ..." >&2
+      exit 1
+      ;;
+  esac
+  # Validate: file must exist under the repo root
+  _doc_abs="${RITE_PROJECT_ROOT}/${RITE_DECLARED_DOC#/}"
+  # Strip RITE_PROJECT_ROOT prefix if path was given absolute
+  if [[ "$RITE_DECLARED_DOC" == /* ]]; then
+    _doc_abs="$RITE_DECLARED_DOC"
+  fi
+  if [ ! -f "$_doc_abs" ]; then
+    print_error "--doc file not found: $RITE_DECLARED_DOC"
+    echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <existing-path>.md ..." >&2
+    exit 1
+  fi
+  # Validate: must be under the repo root
+  case "$_doc_abs" in
+    "${RITE_PROJECT_ROOT}/"*) ;;
+    *)
+      print_error "--doc path must be inside the repo (got: $RITE_DECLARED_DOC)"
+      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <repo-relative-path>.md ..." >&2
+      exit 1
+      ;;
+  esac
+  # Persist per-branch declaration (slash-safe branch name in filename).
+  _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
+  _doc_state_file="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
+  mkdir -p "$RITE_STATE_DIR" 2>/dev/null || true
+  echo "$RITE_DECLARED_DOC" > "$_doc_state_file"
+elif [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then
+  # --branch without --doc: warn when doc tracking is active.
+  case "${RITE_DOC_MODE:-}" in
+    sync|changelog)
+      print_warning "--branch ${RITE_TARGET_BRANCH} declared without --doc; feature doc association missing"
+      ;;
+  esac
+fi
 
 # Target-branch preflight: verify (or auto-create) the target branch on origin.
 # Scoped to workflow-running dispatch keys only — status/plan/undo paths stay
