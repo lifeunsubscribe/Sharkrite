@@ -425,7 +425,9 @@ $(cat "$_readme_path")
 
   if [ -n "$_feature_sections" ]; then
     local _sf _shl _sht
-    declare -A _section_occ_count=()
+    # Portable occurrence counter: newline-delimited registry of seen keys.
+    # grep -cxF counts exact-line matches without needing associative arrays.
+    local _section_occ_registry=""
     while IFS=$'\t' read -r _sf _shl _sht; do
       [ -z "$_sf" ] && continue
       local _sabs="${project_root}/${_sf}"
@@ -443,8 +445,12 @@ $(cat "$_readme_path")
       # Track occurrence index so duplicate headings each map to the correct
       # section rather than always resolving to the first occurrence.
       local _occ_key="${_sf}:${_shl}:${_sht}"
-      _section_occ_count["$_occ_key"]=$(( ${_section_occ_count["$_occ_key"]:-0} + 1 ))
-      local _tgt_occ="${_section_occ_count["$_occ_key"]}"
+      local _prev_count
+      _prev_count=$(printf '%s\n' "$_section_occ_registry" | grep -cxF "$_occ_key" || true)
+      local _tgt_occ
+      _tgt_occ=$(( _prev_count + 1 ))
+      _section_occ_registry="${_section_occ_registry}
+${_occ_key}"
 
       local _section_content
       _section_content=$(_plan_extract_section "$_sabs" "$_shl" "$_sht" "$_tgt_occ" || true)
