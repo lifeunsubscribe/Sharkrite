@@ -184,7 +184,7 @@ _record_tier1_drift_entries() {
                 ;;
             esac
           done <<< "$changed_files"
-        done < <(printf '%s' "$_t1_covers" | tr ',' '\n' || true)
+        done < <(printf '%s\n' "$_t1_covers" | tr ',' '\n' || true)
       done <<< "$_t1_enforcing"
 
       if [ -n "$_tb_changed" ]; then
@@ -1230,7 +1230,7 @@ print_header "📚 Documentation"
 # Consent gating is inside _record_tier1_drift_entries (RITE_DOC_MODE check).
 # Nothing in the user's docs is ever edited here.
 # No recorded consent → no recording (opt-in; see doc-consent.sh).
-_T1_CHANGED_FILES="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' | head -20 || true)"
+_T1_CHANGED_FILES="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' || true)"
 _T1_BASE_BRANCH="$(echo "$PR_DATA" | jq -r '.baseRefName // "main"' || true)"
 _T1_HEAD_BRANCH="$(echo "$PR_DATA" | jq -r '.headRefName // ""' || true)"
 _record_tier1_drift_entries "$PR_NUMBER" "$PR_BODY" "$_T1_CHANGED_FILES" "$_T1_BASE_BRANCH" "$_T1_HEAD_BRANCH" || true

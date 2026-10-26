@@ -43,9 +43,10 @@ setup() {
     > "$_TMPDIR/tests/regression/t1-enforcing.bats"
 
   # Minimal docs map: one row per doc (tab-separated, six fields)
-  printf '# docs-map v4\n' > "$RITE_STATE_DIR/docs-map.tsv"
-  printf 'docs/feature.md\t\t-\t\t\n' >> "$RITE_STATE_DIR/docs-map.tsv"
-  printf 'docs/plain.md\t\t-\t\t\n' >> "$RITE_STATE_DIR/docs-map.tsv"
+  # docs_map_path() returns ${RITE_PROJECT_ROOT}/docs/docs-map.tsv
+  printf '# docs-map v4\n' > "$_TMPDIR/docs/docs-map.tsv"
+  printf 'docs/feature.md\t\t-\t\t\n' >> "$_TMPDIR/docs/docs-map.tsv"
+  printf 'docs/plain.md\t\t-\t\t\n' >> "$_TMPDIR/docs/docs-map.tsv"
 
   # Load all needed functions via RITE_SOURCE_FUNCTIONS_ONLY=1
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_REPO_ROOT/lib/core/assess-documentation.sh" 2>/dev/null || true
@@ -149,6 +150,36 @@ teardown() {
   grep -q "changed: lib/core/impl.sh" "$_ef"
   grep -q "covers: lib/core/impl.sh" "$_ef"
   grep -q "enforces-via: tests/regression/t1-enforcing.bats" "$_ef"
+}
+
+@test "Trigger B: single-pattern covers header fires drift entry" {
+  # Regression: printf '%s' (no newline) caused while-read to skip the only pattern.
+  # The fix: printf '%s\n' so the loop always reads the final (or only) token.
+  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/core/single.sh\n@test "x" { true; }\n' \
+    > "$_TMPDIR/tests/regression/t1-single.bats"
+  printf '# Feature Doc\n\n<!-- sharkrite-enforced-by: tests/regression/t1-single.bats -->\n' \
+    > "$_TMPDIR/docs/single.md"
+  printf 'docs/single.md\t\t-\t\t\n' >> "$_TMPDIR/docs/docs-map.tsv"
+
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "110" "Closes #50" \
+    "lib/core/single.sh" "main" "feat/single" || true
+
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/single.md)"
+  [ "$_cnt" -eq 1 ]
+}
+
+@test "Trigger B: last pattern in multi-pattern covers header fires drift entry" {
+  # Regression: without trailing newline, the last CSV token was dropped by while-read.
+  # The enforcing test has TWO covers paths; this test changes the SECOND one.
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "111" "Closes #51" \
+    "lib/utils/helper.sh" "main" "feat/last-pat" || true
+
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------

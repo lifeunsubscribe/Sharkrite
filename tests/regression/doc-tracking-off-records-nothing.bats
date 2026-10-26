@@ -31,8 +31,9 @@ setup() {
   printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/core/impl.sh\n@test "x" { true; }\n' \
     > "$_TMPDIR/tests/regression/t-off.bats"
 
-  printf '# docs-map v4\n' > "$RITE_STATE_DIR/docs-map.tsv"
-  printf 'docs/feature.md\t\t-\t\t\n' >> "$RITE_STATE_DIR/docs-map.tsv"
+  # docs_map_path() returns ${RITE_PROJECT_ROOT}/docs/docs-map.tsv
+  printf '# docs-map v4\n' > "$_TMPDIR/docs/docs-map.tsv"
+  printf 'docs/feature.md\t\t-\t\t\n' >> "$_TMPDIR/docs/docs-map.tsv"
 
   # Declared-doc state file for Trigger C
   printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-off.txt"
