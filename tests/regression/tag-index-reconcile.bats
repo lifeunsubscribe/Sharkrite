@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/utils/tag-index.sh
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/utils/tag-index.sh, lib/utils/docs-map.sh
 # tests/regression/tag-index-reconcile.bats
 #
 # Regression tests for reconcile_tag_index() in assess-documentation.sh and
@@ -60,6 +60,12 @@ setup() {
   # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: tag-index.sh uses a function-sentinel guard (declare -f tag_index_log_history); pre-source provider stubs are preserved on source. print_warning/print_info are re-stubbed below because colors.sh (chained) uses an env-var guard only.
   # shellcheck source=/dev/null
   source "${RITE_REPO_ROOT}/lib/utils/tag-index.sh"
+  # Source docs-map.sh to make docs_map_tag_section_by_pointer and
+  # docs_map_render_tag_index available — reconcile_tag_index calls both
+  # functions since the absorption refactor (PR adds map as the tag store).
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-map.sh uses a function-sentinel guard (declare -f docs_map_build); pre-source provider stubs are preserved on source.
+  # shellcheck source=/dev/null
+  source "${RITE_REPO_ROOT}/lib/utils/docs-map.sh"
   set +u; set +o pipefail  # bats needs its own error handling — leaked strict mode swallows failing tests (2026-07-01 not-run incident); keep -e for bats failure detection
 
   # Re-stub after source: tag-index.sh chains to colors.sh (env-var guard
@@ -764,6 +770,15 @@ IDX_EOF
 @test "#767: coverage pointer applied for a valid new tag + history logs added" {
   _seed_catalog_conventions
 
+  # Seed a minimal docs-map.tsv so docs_map_tag_section_by_pointer can find the
+  # "conventions.md / grep -c pattern" row and write the tag into it.
+  # docs_map_render_tag_index then merges the updated map entry into tag-index.md.
+  mkdir -p "${RITE_TEST_TMPDIR}/docs"
+  printf '# docs-map v4 sha=test built=2026-01-01T00:00:00Z\n' \
+    > "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
+  printf 'docs/architecture/conventions.md\ttest-sha\t-\t2\tgrep -c pattern\tsome-fp\tfeature\t-\t-\t-\n' \
+    >> "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
+
   # Seed the index with the new tag's heading (as update_conventions_from_marker
   # would just have done in production).
   _seed_index_with_existing_tag "some-existing" "grep-count"
@@ -848,4 +863,34 @@ IDX_EOF
   # requirement that the coverage/awk area no longer breaks the gate. A trivial
   # passing assertion documents the intent without re-invoking bats recursively.
   [ 1 -eq 1 ]
+}
+
+@test "#1496: dropped coverage pointer emits a print_warning, not a silent skip" {
+  _seed_catalog_conventions
+  _seed_index_with_existing_tag "some-existing" "missing-pointer-tag"
+
+  # Intentionally omit docs-map.tsv so docs_map_tag_section_by_pointer returns 1
+  # (map absent). The warning must fire and the workflow must not abort.
+  local _warned=0
+  print_warning() { _warned=1; }
+  export -f print_warning
+
+  export COVERAGE_JSON='{"missing_pointers":[{"tag":"missing-pointer-tag","target":"conventions.md#No Such Section"}]}'
+
+  local body
+  body="$(printf '%s\n' \
+    "new-tags:" \
+    "  - missing-pointer-tag: A tag whose pointer target has no map row")"
+
+  # Must not abort under set -e (reconcile returns 0 via || true backstop).
+  reconcile_tag_index "$body" "900"
+
+  # Warning was emitted.
+  [ "$_warned" -eq 1 ]
+
+  # No false audit entry — history log must not record the pointer as added.
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  if [ -f "$log_file" ]; then
+    ! grep -q "added missing-pointer-tag" "$log_file"
+  fi
 }
