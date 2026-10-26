@@ -22,6 +22,7 @@ setup() {
   setup_test_tmpdir
 
   export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+  export RITE_STATE_DIR="${RITE_TEST_TMPDIR}/.rite/state"
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 
   # _MARKER_DIR is used by _mark_updated() when called from the extracted functions
