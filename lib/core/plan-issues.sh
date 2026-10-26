@@ -114,6 +114,7 @@ _plan_extract_section() {
   local file_path="$1"
   local heading_level="$2"
   local heading_text="$3"
+  local target_occurrence="${4:-1}"  # 1-based: which occurrence to extract (for duplicate headings)
 
   [ -f "$file_path" ] || return 0
 
@@ -129,9 +130,22 @@ _plan_extract_section() {
       { print }
     ' "$file_path"
   else
-    # Named section: find the heading, emit until next same-or-higher level.
-    awk -v tgt_level="$heading_level" -v tgt_text="$heading_text" '
-      BEGIN { capturing=0; in_fence=0; tgt_l=tgt_level+0 }
+    # Named section: find the Nth occurrence of the heading (1-based), emit
+    # until the next heading at the same or higher level, or EOF.
+    #
+    # Heading normalization mirrors docs_map_build (_docs_map_heading_text):
+    #   strip '#' chars, then strip at most ONE leading space, at most ONE
+    #   leading tab, at most ONE trailing space, at most ONE trailing tab,
+    #   then strip all embedded tabs.  The single-strip behaviour is
+    #   intentional — the builder uses ${var# } and ${var#	} (not ${var##*})
+    #   so "##  Two Spaces" stores " Two Spaces" (one residual space).
+    #
+    # awk -v passes the value through C-escape processing, so a backslash in
+    # tgt_text becomes a literal escape sequence (e.g. \r → CR).  Use
+    # ENVIRON["TGT_TEXT"] instead, which is passed via the shell environment
+    # and is never escape-processed by awk.
+    TGT_TEXT="$heading_text" awk -v tgt_level="$heading_level" -v tgt_occ="$target_occurrence" '
+      BEGIN { capturing=0; in_fence=0; tgt_l=tgt_level+0; hits=0; tgt_text=ENVIRON["TGT_TEXT"] }
       /^```/ || /^~~~/ {
         if (in_fence) { in_fence=0 } else { in_fence=1 }
         if (capturing) print
@@ -140,11 +154,16 @@ _plan_extract_section() {
       !in_fence && /^#/ {
         n=0; line=$0
         while (substr(line,1,1)=="#") { n++; line=substr(line,2) }
-        sub(/^[[:space:]]+/, "", line)
-        sub(/[[:space:]]+$/, "", line)
+        if (substr(line,1,1)==" ")  line=substr(line,2)
+        if (substr(line,1,1)=="\t") line=substr(line,2)
+        if (length(line)>0 && substr(line,length(line),1)==" ")  line=substr(line,1,length(line)-1)
+        if (length(line)>0 && substr(line,length(line),1)=="\t") line=substr(line,1,length(line)-1)
         gsub(/\t/, "", line)
         if (!capturing) {
-          if (n==tgt_l && line==tgt_text) { capturing=1; print }
+          if (n==tgt_l && line==tgt_text) {
+            hits++
+            if (hits==tgt_occ) { capturing=1; print }
+          }
         } else {
           if (n<=tgt_l) { exit }
           print
@@ -406,16 +425,39 @@ $(cat "$_readme_path")
 
   if [ -n "$_feature_sections" ]; then
     local _sf _shl _sht
+    declare -A _section_occ_count=()
     while IFS=$'\t' read -r _sf _shl _sht; do
       [ -z "$_sf" ] && continue
       local _sabs="${project_root}/${_sf}"
       _map_is_already_loaded "$_sabs" && continue
-      [ -f "$_sabs" ] || continue
+      if [ ! -f "$_sabs" ]; then
+        print_info "Auto-docs (map-driven): stale map entry — file not found: $_sf" >&2
+        if [ -n "$_sht" ]; then
+          discovery_index+=("$_sf § $_sht")
+        else
+          discovery_index+=("$_sf (preamble)")
+        fi
+        continue
+      fi
+
+      # Track occurrence index so duplicate headings each map to the correct
+      # section rather than always resolving to the first occurrence.
+      local _occ_key="${_sf}:${_shl}:${_sht}"
+      _section_occ_count["$_occ_key"]=$(( ${_section_occ_count["$_occ_key"]:-0} + 1 ))
+      local _tgt_occ="${_section_occ_count["$_occ_key"]}"
 
       local _section_content
-      _section_content=$(_plan_extract_section "$_sabs" "$_shl" "$_sht" || true)
+      _section_content=$(_plan_extract_section "$_sabs" "$_shl" "$_sht" "$_tgt_occ" || true)
       # Skip sections whose content could not be extracted (stale map or parse miss)
-      [ -n "$_section_content" ] || continue
+      if [ -z "$_section_content" ]; then
+        print_info "Auto-docs (map-driven): stale map entry — section not found: $_sf § ${_sht:-<preamble>}" >&2
+        if [ -n "$_sht" ]; then
+          discovery_index+=("$_sf § $_sht")
+        else
+          discovery_index+=("$_sf (preamble)")
+        fi
+        continue
+      fi
 
       local _section_bytes
       _section_bytes=$(printf '%s' "$_section_content" | wc -c 2>/dev/null || echo "${#_section_content}")

@@ -73,18 +73,16 @@ setup() {
     fi
   fi
 
-  # Extract only _collect_auto_docs and generate_issues from plan-issues.sh
-  # to avoid running the plan_issues() interactive body (reads from stdin).
+  # Extract discovery helpers and generate_issues from plan-issues.sh to avoid
+  # running the plan_issues() interactive body (reads from stdin).
+  # _collect_auto_docs delegates to _collect_auto_docs_whole_file /
+  # _collect_auto_docs_via_map, which in turn call _plan_extract_section —
+  # all four helpers must be extracted alongside _collect_auto_docs.
   eval "$(awk '
+    /^_plan_extract_section[(][)]/ { in_fn=1; depth=0 }
+    /^_collect_auto_docs_whole_file[(][)]/ { in_fn=1; depth=0 }
+    /^_collect_auto_docs_via_map[(][)]/ { in_fn=1; depth=0 }
     /^_collect_auto_docs[(][)]/ { in_fn=1; depth=0 }
-    in_fn {
-      for (i=1; i<=length($0); i++) {
-        c=substr($0,i,1)
-        if (c=="{") depth++
-        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
-      }
-      print; next
-    }
     /^generate_issues[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {

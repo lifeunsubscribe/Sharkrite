@@ -585,3 +585,153 @@ DOC
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# Backslash heading: ENVIRON avoids awk -v escape processing
+#
+# A heading that contains a backslash (e.g. "Match \r?") would be mangled by
+# awk -v tgt_text="..." which processes C-escape sequences.  The extractor now
+# passes the value via ENVIRON["TGT_TEXT"] which is never escape-processed.
+# ---------------------------------------------------------------------------
+
+@test "backslash heading: section with backslash in title is correctly extracted" {
+  cat > "$RITE_TEST_TMPDIR/docs/regex.md" <<'DOC'
+# Match \r?
+
+BACKSLASH_SECTION_CONTENT
+
+# Other Section
+
+OTHER_CONTENT
+DOC
+
+  _write_map \
+    "$(_map_row "docs/regex.md" "feature" "1" 'Match \r?')" \
+    "$(_map_row "docs/regex.md" "feature" "1" "Other Section")"
+
+  local result
+  result=$(_collect_auto_docs)
+
+  echo "$result" | grep -q "BACKSLASH_SECTION_CONTENT" || {
+    echo "FAIL: backslash-heading section not found — awk -v escape processing bug" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Duplicate headings: second occurrence is reachable
+#
+# A file with two sections sharing the same title and level — the map references
+# both.  The extractor must return each section's distinct content, not the first
+# occurrence twice.
+# ---------------------------------------------------------------------------
+
+@test "duplicate headings: second occurrence is extracted correctly" {
+  cat > "$RITE_TEST_TMPDIR/docs/dup.md" <<'DOC'
+# Regression Test
+
+FIRST_OCCURRENCE_CONTENT
+
+# Regression Test
+
+SECOND_OCCURRENCE_CONTENT
+
+# Other Section
+
+OTHER_CONTENT
+DOC
+
+  _write_map \
+    "$(_map_row "docs/dup.md" "feature" "1" "Regression Test")" \
+    "$(_map_row "docs/dup.md" "feature" "1" "Regression Test")" \
+    "$(_map_row "docs/dup.md" "feature" "1" "Other Section")"
+
+  export RITE_PLAN_DOC_BYTE_CAP=50000
+
+  local result
+  result=$(_collect_auto_docs)
+
+  echo "$result" | grep -q "FIRST_OCCURRENCE_CONTENT" || {
+    echo "FAIL: first occurrence content not found" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+  echo "$result" | grep -q "SECOND_OCCURRENCE_CONTENT" || {
+    echo "FAIL: second occurrence content not found — duplicate heading always resolved to first" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Stale map: missing file is indexed, not silently dropped
+#
+# A map row that references a file which no longer exists on disk must NOT be
+# silently skipped — its anchor must appear in the discoverability index so
+# readers know it exists in the map.
+# ---------------------------------------------------------------------------
+
+@test "stale map: section for non-existent file appears in discoverability index" {
+  # Write map with a path that does not exist on disk
+  _write_map \
+    "$(_map_row "docs/ghost.md" "feature" "1" "Missing Section")"
+
+  # Set a non-zero cap so feature sections are processed
+  export RITE_PLAN_DOC_BYTE_CAP=50000
+
+  local result
+  result=$(_collect_auto_docs)
+
+  echo "$result" | grep -q "ghost.md" || {
+    echo "FAIL: stale-map anchor not found in output — silent drop instead of index entry" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Stale map: heading that no longer exists is indexed, not silently dropped
+#
+# A map row references a heading that no longer appears in the file.  The
+# section cannot be extracted, but the anchor must appear in the
+# discoverability index.
+# ---------------------------------------------------------------------------
+
+@test "stale map: heading absent from file appears in discoverability index" {
+  cat > "$RITE_TEST_TMPDIR/docs/updated.md" <<'DOC'
+# Current Section
+
+CURRENT_CONTENT
+DOC
+
+  # Map references a heading that does not exist in the file
+  _write_map \
+    "$(_map_row "docs/updated.md" "feature" "1" "Deleted Section")" \
+    "$(_map_row "docs/updated.md" "feature" "1" "Current Section")"
+
+  export RITE_PLAN_DOC_BYTE_CAP=50000
+
+  local result
+  result=$(_collect_auto_docs)
+
+  # Current section content must be loaded
+  echo "$result" | grep -q "CURRENT_CONTENT" || {
+    echo "FAIL: current section not loaded" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+
+  # Deleted section heading must appear in the discoverability index
+  echo "$result" | grep -q "Deleted Section" || {
+    echo "FAIL: deleted section anchor not in discoverability index" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+}
