@@ -93,49 +93,83 @@ fi
 _RITE_PLAN_TITLE_MAX_LEN=50
 
 # =============================================================================
-# _collect_auto_docs: auto-discover docs/**/*.md, ADRs, and README.md
+# _plan_extract_section FILE_PATH HEADING_LEVEL HEADING_TEXT
 #
-# Appends grounding context to the plan prompt beyond user-supplied doc paths.
-# Priority order:
-#   1. ADRs: docs/**/*adr*.md + docs/ADR-*.md (loaded in full, highest priority)
-#   2. README.md at project root (loaded in full)
-#   3. Remaining docs/**/*.md (loaded alphabetically until byte cap is reached)
+# Extract one section from FILE_PATH by its anchor (heading level + text).
+# Output: the heading line (if named) followed by body lines up to (but not
+# including) the next heading at level <= HEADING_LEVEL, or EOF.
 #
-# The byte cap (RITE_PLAN_DOC_BYTE_CAP) applies to the total auto-injected
-# content.  ADRs + README count first; remaining budget goes to other docs.
-# Set RITE_PLAN_DOC_BYTE_CAP=0 to disable auto-discovery entirely.
+# Preamble (HEADING_LEVEL="" and HEADING_TEXT=""):
+#   Outputs all lines before the first Markdown heading, or the whole file
+#   when no headings exist.
 #
-# Output format matches the existing doc_content loop:
-#   --- <basename> ---
-#   <content>
-#   --- end <basename> ---
+# Heading text matching mirrors docs_map_build normalization:
+#   leading '#' and whitespace stripped, embedded tabs stripped, trailing
+#   whitespace stripped.
 #
-# Usage: _collect_auto_docs [already-loaded-paths...]
-#   Already-loaded paths are skipped to avoid double-injection.
+# Used by _collect_auto_docs_via_map. No LLM calls; no side effects.
 # =============================================================================
 
-_collect_auto_docs() {
-  local byte_cap="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
-  local project_root="${RITE_PROJECT_ROOT:-.}"
+_plan_extract_section() {
+  local file_path="$1"
+  local heading_level="$2"
+  local heading_text="$3"
 
-  # Validate that byte_cap is a non-negative integer.  A non-numeric value
-  # (e.g. "50kb") silently passes the -eq guard above but explodes at the
-  # arithmetic expansion on line "remaining_budget=$((byte_cap - total_bytes))"
-  # under set -euo pipefail.  Warn and reset to the built-in default.
-  case "$byte_cap" in
-    ''|*[!0-9]*)
-      print_info "Auto-docs: RITE_PLAN_DOC_BYTE_CAP='$byte_cap' is not a valid integer — using default 50000" >&2
-      byte_cap=50000
-      ;;
-  esac
+  [ -f "$file_path" ] || return 0
 
-  # Escape hatch: cap=0 disables auto-discovery entirely.
-  if [ "$byte_cap" -eq 0 ]; then
-    return 0
+  if [ -z "$heading_level" ]; then
+    # Preamble: emit lines before the first heading (outside fences).
+    awk '
+      BEGIN { in_fence=0 }
+      /^```/ || /^~~~/ {
+        if (in_fence) { in_fence=0 } else { in_fence=1 }
+        print; next
+      }
+      !in_fence && /^#/ { exit }
+      { print }
+    ' "$file_path"
+  else
+    # Named section: find the heading, emit until next same-or-higher level.
+    awk -v tgt_level="$heading_level" -v tgt_text="$heading_text" '
+      BEGIN { capturing=0; in_fence=0; tgt_l=tgt_level+0 }
+      /^```/ || /^~~~/ {
+        if (in_fence) { in_fence=0 } else { in_fence=1 }
+        if (capturing) print
+        next
+      }
+      !in_fence && /^#/ {
+        n=0; line=$0
+        while (substr(line,1,1)=="#") { n++; line=substr(line,2) }
+        sub(/^[[:space:]]+/, "", line)
+        sub(/[[:space:]]+$/, "", line)
+        gsub(/\t/, "", line)
+        if (!capturing) {
+          if (n==tgt_l && line==tgt_text) { capturing=1; print }
+        } else {
+          if (n<=tgt_l) { exit }
+          print
+        }
+        next
+      }
+      capturing { print }
+    ' "$file_path"
   fi
+}
 
-  # Build a set of already-loaded paths (passed as arguments) so we don't
-  # double-inject docs the user explicitly provided.
+# =============================================================================
+# _collect_auto_docs_whole_file BYTE_CAP PROJECT_ROOT [already-loaded-path...]
+#
+# Whole-file auto-discovery fallback used when no docs map is available.
+# Loads ADRs and README in full, then fills remaining budget with other
+# docs/**/*.md files alphabetically (whole-file granularity).
+#
+# Called by _collect_auto_docs when docs/docs-map.tsv is absent or pre-v4.
+# =============================================================================
+
+_collect_auto_docs_whole_file() {
+  local byte_cap="$1"
+  local project_root="$2"
+  shift 2
   local -a loaded_paths=("$@")
 
   _is_already_loaded() {
@@ -154,20 +188,14 @@ _collect_auto_docs() {
 
   # -------------------------------------------------------------------------
   # Phase 1: ADRs — load in full (highest priority, count toward cap first)
-  # Matches: docs/**/*adr*.md (case-insensitive) and docs/ADR-*.md
   # -------------------------------------------------------------------------
   local -a adr_files=()
   local _f
-  # Case-insensitive glob via find-style iteration with while-read (bash 3.2 safe).
-  # We use a while-read loop over a glob expansion to stay portable.
   while IFS= read -r _f; do
     adr_files+=("$_f")
   done < <(
-    # Find all .md files under docs/ that match ADR patterns (sort alphabetically)
     {
-      # Pattern 1: docs/**/*adr*.md (any casing)
       find "$project_root/docs" -name "*[Aa][Dd][Rr]*.md" -type f 2>/dev/null | sort -u
-      # Pattern 2: docs/ADR-*.md (already covered by the above but explicit for clarity)
       find "$project_root/docs" -name "ADR-*.md" -type f 2>/dev/null | sort -u
     } | sort -u
   )
@@ -177,11 +205,7 @@ _collect_auto_docs() {
     _is_already_loaded "$adr_path" && continue
     local adr_bytes
     adr_bytes=$(wc -c < "$adr_path" 2>/dev/null || echo 0)
-    # Use project-relative path as header label to prevent collision when multiple
-    # files share the same basename (e.g., docs/README.md vs README.md).
     local adr_label="${adr_path#"$project_root/"}"
-    # ADRs are always loaded in full regardless of remaining budget.
-    # They count toward the cap — if the cap is already exceeded they still load.
     auto_content+="
 --- $adr_label ---
 $(cat "$adr_path")
@@ -193,11 +217,7 @@ $(cat "$adr_path")
   done
 
   # -------------------------------------------------------------------------
-  # Phase 2: README.md — load in full (high priority, counts toward cap)
-  #
-  # Controlled by RITE_PLAN_INCLUDE_README (default: true).
-  # Set to "false" or "0" to skip README injection (useful when the README is
-  # large or not relevant to the planning context).
+  # Phase 2: README.md — load in full (counts toward cap)
   # -------------------------------------------------------------------------
   local include_readme="${RITE_PLAN_INCLUDE_README:-true}"
   local readme_path="$project_root/README.md"
@@ -205,7 +225,6 @@ $(cat "$adr_path")
     if [ -f "$readme_path" ] && ! _is_already_loaded "$readme_path"; then
       local readme_bytes
       readme_bytes=$(wc -c < "$readme_path" 2>/dev/null || echo 0)
-      # Root README uses bare "README.md" label (no path prefix needed — it's at root).
       auto_content+="
 --- README.md ---
 $(cat "$readme_path")
@@ -224,9 +243,6 @@ $(cat "$readme_path")
   # -------------------------------------------------------------------------
   local remaining_budget=$((byte_cap - total_bytes))
 
-  # Warn prominently when ADRs + README have already consumed the entire budget.
-  # Without this, every remaining doc is silently skipped with only a per-file
-  # "skipping" message, making it non-obvious that grounding quality is degraded.
   if [ "$remaining_budget" -le 0 ] && [ -d "$project_root/docs" ]; then
     print_info "Auto-docs: ADRs + README consumed ${total_bytes}B which meets or exceeds the ${byte_cap}B cap — remaining docs/**/*.md will not be injected. Set RITE_PLAN_DOC_BYTE_CAP to a higher value to include them." >&2
   fi
@@ -244,9 +260,6 @@ $(cat "$readme_path")
 
       local doc_bytes
       doc_bytes=$(wc -c < "$doc_path" 2>/dev/null || echo 0)
-      # Use project-relative path as header label (dedup fix: prevents two files with
-      # the same basename, e.g., docs/README.md vs README.md, from producing
-      # identically-labeled blocks with different content).
       local doc_label="${doc_path#"$project_root/"}"
 
       if [ "$remaining_budget" -gt 0 ] && [ "$doc_bytes" -le "$remaining_budget" ]; then
@@ -260,7 +273,6 @@ $(cat "$doc_path")
         total_bytes=$((total_bytes + doc_bytes))
         loaded_paths+=("$doc_path")
       else
-        # Doc exceeds remaining budget (or budget is already exhausted) — log and skip.
         print_info "Auto-docs: skipping $doc_label (${doc_bytes}B > ${remaining_budget}B remaining budget)" >&2
       fi
     done
@@ -271,6 +283,247 @@ $(cat "$doc_path")
   fi
 
   printf '%s' "$auto_content"
+}
+
+# =============================================================================
+# _collect_auto_docs_via_map MAP_FILE BYTE_CAP PROJECT_ROOT [loaded-path...]
+#
+# Map-driven variant: consults docs/docs-map.tsv to enumerate sections and
+# types, loading content section-by-section rather than whole-file.
+# BYTE_CAP bounds *content loaded per pass*, not discoverability — sections
+# past the cap appear in a discoverability index block in the returned content.
+#
+# Priority order:
+#   1. ADR rows (type=adr): load unique files in full (always-load contract)
+#   2. README.md (type=other, rel_path=README.md): load in full unless disabled
+#   3. Feature doc sections (type=feature): section-by-section, prospective
+#      cap check; over-cap sections are indexed but not loaded
+#
+# Zero provider calls — purely deterministic map query + section reads.
+# =============================================================================
+
+_collect_auto_docs_via_map() {
+  local map_file="$1"
+  local byte_cap="$2"
+  local project_root="$3"
+  shift 3
+  local -a loaded_paths=("$@")
+
+  local include_readme="${RITE_PLAN_INCLUDE_README:-true}"
+  local total_bytes=0
+  local auto_content=""
+  local -a discovery_index=()
+
+  _map_is_already_loaded() {
+    local candidate="$1"
+    local p
+    for p in "${loaded_paths[@]+"${loaded_paths[@]}"}"; do
+      [ "$p" = "$candidate" ] && return 0
+    done
+    return 1
+  }
+
+  # -------------------------------------------------------------------------
+  # Parse map rows grouped by type.
+  # Use IFS=$'\001' (SOH) + awk preprocessing to avoid bash's tab-collapsing
+  # for rows with consecutive empty fields (preamble/headingless sections).
+  # -------------------------------------------------------------------------
+  local _adr_files_seen=""
+  local -a adr_files=()
+  local _readme_path=""
+  # feature_sections: newline-terminated entries of "rel_path<TAB>level<TAB>text"
+  local _feature_sections=""
+
+  local _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note
+  while IFS=$'\001' read -r _f _sha _adr _hl _ht _fp _dtype _rubric _tags _note; do
+    local _abs="${project_root}/${_f}"
+    _map_is_already_loaded "$_abs" && continue
+    case "${_dtype:-other}" in
+      adr)
+        # Collect unique ADR file paths (each file may produce multiple section rows)
+        if ! printf '%s\n' "$_adr_files_seen" | grep -qxF "$_f" 2>/dev/null; then
+          _adr_files_seen="${_adr_files_seen}${_f}"$'\n'
+          adr_files+=("$_abs")
+        fi
+        ;;
+      other)
+        if [ "$_f" = "README.md" ] && [ "$include_readme" != "false" ] && [ "$include_readme" != "0" ]; then
+          _readme_path="$_abs"
+        fi
+        ;;
+      feature)
+        _feature_sections="${_feature_sections}${_f}"$'\t'"${_hl}"$'\t'"${_ht}"$'\n'
+        ;;
+    esac
+  done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$map_file" || true)
+
+  # -------------------------------------------------------------------------
+  # Phase 1: ADRs — load whole files in full (always-load contract unchanged)
+  # -------------------------------------------------------------------------
+  local adr_path
+  for adr_path in "${adr_files[@]+"${adr_files[@]}"}"; do
+    [ -f "$adr_path" ] || continue
+    local adr_bytes
+    adr_bytes=$(wc -c < "$adr_path" 2>/dev/null || echo 0)
+    local adr_label="${adr_path#"$project_root/"}"
+    auto_content+="
+--- $adr_label ---
+$(cat "$adr_path")
+--- end $adr_label ---
+
+"
+    total_bytes=$((total_bytes + adr_bytes))
+    loaded_paths+=("$adr_path")
+  done
+
+  # -------------------------------------------------------------------------
+  # Phase 2: README.md — load in full when not disabled
+  # -------------------------------------------------------------------------
+  if [ -n "$_readme_path" ] && [ -f "$_readme_path" ]; then
+    local readme_bytes
+    readme_bytes=$(wc -c < "$_readme_path" 2>/dev/null || echo 0)
+    auto_content+="
+--- README.md ---
+$(cat "$_readme_path")
+--- end README.md ---
+
+"
+    total_bytes=$((total_bytes + readme_bytes))
+    loaded_paths+=("$_readme_path")
+  elif [ "$include_readme" = "false" ] || [ "$include_readme" = "0" ]; then
+    print_info "Auto-docs: README.md injection disabled (RITE_PLAN_INCLUDE_README=$include_readme)" >&2
+  fi
+
+  # -------------------------------------------------------------------------
+  # Phase 3: Feature doc sections — section-by-section, prospective cap check
+  # Sections within budget are loaded; over-cap sections go to discovery index.
+  # -------------------------------------------------------------------------
+  local remaining_budget=$((byte_cap - total_bytes))
+
+  if [ "$remaining_budget" -le 0 ] && [ -n "$_feature_sections" ]; then
+    print_info "Auto-docs: ADRs + README consumed ${total_bytes}B which meets or exceeds the ${byte_cap}B cap — feature doc sections will be indexed but not loaded. Set RITE_PLAN_DOC_BYTE_CAP to a higher value to include them." >&2
+  fi
+
+  if [ -n "$_feature_sections" ]; then
+    local _sf _shl _sht
+    while IFS=$'\t' read -r _sf _shl _sht; do
+      [ -z "$_sf" ] && continue
+      local _sabs="${project_root}/${_sf}"
+      _map_is_already_loaded "$_sabs" && continue
+      [ -f "$_sabs" ] || continue
+
+      local _section_content
+      _section_content=$(_plan_extract_section "$_sabs" "$_shl" "$_sht" || true)
+      # Skip sections whose content could not be extracted (stale map or parse miss)
+      [ -n "$_section_content" ] || continue
+
+      local _section_bytes
+      _section_bytes=$(printf '%s' "$_section_content" | wc -c 2>/dev/null || echo "${#_section_content}")
+
+      if [ "$remaining_budget" -gt 0 ] && [ "$_section_bytes" -le "$remaining_budget" ]; then
+        if [ -n "$_sht" ]; then
+          auto_content+="
+--- $_sf § $_sht ---
+${_section_content}
+--- end $_sf § $_sht ---
+
+"
+        else
+          auto_content+="
+--- $_sf ---
+${_section_content}
+--- end $_sf ---
+
+"
+        fi
+        remaining_budget=$((remaining_budget - _section_bytes))
+        total_bytes=$((total_bytes + _section_bytes))
+      else
+        if [ -n "$_sht" ]; then
+          discovery_index+=("$_sf § $_sht")
+        else
+          discovery_index+=("$_sf (preamble)")
+        fi
+      fi
+    done < <(printf '%s' "$_feature_sections")
+  fi
+
+  # -------------------------------------------------------------------------
+  # Discoverability index — sections available but not loaded due to cap
+  # -------------------------------------------------------------------------
+  if [ "${#discovery_index[@]}" -gt 0 ]; then
+    auto_content+="
+--- AVAILABLE SECTIONS (not loaded — exceeds ${byte_cap}B content cap) ---
+The following documentation sections are available in the docs map but were not loaded because they would exceed the byte cap. They are discoverable — reference them by file § section if needed:
+"
+    local _idx_entry
+    for _idx_entry in "${discovery_index[@]}"; do
+      auto_content+="- $_idx_entry
+"
+    done
+    auto_content+="--- END AVAILABLE SECTIONS ---
+
+"
+  fi
+
+  if [ -n "$auto_content" ]; then
+    print_info "Auto-docs (map-driven): injected ~${total_bytes}B of grounding docs (cap: ${byte_cap}B); ${#discovery_index[@]} section(s) indexed but not loaded" >&2
+  fi
+
+  printf '%s' "$auto_content"
+}
+
+# =============================================================================
+# _collect_auto_docs: auto-discover docs/**/*.md, ADRs, and README.md
+#
+# Dispatcher: when docs/docs-map.tsv (v4) is present, delegates to
+# _collect_auto_docs_via_map for section-anchored loading so BYTE_CAP bounds
+# *content loaded per pass* rather than discoverability — a 240 KB design doc
+# contributes all its sections to the map; only the sections that fit within
+# the cap are loaded; the rest appear in the discoverability index.
+#
+# Falls back to _collect_auto_docs_whole_file (whole-file granularity) for
+# repos that have not yet built a docs map.
+#
+# Set RITE_PLAN_DOC_BYTE_CAP=0 to disable auto-discovery entirely.
+#
+# Usage: _collect_auto_docs [already-loaded-paths...]
+#   Already-loaded paths are skipped to avoid double-injection.
+# =============================================================================
+
+_collect_auto_docs() {
+  local byte_cap="${RITE_PLAN_DOC_BYTE_CAP:-50000}"
+  local project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Validate that byte_cap is a non-negative integer.
+  case "$byte_cap" in
+    ''|*[!0-9]*)
+      print_info "Auto-docs: RITE_PLAN_DOC_BYTE_CAP='$byte_cap' is not a valid integer — using default 50000" >&2
+      byte_cap=50000
+      ;;
+  esac
+
+  # Escape hatch: cap=0 disables auto-discovery entirely.
+  if [ "$byte_cap" -eq 0 ]; then
+    return 0
+  fi
+
+  # Map-driven path: consult docs/docs-map.tsv (v4) when available so the cap
+  # bounds content loaded per section, not discoverability.
+  local map_file="${project_root}/docs/docs-map.tsv"
+  if [ -f "$map_file" ]; then
+    local _map_header
+    _map_header=$(head -1 "$map_file" 2>/dev/null || true)
+    case "$_map_header" in
+      "# docs-map v4"*)
+        _collect_auto_docs_via_map "$map_file" "$byte_cap" "$project_root" "$@"
+        return
+        ;;
+    esac
+  fi
+
+  # No docs map (or pre-v4 format): fall back to whole-file discovery.
+  _collect_auto_docs_whole_file "$byte_cap" "$project_root" "$@"
 }
 
 # =============================================================================
