@@ -129,6 +129,11 @@ run_align_docs_switch() {
     return 0
   fi
 
+  if [ -n "$_disable_flag" ]; then
+    echo "Error: unknown argument '${_disable_flag}'. Usage: rite align-docs [--disable]" >&2
+    return 1
+  fi
+
   # Already enabled: report and exit without re-prompting
   case "${RITE_DOC_MODE:-}" in
     sync|changelog)
@@ -145,7 +150,7 @@ run_align_docs_switch() {
   esac
 
   # Mode is unset or off — first-run path
-  if [ ! -t 0 ]; then
+  if [ ! -t 0 ] && [ "${_RITE_FORCE_TTY:-}" != "1" ]; then
     if declare -f print_info >/dev/null 2>&1; then
       print_info "Not an interactive terminal — run 'rite align-docs' interactively to configure doc drift tracking."
     else

@@ -1116,7 +1116,9 @@ if [ "$MODE" = "init" ]; then
   source "$RITE_LIB_DIR/utils/doc-consent.sh"
 
   _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
-  if [ -n "$_recorded_mode" ]; then
+  if [ "$_recorded_mode" = "off" ]; then
+    print_info "Doc drift tracking off — run 'rite align-docs' to re-enable"
+  elif [ -n "$_recorded_mode" ]; then
     print_info "Doc mode: ${_recorded_mode} (use 'rite align-docs --disable' to turn off)"
   else
     print_info "Doc drift tracking not configured — run 'rite align-docs' to enable"
