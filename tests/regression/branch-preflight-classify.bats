@@ -237,6 +237,5 @@ teardown() {
 
   # One commit exists but it's not the init commit for issue 141;
   # classify_branch_health should return 0 (HEALTHY — one real commit).
-  [ "$exit_code" -ne 3 ]
-  [ "$exit_code" -ne 4 ]
+  [ "$exit_code" -eq 0 ]
 }
