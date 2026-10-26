@@ -153,12 +153,16 @@ _docs_burn_drift_entries() {
 }
 
 # ---------------------------------------------------------------------------
-# _docs_apply_approved APPROVED_DIR DRIFT_PATH INSTRUCTIONS MODE TARGET_BRANCH
+# _docs_apply_approved APPROVED_DIR DRIFT_PATH INSTRUCTIONS MODE TARGET_BRANCH [SKIP_BURNDOWN]
 #
 # Apply every approved proposal (files in APPROVED_DIR) inside a temporary
 # worktree forked from origin/${TARGET_BRANCH:-main}, burn down covered drift
 # entries in the same commit, push the docs branch, and open a docs PR.
 # The PR is NOT auto-merged — it goes through normal human review.
+#
+# SKIP_BURNDOWN (6th arg, default false): pass "true" to suppress legacy
+# flat-log burn-down (used by _docs_main_entries_pass whose scope boundary
+# explicitly forbids legacy entry removal).
 #
 # Consent-gate rationale: this function is reached ONLY after explicit human
 # approval in the preview loop — explicit command + preview approval IS consent.
@@ -166,10 +170,11 @@ _docs_burn_drift_entries() {
 # ---------------------------------------------------------------------------
 _docs_apply_approved() {
   local _aa_dir="${1:-}"
-  local _aa_drift_path="${2:-}"
+  local _aa_drift_path="${2:-}"  # unused; kept for interface compat with _docs_update_engine caller
   local _aa_instructions="${3:-}"
   local _aa_mode="${4:-directed}"
   local _aa_target="${5:-${RITE_TARGET_BRANCH:-main}}"
+  local _aa_skip_burndown="${6:-false}"
 
   # Count approved proposals
   local _aa_count=0
@@ -256,7 +261,9 @@ _docs_apply_approved() {
   # Burn down drift entries in the worktree's copy of the drift log.
   # drift_log_path is called from within the worktree cwd so git rev-parse
   # --show-toplevel returns the worktree root, not the main checkout root.
-  if [ -n "$_aa_all_drift_refs" ]; then
+  # Skipped when _aa_skip_burndown=true (e.g. _docs_main_entries_pass, whose
+  # scope boundary explicitly forbids removing legacy flat-log entries).
+  if [ -n "$_aa_all_drift_refs" ] && [ "$_aa_skip_burndown" != "true" ]; then
     local _aa_wt_drift
     _aa_wt_drift="$(cd "$_aa_wt_path" && drift_log_path 2>/dev/null || true)"
     if [ -n "$_aa_wt_drift" ] && [ -f "$_aa_wt_drift" ]; then
@@ -852,13 +859,690 @@ docs_directed_update() {
 }
 
 # ---------------------------------------------------------------------------
+# _docs_extract_section FILE HEADING_LEVEL HEADING_TEXT
+#
+# Extract one section from FILE by its heading anchor (level + text).
+# Mirrors _plan_extract_section from plan-issues.sh without sourcing that file.
+# Output: heading line + body up to (not including) the next same-or-higher
+# heading, or EOF.  Preamble: HEADING_LEVEL="" → lines before the first heading.
+# ---------------------------------------------------------------------------
+_docs_extract_section() {
+  local _des_file="$1"
+  local _des_level="$2"
+  local _des_text="$3"
+  [ -f "$_des_file" ] || return 0
+
+  if [ -z "$_des_level" ]; then
+    awk 'BEGIN{inf=0}
+      /^```/||/^~~~/{inf=!inf; print; next}
+      !inf&&/^#/{exit}
+      {print}' "$_des_file"
+  else
+    TGT_TEXT="$_des_text" awk -v tgt_level="$_des_level" '
+      BEGIN{capturing=0;inf=0;tgt_l=tgt_level+0;tgt_text=ENVIRON["TGT_TEXT"]}
+      /^```/||/^~~~/{inf=!inf; if(capturing)print; next}
+      !inf&&/^#/{
+        n=0; line=$0
+        while(substr(line,1,1)=="#"){n++;line=substr(line,2)}
+        if(substr(line,1,1)==" ") line=substr(line,2)
+        if(substr(line,1,1)=="\t") line=substr(line,2)
+        if(length(line)>0&&substr(line,length(line),1)==" ") line=substr(line,1,length(line)-1)
+        if(length(line)>0&&substr(line,length(line),1)=="\t") line=substr(line,1,length(line)-1)
+        gsub(/\t/,"",line)
+        if(!capturing){
+          if(n==tgt_l&&line==tgt_text){capturing=1;print}
+        } else {
+          if(n<=tgt_l){exit}
+          print
+        }
+        next
+      }
+      capturing{print}
+    ' "$_des_file"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# _docs_list_main_entry_docs
+#
+# Echo one doc path per line for every doc that has branch=main drift entries
+# in RITE_STATE_DIR/doc-drift/main/.  Reads the doc= field from the entry file
+# directly (avoids slug-reversal ambiguity).
+# ---------------------------------------------------------------------------
+_docs_list_main_entry_docs() {
+  local _lme_dir="${RITE_STATE_DIR:-}/doc-drift/main"
+  [ -d "$_lme_dir" ] || return 0
+  local _lme_f _lme_doc _lme_cnt
+  while IFS= read -r _lme_f || [ -n "$_lme_f" ]; do
+    [ -f "$_lme_f" ] || continue
+    _lme_doc="$(awk -F'\t' '{for(i=1;i<=NF;i++){if(substr($i,1,4)=="doc="){print substr($i,5); exit}}}' \
+      "$_lme_f" | head -1 || true)"
+    [ -n "$_lme_doc" ] || continue
+    _lme_cnt="$(grep -c '^doc=' "$_lme_f" || true)"
+    [ "$_lme_cnt" -gt 0 ] && printf '%s\n' "$_lme_doc"
+  done < <(find "$_lme_dir" -name '*.log' -type f 2>/dev/null | sort || true)
+}
+
+# ---------------------------------------------------------------------------
+# _docs_bounded_context_for_doc DOC
+#
+# Assemble bounded LLM context for a single doc:
+#   - Map-anchored sections of the target doc (up to 8 KB)
+#   - ADR files that link to this doc (up to 4 KB, from docs_map_adr_links)
+# Writes the formatted context block to stdout.
+# ---------------------------------------------------------------------------
+_docs_bounded_context_for_doc() {
+  local _bcd_doc="$1"
+  local _bcd_abs="${RITE_PROJECT_ROOT}/${_bcd_doc}"
+  local _bcd_section_cap=8000
+  local _bcd_adr_cap=4000
+
+  local _bcd_map_file
+  _bcd_map_file="$(docs_map_path)"
+
+  # --- Pass 1: map-anchored section reads for the target doc ---
+  local _bcd_sec_bytes=0
+  local _bcd_sec_content=""
+  if [ -f "$_bcd_map_file" ] && [ -f "$_bcd_abs" ]; then
+    local _bcd_fp _bcd_sha _bcd_af _bcd_hl _bcd_ht _bcd_fpr _bcd_dt _bcd_rb _bcd_tg _bcd_nt
+    while IFS=$'\001' read -r _bcd_fp _bcd_sha _bcd_af _bcd_hl _bcd_ht _bcd_fpr _bcd_dt _bcd_rb _bcd_tg _bcd_nt; do
+      [ "$_bcd_fp" = "$_bcd_doc" ] || continue
+      local _bcd_sec
+      _bcd_sec="$(_docs_extract_section "$_bcd_abs" "${_bcd_hl:-}" "${_bcd_ht:-}" || true)"
+      [ -n "$_bcd_sec" ] || continue
+      local _bcd_anchor="${_bcd_ht:-(preamble)}"
+      local _bcd_entry
+      _bcd_entry="--- ${_bcd_doc} § ${_bcd_anchor} ---
+${_bcd_sec}
+
+"
+      if [ $((_bcd_sec_bytes + ${#_bcd_entry})) -gt "$_bcd_section_cap" ]; then
+        _bcd_sec_content="${_bcd_sec_content}(remaining sections omitted — byte cap)
+"
+        break
+      fi
+      _bcd_sec_bytes=$((_bcd_sec_bytes + ${#_bcd_entry}))
+      _bcd_sec_content="${_bcd_sec_content}${_bcd_entry}"
+    done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$_bcd_map_file" || true)
+  fi
+
+  # --- Pass 2: ADR files that reference this doc ---
+  local _bcd_adr_bytes=0
+  local _bcd_adr_content=""
+  local _bcd_seen_adrs=""
+  if [ -f "$_bcd_map_file" ]; then
+    local _bcd_a_fp _bcd_a_sha _bcd_a_af _bcd_a_r1 _bcd_a_r2 _bcd_a_r3 _bcd_a_r4 _bcd_a_r5 _bcd_a_r6 _bcd_a_r7
+    while IFS=$'\001' read -r _bcd_a_fp _bcd_a_sha _bcd_a_af _bcd_a_r1 _bcd_a_r2 _bcd_a_r3 _bcd_a_r4 _bcd_a_r5 _bcd_a_r6 _bcd_a_r7; do
+      [ "$_bcd_a_af" = "adr" ] || continue
+      # Dedup: process each ADR file once
+      case $'\n'"$_bcd_seen_adrs"$'\n' in *$'\n'"${_bcd_a_fp}"$'\n'*) continue ;; esac
+      _bcd_seen_adrs="${_bcd_seen_adrs}${_bcd_a_fp}"$'\n'
+      local _bcd_adr_abs="${RITE_PROJECT_ROOT}/${_bcd_a_fp}"
+      [ -f "$_bcd_adr_abs" ] || continue
+      local _bcd_links
+      _bcd_links="$(docs_map_adr_links "$_bcd_a_fp" 2>/dev/null || true)"
+      printf '%s\n' "$_bcd_links" | grep -qxF "$_bcd_doc" 2>/dev/null || continue
+      local _bcd_adr_excerpt
+      _bcd_adr_excerpt="$(head -c 3000 "$_bcd_adr_abs" 2>/dev/null || true)"
+      local _bcd_adr_entry
+      _bcd_adr_entry="--- ADR: ${_bcd_a_fp} ---
+${_bcd_adr_excerpt}
+
+"
+      if [ $((_bcd_adr_bytes + ${#_bcd_adr_entry})) -gt "$_bcd_adr_cap" ]; then
+        break
+      fi
+      _bcd_adr_bytes=$((_bcd_adr_bytes + ${#_bcd_adr_entry}))
+      _bcd_adr_content="${_bcd_adr_content}${_bcd_adr_entry}"
+    done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$_bcd_map_file" || true)
+  fi
+
+  printf '%s' "$_bcd_sec_content"
+  [ -n "$_bcd_adr_content" ] && printf '%s' "$_bcd_adr_content"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _docs_main_entries_pass DOC
+#
+# Tier 2 per-doc engine for branch=main drift entries.
+#
+# 1. Reads structured entries for DOC from RITE_STATE_DIR/doc-drift/main/.
+# 2. Assembles bounded input (map-anchored sections, ADR context, entries,
+#    diff summary extracted from entry evidence fields).
+# 3. Calls provider_resolve_model doc_update (not doc_assessment).
+# 4. Validates response contains both a ---NARRATIVE--- block AND at least one
+#    ---PROPOSAL--- block; missing either → accumulates feedback and retries
+#    (up to 5 attempts, same as _docs_update_engine).
+# 5. REFINE proposals (ACTION: REFINE) → interactive prompt; on approval
+#    writes a kind=refinement drift entry; never applied as doc edits.
+# 6. EDIT / CREATE proposals → #1208 guards + existing preview loop.
+# 7. Approved EDIT/CREATE changes → _docs_apply_approved (same docs-PR path).
+#
+# Notes:
+# - Entry burn-down is NOT performed here (deferred to a separate issue).
+# - The #1233 per-generation end token prevents content containing ---END---
+#   from being mistaken for a proposal delimiter.
+# ---------------------------------------------------------------------------
+_docs_main_entries_pass() {
+  local _mp_doc="$1"
+  local _mp_target="${RITE_TARGET_BRANCH:-main}"
+  local _mp_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+
+  # Read entry file for this doc from the main-branch drift store
+  local _mp_entry_file
+  _mp_entry_file="$(_drift_entry_path "$_mp_doc" "main" || true)"
+  if [ -z "$_mp_entry_file" ] || [ ! -f "$_mp_entry_file" ]; then
+    print_info "  No main-branch entries for ${_mp_doc}"
+    return 0
+  fi
+
+  # Collect entries as formatted text; extract evidence for diff summary
+  local _mp_entries_text="" _mp_diff_summary=""
+  local _mp_eline
+  while IFS= read -r _mp_eline || [ -n "$_mp_eline" ]; do
+    [ -n "$_mp_eline" ] || continue
+    _mp_entries_text="${_mp_entries_text}${_mp_eline}
+"
+    local _mp_ev
+    _mp_ev="$(printf '%s' "$_mp_eline" | awk -F'\t' \
+      '{for(i=1;i<=NF;i++){if(substr($i,1,9)=="evidence="){print substr($i,10); break}}}' || true)"
+    if [ -n "$_mp_ev" ] && [ "$_mp_ev" != "-" ]; then
+      _mp_diff_summary="${_mp_diff_summary}${_mp_ev}
+"
+    fi
+  done < "$_mp_entry_file"
+
+  # Bounded context: map-anchored sections + ADR references
+  local _mp_doc_ctx
+  _mp_doc_ctx="$(_docs_bounded_context_for_doc "$_mp_doc" || true)"
+
+  # Fetch origin/<target> so the #1208 CREATE/EDIT guards reflect current remote state
+  git -C "$RITE_PROJECT_ROOT" fetch origin "$_mp_target" 2>/dev/null || {
+    print_warning "Could not fetch origin/${_mp_target} — CREATE guard may miss recently-pushed files" >&2
+  }
+
+  # Context-membership list for the #1208 EDIT guard: this pass is scoped to
+  # a single doc, so only that doc (plus any CREATE targets) is in context.
+  local _mp_ctx_files="${_mp_doc}
+"
+
+  local _mp_accum_fb=""
+  local _mp_attempt=0
+  # Per-generation end token (#1233): prevents doc content containing ---END---
+  # from being mistaken for a proposal delimiter.
+  local _mp_end_token="---END-${RANDOM}${RANDOM}---"
+
+  while [ "$_mp_attempt" -lt 5 ]; do
+    _mp_attempt=$((_mp_attempt + 1))
+
+    local _mp_fb_section=""
+    if [ -n "$_mp_accum_fb" ]; then
+      _mp_fb_section="
+Feedback from previous proposal round — incorporate in new proposals:
+${_mp_accum_fb}
+"
+    fi
+
+    local _mp_prompt_file
+    _mp_prompt_file="$(mktemp)"
+    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: doc, context, entry, and feedback vars must expand
+    cat > "$_mp_prompt_file" <<DOC_MAIN_EOF
+You are a documentation writer performing a Tier 2 documentation correction pass.
+
+Target doc: ${_mp_doc}
+${_mp_fb_section}
+REQUIRED OUTPUT FORMAT — both sections are mandatory:
+
+1. A ---NARRATIVE--- block (2-5 sentences explaining what changed in the code and why the doc needs updating).
+2. At least one ---PROPOSAL--- block with an explicit edit.
+
+For assertions you cannot verify deterministically (e.g. subjective quality claims like "the experience is smooth"), output a REFINE proposal — propose enforceable, checkable wording instead of an EDIT.
+
+Bounded context for ${_mp_doc} (map-anchored sections + referencing ADRs):
+${_mp_doc_ctx}
+
+Drift entries (tab-separated: doc=, branch=, pr=, issue=, assertion=, kind=, evidence=, recorded=):
+${_mp_entries_text}
+
+Diff summary (changed files/tests that triggered these entries):
+${_mp_diff_summary:-none recorded}
+
+Output in this EXACT format (missing either section causes a retry):
+
+---NARRATIVE---
+<2-5 sentences: what changed in the code and why the doc needs updating>
+---END-NARRATIVE---
+
+For each doc to edit (full new content of the entire file — NOT just the changed section):
+---PROPOSAL---
+ACTION: EDIT
+FILE: ${_mp_doc}
+DRIFT_REFS: <space-separated pr:N from the entries above, or "none">
+DESCRIPTION: <one-line summary>
+---CONTENT---
+<complete new content of the entire file>
+${_mp_end_token}
+
+For nondeterministic assertions (propose enforceable rewording):
+---PROPOSAL---
+ACTION: REFINE
+FILE: ${_mp_doc}
+DRIFT_REFS: <pr:N refs or "none">
+DESCRIPTION: <why this assertion is not verifiable and what checkable form it should take>
+---CONTENT---
+<proposed enforceable rewording>
+${_mp_end_token}
+
+If no changes are needed: NO_PROPOSALS_NEEDED
+DOC_MAIN_EOF
+
+    print_info "Running Tier 2 doc pass for ${_mp_doc} (attempt ${_mp_attempt}/5)..."
+
+    local _mp_raw="" _mp_llm_rc=0
+    _mp_raw="$(provider_run_prompt_with_timeout \
+      "$(cat "$_mp_prompt_file")" \
+      "$(provider_resolve_model doc_update)" \
+      true \
+      "$_mp_timeout" 2>/dev/null)" || _mp_llm_rc=$?
+    rm -f "$_mp_prompt_file"
+
+    if [ "$_mp_llm_rc" -eq 124 ]; then
+      print_warning "Provider call timed out after ${_mp_timeout}s — no proposals generated for ${_mp_doc}" >&2
+      return 1
+    elif [ "$_mp_llm_rc" -ne 0 ]; then
+      print_warning "Provider call failed (exit ${_mp_llm_rc}) — no proposals generated for ${_mp_doc}" >&2
+      return 1
+    fi
+
+    if [ -z "$_mp_raw" ]; then
+      print_info "No proposals returned for ${_mp_doc}"
+      return 0
+    fi
+
+    if printf '%s\n' "$_mp_raw" | grep -q "^NO_PROPOSALS_NEEDED"; then
+      print_info "Doc pass: no changes needed for ${_mp_doc}"
+      return 0
+    fi
+
+    # Validate: response must contain both a narrative and at least one proposal
+    local _mp_has_narrative=0 _mp_has_proposal=0
+    printf '%s\n' "$_mp_raw" | grep -q "^---NARRATIVE---" && _mp_has_narrative=1 || true
+    printf '%s\n' "$_mp_raw" | grep -q "^---PROPOSAL---" && _mp_has_proposal=1 || true
+
+    if [ "$_mp_has_narrative" -eq 0 ] || [ "$_mp_has_proposal" -eq 0 ]; then
+      local _mp_missing=""
+      [ "$_mp_has_narrative" -eq 0 ] && _mp_missing="a ---NARRATIVE--- block"
+      if [ "$_mp_has_proposal" -eq 0 ]; then
+        _mp_missing="${_mp_missing:+${_mp_missing} and }at least one ---PROPOSAL--- block"
+      fi
+      local _mp_val_fb="Response is missing ${_mp_missing}. Both are required: a narrative explaining why the doc needs updating, and at least one explicit edit proposal."
+      if [ -n "$_mp_accum_fb" ]; then
+        _mp_accum_fb="${_mp_accum_fb}
+---
+${_mp_val_fb}"
+      else
+        _mp_accum_fb="$_mp_val_fb"
+      fi
+      print_warning "  Proposal for ${_mp_doc} missing ${_mp_missing} — retrying (${_mp_attempt}/5)..." >&2
+      continue
+    fi
+
+    # Extract and display the narrative
+    local _mp_narrative="" _mp_in_nar=0
+    local _mp_nar_line
+    while IFS= read -r _mp_nar_line || [ -n "$_mp_nar_line" ]; do
+      case "$_mp_nar_line" in
+        "---NARRATIVE---")     _mp_in_nar=1 ;;
+        "---END-NARRATIVE---") _mp_in_nar=0 ;;
+        *) [ "$_mp_in_nar" = "1" ] && _mp_narrative="${_mp_narrative}${_mp_nar_line}"$'\n' ;;
+      esac
+    done <<EOF_NAR
+$_mp_raw
+EOF_NAR
+    if [ -n "$_mp_narrative" ]; then
+      echo "" >&2
+      print_info "Narrative for ${_mp_doc}:"
+      printf '%s' "$_mp_narrative" >&2
+    fi
+
+    # --- Parse proposals ---
+    local _mp_props_dir
+    _mp_props_dir="$(mktemp -d)"
+    local _mp_prop_count=0
+    local _mp_in_prop=0 _mp_in_content=0
+    local _mp_cur_action="" _mp_cur_file="" _mp_cur_drift="" _mp_cur_desc="" _mp_cur_content=""
+
+    local _mp_raw_file
+    _mp_raw_file="$(mktemp)"
+    printf '%s\n' "$_mp_raw" > "$_mp_raw_file"
+
+    local _mp_rl
+    while IFS= read -r _mp_rl || [ -n "$_mp_rl" ]; do
+      case "$_mp_rl" in
+        "---NARRATIVE---"|"---END-NARRATIVE---")
+          # Narrative delimiters are not proposals; include in content if inside one
+          [ "$_mp_in_content" = "1" ] && _mp_cur_content="${_mp_cur_content}${_mp_rl}"$'\n'
+          ;;
+        "---PROPOSAL---")
+          if [ "$_mp_in_content" = "1" ]; then
+            _mp_cur_content="${_mp_cur_content}${_mp_rl}"$'\n'
+          else
+            _mp_in_prop=1; _mp_in_content=0
+            _mp_cur_action=""; _mp_cur_file=""; _mp_cur_drift=""; _mp_cur_desc=""; _mp_cur_content=""
+          fi
+          ;;
+        "---CONTENT---")
+          if [ "$_mp_in_content" = "1" ]; then
+            _mp_cur_content="${_mp_cur_content}${_mp_rl}"$'\n'
+          else
+            [ "$_mp_in_prop" = "1" ] && _mp_in_content=1
+          fi
+          ;;
+        "${_mp_end_token}")
+          if [ "$_mp_in_prop" = "1" ] && [ -n "$_mp_cur_file" ]; then
+            _mp_prop_count=$((_mp_prop_count + 1))
+            {
+              printf 'ACTION: %s\n' "$_mp_cur_action"
+              printf 'FILE: %s\n' "$_mp_cur_file"
+              printf 'DRIFT_REFS: %s\n' "${_mp_cur_drift:-none}"
+              printf 'DESCRIPTION: %s\n' "$_mp_cur_desc"
+              printf -- '---CONTENT---\n'
+              printf '%s' "$_mp_cur_content"
+            } > "${_mp_props_dir}/proposal_${_mp_prop_count}.txt"
+          fi
+          _mp_in_prop=0; _mp_in_content=0
+          ;;
+        *)
+          if [ "$_mp_in_prop" = "1" ]; then
+            if [ "$_mp_in_content" = "1" ]; then
+              _mp_cur_content="${_mp_cur_content}${_mp_rl}"$'\n'
+            else
+              case "$_mp_rl" in
+                "ACTION: "*)      _mp_cur_action="${_mp_rl#ACTION: }" ;;
+                "FILE: "*)        _mp_cur_file="${_mp_rl#FILE: }" ;;
+                "DRIFT_REFS: "*)  _mp_cur_drift="${_mp_rl#DRIFT_REFS: }" ;;
+                "DESCRIPTION: "*) _mp_cur_desc="${_mp_rl#DESCRIPTION: }" ;;
+              esac
+            fi
+          fi
+          ;;
+      esac
+    done < "$_mp_raw_file"
+    rm -f "$_mp_raw_file"
+
+    if [ "$_mp_prop_count" -eq 0 ]; then
+      if printf '%s\n' "$_mp_raw" | grep -q "^---PROPOSAL---$"; then
+        print_warning "Model output contained '---PROPOSAL---' markers but zero complete proposals were parsed — model may have used the wrong end token '${_mp_end_token}'; re-run to generate a new unique end token" >&2
+      fi
+      print_info "No actionable proposals for ${_mp_doc}"
+      rm -rf "$_mp_props_dir"
+      return 0
+    fi
+
+    echo "" >&2
+    print_info "${_mp_prop_count} proposal(s) for ${_mp_doc}:"
+
+    # --- Per-proposal preview loop (with #1208 guards) ---
+    local _mp_appr_dir
+    _mp_appr_dir="$(mktemp -d)"
+    local _mp_appr_count=0
+    local _mp_feedback_this_round="" _mp_pi=1
+
+    while [ "$_mp_pi" -le "$_mp_prop_count" ]; do
+      local _mp_pf="${_mp_props_dir}/proposal_${_mp_pi}.txt"
+      [ -f "$_mp_pf" ] || { _mp_pi=$((_mp_pi + 1)); continue; }
+
+      local _mp_p_action _mp_p_file _mp_p_drift _mp_p_desc _mp_p_content
+      _mp_p_action="$(grep '^ACTION: ' "$_mp_pf" | head -1 | cut -d' ' -f2- || true)"
+      _mp_p_file="$(grep '^FILE: ' "$_mp_pf" | head -1 | cut -d' ' -f2- || true)"
+      _mp_p_drift="$(grep '^DRIFT_REFS: ' "$_mp_pf" | head -1 || true)"
+      _mp_p_drift="${_mp_p_drift#DRIFT_REFS: }"
+      _mp_p_desc="$(grep '^DESCRIPTION: ' "$_mp_pf" | head -1 || true)"
+      _mp_p_desc="${_mp_p_desc#DESCRIPTION: }"
+
+      _mp_p_content=""
+      local _mp_in_c=0 _mp_cl
+      while IFS= read -r _mp_cl || [ -n "$_mp_cl" ]; do
+        if [ "$_mp_in_c" = "1" ]; then
+          _mp_p_content="${_mp_p_content}${_mp_cl}"$'\n'
+        elif [ "$_mp_cl" = "---CONTENT---" ]; then
+          _mp_in_c=1
+        fi
+      done < "$_mp_pf"
+
+      # Reject unsafe paths before preview
+      # shellcheck disable=SC2221,SC2222
+      case "$_mp_p_file" in
+        /*|*../*|*/..|../*|..)
+          print_warning "  Skipping proposal with unsafe FILE path: '$_mp_p_file'" >&2
+          _mp_pi=$((_mp_pi + 1))
+          continue
+          ;;
+      esac
+
+      # REFINE action: record a kind=refinement drift entry (not a doc edit)
+      if [ "$_mp_p_action" = "REFINE" ]; then
+        echo "" >&2
+        echo "──────────────────────────────────────────────" >&2
+        printf '  Proposal %d/%d  [REFINE]  %s\n' "$_mp_pi" "$_mp_prop_count" "$_mp_p_file" >&2
+        [ -n "$_mp_p_desc" ] && printf '  %s\n' "$_mp_p_desc" >&2
+        echo "" >&2
+        printf '  Proposed enforceable rewording:\n' >&2
+        printf '%s\n' "$_mp_p_content" | head -10 >&2
+        echo "" >&2
+        local _mp_ref_input="n"
+        read -p "  Record as refinement entry? (y)es / (n)o: " -r _mp_ref_input || true
+        echo "" >&2
+        case "$_mp_ref_input" in
+          [Yy]|[Yy][Ee][Ss])
+            drift_log_append "$_mp_p_file" "main" "0" "-" \
+              "${_mp_p_desc}" "refinement" \
+              "nondeterministic assertion; proposed rewording: ${_mp_p_content}" || true
+            print_info "  Refinement entry recorded for ${_mp_p_file}"
+            ;;
+          *)
+            print_info "  Skipped refinement for ${_mp_p_file}"
+            ;;
+        esac
+        _mp_pi=$((_mp_pi + 1))
+        continue
+      fi
+
+      # #1208 guard: EDIT context-membership check
+      if [ "$_mp_p_action" = "EDIT" ]; then
+        if [ -n "$_mp_ctx_files" ]; then
+          case $'\n'"$_mp_ctx_files" in
+            *$'\n'"${_mp_p_file}"$'\n'*) : ;;
+            *)
+              print_warning "  Auto-skipping EDIT for '${_mp_p_file}': file not in model context (pass is scoped to ${_mp_doc})" >&2
+              _mp_pi=$((_mp_pi + 1))
+              continue
+              ;;
+          esac
+        fi
+        # #1208 guard: large-file check — threshold matches _bcd_section_cap (8000)
+        # in _docs_bounded_context_for_doc; files within the cap have their full
+        # content loaded so EDIT is safe; files beyond the cap were seen only in
+        # excerpt, making a whole-file overwrite unsafe.
+        local _mp_abs_size="${RITE_PROJECT_ROOT}/${_mp_p_file}"
+        if [ -f "$_mp_abs_size" ]; then
+          local _mp_file_size
+          _mp_file_size="$(wc -c < "$_mp_abs_size" 2>/dev/null || echo 0)"
+          if [ "$_mp_file_size" -gt 8000 ]; then
+            print_warning "  Auto-skipping EDIT for '${_mp_p_file}': file is ${_mp_file_size} bytes but model only saw bounded excerpt" >&2
+            _mp_pi=$((_mp_pi + 1))
+            continue
+          fi
+        elif ! git -C "$RITE_PROJECT_ROOT" cat-file -e "origin/${_mp_target}:${_mp_p_file}" 2>/dev/null; then
+          print_warning "  Auto-skipping EDIT for '${_mp_p_file}': file does not exist locally or on origin/${_mp_target} — use ACTION: CREATE for a new file" >&2
+          _mp_pi=$((_mp_pi + 1))
+          continue
+        fi
+      fi
+
+      # #1208 guard: CREATE-exists check
+      if [ "$_mp_p_action" = "CREATE" ]; then
+        local _mp_abs_create="${RITE_PROJECT_ROOT}/${_mp_p_file}"
+        if [ -f "$_mp_abs_create" ] || \
+           git -C "$RITE_PROJECT_ROOT" cat-file -e "origin/${_mp_target}:${_mp_p_file}" 2>/dev/null; then
+          print_warning "  Auto-skipping CREATE for '${_mp_p_file}': file already exists — use ACTION: EDIT to update an existing file" >&2
+          _mp_pi=$((_mp_pi + 1))
+          continue
+        fi
+      fi
+
+      # Show preview header
+      echo "" >&2
+      echo "──────────────────────────────────────────────" >&2
+      printf '  Proposal %d/%d  [%s]  %s\n' "$_mp_pi" "$_mp_prop_count" "$_mp_p_action" "$_mp_p_file" >&2
+      [ -n "$_mp_p_drift" ] && [ "$_mp_p_drift" != "none" ] && \
+        printf '  Covers: %s\n' "$_mp_p_drift" >&2
+      [ -n "$_mp_p_desc" ] && printf '  %s\n' "$_mp_p_desc" >&2
+      echo "" >&2
+
+      if [ "$_mp_p_action" = "CREATE" ]; then
+        echo "  [CREATE — new file, full content shown]" >&2
+        printf '%s\n' "$_mp_p_content" | head -40 >&2
+        local _mp_total_lines
+        _mp_total_lines="$(printf '%s\n' "$_mp_p_content" | wc -l | tr -d ' ')"
+        [ "$_mp_total_lines" -gt 40 ] && \
+          printf '  ... (%d lines total)\n' "$_mp_total_lines" >&2
+      else
+        local _mp_old_tmp _mp_new_tmp
+        _mp_old_tmp="$(mktemp)"
+        _mp_new_tmp="$(mktemp)"
+        if ! git -C "$RITE_PROJECT_ROOT" show "origin/${_mp_target}:${_mp_p_file}" > "$_mp_old_tmp" 2>/dev/null; then
+          local _mp_abs_path="${RITE_PROJECT_ROOT}/${_mp_p_file}"
+          if [ -f "$_mp_abs_path" ]; then
+            cat "$_mp_abs_path" > "$_mp_old_tmp"
+          else
+            printf '' > "$_mp_old_tmp"
+          fi
+        fi
+        printf '%s' "$_mp_p_content" > "$_mp_new_tmp"
+        diff -u "$_mp_old_tmp" "$_mp_new_tmp" >&2 || true
+        rm -f "$_mp_old_tmp" "$_mp_new_tmp"
+      fi
+
+      echo "" >&2
+      local _mp_input="n"
+      read -p "  Apply this change? (y)es / (n)o / (f)eedback: " -r _mp_input || true
+      echo "" >&2
+
+      case "$_mp_input" in
+        [Yy]|[Yy][Ee][Ss])
+          _mp_appr_count=$((_mp_appr_count + 1))
+          cp "$_mp_pf" "${_mp_appr_dir}/approved_${_mp_appr_count}.txt"
+          print_info "  Approved: ${_mp_p_file}"
+          ;;
+        [Nn]|[Nn][Oo]|"")
+          print_info "  Skipped: ${_mp_p_file}"
+          ;;
+        [Ff]|[Ff][Ee][Ee][Dd][Bb][Aa][Cc][Kk])
+          echo "  What changes do you want? (press Enter twice when done)" >&2
+          local _mp_this_fb="" _mp_empty_ct=0
+          while IFS= read -r _mp_fb_line; do
+            if [ -z "$_mp_fb_line" ]; then
+              _mp_empty_ct=$((_mp_empty_ct + 1))
+              [ "$_mp_empty_ct" -ge 2 ] && break
+              _mp_this_fb="${_mp_this_fb}"$'\n'
+            else
+              _mp_empty_ct=0
+              _mp_this_fb="${_mp_this_fb}${_mp_fb_line}"$'\n'
+            fi
+          done
+          _mp_this_fb=$(printf '%s' "$_mp_this_fb" | sed 's/[[:space:]]*$//' || true)
+          if [ -n "$_mp_this_fb" ]; then
+            _mp_feedback_this_round="$_mp_this_fb"
+            print_info "  Feedback captured — regenerating all proposals for ${_mp_doc}..."
+            break
+          else
+            print_warning "  No feedback entered — please re-answer for proposal ${_mp_pi}" >&2
+            continue
+          fi
+          ;;
+        *)
+          print_warning "  Unrecognized response '${_mp_input}' — please enter y, n, or f" >&2
+          continue
+          ;;
+      esac
+      _mp_pi=$((_mp_pi + 1))
+    done
+
+    rm -rf "$_mp_props_dir"
+
+    if [ -n "$_mp_feedback_this_round" ]; then
+      rm -rf "$_mp_appr_dir"
+      if [ -n "$_mp_accum_fb" ]; then
+        _mp_accum_fb="${_mp_accum_fb}
+---
+${_mp_feedback_this_round}"
+      else
+        _mp_accum_fb="$_mp_feedback_this_round"
+      fi
+      continue
+    fi
+
+    if [ "$_mp_appr_count" -eq 0 ]; then
+      print_info "No changes approved for ${_mp_doc} — nothing to apply"
+      rm -rf "$_mp_appr_dir"
+      return 0
+    fi
+
+    local _mp_apply_rc=0
+    _docs_apply_approved \
+      "$_mp_appr_dir" \
+      "" \
+      "" \
+      "reconcile" \
+      "$_mp_target" \
+      "true" || _mp_apply_rc=$?
+    rm -rf "$_mp_appr_dir"
+    return "$_mp_apply_rc"
+  done
+
+  print_warning "Max proposal regeneration attempts reached for ${_mp_doc} — no changes applied"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # docs_reconcile_drift
 #
-# Reconcile mode: run the update engine over the full drift backlog with no
-# user instruction. Invoked from the reconcile offers in _docs_enable_flow and
-# _docs_run_audit. Zero drift entries → prints an info line and exits 0.
+# Reconcile mode: run the Tier 2 doc-update pass over pending drift entries.
+#
+# Priority path: branch=main entries in the new structured store (RITE_STATE_DIR/
+# doc-drift/main/).  Groups by doc and runs one bounded pass per doc via
+# _docs_main_entries_pass (doc_update model, narrative+edits validation).
+#
+# Fallback path: legacy flat drift log (docs/sharkrite-drift-log.md) for
+# entries recorded before the new schema (pre-#1425).
+#
+# Invoked from the reconcile offers in _docs_run_audit and rite_docs.
+# Zero entries (either store) → prints an info line and exits 0.
+# Entries for branches other than main are untouched.
 # ---------------------------------------------------------------------------
 docs_reconcile_drift() {
+  # Priority: check for branch=main entries in the new structured store.
+  local _rd_main_count=0
+  if [ -n "${RITE_STATE_DIR:-}" ]; then
+    _rd_main_count="$(drift_log_entry_count --branch main || echo 0)"
+  fi
+
+  if [ "$_rd_main_count" -gt 0 ]; then
+    print_info "Reconciling ${_rd_main_count} drift entr$([ "$_rd_main_count" -eq 1 ] && echo 'y' || echo 'ies') for branch=main..."
+    docs_map_ensure || true
+    local _rd_doc
+    while IFS= read -r _rd_doc || [ -n "$_rd_doc" ]; do
+      [ -n "$_rd_doc" ] || continue
+      echo "" >&2
+      print_info "Processing doc: ${_rd_doc}"
+      _docs_main_entries_pass "$_rd_doc" || true
+    done < <(_docs_list_main_entry_docs || true)
+    return 0
+  fi
+
+  # Fallback: legacy flat drift log (pre-#1425 entries).
   local _rd_drift_path
   _rd_drift_path="$(drift_log_path 2>/dev/null || true)"
 
@@ -875,7 +1559,7 @@ docs_reconcile_drift() {
     return 0
   fi
 
-  print_info "Reconciling ${_rd_count} drift entr$([ "$_rd_count" -eq 1 ] && echo 'y' || echo 'ies')..."
+  print_info "Reconciling ${_rd_count} drift entr$([ "$_rd_count" -eq 1 ] && echo 'y' || echo 'ies') from flat log..."
   docs_map_ensure || true
   _docs_update_engine "reconcile" ""
 }
