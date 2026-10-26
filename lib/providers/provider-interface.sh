@@ -41,6 +41,13 @@ fi
 # provider_validate_cli()
 #   Verify the CLI is authenticated and functional. Return 0/1.
 #
+# provider_healthcheck()
+#   Workspace trust preflight (Claude CLI >=2.1.284). Runs a trivial --print
+#   invocation and inspects stderr for the "has not been trusted" signal.
+#   Returns 0 (trusted / no signal) or 1 (untrusted — fix command printed to stderr).
+#   Emits a PROVIDER_PREFLIGHT diag line in both cases.
+#   Called once per batch or once per single-issue run; never inside the fix loop.
+#
 # --- Invocation ---
 #
 # provider_run_agentic_session(prompt, timeout, auto_mode, stderr_file)
@@ -132,7 +139,7 @@ load_provider() {
   # Alias <name>_provider_* -> provider_*
   local fn
   for fn in \
-    detect_cli validate_cli \
+    detect_cli validate_cli healthcheck \
     run_agentic_session run_prompt run_prompt_with_timeout \
     run_streaming_prompt run_classify run_uncached \
     detect_error \

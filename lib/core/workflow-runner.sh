@@ -3788,6 +3788,19 @@ main() {
     shift
   done
 
+  # Provider preflight: single-issue parity with batch-process-issues.sh.
+  # Batch mode runs this once before the first issue; skip it here to avoid
+  # a double-check per issue in batch (BATCH_MODE is exported by the dispatcher).
+  # See: batch-process-issues.sh — provider preflight block; behavioral-design.md
+  # → "Provider Preflight Parity Contract".
+  if [ "${BATCH_MODE:-false}" != "true" ]; then
+    load_provider "${RITE_DEV_PROVIDER:-claude}"
+    provider_detect_cli || true
+    if ! provider_healthcheck; then
+      exit 1
+    fi
+  fi
+
   # Set up interrupt handlers for graceful Ctrl-C exit
   setup_interrupt_handlers
 

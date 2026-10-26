@@ -864,6 +864,8 @@ A launchd job (`com.sharkrite.health-report`) runs every Monday at 9:07 AM and g
 
 **launchd PATH requirement (CRITICAL — live failure 2026-06-15):** the plist runs `bin/rite-health-report` with a minimal PATH and does NOT source your shell profile. `claude` is `#!/usr/bin/env node`, and `node` lives under nvm (`~/.nvm/versions/node/<ver>/bin`), which is not on launchd's PATH — so the job dies at exit 127 (`env node` not found) *after* passing the `command -v claude` precheck. Fix: symlink `node` into a stable dir already on the plist PATH — `ln -sf "$(command -v node)" ~/.local/bin/node` (the plist PATH already includes `~/.local/bin`, which is also where `claude` is symlinked). Re-point the symlink if you nvm-uninstall that node version. Verify with: `env -i HOME="$HOME" PATH="<plist PATH>" claude --version`.
 
+**Workspace trust requirement (Claude CLI >=2.1.284 — live failures 2026-10-25):** CLI 2.1.284 requires each project directory to be explicitly trusted before non-interactive sessions (`--print`) can run with `permissions.allow` entries. An untrusted workspace emits "has not been trusted" to stderr and ignores all allow-list entries — every subsequent provider session (dev, review, assessment) fails. The batch preflight (`provider_healthcheck` in `lib/providers/claude.sh`) detects this at batch start and prints the exact fix command. To trust the workspace manually: `claude config set --global 'projects["/path/to/repo"].hasTrustDialogAccepted' true`. Unlike the launchd PATH issue, the CLI's own error message contains the correct path and fix command.
+
 The report uses **absolute thresholds** (not before/after comparison):
 - Fix iterations avg > 2.0 → WARNING
 - Any phase failing > 30% → WARNING
@@ -974,5 +976,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `SESSION` — Claude session mode and exit code
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
+- `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

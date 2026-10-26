@@ -62,6 +62,70 @@ claude_provider_validate_cli() {
   return 0
 }
 
+# Workspace trust preflight check for Claude CLI >=2.1.284.
+#
+# CLI 2.1.284 introduced a workspace trust requirement: non-interactive sessions
+# in an untrusted workspace print "has not been trusted" to stderr and ignore
+# every permissions.allow entry — causing every subsequent session to fail.
+# This preflight detects that condition cheaply (trivial --print invocation)
+# so the batch can abort in one line instead of burning time on per-issue failures.
+#
+# Returns 0 (trusted / no trust error detected) or 1 (untrusted workspace).
+# On failure: emits PROVIDER_PREFLIGHT diag, prints the exact fix command to stderr.
+# On success: emits PROVIDER_PREFLIGHT diag only.
+#
+# Called once per batch (via provider_healthcheck alias) or once per single-issue run.
+claude_provider_healthcheck() {
+  local _cmd="${CLAUDE_PROVIDER_CMD:-}"
+  if [ -z "$_cmd" ]; then
+    claude_provider_detect_cli 2>/dev/null || true
+    _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
+  fi
+
+  local _stderr_file
+  _stderr_file=$(mktemp)
+
+  # Trivial --print invocation; only stderr is inspected for the trust signal.
+  # --dangerously-skip-permissions keeps it non-interactive across all setups.
+  "$_cmd" --print "ok" --dangerously-skip-permissions \
+    >/dev/null 2>"$_stderr_file" || true
+
+  local _stderr_content
+  _stderr_content=$(cat "$_stderr_file" || true)
+  rm -f "$_stderr_file"
+
+  if printf '%s' "$_stderr_content" | grep -q "has not been trusted"; then
+    # Extract the repo path from the CLI's own error message; fall back to
+    # RITE_PROJECT_ROOT so the fix command is always copy-pasteable.
+    local _repo_path
+    _repo_path=$(printf '%s' "$_stderr_content" \
+      | grep -oE 'projects\["[^"]+"\]' | head -1 \
+      | sed 's/^projects\["\(.*\)"\]$/\1/' \
+      || true)
+    [ -z "$_repo_path" ] && _repo_path="${RITE_PROJECT_ROOT:-$(pwd)}"
+
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "PROVIDER_PREFLIGHT outcome=untrusted_workspace repo=${_repo_path}"
+    fi
+
+    echo "" >&2
+    echo "Provider preflight failed: workspace not trusted (Claude CLI >=2.1.284)" >&2
+    echo "" >&2
+    echo "  Repo: ${_repo_path}" >&2
+    echo "" >&2
+    echo "  Fix — run once, then retry:" >&2
+    printf "    claude config set --global 'projects[\"%s\"].hasTrustDialogAccepted' true\n" \
+      "${_repo_path}" >&2
+    echo "" >&2
+    return 1
+  fi
+
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "PROVIDER_PREFLIGHT outcome=ok"
+  fi
+  return 0
+}
+
 # =============================================================================
 # Streaming Filters (internal helpers)
 # =============================================================================
