@@ -176,17 +176,18 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "run_align_docs_switch TTY y-path records sync when user answers y" {
-  # _RITE_FORCE_TTY=1 bypasses the [ -t 0 ] guard so stdin (here-string) reaches read -p
+  # Call _align_docs_prompt_and_record directly — the helper that run_align_docs_switch
+  # delegates to after the [ -t 0 ] guard. Testing the helper directly exercises the y-path
+  # without any production bypass of the non-TTY guard.
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     export RITE_DATA_DIR='.rite'
     export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
     export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
-    export _RITE_FORCE_TTY=1
     unset RITE_DOC_MODE 2>/dev/null || true
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
-    run_align_docs_switch
+    _align_docs_prompt_and_record
     grep '^RITE_DOC_MODE=' '$RITE_PROJECT_ROOT/.rite/config' || true
   " <<< "y"
   [ "$status" -eq 0 ]

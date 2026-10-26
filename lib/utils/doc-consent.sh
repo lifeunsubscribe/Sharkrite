@@ -150,7 +150,7 @@ run_align_docs_switch() {
   esac
 
   # Mode is unset or off — first-run path
-  if [ ! -t 0 ] && [ "${_RITE_FORCE_TTY:-}" != "1" ]; then
+  if [ ! -t 0 ]; then
     if declare -f print_info >/dev/null 2>&1; then
       print_info "Not an interactive terminal — run 'rite align-docs' interactively to configure doc drift tracking."
     else
@@ -159,6 +159,18 @@ run_align_docs_switch() {
     return 0
   fi
 
+  _align_docs_prompt_and_record
+}
+
+# ---------------------------------------------------------------------------
+# _align_docs_prompt_and_record
+#
+# Internal helper: display the consent prompt and record the user's choice.
+# Caller must have already verified stdin is a TTY before calling this.
+# Extracted to allow unit tests to exercise the y/n path without needing any
+# bypass of the [ -t 0 ] guard in run_align_docs_switch.
+# ---------------------------------------------------------------------------
+_align_docs_prompt_and_record() {
   echo "" >&2
   echo "  Sharkrite can track which docs a merge may have made inaccurate." >&2
   echo "  The audit (checking docs against code) runs either way." >&2
