@@ -259,6 +259,13 @@ while [[ $# -gt 0 ]]; do
       DOCS_ARGS=("$@")
       shift $#
       ;;
+    align-docs)
+      MODE="align-docs"
+      shift
+      # Collect remaining args (optional --disable flag)
+      ALIGN_DOCS_ARGS=("$@")
+      shift $#
+      ;;
     --version|-v)
       echo "rite version $VERSION"
       exit 0
@@ -284,8 +291,10 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --reset-approval         Clear ALL saved blocker approvals (global reset)"
       echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
       echo "  rite plan --preview [doc]     Preview issues without creating them"
-      echo "  rite docs                     Doc consent/audit: enable sync, audit drift, or report"
-      echo "  rite docs \"<instructions>\"    Directed doc update (routes to engine in #1049)"
+      echo "  rite align-docs               Enable/disable doc drift tracking (the on/off switch)"
+      echo "  rite align-docs --disable     Turn off doc drift tracking"
+      echo "  rite docs                     Doc audit: check docs against code (requires align-docs first)"
+      echo "  rite docs \"<instructions>\"    Directed doc update"
       echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
@@ -338,8 +347,10 @@ while [[ $# -gt 0 ]]; do
       echo "  rite plan docs/phases.md   # Generate issues from doc"
       echo "  rite plan \"phases 2-4\"     # Natural language filtering"
       echo "  rite plan --preview        # Preview without creating"
-      echo "  rite docs                  # Turn on doc drift tracking or audit drift (first-time: consent flow)"
-      echo "  rite docs \"update arch\"    # Directed doc update (engine lands in #1049)"
+      echo "  rite align-docs            # Enable/disable doc drift tracking"
+      echo "  rite align-docs --disable  # Turn off doc drift tracking"
+      echo "  rite docs                  # Audit docs against code (run align-docs first)"
+      echo "  rite docs \"update arch\"    # Directed doc update"
       echo "  rite --status              # Repo-wide status overview"
       echo "  rite --status --by-label   # Status grouped by label"
       echo "  rite 21 --dry-run          # See what would happen"
@@ -506,6 +517,10 @@ resolve_dispatch_key() {
       echo "docs"
       return 0
       ;;
+    align-docs)
+      echo "align-docs"
+      return 0
+      ;;
     full|dev-and-pr|review-latest|assess-and-fix|status|undo)
       # Smart-routing modes — tuple-based routing below.
       ;;
@@ -667,7 +682,11 @@ resolve_dispatch_plan() {
       return 0
       ;;
     docs)
-      echo "docs-command.sh::rite_docs ${DOCS_ARGS[*]:-}  (docs consent/audit/drift via claude)"
+      echo "docs-command.sh::rite_docs ${DOCS_ARGS[*]:-}  (docs audit/drift via claude)"
+      return 0
+      ;;
+    align-docs)
+      echo "doc-consent.sh::run_align_docs_switch ${ALIGN_DOCS_ARGS[*]:-}  (enable/disable doc drift tracking)"
       return 0
       ;;
     status-repo-wide)
@@ -791,7 +810,7 @@ fi
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ] || [ "$MODE" = "align-docs" ]; then
   # full-suite manages its own log file (per-run to .rite/logs/full-suite-YYYYMMDD.log)
   RITE_LOG_AUTO=false
 fi
@@ -1090,35 +1109,19 @@ if [ "$MODE" = "init" ]; then
   fi
 
   # ─────────────────────────────────────────────────────────────────
-  # Doc drift consent (opt-in; nothing edits docs/ automatically)
+  # Doc drift mode: report current state; consent is owned by `rite align-docs`
   # ─────────────────────────────────────────────────────────────────
   _config_file_for_doc_mode="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"
 
-  # Source doc-consent helpers (provides record_doc_mode)
   source "$RITE_LIB_DIR/utils/doc-consent.sh"
-  # Also ensure docs-map builder is available for both branches below
-  source "$RITE_LIB_DIR/utils/docs-map.sh"
 
-  if grep -qE '^RITE_DOC_MODE=' "$_config_file_for_doc_mode" 2>/dev/null; then
-    # Already recorded — load and announce
-    _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
-    print_info "Doc mode already configured: ${_recorded_mode:-sync}"
+  _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
+  if [ "$_recorded_mode" = "off" ]; then
+    print_info "Doc drift tracking off — run 'rite align-docs' to re-enable"
+  elif [ -n "$_recorded_mode" ]; then
+    print_info "Doc mode: ${_recorded_mode} (use 'rite align-docs --disable' to turn off)"
   else
-    echo ""
-    echo "  Sharkrite can track which docs a merge may have made inaccurate, and"
-    echo "  'rite docs' then proposes fixes for your approval. Docs are never edited"
-    echo "  automatically."
-    read -p "  Track doc drift for this repo? [y/N] " -n 1 -r
-    echo
-    if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
-      record_doc_mode "sync"
-      print_success "Doc drift tracking on (review with 'rite docs')"
-    else
-      record_doc_mode "off"
-      print_info "Doc drift tracking off (run 'rite docs' to turn it on)"
-    fi
-    # Build docs map (both branches)
-    docs_map_build
+    print_info "Doc drift tracking not configured — run 'rite align-docs' to enable"
   fi
 
   # Create backward-compat symlink if .claude/ exists
@@ -1428,6 +1431,13 @@ fi
 if [ "$MODE" = "docs" ]; then
   source "$RITE_LIB_DIR/core/docs-command.sh"
   rite_docs "${DOCS_ARGS[@]+"${DOCS_ARGS[@]}"}"
+  exit $?
+fi
+
+# Handle align-docs mode — the single on/off switch for doc drift tracking
+if [ "$MODE" = "align-docs" ]; then
+  source "$RITE_LIB_DIR/utils/doc-consent.sh"
+  run_align_docs_switch "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
   exit $?
 fi
 

@@ -880,76 +880,7 @@ docs_reconcile_drift() {
   _docs_update_engine "reconcile" ""
 }
 
-# ---------------------------------------------------------------------------
-# _docs_enable_flow [instructions]
-#
-# Never-run path (mode unset or off): ask the consent question, record
-# sync on yes / off on no, and build the docs map. If instructions are also
-# provided, they are passed to docs_directed_update after the flow completes
-# (an explicit directed update is its own consent).
-#
-# Prompt is default-no; non-TTY takes the "no" branch (never hangs).
-# ---------------------------------------------------------------------------
-_docs_enable_flow() {
-  local instructions="${1:-}"
-
-  echo "" >&2
-  echo "  Sharkrite can track which docs a merge may have made inaccurate and" >&2
-  echo "  propose fixes here for your approval. Docs are never edited automatically." >&2
-
-  local reply_val="N"
-  if [ -t 0 ]; then
-    read -p "  Track doc drift for this repo? [y/N] " -n 1 -r
-    echo
-    reply_val="${REPLY:-N}"
-  fi
-
-  if [[ "$reply_val" =~ ^[Yy]$ ]]; then
-    # Yes: record sync + build map
-    record_doc_mode "sync"
-    print_success "Doc drift tracking on"
-    docs_map_build
-    print_success "Docs map built"
-
-    # If the drift log has entries, offer to reconcile now
-    local drift_path
-    drift_path="$(drift_log_path 2>/dev/null || true)"
-    if [ -n "$drift_path" ] && [ -f "$drift_path" ]; then
-      local entry_count
-      entry_count="$(drift_log_entry_count "$drift_path" || echo "0")"
-      if [ "$entry_count" -gt 0 ]; then
-        local _reconcile_reply="N"
-        if [ -t 0 ]; then
-          read -p "  ${entry_count} drift entries found — reconcile them now? [y/N] " -n 1 -r
-          echo
-          _reconcile_reply="${REPLY:-N}"
-        fi
-        if [[ "$_reconcile_reply" =~ ^[Yy]$ ]]; then
-          docs_reconcile_drift || true
-        else
-          print_info "  Run 'rite docs' to reconcile ${entry_count} entries later"
-        fi
-      fi
-    fi
-
-    # If instructions were also provided, route to the directed-update engine
-    if [ -n "$instructions" ]; then
-      echo ""
-      docs_directed_update "$instructions" || true
-    fi
-  else
-    # No: record off + build map (directed updates still work)
-    record_doc_mode "off"
-    print_info "Doc drift tracking off — run 'rite docs' again to turn it on"
-    docs_map_build
-    print_info "Docs map built"
-
-    if [ -n "$instructions" ]; then
-      echo ""
-      docs_directed_update "$instructions" || true
-    fi
-  fi
-}
+# _docs_enable_flow was removed — consent is now owned by `rite align-docs`.
 
 # ---------------------------------------------------------------------------
 # _docs_run_audit [mode]
@@ -1181,8 +1112,14 @@ rite_docs() {
   case "$state" in
 
     never-run)
-      # First-ever run: ask consent, then optionally route input
-      _docs_enable_flow "$instructions"
+      if [ -n "$instructions" ]; then
+        # Explicit directed update — the command itself is consent; run it directly.
+        _docs_ensure_map || exit 1
+        docs_directed_update "$instructions" || true
+      else
+        # No instructions and no consent recorded: direct user to the switch.
+        print_info "Doc drift tracking is not enabled. Run 'rite align-docs' to turn it on or off."
+      fi
       ;;
 
     sync|changelog)
