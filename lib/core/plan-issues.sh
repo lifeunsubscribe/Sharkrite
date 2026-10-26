@@ -3312,6 +3312,20 @@ _check_block_sections() {
   printf '%s' "$_missing"
 }
 
+# Extract the first ---ISSUE---...---END--- block from a file path (arg) or
+# stdin (no arg). Called by _regen_block_sections after _plan_streaming_awk
+# normalisation so tests can exercise production extraction logic directly.
+_regen_extract_block() {
+  awk '
+    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf=""; exit }
+      next
+    }
+  ' "${1:--}" || true
+}
+
 # Request a targeted regeneration of one incomplete issue block.
 # Calls the plan-model provider asking for the same issue with all required
 # sections present. Returns the repaired ---ISSUE---...---END--- block via
@@ -3321,14 +3335,25 @@ _regen_block_sections() {
   local _regen_existing_block="$2"
   local _regen_base_prompt="$3"
 
+  # Per-regen unique end token prevents a block body that contains ---END--- on
+  # its own line from being mistaken for the block terminator (same fix as the
+  # main stream path in generate_issues / _request_missing_blocks, issue #1493).
+  local _regen_end_token="---END-${RANDOM}${RANDOM}---"
+
+  # Replace the canonical ---END--- terminator in the embedded existing block with
+  # the unique token so the example in the prompt is consistent with the instruction
+  # below that tells the model to use the same unique token as its terminator.
+  local _regen_existing_block_display
+  _regen_existing_block_display=$(printf '%s' "$_regen_existing_block" | sed "s/^---END---$/$_regen_end_token/" || true)
+
   local _regen_prompt
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (title, block)
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (title, block, token)
   _regen_prompt=$(cat <<REGEN_PROMPT_EOF
 ${_regen_base_prompt}
 
 **SECTION-REPAIR PASS — REGENERATE ONE ISSUE BLOCK.** The following issue block is incomplete (missing required runbook sections):
 
-${_regen_existing_block}
+${_regen_existing_block_display}
 
 Regenerate the above block for issue title: "${_regen_title}"
 
@@ -3347,7 +3372,7 @@ If the LABELS line includes the word "bug", also include:
 - **Bug Class Analysis**: (sibling instances, reuse check)
 
 Preserve the issue's original intent and existing valid fields from the block above.
-Output ONLY the single ---ISSUE--- ... ---END--- block. Start with ---ISSUE--- and end with ---END---. No commentary before or after.
+Output ONLY the single ---ISSUE--- ... ${_regen_end_token} block. Start with ---ISSUE--- and end with ${_regen_end_token}. No commentary before or after.
 REGEN_PROMPT_EOF
 )
 
@@ -3356,8 +3381,10 @@ REGEN_PROMPT_EOF
   _regen_err=$(mktemp)
 
   # Explicit "plan" role — same reasoning stage as the primary generation call.
+  # Pipe through _plan_streaming_awk so interior ---END--- in the body is escaped
+  # to <!--rite-end-esc--> and the unique token is normalised to canonical ---END---.
   if ! provider_run_streaming_prompt "$_regen_prompt" "$(provider_resolve_model plan)" \
-       2>"$_regen_err" | tee "$_regen_out" >&2; then
+       2>"$_regen_err" | _plan_streaming_awk "$_regen_end_token" | tee "$_regen_out" >&2; then
     print_warning "sections-lint: section-repair provider call failed for '${_regen_title}'" >&2
   fi
 
@@ -3378,14 +3405,7 @@ REGEN_PROMPT_EOF
 
   # Extract the first well-formed ---ISSUE---...---END--- block; discard prose.
   local _extracted_block
-  _extracted_block=$(awk '
-    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf=""; exit }
-      next
-    }
-  ' "$_regen_out" || true)
+  _extracted_block=$(_regen_extract_block "$_regen_out")
   rm -f "$_regen_out"
 
   if [ -z "$_extracted_block" ]; then

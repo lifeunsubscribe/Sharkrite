@@ -42,7 +42,7 @@ setup() {
   # as plan-targeted-block-completion.bats. Each function is extracted
   # independently so stubs defined below are not overwritten by sourcing.
   local fn
-  for fn in _check_block_sections _regen_block_sections _lint_issues_sections _normalize_issue_markers; do
+  for fn in _plan_streaming_awk _check_block_sections _regen_extract_block _regen_block_sections _lint_issues_sections _normalize_issue_markers; do
     eval "$(awk -v target="^${fn}\\\\(\\\\)" '
       $0 ~ target { in_fn=1; depth=0 }
       in_fn {
@@ -69,7 +69,16 @@ setup() {
     local _cnt
     _cnt=$(cat "$STUB_CALL_COUNT_FILE" 2>/dev/null || printf '0')
     printf '%d' "$((_cnt + 1))" > "$STUB_CALL_COUNT_FILE"
-    cat "$STUB_RESPONSE_FILE" 2>/dev/null || true
+    # Extract the per-regen unique end token from the prompt (---END-NNN---),
+    # then replace canonical ---END--- with it in the canned response so that
+    # _plan_streaming_awk can find the unique terminator and emit the block.
+    local _tok
+    _tok=$(printf '%s' "$1" | grep -oE -- '---END-[0-9]+---' | head -1 || true)
+    if [ -n "$_tok" ] && [ -f "$STUB_RESPONSE_FILE" ]; then
+      awk -v tok="$_tok" '{ if ($0 == "---END---") print tok; else print }' "$STUB_RESPONSE_FILE" || true
+    else
+      cat "$STUB_RESPONSE_FILE" 2>/dev/null || true
+    fi
   }
 
   provider_resolve_model() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks|create_issues|_coverage_missing_titles|_canon_title|_plan_streaming_awk
+# sharkrite-test-covers: lib/core/plan-issues.sh::generate_issues|_request_missing_blocks|_normalize_issue_markers|_emitted_blocks|create_issues|_coverage_missing_titles|_canon_title|_plan_streaming_awk|_regen_block_sections
 #
 # Regression tests for ---END--- delimiter collision in plan-issues.sh.
 #
@@ -528,6 +528,123 @@ setup() {
   }
   grep -qF "s/<!--rite-issue-esc-->/---ISSUE---/g" "$_plan_issues_sh" || {
     echo "FAIL: _canon_title sed unescape for rite-issue-esc missing from plan-issues.sh (regression for #1484)" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# K — structural: _regen_block_sections uses a unique token and escapes via
+# _plan_streaming_awk (regression pin for issue #1493).
+#
+# Without this fix, a section-repair regen whose body quotes ---END--- line-alone
+# is silently truncated and the truncated block replaces the original in the slate.
+# ---------------------------------------------------------------------------
+
+@test "K: _regen_block_sections uses per-run unique end token and pipes through _plan_streaming_awk" {
+  local plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
+
+  local fn_body
+  fn_body=$(awk '
+    /^_regen_block_sections[(][)]/ { in_fn=1; depth=0 }
+    in_fn {
+      for (i=1; i<=length($0); i++) {
+        c=substr($0,i,1)
+        if (c=="{") depth++
+        if (c=="}") { depth--; if (depth==0) { print; in_fn=0; next } }
+      }
+      print; next
+    }
+  ' "$plan_issues_sh")
+
+  # Must define a per-run end token using RANDOM (not hardcoded ---END---)
+  echo "$fn_body" | grep -q '_regen_end_token.*RANDOM' || {
+    echo "FAIL: _regen_block_sections does not define _regen_end_token with \$RANDOM" >&2
+    false
+  }
+
+  # The prompt instruction must NOT hardcode ---END--- as the end marker
+  if echo "$fn_body" | grep -q 'end with ---END---'; then
+    echo "FAIL: _regen_block_sections prompt instruction still hardcodes ---END--- as end marker" >&2
+    echo "$fn_body" | grep -n -- "end with ---END---" >&2
+    false
+  fi
+
+  # Must pipe through _plan_streaming_awk with the unique token
+  echo "$fn_body" | grep -q '_plan_streaming_awk.*_regen_end_token' || {
+    echo "FAIL: _regen_block_sections does not pipe through _plan_streaming_awk with _regen_end_token" >&2
+    false
+  }
+
+  # After _plan_streaming_awk, _normalize_issue_markers must use canonical ---END---
+  # (the unique token has already been normalised to canonical form by the streaming awk)
+  echo "$fn_body" | grep -qF '_normalize_issue_markers "$_regen_out" "---END---"' || {
+    echo "FAIL: _regen_block_sections does not call _normalize_issue_markers with canonical ---END---" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# L — behavioral: the regen extraction awk handles a body containing ---END---
+# after it has been escaped by _plan_streaming_awk (end-to-end of the fix).
+#
+# Simulates what _regen_block_sections receives after the streaming-awk step:
+# run fixture input through _plan_streaming_awk, then run the extraction awk
+# (as written in _regen_block_sections) on the result. The body's ---END--- must
+# be escaped to <!--rite-end-esc--> and the block must not be truncated.
+# ---------------------------------------------------------------------------
+
+@test "L: regen extraction awk receives escaped body from _plan_streaming_awk and extracts full block" {
+  local _tok="---END-REGENTEST---"
+
+  # Simulate the LLM regen response: a single block whose body contains ---END---
+  local _streamed
+  _streamed=$(printf '%s\n' \
+    "---ISSUE---" \
+    "TITLE: Regen block with interior END delimiter" \
+    "BODY:" \
+    "This body references a bats fixture line:" \
+    "---END---" \
+    "which used to truncate the regen block." \
+    "$_tok" | _plan_streaming_awk "$_tok")
+
+  # Run the production extraction function from _regen_block_sections
+  local _extracted
+  _extracted=$(printf '%s\n' "$_streamed" | _regen_extract_block)
+
+  # The block must be extracted (not empty)
+  [ -n "$_extracted" ] || {
+    echo "FAIL: extraction awk returned empty — block was lost" >&2
+    printf 'streamed input:\n%s\n' "$_streamed" >&2
+    false
+  }
+
+  # Title must be present (block not dropped)
+  echo "$_extracted" | grep -q "TITLE: Regen block with interior END delimiter" || {
+    echo "FAIL: TITLE line missing from extracted block" >&2
+    printf '%s\n' "$_extracted" >&2
+    false
+  }
+
+  # The interior ---END--- must be escaped (not raw), confirming no premature truncation
+  echo "$_extracted" | grep -q "<!--rite-end-esc-->" || {
+    echo "FAIL: interior ---END--- was not escaped to <!--rite-end-esc--> — block was truncated" >&2
+    printf '%s\n' "$_extracted" >&2
+    false
+  }
+
+  # The line after the interior ---END--- must survive
+  echo "$_extracted" | grep -q "which used to truncate the regen block" || {
+    echo "FAIL: block was truncated — line after interior ---END--- is missing" >&2
+    printf '%s\n' "$_extracted" >&2
+    false
+  }
+
+  # Exactly one canonical ---END--- must appear (the terminal marker)
+  local _end_count
+  _end_count=$(printf '%s\n' "$_extracted" | grep -c "^---END---$" || true)
+  [ "$_end_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 canonical ---END--- in extracted block, got $_end_count" >&2
+    printf '%s\n' "$_extracted" >&2
     false
   }
 }
