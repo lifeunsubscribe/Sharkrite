@@ -55,6 +55,179 @@ load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 source "$RITE_LIB_DIR/utils/tag-index.sh"
 source "$RITE_LIB_DIR/utils/docs-map.sh"
 source "$RITE_LIB_DIR/utils/drift-log.sh"
+source "$RITE_LIB_DIR/utils/gate-selection.sh"
+
+# ---------------------------------------------------------------------------
+# _record_tier1_drift_entries PR_NUMBER PR_BODY CHANGED_FILES BASE_BRANCH HEAD_BRANCH
+#
+# Deterministic Tier 1 drift detection: zero model calls.
+# Records drift entries when any of three triggers fire:
+#   A — a changed file IS one of a doc's declared enforcing tests
+#   B — a changed file matches a covers-header path of an enforcing test
+#   C — the PR's head branch has a declared-doc state file
+#
+# Consent gate is enforced here: RITE_DOC_MODE must be sync or changelog;
+# unset or off → returns immediately with no writes.
+#
+# Arguments:
+#   $1  PR number
+#   $2  PR body text (already fetched — no extra gh call)
+#   $3  Newline-separated changed files (non-docs), may be empty
+#   $4  Base branch (baseRefName — where the PR merges into)
+#   $5  Head branch (headRefName — source branch of the PR)
+# ---------------------------------------------------------------------------
+_record_tier1_drift_entries() {
+  case "${RITE_DOC_MODE:-}" in
+    sync|changelog) ;;
+    *) verbose_info "  drift-log: doc tracking not enabled — skipping tier-1"; return 0 ;;
+  esac
+
+  local pr_number="$1"
+  local pr_body="$2"
+  local changed_files="$3"
+  local pr_base_branch="$4"
+  local pr_head_branch="$5"
+
+  if [ -z "$changed_files" ]; then
+    verbose_info "  drift-log: PR #${pr_number} is docs-only — skipping tier-1"
+    return 0
+  fi
+
+  local _t1_issue
+  _t1_issue="$(echo "$pr_body" | sed -n 's/.*Closes #\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
+  _t1_issue="${_t1_issue:--}"
+
+  local _t1_branch="${pr_base_branch:-main}"
+  local _t1_any=false
+
+  docs_map_ensure || true
+
+  local _t1_map
+  _t1_map="$(docs_map_path)" || true
+
+  # Triggers A & B: for each doc in the map, check its enforcing tests
+  if [ -f "${_t1_map:-}" ]; then
+    # Collect unique doc paths from the map (dedup: map has one row per heading)
+    local -a _t1_docs=()
+    local _t1_row
+    while IFS= read -r _t1_row; do
+      case "$_t1_row" in '#'*) continue ;; esac
+      local _t1_docf
+      _t1_docf="$(echo "$_t1_row" | cut -f1 || true)"
+      [ -z "$_t1_docf" ] && continue
+      local _t1_seen=false
+      local _t1_d
+      for _t1_d in "${_t1_docs[@]+"${_t1_docs[@]}"}"; do
+        [ "$_t1_d" = "$_t1_docf" ] && { _t1_seen=true; break; }
+      done
+      [ "$_t1_seen" = false ] && _t1_docs+=("$_t1_docf")
+    done < "$_t1_map"
+
+    local _t1_docpath _t1_et _t1_cf
+    for _t1_docpath in "${_t1_docs[@]+"${_t1_docs[@]}"}"; do
+      [ -f "${RITE_PROJECT_ROOT}/${_t1_docpath}" ] || continue
+
+      local _t1_enforcing
+      _t1_enforcing="$(docs_map_enforcing_tests "$_t1_docpath" 2>/dev/null || true)"
+      [ -z "$_t1_enforcing" ] && continue
+
+      # Trigger A: a changed file IS one of the enforcing tests
+      local _ta_et=""
+      while IFS= read -r _t1_et; do
+        [ -z "$_t1_et" ] && continue
+        [ -n "$_ta_et" ] && break
+        while IFS= read -r _t1_cf; do
+          [ -z "$_t1_cf" ] && continue
+          if [ "$_t1_cf" = "$_t1_et" ]; then
+            _ta_et="$_t1_et"
+            break
+          fi
+        done <<< "$changed_files"
+      done <<< "$_t1_enforcing"
+
+      if [ -n "$_ta_et" ]; then
+        drift_log_append "$_t1_docpath" "$_t1_branch" \
+          "$pr_number" "$_t1_issue" \
+          "$_ta_et" "test-scope" \
+          "changed: ${_ta_et}; enforces: ${_t1_docpath}" || true
+        _t1_any=true
+        continue
+      fi
+
+      # Trigger B: a changed file matches a covers-header path of an enforcing test
+      # Reuses _parse_test_coverage_header from gate-selection.sh (no second glob matcher).
+      local _tb_changed="" _tb_pat="" _tb_et=""
+      while IFS= read -r _t1_et; do
+        [ -z "$_t1_et" ] && continue
+        [ -n "$_tb_changed" ] && break
+        local _t1_et_abs="${RITE_PROJECT_ROOT}/${_t1_et}"
+        [ -f "$_t1_et_abs" ] || continue
+        local _t1_covers
+        _t1_covers="$(_parse_test_coverage_header "$_t1_et_abs" 2>/dev/null || true)"
+        [ -z "$_t1_covers" ] && continue
+        while IFS= read -r _t1_patline; do
+          [ -z "$_t1_patline" ] && continue
+          [ -n "$_tb_changed" ] && break
+          # Strip function scope (path::fn syntax) and leading/trailing space
+          local _t1_pathpat="${_t1_patline%%::*}"
+          _t1_pathpat="${_t1_pathpat# }"; _t1_pathpat="${_t1_pathpat% }"
+          [ -z "$_t1_pathpat" ] && continue
+          while IFS= read -r _t1_cf; do
+            [ -z "$_t1_cf" ] && continue
+            # shellcheck disable=SC2254
+            case "$_t1_cf" in
+              $_t1_pathpat)
+                _tb_changed="$_t1_cf"
+                _tb_pat="$_t1_pathpat"
+                _tb_et="$_t1_et"
+                break
+                ;;
+            esac
+          done <<< "$changed_files"
+        done < <(printf '%s\n' "$_t1_covers" | tr ',' '\n' || true)
+      done <<< "$_t1_enforcing"
+
+      if [ -n "$_tb_changed" ]; then
+        drift_log_append "$_t1_docpath" "$_t1_branch" \
+          "$pr_number" "$_t1_issue" \
+          "$_tb_pat" "test-scope" \
+          "changed: ${_tb_changed}; covers: ${_tb_pat}; enforces-via: ${_tb_et}" || true
+        _t1_any=true
+      fi
+    done
+  fi
+
+  # Trigger C: PR is on a branch with a declared-doc state file
+  if [ -n "${pr_head_branch:-}" ] && [ -n "${RITE_STATE_DIR:-}" ]; then
+    local _tc_slug="${pr_head_branch//\//-}"
+    local _tc_file="${RITE_STATE_DIR}/declared-doc-${_tc_slug}.txt"
+    if [ -f "$_tc_file" ]; then
+      local _tc_doc
+      _tc_doc="$(cat "$_tc_file" 2>/dev/null || true)"
+      if [ -n "$_tc_doc" ]; then
+        local _tc_first
+        _tc_first="$(echo "$changed_files" | head -1 || true)"
+        drift_log_append "$_tc_doc" "$_t1_branch" \
+          "$pr_number" "$_t1_issue" \
+          "" "addition" \
+          "branch: ${pr_head_branch}; declared-doc: ${_tc_doc}; changed: ${_tc_first}" || true
+        _t1_any=true
+      fi
+    fi
+  fi
+
+  if [ "$_t1_any" = "true" ]; then
+    print_info "  drift-log: recorded tier-1 drift entry/entries for PR #${pr_number}"
+  else
+    verbose_info "  drift-log: PR #${pr_number} — no tier-1 trigger fired; skipping"
+  fi
+}
+
+# Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here
+# so tests can load only function definitions without running the program.
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
 
 # Timeout per provider call in doc assessment (seconds)
 DOC_CLAUDE_TIMEOUT="${RITE_DOC_CLAUDE_TIMEOUT:-120}"
@@ -132,7 +305,7 @@ provider_detect_cli || exit 1
 # Idiom: `|| _pr_data_exit=$?` (not `if ! gh_safe`) because `pr view` output is
 # captured directly into PR_DATA via $().
 _pr_data_exit=0
-PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments) || _pr_data_exit=$?
+PR_DATA=$(gh_safe pr view "$PR_NUMBER" --json title,body,files,commits,reviews,comments,baseRefName,headRefName) || _pr_data_exit=$?
 if [ "$_pr_data_exit" -ne 0 ]; then
   # gh_safe exhausted retries on a persistent 5xx/429 — GitHub API is unavailable.
   # Exit 0 so the batch reporter doesn't mark the merged issue as failed (see #57).
@@ -1053,222 +1226,13 @@ print_header "📚 Documentation"
 # LAYER 2: DRIFT RECORDING (only with recorded doc consent)
 # =====================================================================
 
-# ---------------------------------------------------------------------------
-# _append_doc_drift_entry PR_NUMBER PR_BODY CHANGED_FILES
-#
-# Append one drift log entry for this PR and commit + push the log only.
-# Called when the repo has recorded doc consent (RITE_DOC_MODE=sync|changelog).
-#
-# Graceful-degradation contract: same as reconcile_tag_index (lines 1009-1012)
-# — every error path prints a warning and returns 0 so the doc-assessment pass
-# is never aborted.
-#
-# Arguments:
-#   $1  PR number
-#   $2  PR body text (already-fetched PR_BODY — no extra gh call)
-#   $3  Newline-separated changed files (non-docs), may be empty
-# ---------------------------------------------------------------------------
-_append_doc_drift_entry() {
-  local pr_number="$1"
-  local pr_body="$2"
-  local changed_files_no_docs="$3"
-
-  # ------------------------------------------------------------------
-  # Skip: docs-only PR (CHANGED_FILES_NO_DOCS is empty) — no entry,
-  # no noise. One verbose line so diagnostics are traceable.
-  # ------------------------------------------------------------------
-  if [ -z "$changed_files_no_docs" ]; then
-    verbose_info "  drift-log: PR #${pr_number} is docs-only — skipping drift entry"
-    return 0
-  fi
-
-  # ------------------------------------------------------------------
-  # Extract issue number from PR body via the same sed as merge-pr.sh:1062.
-  # No extra gh call — PR_BODY is already fetched.
-  # ------------------------------------------------------------------
-  local issue_number
-  issue_number="$(echo "$pr_body" | sed -n 's/.*Closes #\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
-  issue_number="${issue_number:--}"   # fall back to "-" when absent
-
-  # ------------------------------------------------------------------
-  # Implicated docs: source the docs map, grep each mapped doc for
-  # mentions of the changed source paths or their basenames, and collect
-  # up to 10 matches with their nearest heading (section attribution).
-  # ------------------------------------------------------------------
-  # Ensure docs map exists (build silently if missing; errors are non-fatal).
-  docs_map_ensure || true
-
-  local map_file
-  map_file="$(docs_map_path)" || true
-
-  local implicated_docs=""
-  local _impl_count=0
-  local _cf_line
-
-  if [ -f "$map_file" ]; then
-    # Collect doc file paths from the map (column 1, skip the comment header).
-    # Use a while-read loop for bash 3.2 compat (no mapfile).
-    local -a _doc_files=()
-    while IFS= read -r _map_row; do
-      # Skip comment header lines (start with #)
-      case "$_map_row" in '#'*) continue ;; esac
-      # Extract field 1 (tab-separated)
-      local _doc_rel_path
-      _doc_rel_path="$(echo "$_map_row" | cut -f1 || true)"
-      [ -z "$_doc_rel_path" ] && continue
-      # De-duplicate: only add when not already in _doc_files.
-      local _already=false
-      local _existing_df
-      for _existing_df in "${_doc_files[@]+"${_doc_files[@]}"}"; do
-        [ "$_existing_df" = "$_doc_rel_path" ] && { _already=true; break; }
-      done
-      [ "$_already" = false ] && _doc_files+=("$_doc_rel_path")
-    done < "$map_file"
-
-    # For each mapped doc, grep for mentions of each changed file or its
-    # basename. Record file + nearest heading (section attribution from map).
-    local _doc_rel
-    for _doc_rel in "${_doc_files[@]+"${_doc_files[@]}"}"; do
-      [ "$_impl_count" -ge 10 ] && break   # cap at 10
-
-      local _doc_abs="${RITE_PROJECT_ROOT}/${_doc_rel}"
-      [ -f "$_doc_abs" ] || continue
-
-      # Check if any changed file (path or basename) appears in this doc.
-      local _matched=false
-      local _matched_term=""
-      while IFS= read -r _cf_line || [ -n "$_cf_line" ]; do
-        [ -z "$_cf_line" ] && continue
-        # Check both the full relative path and the basename.
-        local _cf_base
-        _cf_base="$(basename "$_cf_line")"
-        if grep -qF "$_cf_line" "$_doc_abs" 2>/dev/null || \
-           grep -qF "$_cf_base" "$_doc_abs" 2>/dev/null; then
-          _matched=true
-          _matched_term="$_cf_base"
-          break
-        fi
-      done <<EOF_CFCHECK
-$changed_files_no_docs
-EOF_CFCHECK
-
-      [ "$_matched" = false ] && continue
-
-      # Best-effort section attribution: look up the first heading for this
-      # doc in the TSV map (column 5 = heading_text). awk -F'\t' for portable
-      # tab-separated parsing (BSD + GNU awk both support -F'\t').
-      local _section=""
-      _section="$(awk -F'\t' -v doc="$_doc_rel" '$1 == doc && $5 != "" { print $5; exit }' \
-        "$map_file" 2>/dev/null || true)"
-      # If map lookup returned empty, fall back to the first heading in the file.
-      if [ -z "$_section" ]; then
-        _section="$(grep -m1 '^#' "$_doc_abs" 2>/dev/null | sed 's/^#\{1,6\}[[:space:]]*//' || true)"
-      fi
-
-      if [ -n "$_section" ]; then
-        implicated_docs="${implicated_docs}- ${_doc_rel} — \"${_section}\""$'\n'
-      else
-        implicated_docs="${implicated_docs}- ${_doc_rel}"$'\n'
-      fi
-      _impl_count=$((_impl_count + 1))
-    done
-  fi
-
-  # Strip trailing newline from implicated_docs.
-  implicated_docs="${implicated_docs%$'\n'}"
-
-  # Skip: zero implicated docs — no entry, no noise.
-  if [ -z "$implicated_docs" ]; then
-    verbose_info "  drift-log: PR #${pr_number} — no implicated docs found; skipping drift entry"
-    return 0
-  fi
-
-  # ------------------------------------------------------------------
-  # One-liner suspected inaccuracy via doc_assessment model.
-  # On provider failure/empty, degrade to deterministic fallback text.
-  # Mirrors the model-call pattern at assess-documentation.sh line 1932.
-  # Rule 31: never pass "" as model. Rule 32: use provider_resolve_model.
-  # ------------------------------------------------------------------
-  local _drift_prompt_file
-  _drift_prompt_file="$(mktemp 2>/dev/null)" || {
-    print_warning "drift-log: mktemp failed for prompt — using fallback inaccuracy line"
-    _drift_prompt_file=""
-  }
-
-  local suspected_inaccuracy=""
-  if [ -n "$_drift_prompt_file" ]; then
-    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: context vars must expand
-    cat > "$_drift_prompt_file" <<DRIFT_PROMPT_EOF
-You are reviewing a merged pull request to identify the single most likely documentation
-inaccuracy it may have introduced.
-
-PR #${pr_number} changed these source files:
-${changed_files_no_docs}
-
-The following documentation files were found to mention these files:
-${implicated_docs}
-
-In one sentence (≤120 chars), describe the most likely documentation inaccuracy
-introduced by this change. Focus on concrete details: changed defaults, removed
-features, new commands, renamed symbols, or altered behaviour. Do NOT start with
-"The documentation" — start with the specific claim that may now be outdated.
-
-Output ONLY the one-sentence inaccuracy description. Nothing else.
-DRIFT_PROMPT_EOF
-
-    suspected_inaccuracy="$(provider_run_prompt_with_timeout "$(cat "$_drift_prompt_file")" "$(provider_resolve_model doc_assessment)" true "$DOC_CLAUDE_TIMEOUT" 2>/dev/null)" || true
-    rm -f "$_drift_prompt_file"
-  fi
-
-  # Degrade on empty/failed provider response.
-  if [ -z "$suspected_inaccuracy" ]; then
-    suspected_inaccuracy="not assessed — provider unavailable; verify implicated sections manually"
-  fi
-
-  # ------------------------------------------------------------------
-  # Append drift entry (via drift-log.sh library — never aborts).
-  # ------------------------------------------------------------------
-  drift_log_append "$pr_number" "$issue_number" \
-    "$changed_files_no_docs" "$implicated_docs" "$suspected_inaccuracy" || {
-    print_warning "drift-log: append failed for PR #${pr_number} — skipping commit"
-    return 0
-  }
-
-  print_info "  drift-log: recorded drift entry for PR #${pr_number} → docs/sharkrite-drift-log.md"
-
-  # ------------------------------------------------------------------
-  # Commit + push the drift log only. Mirrors the Layer 2 commit block
-  # at assess-documentation.sh lines 1965-1985.
-  # ------------------------------------------------------------------
-  local _log_path
-  _log_path="$(drift_log_path)" || { print_warning "drift-log: could not resolve path for commit"; return 0; }
-
-  git add "$_log_path" 2>/dev/null || { print_warning "drift-log: git add failed — entry written but not committed"; return 0; }
-
-  local _commit_msg="docs: record drift entry for PR #${pr_number}"
-  if git commit -m "$_commit_msg" 2>/dev/null; then
-    if git push origin "$(git rev-parse --abbrev-ref HEAD)" 2>/dev/null; then
-      print_info "  drift-log: committed and pushed"
-    else
-      print_info "  drift-log: committed (push failed — local only)"
-    fi
-  else
-    # Nothing staged (e.g. no-op append somehow). Not an error.
-    verbose_info "  drift-log: nothing to commit (entry may already exist)"
-  fi
-}
-
-# Drift recording: one entry per merge when the repo has recorded doc
-# consent (RITE_DOC_MODE=sync|changelog). Nothing in the user's docs is ever
-# edited here — the per-merge doc-sync rewrite was retired 2026-10-21 after it
-# committed raw model output (CLI warnings, narration, a wrapping code fence)
-# into orrery's README. Corrections go through `rite docs`' approval loop.
+# Tier 1 drift recording: deterministic, zero model calls.
+# Consent gating is inside _record_tier1_drift_entries (RITE_DOC_MODE check).
+# Nothing in the user's docs is ever edited here.
 # No recorded consent → no recording (opt-in; see doc-consent.sh).
-case "${RITE_DOC_MODE:-}" in
-  sync|changelog)
-    _CHANGED_FILES_NO_DOCS="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' | head -20 || true)"
-    _append_doc_drift_entry "$PR_NUMBER" "$PR_BODY" "$_CHANGED_FILES_NO_DOCS" || true
-    ;;
-esac
+_T1_CHANGED_FILES="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' || true)"
+_T1_BASE_BRANCH="$(echo "$PR_DATA" | jq -r '.baseRefName // "main"' || true)"
+_T1_HEAD_BRANCH="$(echo "$PR_DATA" | jq -r '.headRefName // ""' || true)"
+_record_tier1_drift_entries "$PR_NUMBER" "$PR_BODY" "$_T1_CHANGED_FILES" "$_T1_BASE_BRANCH" "$_T1_HEAD_BRANCH" || true
 echo ""
 exit 0
