@@ -121,6 +121,54 @@ drift_log_path() {
 }
 
 # ---------------------------------------------------------------------------
+# _drift_log_append_legacy PR ISSUE CHANGED_FILES IMPLICATED_DOCS INACCURACY
+#
+# Legacy 5-arg compat shim. Appends a markdown-block entry to
+# docs/sharkrite-drift-log.md (the flat human-readable file that callers in
+# assess-documentation.sh and docs-command.sh write and rite docs reconciles).
+#
+# Format:
+#   <!-- sharkrite-doc-drift pr:N issue:N recorded:ISO8601Z -->
+#   **Changed files**: CHANGED_FILES
+#   **Implicated docs**:
+#   IMPLICATED_DOCS
+#   **Suspected inaccuracy**: INACCURACY
+#   <!-- /sharkrite-doc-drift -->
+#
+# Callers that still pass 5 args are routed here automatically by
+# drift_log_append; no caller migration required.
+# ---------------------------------------------------------------------------
+_drift_log_append_legacy() {
+  local pr="$1"
+  local issue="$2"
+  local changed_files="$3"
+  local implicated_docs="$4"
+  local inaccuracy="$5"
+
+  local log_path
+  log_path="$(drift_log_path 2>/dev/null)" || return 0
+  [ -n "$log_path" ] || return 0
+
+  mkdir -p "$(dirname "$log_path")" 2>/dev/null || return 0
+
+  if [ ! -f "$log_path" ]; then
+    _drift_log_bootstrap "$log_path"
+  fi
+
+  local recorded
+  recorded="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  {
+    printf '\n<!-- sharkrite-doc-drift pr:%s issue:%s recorded:%s -->\n' \
+      "$pr" "$issue" "$recorded"
+    printf '**Changed files**: %s\n' "$changed_files"
+    printf '**Implicated docs**:\n%s\n' "$implicated_docs"
+    printf '**Suspected inaccuracy**: %s\n' "$inaccuracy"
+    printf '<!-- /sharkrite-doc-drift -->\n'
+  } >> "$log_path"
+}
+
+# ---------------------------------------------------------------------------
 # _drift_log_bootstrap LOG_PATH
 #
 # Create docs/sharkrite-drift-log.md with an explanatory header if it does
@@ -185,6 +233,14 @@ EOF
 # other errors — skips with a warning (same contract as reconcile_tag_index).
 # ---------------------------------------------------------------------------
 drift_log_append() {
+  # Legacy compat: 5-arg callers (assess-documentation.sh, docs-command.sh) use
+  # drift_log_append PR ISSUE CHANGED_FILES IMPLICATED_DOCS INACCURACY and write
+  # markdown blocks to docs/sharkrite-drift-log.md.  Route them to the shim.
+  if [ $# -eq 5 ]; then
+    _drift_log_append_legacy "$@"
+    return
+  fi
+
   local doc="$1"
   local branch="$2"
   local pr="$3"
@@ -207,10 +263,26 @@ drift_log_append() {
     return 0
   fi
 
+  # Normalize free-text fields: strip tabs (shift TSV columns), newlines
+  # (inflate entry count), and backslashes (awk assignment-arg escape
+  # processing corrupts the match key — stored value keeps the literal \
+  # but awk sees a control char, so keys never match → duplicate append).
+  local assertion_norm evidence_norm
+  assertion_norm="${assertion//$'\t'/ }"
+  assertion_norm="${assertion_norm//$'\n'/ }"
+  assertion_norm="${assertion_norm//\\/}"
+  evidence_norm="${evidence//$'\t'/ }"
+  evidence_norm="${evidence_norm//$'\n'/ }"
+  evidence_norm="${evidence_norm//\\/}"
+
   local entry_file
   entry_file="$(_drift_entry_path "$doc" "$branch")"
 
-  mkdir -p "$(dirname "$entry_file")"
+  mkdir -p "$(dirname "$entry_file")" || {
+    printf 'drift_log_append: mkdir failed for "%s" — skipping\n' \
+      "$(dirname "$entry_file")" >&2
+    return 0
+  }
 
   local recorded
   recorded="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -220,7 +292,7 @@ drift_log_append() {
   if ! lock_acquire "$lock_path" 30; then
     printf 'drift_log_append: could not acquire lock for "%s" (timeout 30s)\n' \
       "$entry_file" >&2
-    return 1
+    return 0
   fi
 
   # Trap ensures lock is released even when the function exits early under set -e.
@@ -234,38 +306,56 @@ drift_log_append() {
   if [ -f "$entry_file" ]; then
     # Accumulate-in-place: scan the file for a line whose doc= and assertion=
     # fields match.  awk rewrites the file appending the new PR to that line's
-    # pr= field and exits 0; exits 1 when no matching line was found.
+    # pr= field (skipped when PR already present) and exits 0; exits 1 when no
+    # matching line was found; exits >1 on I/O error (skip to avoid duplicate).
     local _dla_awk_exit=0
-    awk -F'\t' 'BEGIN{OFS="\t"}
+    awk -F'\t' 'BEGIN{OFS="\t"; matched=0}
     {
       hasdoc=0; hasassert=0; prfldidx=0
       for (i=1; i<=NF; i++) {
-        if ($i == "doc=" _doc)               hasdoc=1
-        if ($i == "assertion=" _assertion)   hasassert=1
-        if (substr($i, 1, 3) == "pr=")       prfldidx=i
+        if ($i == "doc=" _doc)                hasdoc=1
+        if ($i == "assertion=" _assertion)    hasassert=1
+        if (substr($i, 1, 3) == "pr=")        prfldidx=i
       }
       if (hasdoc && hasassert && prfldidx > 0) {
-        $prfldidx = $prfldidx "," _newpr
+        _prnums = substr($prfldidx, 4)
+        _check  = "," _prnums ","
+        if (index(_check, "," _newpr ",") == 0) {
+          $prfldidx = $prfldidx "," _newpr
+        }
         matched=1
       }
       print
     }
     END { exit (matched ? 0 : 1) }
-    ' _doc="$doc" _assertion="$assertion" _newpr="$pr" \
+    ' _doc="$doc" _assertion="$assertion_norm" _newpr="$pr" \
       "$entry_file" > "$_dla_tmp" || _dla_awk_exit=$?
 
     if [ "$_dla_awk_exit" -eq 0 ]; then
       _dla_found=1
       mv "$_dla_tmp" "$entry_file"
+    elif [ "$_dla_awk_exit" -eq 1 ]; then
+      rm -f "$_dla_tmp"
+      # _dla_found stays 0; new entry appended below
     else
       rm -f "$_dla_tmp"
+      printf 'drift_log_append: awk error (exit %s) for "%s" — skipping\n' \
+        "$_dla_awk_exit" "$entry_file" >&2
+      lock_release "$lock_path"
+      trap - RETURN
+      return 0
     fi
   fi
 
   if [ "$_dla_found" -eq 0 ]; then
     printf 'doc=%s\tbranch=%s\tpr=%s\tissue=%s\tassertion=%s\tkind=%s\tevidence=%s\trecorded=%s\n' \
-      "$doc" "$branch" "$pr" "$issue" "$assertion" "$kind" "$evidence" "$recorded" \
-      >> "$entry_file"
+      "$doc" "$branch" "$pr" "$issue" "$assertion_norm" "$kind" "$evidence_norm" "$recorded" \
+      >> "$entry_file" || {
+      printf 'drift_log_append: write failed for "%s" — skipping\n' "$entry_file" >&2
+      lock_release "$lock_path"
+      trap - RETURN
+      return 0
+    }
   fi
 
   lock_release "$lock_path"
@@ -321,10 +411,12 @@ drift_log_entry_count() {
   local drift_base="${RITE_STATE_DIR}/doc-drift"
 
   # Count lines in a single entry file (each non-empty line = one entry).
+  # Anchored to ^doc= so free-text evidence fields containing "doc=" do not
+  # inflate the count.
   _dlc_count_file() {
     local _f="$1"
     [ -f "$_f" ] || { echo "0"; return; }
-    grep -c 'doc=' "$_f" || true
+    grep -c '^doc=' "$_f" || true
   }
 
   # Sum entry counts across all .log files under a given directory.
@@ -335,7 +427,7 @@ drift_log_entry_count() {
     [ -d "$_dir" ] || { echo "0"; return; }
     while IFS= read -r _f; do
       [ -f "$_f" ] || continue
-      _fc="$(grep -c 'doc=' "$_f" || true)"
+      _fc="$(grep -c '^doc=' "$_f" || true)"
       _total=$((_total + _fc))
     done < <(find "$_dir" -name "$_pat" 2>/dev/null || true)
     echo "$_total"

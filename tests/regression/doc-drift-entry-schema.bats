@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/drift-log.sh::drift_log_append|drift_log_entry_count
+# sharkrite-test-covers: lib/utils/drift-log.sh::drift_log_append|drift_log_entry_count|_drift_entry_path|_drift_kind_valid
 
 # Tests for the structured per-doc/per-branch drift entry schema.
 #
