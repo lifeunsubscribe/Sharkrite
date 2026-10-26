@@ -117,6 +117,10 @@ gh_safe()          { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 
 # Expose origin/main for _docs_apply_approved worktree fork
 git -C "${FAKE_PROJECT}" update-ref refs/remotes/origin/main HEAD
 
+# cd to FAKE_PROJECT so git rev-parse --show-toplevel resolves to the
+# fake repo, not the sharkrite repo root — otherwise drift_log_path
+# returns the real sharkrite drift log (which exists and has entries).
+cd "${FAKE_PROJECT}"
 "$@"
 HELPER_EOF
   chmod +x "$_DOCS_HELPER"
@@ -139,12 +143,8 @@ _seed_main_entry() {
   local evidence="${4:-lib/core/foo.sh}"
   local pr="${5:-42}"
 
-  local slug
-  slug="${doc//\//-}"
-  slug="${doc//\//-}"
-  # Use the same slug formula as _drift_entry_path: replace / with --
-  local entry_slug="${doc//\//--.}"
-  entry_slug="${doc//\//--}"
+  # Slug formula matches _drift_entry_path: replace / with --
+  local entry_slug="${doc//\//--}"
   local entry_file="${FAKE_PROJECT}/.rite/state/doc-drift/main/${entry_slug}.log"
   mkdir -p "$(dirname "$entry_file")"
   printf 'doc=%s\tbranch=main\tpr=%s\tissue=-\tassertion=%s\tkind=%s\tevidence=%s\trecorded=2026-01-01T00:00:00Z\n' \
@@ -201,9 +201,10 @@ Use it.
   run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
   [ "$status" -eq 0 ]
 
-  # The prompt passed to the provider must contain the doc + section anchor label
-  # We verify by checking the call log recorded the prompt had NARRATIVE requirement
-  grep -q "CALL:has_narrative=1" "$STUB_CALLS_FILE"
+  # The prompt passed to the provider must contain the NARRATIVE requirement.
+  # The prompt has multiple ---NARRATIVE--- occurrences (description + marker line),
+  # so check for any non-zero count rather than exactly 1.
+  grep -qE "CALL:has_narrative=[1-9]" "$STUB_CALLS_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -218,8 +219,10 @@ Use it.
   run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
   [ "$status" -eq 0 ]
 
-  # Verify prompt included an ---END-NNN--- end token
-  grep -q "CALL:has_endtoken=1" "$STUB_CALLS_FILE"
+  # Verify prompt included an ---END-NNN--- end token.
+  # The token appears twice in the prompt (EDIT template + REFINE template),
+  # so check for any non-zero count rather than exactly 1.
+  grep -qE "CALL:has_endtoken=[1-9]" "$STUB_CALLS_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -380,11 +383,11 @@ new content
 # Test 10: #1208 large-file guard — EDIT for large file auto-skipped
 # ---------------------------------------------------------------------------
 
-@test "#1208 large-file guard: auto-skips EDIT for file > 2000 bytes" {
-  # Make the target doc large
-  python3 -c "print('x' * 3000)" > "$FAKE_PROJECT/docs/test-doc.md" 2>/dev/null || \
-    printf '%.0sx' {1..3001} > "$FAKE_PROJECT/docs/test-doc.md" 2>/dev/null || \
-    dd if=/dev/zero bs=3001 count=1 2>/dev/null | tr '\0' 'x' > "$FAKE_PROJECT/docs/test-doc.md"
+@test "#1208 large-file guard: auto-skips EDIT for file > 8000 bytes" {
+  # Make the target doc large (must exceed _bcd_section_cap=8000 in
+  # _docs_bounded_context_for_doc to trigger the guard)
+  python3 -c "print('x' * 9000)" > "$FAKE_PROJECT/docs/test-doc.md" 2>/dev/null || \
+    dd if=/dev/zero bs=9001 count=1 2>/dev/null | tr '\0' 'x' > "$FAKE_PROJECT/docs/test-doc.md"
 
   _seed_main_entry "docs/test-doc.md" "stale assertion" "contradiction" "lib/core/foo.sh"
 
@@ -466,19 +469,22 @@ new file content
 
 @test "_docs_extract_section: extracts preamble (no heading)" {
   run bash -c "
-source '$_DOCS_HELPER' 2>/dev/null || true
 export RITE_LIB_DIR='$PROJECT_ROOT/lib'
 export RITE_PROJECT_ROOT='$FAKE_PROJECT'
 export RITE_STATE_DIR='$FAKE_PROJECT/.rite/state'
 source '$DOCS_CMD'
 load_provider() { return 0; }
 provider_resolve_model() { printf 'claude-sonnet-4-6\n'; }
-printf '# Heading\n\n## Sub\n\nbody\n' > /tmp/bats_extract_test_\$\$.md
-_docs_extract_section /tmp/bats_extract_test_\$\$.md '' ''
-rm -f /tmp/bats_extract_test_\$\$.md
+_tf=\$(mktemp)
+# File starts with a heading — preamble (empty heading level) returns nothing
+printf '# Heading\n\n## Sub\n\nbody\n' > \"\$_tf\"
+_docs_extract_section \"\$_tf\" '' ''
+rm -f \"\$_tf\"
 "
-  # Preamble before first heading: nothing (file starts with heading)
+  # Preamble extraction: file starts with heading so nothing before it
   [ "$status" -eq 0 ]
+  # Output must be empty (no lines before first heading)
+  [ -z "$output" ]
 }
 
 # ---------------------------------------------------------------------------

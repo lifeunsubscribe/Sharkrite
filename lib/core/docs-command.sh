@@ -153,12 +153,16 @@ _docs_burn_drift_entries() {
 }
 
 # ---------------------------------------------------------------------------
-# _docs_apply_approved APPROVED_DIR DRIFT_PATH INSTRUCTIONS MODE TARGET_BRANCH
+# _docs_apply_approved APPROVED_DIR DRIFT_PATH INSTRUCTIONS MODE TARGET_BRANCH [SKIP_BURNDOWN]
 #
 # Apply every approved proposal (files in APPROVED_DIR) inside a temporary
 # worktree forked from origin/${TARGET_BRANCH:-main}, burn down covered drift
 # entries in the same commit, push the docs branch, and open a docs PR.
 # The PR is NOT auto-merged — it goes through normal human review.
+#
+# SKIP_BURNDOWN (6th arg, default false): pass "true" to suppress legacy
+# flat-log burn-down (used by _docs_main_entries_pass whose scope boundary
+# explicitly forbids legacy entry removal).
 #
 # Consent-gate rationale: this function is reached ONLY after explicit human
 # approval in the preview loop — explicit command + preview approval IS consent.
@@ -166,10 +170,11 @@ _docs_burn_drift_entries() {
 # ---------------------------------------------------------------------------
 _docs_apply_approved() {
   local _aa_dir="${1:-}"
-  local _aa_drift_path="${2:-}"
+  local _aa_drift_path="${2:-}"  # unused; kept for interface compat with _docs_update_engine caller
   local _aa_instructions="${3:-}"
   local _aa_mode="${4:-directed}"
   local _aa_target="${5:-${RITE_TARGET_BRANCH:-main}}"
+  local _aa_skip_burndown="${6:-false}"
 
   # Count approved proposals
   local _aa_count=0
@@ -256,7 +261,9 @@ _docs_apply_approved() {
   # Burn down drift entries in the worktree's copy of the drift log.
   # drift_log_path is called from within the worktree cwd so git rev-parse
   # --show-toplevel returns the worktree root, not the main checkout root.
-  if [ -n "$_aa_all_drift_refs" ]; then
+  # Skipped when _aa_skip_burndown=true (e.g. _docs_main_entries_pass, whose
+  # scope boundary explicitly forbids removing legacy flat-log entries).
+  if [ -n "$_aa_all_drift_refs" ] && [ "$_aa_skip_burndown" != "true" ]; then
     local _aa_wt_drift
     _aa_wt_drift="$(cd "$_aa_wt_path" && drift_log_path 2>/dev/null || true)"
     if [ -n "$_aa_wt_drift" ] && [ -f "$_aa_wt_drift" ]; then
@@ -1107,14 +1114,14 @@ Output in this EXACT format (missing either section causes a retry):
 <2-5 sentences: what changed in the code and why the doc needs updating>
 ---END-NARRATIVE---
 
-For each section to edit (full new content of that section):
+For each doc to edit (full new content of the entire file — NOT just the changed section):
 ---PROPOSAL---
 ACTION: EDIT
 FILE: ${_mp_doc}
 DRIFT_REFS: <space-separated pr:N from the entries above, or "none">
 DESCRIPTION: <one-line summary>
 ---CONTENT---
-<complete new content of the file or section>
+<complete new content of the entire file>
 ${_mp_end_token}
 
 For nondeterministic assertions (propose enforceable rewording):
@@ -1354,12 +1361,15 @@ EOF_NAR
               ;;
           esac
         fi
-        # #1208 guard: large-file check
+        # #1208 guard: large-file check — threshold matches _bcd_section_cap (8000)
+        # in _docs_bounded_context_for_doc; files within the cap have their full
+        # content loaded so EDIT is safe; files beyond the cap were seen only in
+        # excerpt, making a whole-file overwrite unsafe.
         local _mp_abs_size="${RITE_PROJECT_ROOT}/${_mp_p_file}"
         if [ -f "$_mp_abs_size" ]; then
           local _mp_file_size
           _mp_file_size="$(wc -c < "$_mp_abs_size" 2>/dev/null || echo 0)"
-          if [ "$_mp_file_size" -gt 2000 ]; then
+          if [ "$_mp_file_size" -gt 8000 ]; then
             print_warning "  Auto-skipping EDIT for '${_mp_p_file}': file is ${_mp_file_size} bytes but model only saw bounded excerpt" >&2
             _mp_pi=$((_mp_pi + 1))
             continue
@@ -1483,10 +1493,11 @@ ${_mp_feedback_this_round}"
     local _mp_apply_rc=0
     _docs_apply_approved \
       "$_mp_appr_dir" \
-      "$(drift_log_path 2>/dev/null || true)" \
+      "" \
       "" \
       "reconcile" \
-      "$_mp_target" || _mp_apply_rc=$?
+      "$_mp_target" \
+      "true" || _mp_apply_rc=$?
     rm -rf "$_mp_appr_dir"
     return "$_mp_apply_rc"
   done
