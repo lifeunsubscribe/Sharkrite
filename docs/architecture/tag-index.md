@@ -61,3 +61,8 @@
 
 
 
+
+## DO
+- behavioral-design.md → Assessment May Not Defer the Issue's Own Acceptance Criteria
+- encountered-issues.md → Dev session deletes unrelated regression tests — scope boundary not enforced
+
