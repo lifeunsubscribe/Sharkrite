@@ -186,7 +186,7 @@ _batch_print_drift_summary() {
       [ -n "$_f" ] || continue
       _docs=$((_docs + 1))
     done < <(
-      find "${RITE_STATE_DIR}/doc-drift" -mindepth 2 -maxdepth 2 -name '*.log' \
+      find "${RITE_STATE_DIR}/doc-drift" -mindepth 2 -name '*.log' \
         2>/dev/null \
         | sed 's|.*/||' \
         | sort -u \

@@ -186,6 +186,34 @@ _seed_entry() {
   }
 }
 
+@test "behavioral: slash-named branch (release/1.2) — N and M both counted correctly" {
+  # release/1.2 produces a 3-level-deep path: doc-drift/release/1.2/slug.log
+  # -maxdepth 2 would miss it, causing M=0 while N=1 — a directly unmet AC.
+  _seed_entry "$_tmpdir" "docs/architecture/foo.md" "release/1.2"
+
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='${REPO_ROOT}/lib'
+    export RITE_STATE_DIR='${_tmpdir}'
+    print_info() { printf '%s\n' \"\$*\"; }
+    source '${DRIFT_LOG}'
+    _fn_src=\$(awk '
+      /^_batch_print_drift_summary\(\)/ { in_func=1 }
+      in_func { print }
+      in_func && /^\}$/ { exit }
+    ' '${BATCH}')
+    eval \"\$_fn_src\"
+    _batch_print_drift_summary
+  "
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "1 drift entries pending across 1 docs" || {
+    echo "FAIL: expected '1 drift entries pending across 1 docs'" >&2
+    echo "      got: $output" >&2
+    return 1
+  }
+}
+
 # ---------------------------------------------------------------------------
 # STRUCTURAL
 # ---------------------------------------------------------------------------
