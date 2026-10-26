@@ -57,6 +57,7 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/cap-resume.sh"
+source "$RITE_LIB_DIR/utils/drift-log.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 
@@ -167,6 +168,32 @@ record_run() {
   local history_file="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/run-history.log"
   mkdir -p "$(dirname "$history_file")"
   echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $issue $mode" >> "$history_file"
+}
+
+# _batch_print_drift_summary
+# Print one informational line when the batch finishes with pending drift entries.
+# Format: "N drift entries pending across M docs — run 'rite docs'"
+# Silent when N=0, RITE_STATE_DIR unset, or drift-log.sh not loaded.
+# No prompting; no effect on exit code.
+_batch_print_drift_summary() {
+  declare -f drift_log_entry_count >/dev/null 2>&1 || return 0
+  local _total _docs _f
+  _total="$(drift_log_entry_count --total || true)"
+  [ "${_total:-0}" -gt 0 ] || return 0
+  _docs=0
+  if [ -d "${RITE_STATE_DIR:-}/doc-drift" ]; then
+    while IFS= read -r _f; do
+      [ -n "$_f" ] || continue
+      _docs=$((_docs + 1))
+    done < <(
+      find "${RITE_STATE_DIR}/doc-drift" -mindepth 2 -name '*.log' \
+        2>/dev/null \
+        | sed 's|.*/||' \
+        | sort -u \
+        || true
+    )
+  fi
+  print_info "${_total} drift entries pending across ${_docs} docs — run 'rite docs'"
 }
 
 # Batch processing requires associative arrays (bash 4+)
@@ -2215,6 +2242,7 @@ if [ ${#BLOCKED_ISSUES[@]} -gt 0 ]; then
 fi
 
 # (Skipped Issues section is now emitted by _batch_print_stats above)
+_batch_print_drift_summary
 
 # Build comprehensive Slack summary
 NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*
