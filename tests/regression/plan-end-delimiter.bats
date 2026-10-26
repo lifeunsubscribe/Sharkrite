@@ -169,7 +169,7 @@ setup() {
 
   local fn_body
   fn_body=$(awk '
-    /^generate_issues[(][)]/ { in_fn=1; depth=0 }
+    /^_plan_streaming_awk[(][)]/ { in_fn=1; depth=0 }
     in_fn {
       for (i=1; i<=length($0); i++) {
         c=substr($0,i,1)
