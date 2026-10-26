@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/providers/claude.sh::claude_provider_healthcheck, lib/core/batch-process-issues.sh
+# sharkrite-test-covers: lib/providers/claude.sh::claude_provider_healthcheck, lib/core/batch-process-issues.sh, lib/providers/provider-interface.sh, lib/core/workflow-runner.sh::main
 # Regression tests for the provider trust preflight (issue #1488).
 #
 # Claude CLI >=2.1.284 emits "has not been trusted" to stderr in untrusted
@@ -63,7 +63,7 @@ _make_trusted_stub() {
   _make_untrusted_stub
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     source '$RITE_LIB_DIR/providers/provider-interface.sh'
@@ -81,7 +81,7 @@ _make_trusted_stub() {
   _make_untrusted_stub
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     source '$RITE_LIB_DIR/providers/provider-interface.sh'
@@ -100,7 +100,7 @@ _make_trusted_stub() {
   _make_untrusted_stub
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     source '$RITE_LIB_DIR/providers/provider-interface.sh'
@@ -119,7 +119,7 @@ _make_trusted_stub() {
   _make_trusted_stub
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     source '$RITE_LIB_DIR/providers/provider-interface.sh'
@@ -137,7 +137,7 @@ _make_trusted_stub() {
   _make_trusted_stub
 
   bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     source '$RITE_LIB_DIR/providers/provider-interface.sh'
@@ -159,7 +159,7 @@ _make_trusted_stub() {
   _make_trusted_stub
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     source '$RITE_LIB_DIR/providers/provider-interface.sh'

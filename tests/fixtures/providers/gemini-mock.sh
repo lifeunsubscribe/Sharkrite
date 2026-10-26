@@ -45,6 +45,11 @@ gemini_mock_provider_validate_cli() {
   return 0
 }
 
+gemini_mock_provider_healthcheck() {
+  # Mock always reports workspace as trusted
+  return 0
+}
+
 # =============================================================================
 # Invocation Functions
 # =============================================================================

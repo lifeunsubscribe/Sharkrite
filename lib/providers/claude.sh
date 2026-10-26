@@ -87,7 +87,8 @@ claude_provider_healthcheck() {
 
   # Trivial --print invocation; only stderr is inspected for the trust signal.
   # --dangerously-skip-permissions keeps it non-interactive across all setups.
-  "$_cmd" --print "ok" --dangerously-skip-permissions \
+  # Bounded at 120s so a hung CLI cannot stall an entire batch run.
+  run_with_timeout 120 "$_cmd" --print "ok" --dangerously-skip-permissions \
     >/dev/null 2>"$_stderr_file" || true
 
   local _stderr_content
