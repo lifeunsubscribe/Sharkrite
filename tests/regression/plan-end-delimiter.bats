@@ -607,16 +607,9 @@ setup() {
     "which used to truncate the regen block." \
     "$_tok" | _plan_streaming_awk "$_tok")
 
-  # Run the extraction awk exactly as written in _regen_block_sections
+  # Run the production extraction function from _regen_block_sections
   local _extracted
-  _extracted=$(printf '%s\n' "$_streamed" | awk '
-    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf=""; exit }
-      next
-    }
-  ' || true)
+  _extracted=$(printf '%s\n' "$_streamed" | _regen_extract_block)
 
   # The block must be extracted (not empty)
   [ -n "$_extracted" ] || {
