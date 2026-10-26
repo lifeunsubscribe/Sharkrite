@@ -5916,6 +5916,85 @@ FIXTURE
 }
 
 # ---------------------------------------------------------------------------
+# AC8f — canonical annotation with unbalanced paren: dep edge must be added.
+#
+# "(can run in parallel with #8" has no closing ')'.  _strip_par_ref's awk
+# previously bailed at "cp == 0" and returned the line unchanged, leaving #8
+# visible to Step 2's presence check — which then skipped the After #8 append.
+#
+# After the fix, cp==0 falls through to process the ref list with empty tail,
+# so _strip_par_ref strips #8 from the annotation and _transform_dep_line
+# correctly adds "After #8".
+# ---------------------------------------------------------------------------
+
+@test "AC8f: canonical unbalanced-paren annotation — _strip_par_ref strips ref, After #N added" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: (can run in parallel with #8" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+}
+
+@test "AC8f2: canonical unbalanced-paren annotation with other deps — After #N prepended, other deps preserved" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3 (can run in parallel with #8" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+
+  # Must still contain After #3
+  printf '%s\n' "$result" | grep -q 'After #3' || {
+    echo "FAIL: original After #3 should be preserved; got: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# AC8g — non-canonical annotation with unbalanced paren: dep edge must be added.
+#
+# "(parallel with #8" (no "can run in", no closing ')') leaves #8 visible to
+# Step 2's presence check when the sed pattern requires a balanced ')'.
+#
+# After the fix, the Step 2 sed uses '\{0,1\}' to make ')' optional, so the
+# unbalanced group is stripped before the presence check and "After #8" is
+# correctly appended.
+# ---------------------------------------------------------------------------
+
+@test "AC8g: non-canonical unbalanced-paren annotation — Step 2 sed strips ref, After #N added" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: (parallel with #8" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+}
+
+@test "AC8g2: non-canonical unbalanced-paren annotation with other deps — After #N prepended, other deps preserved" {
+  local result
+  result=$(_transform_dep_line "**Dependencies**: After #3, (parallel with #8" 8)
+
+  # Must contain After #8
+  printf '%s\n' "$result" | grep -qE 'After #8([^0-9]|$)' || {
+    echo "FAIL: expected After #8 to be appended; got: $result" >&2
+    false
+  }
+
+  # Must still contain After #3
+  printf '%s\n' "$result" | grep -q 'After #3' || {
+    echo "FAIL: original After #3 should be preserved; got: $result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
 # T1 — title-length: 51-char title emits WARNING, exit 0
 #
 # "[Phase 1] Implement full authentication module now!" is 51 characters (ASCII).

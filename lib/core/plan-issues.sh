@@ -1652,10 +1652,15 @@ _strip_par_ref() {
     after_kw = substr(line, kid + length(kw))
 
     cp = index(after_kw, ")")
-    if (cp == 0) { print; next }
-
-    ref_list = substr(after_kw, 1, cp - 1)
-    tail     = substr(after_kw, cp)
+    if (cp == 0) {
+      # Unbalanced paren: no closing paren found. Treat entire after_kw as
+      # the ref list so the ref is still stripped; tail is empty.
+      ref_list = after_kw
+      tail     = ""
+    } else {
+      ref_list = substr(after_kw, 1, cp - 1)
+      tail     = substr(after_kw, cp)
+    }
 
     n     = split(ref_list, toks, /[[:space:]]*,[[:space:]]*/)
     found    = 0
@@ -1736,7 +1741,9 @@ _transform_dep_line() {
   # presence check.  Genuine dep edges (After #N, bare #N) always appear outside
   # parens.  Suffix ([^0-9]|$) prevents #8 matching #80.
   local _tdl_check
-  _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*[Pp]arallel[^)]*)//g' || true)
+  # \{0,1\} makes the closing ')' optional so unbalanced groups like
+  # "(parallel with #8" (no ')') are also stripped before the presence check.
+  _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*[Pp]arallel[^)]*)\{0,1\}//g' || true)
   if ! echo "$_tdl_check" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
