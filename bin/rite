@@ -786,6 +786,76 @@ resolve_dispatch_plan() {
 }
 # --- end resolve_dispatch_plan ------------------------------------------------
 
+# --doc validation, persistence, and missing-doc warning.
+# Placed here — after function definitions, before the log bootstrap — so
+# --version exits cleanly without spinning up the log infrastructure (which
+# would truncate a parent workflow's inherited RITE_LOG_FILE).
+if [ -n "${RITE_DECLARED_DOC:-}" ]; then
+  # Validate: must end in .md
+  case "$RITE_DECLARED_DOC" in
+    *.md) ;;
+    *)
+      print_error "--doc path must be a .md file (got: $RITE_DECLARED_DOC)"
+      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <path>.md ..." >&2
+      exit 1
+      ;;
+  esac
+  # Resolve to absolute path for existence and repo-root checks below.
+  if [[ "$RITE_DECLARED_DOC" == /* ]]; then
+    _doc_abs="$RITE_DECLARED_DOC"
+  else
+    _doc_abs="${RITE_PROJECT_ROOT}/${RITE_DECLARED_DOC}"
+  fi
+  if [ ! -f "$_doc_abs" ]; then
+    print_error "--doc file not found: $RITE_DECLARED_DOC"
+    echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <existing-path>.md ..." >&2
+    exit 1
+  fi
+  # Normalize to resolve .. traversal before the under-root check.
+  _doc_abs_real="$(cd "$(dirname "$_doc_abs")" && pwd -P)/$(basename "$_doc_abs")"
+  _root_real="$(cd "$RITE_PROJECT_ROOT" && pwd -P)"
+  # Validate: must be under the repo root
+  case "$_doc_abs_real" in
+    "${_root_real}/"*) ;;
+    *)
+      print_error "--doc path must be inside the repo (got: $RITE_DECLARED_DOC)"
+      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <repo-relative-path>.md ..." >&2
+      exit 1
+      ;;
+  esac
+  # Persist per-branch declaration. Guard: do not persist on no-target
+  # invocations (e.g. bare `rite --branch X --doc Y` with no issue number) —
+  # those exit 1 with "No issues specified" and must not overwrite the state
+  # file, which would silently suppress future missing-doc warnings.
+  _doc_rel="${_doc_abs_real#${_root_real}/}"
+  _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
+  _doc_state_file="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
+  _doc_is_no_target=false
+  if [ "$MODE" = "full" ] && [ "${#ARGS[@]}" -eq 0 ] && [ "${#BATCH_FILTER_ARGS[@]}" -eq 0 ] && [ -z "${PR_INPUT:-}" ]; then
+    _doc_is_no_target=true
+  fi
+  if [ "${RITE_DRY_RUN:-}" != "true" ] && [ "$_doc_is_no_target" != "true" ]; then
+    mkdir -p "$RITE_STATE_DIR" 2>/dev/null || true
+    echo "$_doc_rel" > "$_doc_state_file"
+  fi
+elif [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then
+  # --branch without --doc: warn when doc tracking is active and no prior declaration exists.
+  _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
+  _existing_state="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
+  if [ ! -f "${_existing_state}" ]; then
+    case "${RITE_DOC_MODE:-}" in
+      sync|changelog)
+        print_warning "--branch ${RITE_TARGET_BRANCH} declared without --doc; feature doc association missing"
+        ;;
+    esac
+  fi
+fi
+# --version: exit here, before the log bootstrap, so we don't spin up the
+# log infrastructure and truncate a parent workflow's inherited RITE_LOG_FILE.
+if [ "${_RITE_VERSION_REQUESTED:-}" = "true" ]; then
+  exit 0
+fi
+
 # Dry-run choke point (fail-closed): plan-and-exit BEFORE any side effect.
 # MUST stay immediately after the arg-parse loop and BEFORE the logging block
 # below — logging setup creates a log file and rotates (deletes) old logs, and
@@ -1714,66 +1784,6 @@ record_run() {
 # the routing logic has exactly one source of truth shared with the dry-run
 # printer. No independent routing conditionals may appear in this section.
 _DISPATCH_KEY=$(resolve_dispatch_key "$MODE" "${BATCH_FILTER_ARGS[*]:-}" "${PR_INPUT:-}" ${ARGS[@]+"${ARGS[@]}"})
-
-# --doc validation, persistence, and missing-doc warning.
-# Runs after config.sh (RITE_STATE_DIR available) and before any LLM work.
-if [ -n "${RITE_DECLARED_DOC:-}" ]; then
-  # Validate: must end in .md
-  case "$RITE_DECLARED_DOC" in
-    *.md) ;;
-    *)
-      print_error "--doc path must be a .md file (got: $RITE_DECLARED_DOC)"
-      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <path>.md ..." >&2
-      exit 1
-      ;;
-  esac
-  # Resolve to absolute path for existence and repo-root checks below.
-  if [[ "$RITE_DECLARED_DOC" == /* ]]; then
-    _doc_abs="$RITE_DECLARED_DOC"
-  else
-    _doc_abs="${RITE_PROJECT_ROOT}/${RITE_DECLARED_DOC}"
-  fi
-  if [ ! -f "$_doc_abs" ]; then
-    print_error "--doc file not found: $RITE_DECLARED_DOC"
-    echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <existing-path>.md ..." >&2
-    exit 1
-  fi
-  # Normalize to resolve .. traversal before the under-root check.
-  _doc_abs_real="$(cd "$(dirname "$_doc_abs")" && pwd -P)/$(basename "$_doc_abs")"
-  _root_real="$(cd "$RITE_PROJECT_ROOT" && pwd -P)"
-  # Validate: must be under the repo root
-  case "$_doc_abs_real" in
-    "${_root_real}/"*) ;;
-    *)
-      print_error "--doc path must be inside the repo (got: $RITE_DECLARED_DOC)"
-      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <repo-relative-path>.md ..." >&2
-      exit 1
-      ;;
-  esac
-  # Persist per-branch declaration: canonical repo-relative path, slash-safe branch name.
-  _doc_rel="${_doc_abs_real#${_root_real}/}"
-  _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
-  _doc_state_file="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
-  if [ "${RITE_DRY_RUN:-}" != "true" ]; then
-    mkdir -p "$RITE_STATE_DIR" 2>/dev/null || true
-    echo "$_doc_rel" > "$_doc_state_file"
-  fi
-elif [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then
-  # --branch without --doc: warn when doc tracking is active and no prior declaration exists.
-  _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
-  _existing_state="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
-  if [ ! -f "${_existing_state}" ]; then
-    case "${RITE_DOC_MODE:-}" in
-      sync|changelog)
-        print_warning "--branch ${RITE_TARGET_BRANCH} declared without --doc; feature doc association missing"
-        ;;
-    esac
-  fi
-fi
-# Deferred --version exit: runs here so --doc persistence completes first.
-if [ "${_RITE_VERSION_REQUESTED:-}" = "true" ]; then
-  exit 0
-fi
 
 # Target-branch preflight: verify (or auto-create) the target branch on origin.
 # Scoped to workflow-running dispatch keys only — status/plan/undo paths stay

@@ -137,7 +137,7 @@ teardown() {
 @test "--doc without --branch is a usage error (exit 1)" {
   run bash "$RITE_REPO_ROOT/bin/rite" --doc docs/features/foo.md < /dev/null
   [ "$status" -eq 1 ]
-  _cnt=$(echo "$output" | grep -c 'requires --branch' || true)
+  _cnt=$(echo "$output" | grep -c 'non-main integration branch' || true)
   [ "$_cnt" -ge 1 ]
 }
 
