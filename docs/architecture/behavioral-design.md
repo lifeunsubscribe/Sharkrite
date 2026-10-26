@@ -269,6 +269,28 @@ When no PR can be found via the API (manual close with no matching PR body, or t
 
 ---
 
+### Orchestrator/Dev-Session Worktree Alignment
+
+**Principle:** The orchestrator (`workflow-runner.sh`) must measure post-dev work against the worktree the dev session actually used. When the two derivations disagree, the run fails loudly naming both paths — it never guesses which is right.
+
+**Why this matters:** After `claude-workflow.sh` completes, the orchestrator re-derives the worktree path via three steps: (1) `detect_worktree_for_pr` — finds the local worktree matching the PR's branch, (2) a path-grep fallback matching the issue number in the worktree directory name, (3) the handoff file written by `claude-workflow.sh`. If step (1) finds a different worktree (e.g. a stale PR from a previous batch whose worktree still exists), step (3) is never reached, and `count_changed_files` runs against the wrong worktree — a worktree that may have 0 changes, causing the orchestrator to report "No work was produced" even though the dev session succeeded.
+
+**Handoff file is authoritative.** `claude-workflow.sh` writes `${RITE_STATE_DIR}/worktree-handoff-${ISSUE_NUMBER}.txt` unconditionally at the point it switches into the worktree. This file is the ground truth for the dev session's actual path. `workflow-runner.sh` reads this file after all discovery steps — not only when `WORKTREE_PATH` is empty — and compares it to the orchestrator's discovery. When they disagree, the orchestrator refuses with a clear error:
+
+```
+ERROR: Worktree path mismatch: dev session and orchestrator found different worktrees
+ERROR:   Dev session used:   /path/to/real/worktree
+ERROR:   Orchestrator found: /path/to/stale/worktree
+```
+
+**Refusal over guessing.** Automatically choosing the worktree with more changes would work most of the time but masks discovery bugs. The refusal surfaces the mismatch immediately so the underlying discovery issue can be fixed (e.g. stale PR cleanup, matcher regex gap, handoff file write failure).
+
+**Live failure (2026-10-25):** Batch run for issues #1342/#1368. Dev session completed with 4 files changed (`AUTO_COMMIT issue=1342 files=4`) and wrote the handoff file pointing to `fx-make-plan-issuessh-end_b1342-1368`. `detect_pr_for_issue` returned the stale PR #1452 (Oct 24 batch) whose content-empty worktree existed locally. `count_changed_files` on that worktree returned 0, triggering "No work was produced" — a 24-minute silent failure that left the real work pushed nowhere.
+
+**Regression test:** `tests/regression/orchestrator-worktree-alignment.bats`.
+
+---
+
 ## Plan System (plan-issues.sh)
 
 ### Coverage Checklist Validation

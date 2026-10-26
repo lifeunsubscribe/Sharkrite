@@ -719,6 +719,65 @@ phase_pre_start_checks() {
   return 0
 }
 
+# _assert_worktree_alignment <issue_number> <workflow_exit>
+# Reads the dev-session worktree handoff, canonicalizes both paths (resolving
+# symlinks so /tmp == /private/tmp on macOS), and verifies that the dev
+# session's worktree and the orchestrator's WORKTREE_PATH agree.
+# On success, sets WORKTREE_PATH to the handoff path when one was written.
+# Returns 1 when the paths disagree; 0 otherwise (including when no handoff
+# was written, which is logged as a warning on a clean dev-session exit).
+_assert_worktree_alignment() {
+  local _issue_num="$1"
+  local _wf_exit="${2:-0}"
+  local _dev_session_wt=""
+  local _handoff_file=""
+
+  if [ -n "${RITE_STATE_DIR:-}" ]; then
+    _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${_issue_num}.txt"
+    if [ -f "$_handoff_file" ]; then
+      _dev_session_wt=$(cat "$_handoff_file" 2>/dev/null || true)
+      rm -f "$_handoff_file"
+    fi
+  fi
+
+  # Warn when the dev session exited cleanly but wrote no handoff — the alignment
+  # check then silently no-ops, which is indistinguishable from a healthy run
+  # but leaves the stale-path risk active.
+  if [ -z "${_dev_session_wt:-}" ] && [ "${_wf_exit:-0}" -eq 0 ] && [ -n "${RITE_STATE_DIR:-}" ]; then
+    print_warning "Dev session wrote no worktree handoff — alignment check skipped (stale-path risk active)"
+  fi
+
+  # Guard existence before comparison — a nonexistent handoff path is silently
+  # ignored (stale state), not treated as a fatal mismatch.
+  if [ -n "${_dev_session_wt:-}" ] && [ ! -d "$_dev_session_wt" ]; then
+    print_warning "Dev session handoff path does not exist: $_dev_session_wt — ignoring handoff"
+    _dev_session_wt=""
+  fi
+
+  if [ -n "${_dev_session_wt:-}" ] && [ -n "${WORKTREE_PATH:-}" ]; then
+    # Canonicalize both paths before comparison to avoid symlink false-mismatches
+    # (macOS /tmp is a symlink to /private/tmp; git worktree list returns the
+    # resolved path while a constructed RITE_WORKTREE_DIR path may not be).
+    local _canonical_handoff _canonical_discovered
+    _canonical_handoff=$(cd "$_dev_session_wt" 2>/dev/null && pwd -P 2>/dev/null || echo "$_dev_session_wt")
+    _canonical_discovered=$(cd "$WORKTREE_PATH" 2>/dev/null && pwd -P 2>/dev/null || echo "$WORKTREE_PATH")
+    if [ "$_canonical_handoff" != "$_canonical_discovered" ]; then
+      print_error "Worktree path mismatch: dev session and orchestrator found different worktrees"
+      print_error "  Dev session used:   $_dev_session_wt"
+      print_error "  Orchestrator found: $WORKTREE_PATH"
+      print_info "The dev session's work is in the first path; the second is a discovery miss."
+      print_info "See docs/architecture/behavioral-design.md — Orchestrator/Dev-Session Worktree Alignment"
+      return 1
+    fi
+  fi
+
+  if [ -n "${_dev_session_wt:-}" ]; then
+    WORKTREE_PATH="$_dev_session_wt"
+  fi
+
+  return 0
+}
+
 phase_claude_workflow() {
   local issue_number="$1"
 
@@ -883,6 +942,7 @@ EOF
           fi
 
           WORKFLOW_EXIT=$?
+          _assert_worktree_alignment "$issue_number" "$WORKFLOW_EXIT" || return 1
           if [ $WORKFLOW_EXIT -eq 3 ]; then
             BLOCKER_TYPE=test_failures BLOCKER_DETAILS="Test suite failed during development phase — see output above"
             if ! handle_blocker "pre-merge" "$issue_number"; then
@@ -898,6 +958,7 @@ EOF
               RITE_ORCHESTRATED=true "$CLAUDE_WORKFLOW" "$issue_number" --auto
             fi
             WORKFLOW_EXIT=$?
+            _assert_worktree_alignment "$issue_number" "$WORKFLOW_EXIT" || return 1
             if [ $WORKFLOW_EXIT -eq 4 ]; then
               # Two consecutive no-change sessions: before failing loud, run the
               # execution-free already-fixed check (#821). Closes with evidence
@@ -1012,14 +1073,11 @@ EOF
           grep -E "(issue[^0-9]?${issue_number}([^0-9]|$)|#${issue_number}([^0-9]|$)|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
       fi
 
-      # Last resort: read handoff file written by claude-workflow.sh
-      if [ -z "${WORKTREE_PATH:-}" ] && [ -n "${RITE_STATE_DIR:-}" ]; then
-        local _handoff_file="${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
-        if [ -f "$_handoff_file" ]; then
-          WORKTREE_PATH=$(cat "$_handoff_file" 2>/dev/null || echo "")
-          rm -f "$_handoff_file"
-        fi
-      fi
+      # Assert worktree alignment: verify the dev session's actual path agrees with
+      # the orchestrator's discovery, warn on missing handoff, canonicalize symlinks,
+      # and adopt the handoff path when valid. (#1473)
+      # See: docs/architecture/behavioral-design.md — Orchestrator/Dev-Session Worktree Alignment
+      _assert_worktree_alignment "$issue_number" "$workflow_exit" || return 1
 
       if [ -n "${WORKTREE_PATH:-}" ]; then
         set_current_worktree "$WORKTREE_PATH"
@@ -1053,6 +1111,9 @@ EOF
           WORKTREE_PATH=$(git worktree list | awk '{print $1}' | grep -v "^${MAIN_WORKTREE}$" | \
             grep -E "(issue[^0-9]?${issue_number}([^0-9]|$)|#${issue_number}([^0-9]|$)|[-_]${issue_number}[-_]|[-_]${issue_number}$|_b${issue_number}[-_]|_b${issue_number}$)" | head -1 || true)
         fi
+
+        # Alignment assertion for retry dev session (same contract as initial run above)
+        _assert_worktree_alignment "$issue_number" "$workflow_exit" || return 1
 
         if [ $workflow_exit -eq 4 ]; then
           # Two consecutive no-change sessions: before failing loud, run the
