@@ -81,6 +81,15 @@ WT_AGE_DISPLAY=""
 # a bogus ~20000d age instead of signalling the broken state).
 compute_worktree_age() {
   local wt_path="$1"
+
+  # Guard: if .git is absent the worktree directory is a husk (git link reaped).
+  # Without this, git -C walks up to the enclosing repo and returns a real epoch,
+  # producing a bogus computed age instead of the honest "unknown age (prunable)".
+  if [ ! -e "$wt_path/.git" ]; then
+    WT_AGE_DISPLAY="unknown age (prunable)"
+    return 0
+  fi
+
   local last_commit_epoch
   last_commit_epoch=$(git -C "$wt_path" log -1 --format='%ct' 2>/dev/null || true)
 
