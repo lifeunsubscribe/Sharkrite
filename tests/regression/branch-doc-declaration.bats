@@ -17,6 +17,7 @@ load '../helpers/setup'
 
 setup() {
   setup_test_tmpdir
+  unset RITE_TARGET_BRANCH RITE_DOC_MODE RITE_LOG_FILE
   export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
   export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
   export RITE_DATA_DIR=".rite"
