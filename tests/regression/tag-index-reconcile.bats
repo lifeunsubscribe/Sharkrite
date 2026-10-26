@@ -773,11 +773,11 @@ IDX_EOF
   # Seed a minimal docs-map.tsv so docs_map_tag_section_by_pointer can find the
   # "conventions.md / grep -c pattern" row and write the tag into it.
   # docs_map_render_tag_index then merges the updated map entry into tag-index.md.
-  mkdir -p "${RITE_TEST_TMPDIR}/docs"
+  mkdir -p "${RITE_TEST_TMPDIR}/.rite/state"
   printf '# docs-map v4 sha=test built=2026-01-01T00:00:00Z\n' \
-    > "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
+    > "${RITE_TEST_TMPDIR}/.rite/state/docs-map.tsv"
   printf 'docs/architecture/conventions.md\ttest-sha\t-\t2\tgrep -c pattern\tsome-fp\tfeature\t-\t-\t-\n' \
-    >> "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
+    >> "${RITE_TEST_TMPDIR}/.rite/state/docs-map.tsv"
 
   # Seed the index with the new tag's heading (as update_conventions_from_marker
   # would just have done in production).
