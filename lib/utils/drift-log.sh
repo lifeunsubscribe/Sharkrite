@@ -24,8 +24,10 @@
 #
 # Public API:
 #   drift_log_path         — echo the absolute path to docs/sharkrite-drift-log.md
-#   drift_log_append       — append one entry (auto-bootstraps header on first write)
-#   drift_log_entry_count  — count delimited blocks in the file
+#   drift_log_relpath      — repo-relative form of drift_log_path
+#   drift_log_append       — append or accumulate-in-place one structured entry
+#   drift_log_entry_count  — count entries (per-doc, per-branch, or total)
+#   drift_log_union_merge  — deterministic union-merge of a conflicted drift log
 #
 # All functions are re-source safe. Sentinel: drift_log_append.
 
@@ -45,6 +47,11 @@ fi
 if [ -z "${RITE_LIB_DIR:-}" ]; then
   _DRIFT_LOG_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_DRIFT_LOG_SELF_DIR/config.sh"
+fi
+
+# Source lock.sh for lock_acquire/lock_release (concurrent-append safety, #706).
+if ! declare -f lock_acquire >/dev/null 2>&1; then
+  source "$RITE_LIB_DIR/utils/lock.sh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -68,6 +75,42 @@ fi
 # ---------------------------------------------------------------------------
 drift_log_relpath() {
   echo "docs/sharkrite-drift-log.md"
+}
+
+# ---------------------------------------------------------------------------
+# _drift_entry_path DOC BRANCH
+#
+# Returns the absolute path to the structured entry file for a (doc, branch)
+# pair.  Doc path '/' chars are replaced with '--' in the filename portion so
+# all doc entries for a branch live flat in one subdirectory.  Branch slashes
+# (e.g. release/1.2) are preserved in the path; mkdir -p handles them.
+#
+# Internal helper — not part of the public API.
+# ---------------------------------------------------------------------------
+_drift_entry_path() {
+  local doc="$1"
+  local branch="$2"
+  local doc_slug
+  doc_slug="${doc//\//--}"
+  echo "${RITE_STATE_DIR:-}/doc-drift/${branch}/${doc_slug}.log"
+}
+
+# Space-separated list of valid KIND values for drift_log_append.
+_DRIFT_VALID_KINDS="addition refinement contradiction test-scope reference-missing"
+
+# ---------------------------------------------------------------------------
+# _drift_kind_valid KIND
+#
+# Returns 0 when KIND is one of the valid values, 1 otherwise.
+# Internal helper.
+# ---------------------------------------------------------------------------
+_drift_kind_valid() {
+  local kind="$1"
+  local k
+  for k in $_DRIFT_VALID_KINDS; do
+    [ "$k" = "$kind" ] && return 0
+  done
+  return 1
 }
 
 drift_log_path() {
@@ -115,131 +158,212 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# drift_log_append PR_NUMBER ISSUE_NUMBER CHANGED_FILES_ONE_PER_LINE
-#                 IMPLICATED_DOCS_LIST SUSPECTED_INACCURACY
+# drift_log_append DOC BRANCH PR ISSUE ASSERTION KIND EVIDENCE
 #
-# Append one machine-parseable drift entry to the log.
+# Append or accumulate-in-place one structured drift entry.
 #
 # Arguments:
-#   $1  PR number (integer)
-#   $2  Issue number (integer or "-" when absent)
-#   $3  Newline-separated list of changed files (non-docs)
-#   $4  Formatted implicated-docs list — each line "- path — section" or
-#       empty string when there are zero implicated docs
-#   $5  One-line suspected inaccuracy (or deterministic fallback text)
+#   $1  DOC       — repo-relative path of the implicated doc
+#   $2  BRANCH    — integration branch, or 'main'
+#   $3  PR        — PR number that triggered the drift
+#   $4  ISSUE     — issue number (integer or '-' when absent)
+#   $5  ASSERTION — doc assertion text whose evidence changed ('' if unknown)
+#   $6  KIND      — one of: addition refinement contradiction test-scope
+#                   reference-missing  (invalid → non-zero + stderr)
+#   $7  EVIDENCE  — changed paths, test names, or grep pattern that fired
 #
-# Behaviour:
-#   - Auto-bootstraps the file (and its parent dir) on first write.
-#   - Appends the entry block after the existing content.
-#   - Never aborts on error: all internal error paths print a warning and
-#     return 0 (same contract as reconcile_tag_index).
+# Entry file: $RITE_STATE_DIR/doc-drift/<branch>/<doc-slug>.log
+# Format: tab-separated key=value, one line per (doc, assertion) pair.
+#
+# Accumulate-in-place: a repeat hit for the same (doc, assertion) appends
+# the PR to the existing entry's comma-separated pr= list — no duplicate
+# lines.  (conventions-catalog rule.)
+#
+# Locking: acquires per-file lock_acquire/lock_release from lock.sh (#706).
+#
+# Returns 0 on success; 1 + stderr for invalid KIND.  Never aborts for
+# other errors — skips with a warning (same contract as reconcile_tag_index).
 # ---------------------------------------------------------------------------
 drift_log_append() {
-  local pr_number="$1"
-  local issue_number="$2"
-  local changed_files="$3"
-  local implicated_docs="$4"
-  local suspected_inaccuracy="$5"
+  local doc="$1"
+  local branch="$2"
+  local pr="$3"
+  local issue="$4"
+  local assertion="$5"
+  local kind="$6"
+  local evidence="$7"
 
-  local log_path
-  log_path="$(drift_log_path)" || {
+  # KIND validation — callers must pass a known value.
+  if ! _drift_kind_valid "$kind"; then
+    printf 'drift_log_append: invalid kind "%s"; valid: %s\n' \
+      "$kind" "$_DRIFT_VALID_KINDS" >&2
+    return 1
+  fi
+
+  if [ -z "${RITE_STATE_DIR:-}" ]; then
     if declare -f print_warning >/dev/null 2>&1; then
-      print_warning "drift-log: could not resolve log path — skipping append"
+      print_warning "drift-log: RITE_STATE_DIR unset — skipping append"
     fi
     return 0
-  }
+  fi
 
-  # Auto-bootstrap on first write.
-  if [ ! -f "$log_path" ]; then
-    _drift_log_bootstrap "$log_path" || {
-      if declare -f print_warning >/dev/null 2>&1; then
-        print_warning "drift-log: bootstrap failed — skipping append"
-      fi
-      return 0
+  local entry_file
+  entry_file="$(_drift_entry_path "$doc" "$branch")"
+
+  mkdir -p "$(dirname "$entry_file")"
+
+  local recorded
+  recorded="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  local lock_path="${entry_file}.lock"
+
+  if ! lock_acquire "$lock_path" 30; then
+    printf 'drift_log_append: could not acquire lock for "%s" (timeout 30s)\n' \
+      "$entry_file" >&2
+    return 1
+  fi
+
+  # Trap ensures lock is released even when the function exits early under set -e.
+  # shellcheck disable=SC2064
+  trap "lock_release '$lock_path'" RETURN
+
+  local _dla_found=0
+  local _dla_tmp
+  _dla_tmp="${entry_file}.tmp.$$"
+
+  if [ -f "$entry_file" ]; then
+    # Accumulate-in-place: scan the file for a line whose doc= and assertion=
+    # fields match.  awk rewrites the file appending the new PR to that line's
+    # pr= field and exits 0; exits 1 when no matching line was found.
+    local _dla_awk_exit=0
+    awk -F'\t' 'BEGIN{OFS="\t"}
+    {
+      hasdoc=0; hasassert=0; prfldidx=0
+      for (i=1; i<=NF; i++) {
+        if ($i == "doc=" _doc)               hasdoc=1
+        if ($i == "assertion=" _assertion)   hasassert=1
+        if (substr($i, 1, 3) == "pr=")       prfldidx=i
+      }
+      if (hasdoc && hasassert && prfldidx > 0) {
+        $prfldidx = $prfldidx "," _newpr
+        matched=1
+      }
+      print
     }
-  fi
+    END { exit (matched ? 0 : 1) }
+    ' _doc="$doc" _assertion="$assertion" _newpr="$pr" \
+      "$entry_file" > "$_dla_tmp" || _dla_awk_exit=$?
 
-  # Timestamp (BSD date and GNU date both accept this format).
-  local recorded_ts
-  recorded_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-  # Format changed_files as comma-separated (compact for the header line).
-  local changed_files_inline
-  # Replace newlines with ", " using parameter expansion loop (bash 3.2 safe,
-  # no tr dependency — tr is an external command and might be stripped in stubs).
-  changed_files_inline=""
-  local _cf_line
-  while IFS= read -r _cf_line || [ -n "$_cf_line" ]; do
-    [ -z "$_cf_line" ] && continue
-    if [ -z "$changed_files_inline" ]; then
-      changed_files_inline="$_cf_line"
+    if [ "$_dla_awk_exit" -eq 0 ]; then
+      _dla_found=1
+      mv "$_dla_tmp" "$entry_file"
     else
-      changed_files_inline="${changed_files_inline}, ${_cf_line}"
+      rm -f "$_dla_tmp"
     fi
-  done <<EOF_CF
-$changed_files
-EOF_CF
-
-  # Format implicated docs block.
-  # Each line is already "- path — section"; emit as-is.
-  # If empty, this field will be "  (none detected)" — but caller already
-  # skips the append when there are zero implicated docs, so this is a
-  # defensive fallback only.
-  local implicated_docs_block
-  if [ -n "$implicated_docs" ]; then
-    implicated_docs_block="$implicated_docs"
-  else
-    implicated_docs_block="  (none detected)"
   fi
 
-  # Append the entry block.
-  # The marker constant is expanded via RITE_MARKER_DOC_DRIFT (sourced from
-  # markers.sh, which assess-documentation.sh always loads before this library).
-  # The fallback literal is required for standalone sourcing in tests where
-  # markers.sh may not be loaded first. drift-log.sh is listed in the Rule 19
-  # allowlist (lib/utils/drift-log.sh) so the literal does not violate lint.
-  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_DOC_DRIFT is an internal marker constant (defined in markers.sh), not a user config var; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention for all marker constants (see markers.sh); ledger is frozen per 2026-07-14 rule
-  local _marker="${RITE_MARKER_DOC_DRIFT:-sharkrite-doc-drift}"
+  if [ "$_dla_found" -eq 0 ]; then
+    printf 'doc=%s\tbranch=%s\tpr=%s\tissue=%s\tassertion=%s\tkind=%s\tevidence=%s\trecorded=%s\n' \
+      "$doc" "$branch" "$pr" "$issue" "$assertion" "$kind" "$evidence" "$recorded" \
+      >> "$entry_file"
+  fi
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: marker + field vars must expand
-  cat >> "$log_path" <<EOF
-
-<!-- ${_marker} pr:${pr_number} issue:${issue_number} recorded:${recorded_ts} -->
-**Changed files**: ${changed_files_inline}
-**Implicated docs**:
-${implicated_docs_block}
-**Suspected inaccuracy**: ${suspected_inaccuracy}
-<!-- /${_marker} -->
-EOF
+  lock_release "$lock_path"
+  trap - RETURN
 }
 
 # ---------------------------------------------------------------------------
-# drift_log_entry_count LOG_PATH
+# drift_log_entry_count [LOG_PATH | --doc DOC | --branch BRANCH | --total]
 #
-# Echo the number of delimited drift entries in the file.
-# Returns 0 even when the file does not exist (echoes "0").
+# Echo the number of drift entries.  Three calling modes:
 #
-# The grep pattern MUST carry the pr:[0-9] format anchor per the
-# BARE_MARKER_GREP rule (bare-prefix guard requirement).
+#   drift_log_entry_count FILE_PATH          — legacy: count delimited blocks
+#                                              in the given flat-log file
+#   drift_log_entry_count [--total]          — total entries across all docs
+#                                              and branches in the new store
+#   drift_log_entry_count --doc DOC          — entries for this doc, all branches
+#   drift_log_entry_count --branch BRANCH    — entries for this branch, all docs
+#   drift_log_entry_count --doc D --branch B — entries in the specific (doc,branch) file
+#
+# Existing callers that pass a FILE_PATH (non-'--' first arg) keep working.
+# Returns 0 even when nothing exists (echoes "0").
 # ---------------------------------------------------------------------------
 drift_log_entry_count() {
-  local log_path="${1:-}"
-  if [ -z "$log_path" ]; then
-    log_path="$(drift_log_path)" || { echo "0"; return 0; }
-  fi
-
-  if [ ! -f "$log_path" ]; then
-    echo "0"
+  # Legacy mode: single non-flag arg → file path to legacy flat log.
+  if [ $# -eq 1 ] && [ "${1#--}" = "$1" ]; then
+    local log_path="$1"
+    if [ ! -f "$log_path" ]; then
+      echo "0"; return 0
+    fi
+    # Count opening delimiters only.  Format anchor satisfies BARE_MARKER_GREP.
+    # grep -c returns exit 1 when count is 0 — || true is correct (CLAUDE.md).
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_DOC_DRIFT is an internal marker constant (defined in markers.sh), not a user config var; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention for all marker constants (see markers.sh); ledger is frozen per 2026-07-14 rule
+    local _marker="${RITE_MARKER_DOC_DRIFT:-sharkrite-doc-drift}"
+    grep -c "<!-- ${_marker} pr:[0-9]" "$log_path" || true
     return 0
   fi
 
-  # Count opening delimiters only (each entry has exactly one opening marker
-  # with pr:[0-9] anchor). The format anchor satisfies BARE_MARKER_GREP.
-  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_DOC_DRIFT is an internal marker constant (defined in markers.sh), not a user config var; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention for all marker constants (see markers.sh); ledger is frozen per 2026-07-14 rule
-  local _marker="${RITE_MARKER_DOC_DRIFT:-sharkrite-doc-drift}"
-  # grep -c returns exit 1 when count is 0 — || true is the correct idiom
-  # (see CLAUDE.md "grep -c pattern").
-  grep -c "<!-- ${_marker} pr:[0-9]" "$log_path" || true
+  # New mode: parse --doc / --branch flags.
+  local _dlc_doc="" _dlc_branch=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --doc)    _dlc_doc="$2";    shift 2 ;;
+      --branch) _dlc_branch="$2"; shift 2 ;;
+      --total)  shift ;;
+      *)        shift ;;
+    esac
+  done
+
+  if [ -z "${RITE_STATE_DIR:-}" ]; then
+    echo "0"; return 0
+  fi
+
+  local drift_base="${RITE_STATE_DIR}/doc-drift"
+
+  # Count lines in a single entry file (each non-empty line = one entry).
+  _dlc_count_file() {
+    local _f="$1"
+    [ -f "$_f" ] || { echo "0"; return; }
+    grep -c 'doc=' "$_f" || true
+  }
+
+  # Sum entry counts across all .log files under a given directory.
+  _dlc_sum_dir() {
+    local _dir="$1"
+    local _pat="$2"
+    local _total=0 _f _fc
+    [ -d "$_dir" ] || { echo "0"; return; }
+    while IFS= read -r _f; do
+      [ -f "$_f" ] || continue
+      _fc="$(grep -c 'doc=' "$_f" || true)"
+      _total=$((_total + _fc))
+    done < <(find "$_dir" -name "$_pat" 2>/dev/null || true)
+    echo "$_total"
+  }
+
+  if [ -n "$_dlc_doc" ] && [ -n "$_dlc_branch" ]; then
+    # Specific (doc, branch) file.
+    local entry_file
+    entry_file="$(_drift_entry_path "$_dlc_doc" "$_dlc_branch")"
+    _dlc_count_file "$entry_file"
+    return 0
+  fi
+
+  if [ -n "$_dlc_branch" ]; then
+    # All docs for this branch.
+    _dlc_sum_dir "${drift_base}/${_dlc_branch}" "*.log"
+    return 0
+  fi
+
+  if [ -n "$_dlc_doc" ]; then
+    # This doc across all branches — search by slug filename.
+    local doc_slug="${_dlc_doc//\//--}"
+    _dlc_sum_dir "$drift_base" "${doc_slug}.log"
+    return 0
+  fi
+
+  # Total: all entries across the entire store.
+  _dlc_sum_dir "$drift_base" "*.log"
 }
 
 # ===================================================================
