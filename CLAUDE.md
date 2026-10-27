@@ -34,7 +34,7 @@ lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
-lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + targeted gate + assessment + merge + cleanup)
+lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + targeted gate + assessment + merge + cleanup + post-merge doc pass)
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
@@ -576,14 +576,18 @@ rite --sync <N> [<N>...]  # Rebase issue feature branches onto their resolver-de
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
 rite --promote <branch>    # Promote integration branch to main (PR + review + targeted gate +
                            # CRITICAL hard gate + NOW/LATER/DISMISSED assessment + squash-merge
-                           # + cleanup). Classify-only — there is NO fix loop at promote: fixing
-                           # on the integration branch would land code on main that skipped the
-                           # per-issue review cycle. ACTIONABLE_NOW findings become one
-                           # aggregated issue and ACTIONABLE_LATER become per-item issues —
-                           # both deduped against the follow-ups the constituent issues already
-                           # filed — and DISMISSED are dropped. When every surviving finding is
-                           # already tracked, nothing is filed. If the assessor is unavailable it falls back
-                           # to capturing the raw review — it never silently loses findings.
+                           # + cleanup + post-merge Tier 2 doc pass). Classify-only — there is
+                           # NO fix loop at promote: fixing on the integration branch would land
+                           # code on main that skipped the per-issue review cycle. ACTIONABLE_NOW
+                           # findings become one aggregated issue and ACTIONABLE_LATER become
+                           # per-item issues — both deduped against the follow-ups the constituent
+                           # issues already filed — and DISMISSED are dropped. When every
+                           # surviving finding is already tracked, nothing is filed. If the
+                           # assessor is unavailable it falls back to capturing the raw review —
+                           # it never silently loses findings. After the merge, a Tier 2 doc pass
+                           # runs (TTY: interactive review loop; no TTY: saves proposal to
+                           # .rite/state/doc-proposal-<branch>.md, prints `rite docs --resume`).
+                           # Doc rejection never blocks the merge outcome.
                            # See behavioral-design.md → "Promotion Review Is Assessed, Not Just
                            # Captured".
 rite --promote <branch> <issue>  # Single-issue promote: cherry-picks ONE staged ledger SHA onto a
