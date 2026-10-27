@@ -596,11 +596,23 @@ DOC_UPDATE_EOF
     rm -f "$_ue_raw_file"
 
     if [ "$_ue_prop_count" -eq 0 ]; then
+      rm -rf "$_ue_props_dir"
       if printf '%s\n' "$_ue_proposals_raw" | grep -q "^---PROPOSAL---$"; then
-        print_warning "Model output contained '---PROPOSAL---' markers but zero complete proposals were parsed — model may have used '---END---' instead of expected end token '${_ue_end_token}'; re-run to generate a new unique end token" >&2
+        # Model sent PROPOSAL markers but used the wrong end token — inject
+        # corrective feedback and retry via the loop instead of discarding the run.
+        print_warning "Model used wrong end token — retrying with feedback (attempt ${_ue_attempt}/5)" >&2
+        local _ue_token_fb
+        _ue_token_fb="Proposals were not parsed: you used the wrong end token to close each proposal. You MUST end each proposal with exactly '${_ue_end_token}' on its own line — do NOT use '---END---' or any other variant."
+        if [ -n "$_ue_accum_fb" ]; then
+          _ue_accum_fb="${_ue_accum_fb}
+---
+${_ue_token_fb}"
+        else
+          _ue_accum_fb="$_ue_token_fb"
+        fi
+        continue
       fi
       print_info "No actionable proposals in LLM output"
-      rm -rf "$_ue_props_dir"
       return 0
     fi
 
