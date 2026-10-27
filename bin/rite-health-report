@@ -743,6 +743,11 @@ source "$RITE_LIB_DIR/providers/provider-interface.sh"
 load_provider "${RITE_UTILITY_PROVIDER:-claude}"
 provider_detect_cli || exit 1
 
+# Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+if ! provider_healthcheck; then
+  exit 1
+fi
+
 REPORT_OUTPUT=$(provider_run_prompt "$(cat "$PROMPT_FILE")" "$RITE_HEALTH_MODEL" true 2>/dev/null) || {
   echo "Error: Provider analysis failed (exit code $?)"
   exit 1

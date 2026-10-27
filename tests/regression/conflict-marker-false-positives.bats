@@ -227,7 +227,9 @@ RESOLVED
     done <<< "$_conflicted"
     return 0
   }
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   local result=0
   attempt_claude_merge_resolution \
