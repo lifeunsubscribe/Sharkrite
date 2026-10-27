@@ -3281,6 +3281,7 @@ ${_aau_ref_excerpt}
       fi
     fi
     if [ "$_aau_override_loaded" = "false" ]; then
+      _aau_acc_rubric="$_DOCS_AUDIT_RUBRIC_ACCURACY"
       case "${_aau_sl_dt:-other}" in
         feature) _aau_role_rubric="$_DOCS_AUDIT_RUBRIC_FEATURE" ;;
         adr)     _aau_role_rubric="$_DOCS_AUDIT_RUBRIC_ADR" ;;
