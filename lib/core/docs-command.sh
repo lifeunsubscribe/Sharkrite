@@ -2145,8 +2145,8 @@ _docs_cross_doc_just_in_case_pass() {
       while IFS= read -r _ji_dp || [ -n "${_ji_dp:-}" ]; do
         [ -n "$_ji_dp" ] || continue
         # case with unquoted pattern enables glob expansion (e.g. lib/core/**)
+        # shellcheck disable=SC2254
         case "$_ji_dp" in
-          # shellcheck disable=SC2254
           $_ji_fp) _ji_fp_hit=1; break ;;
         esac
       done < <(printf '%s\n' "$_ji_diff")

@@ -122,6 +122,12 @@ _write_fake_docs_map() {
   printf '#!/usr/bin/env bats\n' > "$_bats"
   printf '# sharkrite-test-covers: lib/utils/foo.sh\n' >> "$_bats"
 
+  # Use a file-based counter: provider_run_prompt_with_timeout is called inside
+  # $() in the real implementation, so a shell variable counter always reads 0
+  # in the parent (subshell-safe pattern from test 2).
+  local _pcount_file="$RITE_TEST_TMPDIR/pcount.txt"
+  printf '0\n' > "$_pcount_file"
+
   local _runner
   _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
@@ -134,22 +140,23 @@ source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
 
 # Override docs_map_enforcing_tests to return our fake bats file
 docs_map_enforcing_tests() { printf '%s\n' "$_bats"; }
-# Override provider_run_prompt_with_timeout to record calls
-_PROVIDER_CALLED=0
-provider_run_prompt_with_timeout() { _PROVIDER_CALLED=1; echo "[]"; return 0; }
+# Override provider_run_prompt_with_timeout to record calls (file-based, subshell-safe)
+provider_run_prompt_with_timeout() {
+  local _c; _c=\$(cat "$_pcount_file"); printf '%d\n' \$(( _c + 1 )) > "$_pcount_file"
+  echo "[]"; return 0
+}
 # _docs_list_branch_entry_docs: no declared docs for this branch
 _docs_list_branch_entry_docs() { return 0; }
 
 # Diff: lib/utils/bar.sh — does NOT match foo.sh
 _docs_cross_doc_just_in_case_pass "my-branch" "42" "lib/utils/bar.sh" 2>&1
-echo "provider_called=\${_PROVIDER_CALLED}"
 RUNEOF
 )
 
   run bash "$_runner"
   [ "$status" -eq 0 ]
-  # Provider must NOT have been called
-  echo "$output" | grep -q "provider_called=0"
+  # Provider must NOT have been called (file counter must still be 0)
+  [ "$(cat "$_pcount_file")" = "0" ]
   # No drift entries should be logged
   [ ! -s "$_call_log" ] || [ "$(wc -l < "$_call_log")" -eq 0 ]
 }
@@ -245,6 +252,11 @@ RUNEOF
   local _bats_a="$_bats_dir/test-a.bats"
   printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/foo.sh\n' > "$_bats_a"
 
+  # Use a file-based counter (subshell-safe — provider_run_prompt_with_timeout
+  # is called inside $() in the real implementation).
+  local _pcount_file="$RITE_TEST_TMPDIR/pcount.txt"
+  printf '0\n' > "$_pcount_file"
+
   local _runner
   _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
@@ -263,9 +275,9 @@ docs_map_enforcing_tests() {
   esac
 }
 
-_PROVIDER_CALLED=0
 provider_run_prompt_with_timeout() {
-  _PROVIDER_CALLED=1
+  # Increment file-based counter (subshell-safe)
+  local _c; _c=\$(cat "$_pcount_file"); printf '%d\n' \$(( _c + 1 )) > "$_pcount_file"
   # If the prompt mentions feature-a, the declared-doc exclusion failed
   if printf '%s\n' "\$1" | grep -q "feature-a"; then
     echo "DECLARED_DOC_LEAKED_INTO_RESIDUE" >&2
@@ -280,7 +292,6 @@ _docs_list_branch_entry_docs() { printf 'docs/feature-a.md\n'; }
 # Diff: lib/utils/foo.sh — matches feature-a's covers path
 # Provider should NOT be called (feature-a excluded; feature-b has empty fingerprint)
 _docs_cross_doc_just_in_case_pass "my-branch" "42" "lib/utils/foo.sh" 2>&1
-echo "provider_called=\${_PROVIDER_CALLED}"
 RUNEOF
 )
 
@@ -288,7 +299,7 @@ RUNEOF
   [ "$status" -eq 0 ]
   # Provider must NOT have been called (no residue after exclusion of declared doc,
   # and feature-b has no enforcing tests so its fingerprint set is empty)
-  echo "$output" | grep -q "provider_called=0"
+  [ "$(cat "$_pcount_file")" = "0" ]
   # No drift entries written
   [ ! -s "$_call_log" ] || [ "$(wc -l < "$_call_log")" -eq 0 ]
 }
@@ -331,4 +342,67 @@ RUNEOF
     echo "FAIL: drift_log_append not found in _docs_cross_doc_just_in_case_pass body"
     return 1
   fi
+}
+
+# ===========================================================================
+# Group 5: Glob covers-header intersection (unquoted case pattern, SC2254)
+# ===========================================================================
+
+@test "jic pass: glob covers-header (lib/utils/*.sh) matches specific file in diff" {
+  # Verifies that a bats header 'lib/utils/*.sh' is correctly treated as a glob
+  # pattern (not a literal string) when intersected with the diff.  This is the
+  # behaviour guarded by the SC2254 disable on the case statement in
+  # _docs_jic_covers_for_doc.
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  _write_jic_docs_stubs "$_lib"
+
+  local _state_dir="$RITE_TEST_TMPDIR/state"
+  local _call_log="$RITE_TEST_TMPDIR/calls.log"
+  mkdir -p "$_state_dir"
+  touch "$_call_log"
+
+  local _tsv="$_state_dir/docs-map.tsv"
+  printf '# docs-map v4 sha=abc built=2026-01-01\n' > "$_tsv"
+  printf '%s\t-\t-\t-\t-\t-\tfeature\t-\t-\t-\n' "docs/feature-a.md" >> "$_tsv"
+
+  # Bats file declares a GLOB path lib/utils/*.sh (not a literal)
+  local _bats_dir="$RITE_TEST_TMPDIR/tests"
+  mkdir -p "$_bats_dir"
+  local _bats="$_bats_dir/test-glob.bats"
+  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/*.sh\n' > "$_bats"
+
+  local _pcount_file="$RITE_TEST_TMPDIR/pcount.txt"
+  printf '0\n' > "$_pcount_file"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_STATE_DIR="$_state_dir"
+export RITE_JIC_CALL_LOG="$_call_log"
+source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
+
+docs_map_enforcing_tests() { printf '%s\n' "$_bats"; }
+provider_run_prompt_with_timeout() {
+  local _c; _c=\$(cat "$_pcount_file"); printf '%d\n' \$(( _c + 1 )) > "$_pcount_file"
+  printf '[{"doc":"docs/feature-a.md","implicated":true,"kind":"test-scope","assertion":"glob match"}]\n'
+  return 0
+}
+_docs_list_branch_entry_docs() { return 0; }
+
+# Diff: lib/utils/config.sh — matched by the glob lib/utils/*.sh
+_docs_cross_doc_just_in_case_pass "my-branch" "42" "lib/utils/config.sh" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner"
+  [ "$status" -eq 0 ]
+  # Glob matched → provider must have been called exactly once
+  [ "$(cat "$_pcount_file")" = "1" ]
+  # Drift entry must have been written for docs/feature-a.md
+  [ -s "$_call_log" ]
+  grep -q "doc=docs/feature-a.md" "$_call_log"
 }
