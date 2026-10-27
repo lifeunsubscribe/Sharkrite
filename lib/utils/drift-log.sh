@@ -835,6 +835,162 @@ adr_drift_log_remove_entry() {
   trap - RETURN
 }
 
+# ---------------------------------------------------------------------------
+# migrate_legacy_drift_log
+#
+# Convert docs/sharkrite-drift-log.md legacy markdown entries into per-doc/
+# per-branch schema entries in the structured store (RITE_STATE_DIR/doc-drift/).
+#
+# Idempotent: no-op when legacy-archive.md already exists AND the legacy file
+# is gone.  If the legacy file was re-created (changelog mode re-appends to it
+# via _drift_log_append_legacy), falls through and migrates the new entries —
+# drift_log_append is accumulate-in-place by (doc,assertion), so re-processing
+# already-migrated entries is safe.
+# Silent no-op when the legacy file does not exist or RITE_STATE_DIR is unset.
+#
+# Parsing (best-effort):
+#   Parseable block: one drift_log_append call per implicated doc with
+#     branch=main, kind=contradiction, evidence=changed_files.
+#   Unparseable block (no doc list extracted): one catch-all entry with
+#     doc=.rite/state/drift/legacy-archive.md, kind=reference-missing,
+#     assertion naming the block's recorded timestamp.
+#
+# After conversion: appends legacy file to RITE_STATE_DIR/drift/legacy-archive.md
+# (accumulating across multiple migration passes) and removes
+# docs/sharkrite-drift-log.md from disk.
+# ---------------------------------------------------------------------------
+migrate_legacy_drift_log() {
+  [ -z "${RITE_STATE_DIR:-}" ] && return 0
+
+  local _mld_legacy_path
+  _mld_legacy_path="$(drift_log_path 2>/dev/null || true)"
+  [ -n "$_mld_legacy_path" ] || return 0
+  [ -f "$_mld_legacy_path" ] || return 0
+
+  local _mld_archive_dir="${RITE_STATE_DIR}/drift"
+  local _mld_archive_path="${_mld_archive_dir}/legacy-archive.md"
+
+  # Idempotence guard: migration already ran AND the legacy file is gone — nothing to do.
+  # If the legacy file was re-created (changelog mode re-appends to it via
+  # _drift_log_append_legacy), fall through and migrate the new entries.
+  # drift_log_append is accumulate-in-place by (doc,assertion), so re-processing
+  # old entries that already landed is safe — only genuinely new entries are added.
+  if [ -f "$_mld_archive_path" ] && [ ! -f "$_mld_legacy_path" ]; then
+    return 0
+  fi
+
+  mkdir -p "$_mld_archive_dir" || return 0
+
+  # Parse all legacy blocks with awk.
+  # Output: one line per (block, doc) with fields separated by \001 (SOH):
+  #   pr \001 issue \001 ts \001 changed \001 docpath \001 inaccuracy
+  # Unparseable blocks (no doc list) emit __CATCHALL__ as docpath.
+  local _mld_entries
+  _mld_entries="$(awk '
+    BEGIN { pr=""; issue=""; ts=""; changed=""; inaccuracy=""; doclist=""; inblock=0; indocs=0 }
+
+    /^<!-- sharkrite-doc-drift pr:[0-9]/ {
+      line = $0
+      if (match(line, /pr:[0-9]+/))           pr    = substr(line, RSTART+3, RLENGTH-3)
+      else                                     pr    = "-"
+      if (match(line, /issue:[0-9]+/))         issue = substr(line, RSTART+6, RLENGTH-6)
+      else                                     issue = "-"
+      if (match(line, /recorded:[0-9TZ:+-]+/)) ts    = substr(line, RSTART+9, RLENGTH-9)
+      else                                     ts    = "unknown"
+      inblock=1; indocs=0; changed=""; inaccuracy=""; doclist=""
+      next
+    }
+
+    inblock && /^\*\*Changed files\*\*:/ {
+      idx = index($0, ": ")
+      changed = (idx > 0) ? substr($0, idx+2) : ""
+      indocs=0; next
+    }
+
+    inblock && /^\*\*Implicated docs\*\*:/ {
+      indocs=1; next
+    }
+
+    inblock && indocs && /^- / {
+      line = substr($0, 3)
+      # doc path is the first space-delimited token (paths never contain spaces)
+      if (match(line, /^[^ ]+/)) {
+        docpath = substr(line, RSTART, RLENGTH)
+        doclist = doclist (length(doclist) > 0 ? "|" : "") docpath
+      }
+      next
+    }
+
+    inblock && indocs && !/^- / { indocs=0 }
+
+    inblock && /^\*\*Suspected inaccuracy\*\*:/ {
+      idx = index($0, ": ")
+      inaccuracy = (idx > 0) ? substr($0, idx+2) : ""
+      indocs=0; next
+    }
+
+    inblock && length(inaccuracy) > 0 && !/^<!-- / && !/^\*\*[A-Za-z]/ && length($0) > 0 {
+      if (length(inaccuracy) < 500) inaccuracy = inaccuracy " " $0
+      next
+    }
+
+    inblock && /^<!-- \/sharkrite-doc-drift -->/ {
+      if (length(doclist) > 0) {
+        n = split(doclist, docs, "|")
+        for (i=1; i<=n; i++) {
+          print pr "\001" issue "\001" ts "\001" changed "\001" docs[i] "\001" inaccuracy
+        }
+      } else {
+        print pr "\001" issue "\001" ts "\001" changed "\001__CATCHALL__\001" inaccuracy
+      }
+      inblock=0; next
+    }
+  ' "$_mld_legacy_path" || true)"
+
+  local _mld_archive_path_rel="${_mld_archive_path#${RITE_PROJECT_ROOT:-}/}"
+  local _mld_count=0
+
+  while IFS=$'\001' read -r _mld_pr _mld_issue _mld_ts _mld_changed _mld_doc _mld_inaccuracy \
+    || [ -n "${_mld_pr:-}" ]; do
+    [ -n "${_mld_pr:-}" ] || continue
+
+    _mld_count=$((_mld_count + 1))
+    if [ "$_mld_doc" = "__CATCHALL__" ]; then
+      drift_log_append \
+        "$_mld_archive_path_rel" "main" "$_mld_pr" "$_mld_issue" \
+        "legacy block (recorded:${_mld_ts}) — see legacy-archive.md" \
+        "reference-missing" \
+        "legacy:${_mld_changed:-unknown}" || true
+    else
+      drift_log_append \
+        "$_mld_doc" "main" "$_mld_pr" "$_mld_issue" \
+        "${_mld_inaccuracy:-legacy entry (recorded:${_mld_ts})}" \
+        "contradiction" \
+        "${_mld_changed:-unknown}" || true
+    fi
+  done <<< "$_mld_entries"
+
+  # Archive and remove legacy file from disk. The idempotence guard (archive exists
+  # + no legacy file) prevents re-running when neither file changes.
+  # Do NOT use git rm here: _docs_apply_approved commits in a separate worktree
+  # forked from origin/<target>, so any staged deletion in the main checkout never
+  # lands. Notify the operator to commit the removal themselves.
+  cat "$_mld_legacy_path" >> "$_mld_archive_path" || return 0
+  rm -f "$_mld_legacy_path"
+
+  if declare -f print_info >/dev/null 2>&1; then
+    local _legacy_relpath
+    _legacy_relpath="${_mld_legacy_path#${RITE_PROJECT_ROOT:-}/}"
+    if [ "$_mld_count" -gt 0 ]; then
+      print_info "Migrated legacy drift log (${_mld_count} entries) — archived at ${_mld_archive_path_rel}"
+    else
+      print_info "Legacy drift log empty — archived at ${_mld_archive_path_rel}"
+    fi
+    print_info "Legacy file removed from disk: commit the deletion — git rm ${_legacy_relpath}"
+  fi
+  return 0
+}
+
 # ===================================================================
 # PUBLIC: drift_log_union_merge <log_path>
 # ===================================================================
