@@ -274,6 +274,10 @@ setup() {
   _runner_called=false
   _resolve_node_lint_runner() { _runner_called=true; echo "eslint"; }
 
+  # Pin this test to the shipped guard: if the guard is removed, this assertion fails.
+  guard_line=$(grep -F 'if [ "${RITE_GATE_REPO_LINT:-true}" != "false" ]' "$RITE_LIB_DIR/utils/test-gate.sh" || true)
+  [ -n "$guard_line" ]
+
   export RITE_GATE_REPO_LINT=false
   # Replicate the guard from test-gate.sh:1265.
   if [ "${RITE_GATE_REPO_LINT:-true}" != "false" ]; then

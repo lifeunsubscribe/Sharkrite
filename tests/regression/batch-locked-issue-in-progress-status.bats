@@ -547,6 +547,8 @@ export RITE_MARKER_FOLLOWUP="sharkrite-followup"
 export NORMALIZED_SUBJECT="test issue"
 export WORK_DESCRIPTION="test"
 export ISSUE_BODY=""
+export PR_NUMBER=""
+export PR_BASE_BRANCH=""
 
 # gh_safe stub: return OPEN issue, empty PR list
 gh_safe() {
