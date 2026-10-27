@@ -330,8 +330,7 @@ claude_provider_run_agentic_session() {
   # stderr: unanchored — stderr is always the CLI's own output, never the
   # streamed transcript.
   elif [ "$_exit_code" -ne 0 ] && \
-     { grep -qiE "^(invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error)" \
-         "$_stdout_capture" 2>/dev/null || \
+     { grep -qiE "^(invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error)" "$_stdout_capture" 2>/dev/null || \
        grep -qiE "invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error" \
          "$stderr_file" 2>/dev/null; }; then
     _exit_code=18
