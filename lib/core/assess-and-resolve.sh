@@ -2620,6 +2620,15 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
             FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${_new_issue_num} "
             _rollup_any_created=true
 
+            # Prevent this follow-up from inheriting the parent batch's
+            # integration-branch target. Follow-ups filed here belong on main.
+            # claude-workflow.sh reads this marker before writing the
+            # target-branch state file (sharkrite-target-transport) and skips
+            # the write when it is present.
+            if [ -n "${RITE_STATE_DIR:-}" ]; then
+              touch "${RITE_STATE_DIR}/followup-no-inherit-${_new_issue_num}.marker" 2>/dev/null || true
+            fi
+
             # Durable local evidence (primary dedup guard across processes)
             # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so
             # each finding gets its own evidence file.

@@ -2250,16 +2250,27 @@ handle_pr_number_refused() {
 }
 
 # ---------------------------------------------------------------------------
-# handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET [MODE_SUFFIX]
+# handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET [MODE_SUFFIX] [SOURCE]
 #
 # Refusal handler when an existing PR's baseRefName differs from the effective
 # target branch resolved for this issue. Prints a verbose block naming the
-# issue, PR number, the PR's actual base, the current effective target, and
-# the exact corrected command the user should run.
+# issue, PR number, the PR's actual base, the current effective target and its
+# source tier, and the exact corrected command the user should run.
+#
+# SOURCE (optional, 6th arg) — tier label from resolve_target_branch:
+#   "state"   — tier 2: .rite/state/target-branch-N.txt (stale state file)
+#   "env"     — tier 3: RITE_TARGET_BRANCH env var
+#   "pr"      — tier 1: PR baseRefName (circular resolution, should not occur)
+#   "default" — tier 4: hardcoded "main"
+#
+# For state-file-driven mismatches, the corrected command always includes
+# "--branch <pr_base>" so the --base handler in main() clears the stale state
+# file (even when pr_base is "main"). Without that explicit flag, "rite N"
+# would still hit the old tier-2 entry and loop on the same refusal.
 #
 # NO auto-adopt: never assigns RITE_TARGET_BRANCH or switches targets silently.
 # The user must re-run with the correct --branch flag (or without one when the
-# PR base is main and main is the intended target).
+# PR base is main and the mismatch was NOT state-file-driven).
 #
 # Optional MODE_SUFFIX (e.g. "--dev-and-pr") is appended to the corrected
 # command so callers invoked with a mode flag get a refusal that preserves
@@ -2270,6 +2281,7 @@ handle_pr_number_refused() {
 #   printing "Workflow failed". Batch records branch_mismatch (SKIPPED class).
 #   See: docs/architecture/exit-codes.md — exit code 19
 #   See: tests/regression/branch-mismatch-refusal.bats
+#   See: tests/regression/followup-target-inheritance.bats (state-file anti-loop)
 # ---------------------------------------------------------------------------
 handle_branch_mismatch() {
   local issue_number="$1"
@@ -2277,23 +2289,37 @@ handle_branch_mismatch() {
   local pr_base="$3"
   local effective_target="$4"
   local _mode_suffix="${5:-}"
+  local _source="${6:-default}"
 
-  # Build the corrected command:
-  #   - If the PR's base is "main", the user should omit --branch (default target).
-  #   - Otherwise, the user should pass --branch <pr_base> to match the PR.
-  # Append optional mode suffix to preserve the caller's invocation form.
+  # Build the corrected command.
+  # State-file source: always include --branch so the --base handler in main()
+  # deletes the stale .rite/state/target-branch-N.txt before check_branch_mismatch
+  # runs — this escapes the loop even when pr_base == "main".
+  # Env/flag/default source: omit --branch when PR is on main (bare "rite N"
+  # will resolve via default and match).
   local _corrected_cmd
-  if [ "$pr_base" = "main" ]; then
+  if [ "$_source" = "state" ]; then
+    _corrected_cmd="rite --branch ${pr_base} ${issue_number}${_mode_suffix:+ $_mode_suffix}"
+  elif [ "$pr_base" = "main" ]; then
     _corrected_cmd="rite ${issue_number}${_mode_suffix:+ $_mode_suffix}"
   else
     _corrected_cmd="rite --branch ${pr_base} ${issue_number}${_mode_suffix:+ $_mode_suffix}"
   fi
 
+  # Human-readable source label for the effective-target line.
+  local _source_label
+  case "$_source" in
+    state)   _source_label="state file (.rite/state/target-branch-${issue_number}.txt)" ;;
+    env)     _source_label="RITE_TARGET_BRANCH env var" ;;
+    pr)      _source_label="PR baseRefName (tier 1)" ;;
+    *)       _source_label="default" ;;
+  esac
+
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   print_error "PR #${pr_number} base mismatch for issue #${issue_number}"
   print_error "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   print_error "  PR #${pr_number} is based on:  ${pr_base}"
-  print_error "  Current effective target:       ${effective_target}"
+  print_error "  Current effective target:       ${effective_target}  [from: ${_source_label}]"
   print_error ""
   print_error "  rite will not silently switch targets. Re-run with the correct command:"
   print_error ""
@@ -2346,6 +2372,11 @@ check_branch_mismatch() {
 
   local _mismatch_target
   _mismatch_target=$(resolve_target_branch "$_cbm_issue" 2>/dev/null || echo "main")
+  # Capture the source tier that won the resolution (set by resolve_target_branch).
+  # Passed to handle_branch_mismatch so it can name the source in the error message
+  # and generate the right corrected command (state-file mismatches need --branch
+  # to trigger the state-file cleanup in main()'s --base handler).
+  local _mismatch_source="${RESOLVED_TARGET_SOURCE:-default}"
 
   local _pr_base_for_check="${_cbm_base:-}"
   if [ -z "$_pr_base_for_check" ]; then
@@ -2362,7 +2393,7 @@ check_branch_mismatch() {
 
   if [ "$_pr_base_for_check" != "$_mismatch_target" ]; then
     set +e
-    handle_branch_mismatch "$_cbm_issue" "$_cbm_pr" "$_pr_base_for_check" "$_mismatch_target" "$_cbm_mode_suffix"
+    handle_branch_mismatch "$_cbm_issue" "$_cbm_pr" "$_pr_base_for_check" "$_mismatch_target" "$_cbm_mode_suffix" "$_mismatch_source"
     set -e
     return 19
   fi
@@ -3778,6 +3809,17 @@ main() {
         fi
         RITE_TARGET_BRANCH="$2"
         export RITE_TARGET_BRANCH  # sharkrite-target-transport
+        # When the user explicitly passes --base main, clear any stale non-main
+        # state file so this run escapes a poisoned tier-2 entry without the user
+        # having to delete the file by hand. handle_branch_mismatch() prints
+        # "rite --branch main N" as the corrected command for state-file-driven
+        # mismatches; this handler makes that command effective.
+        # Only fires in single-issue mode (batch-process-issues.sh never passes
+        # --base to workflow-runner.sh; the batch uses exported RITE_TARGET_BRANCH).
+        if [ "${RITE_TARGET_BRANCH}" = "main" ] && \
+           [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${issue_number:-}" ]; then
+          rm -f "${RITE_STATE_DIR}/target-branch-${issue_number}.txt" 2>/dev/null || true
+        fi
         shift  # consume the value (the loop's shift below consumes the flag)
         ;;
       *)
