@@ -141,6 +141,18 @@
 # runs are exempt by construction.
 # RITE_GATE_SCOPE_WARN_SECONDS=300
 
+# Run the target repo's scripts.lint in the post-commit gate (default: true).
+# When true and the repo's package.json declares a `scripts.lint` entry, the
+# gate runs it after the test phase. When eslint is the lint runner (the first
+# token of scripts.lint, after one level of npm/pnpm run delegation), the gate
+# calls eslint directly with --format unix scoped to changed .js/.ts/.jsx/.tsx
+# files so violations surface as named lint[] findings in the gate JSON. For
+# other runners (e.g. next lint, biome), the full scripts.lint runs unscoped
+# and any non-zero exit produces a synthetic LINT_FAILED blocking finding.
+# Set to "false" to skip this step entirely (e.g. when the repo's lint is
+# slow and you want to rely on CI for lint coverage).
+# RITE_GATE_REPO_LINT=true
+
 # Minimum recurrence count before a review finding class is flagged as a lint-rule
 # candidate in the weekly health report (default: 2).
 # Titles appearing this many times or more across the period's ACTIONABLE_NOW findings

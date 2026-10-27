@@ -1085,3 +1085,153 @@ _node_scope_zero_tests() {
   grep -qE '(No tests found|Tests:[[:space:]]+0 total|Test Suites:[[:space:]]+0 total|No test files found)' \
     "$_nszt_file" 2>/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# _resolve_node_lint_runner — extract the lint runner binary name (issue #1545)
+# Args: $1=project_root
+# Echoes the first executable token of package.json's .scripts.lint, resolving
+# one level of `npm run <X>` / `pnpm run <X>` delegation. Echoes "" when no
+# lint script found or the runner cannot be extracted cheaply.
+#
+# Examples:
+#   "eslint ."               -> eslint
+#   "eslint . --ext .ts"     -> eslint
+#   "next lint"              -> next
+#   "npm run lint:check"     -> (resolves .scripts."lint:check"'s first token)
+#   "pnpm run lint:all"      -> (resolves .scripts."lint:all"'s first token)
+# ---------------------------------------------------------------------------
+_resolve_node_lint_runner() {
+  local _pr="$1"
+  local _pkg="$_pr/package.json"
+  [ -f "$_pkg" ] || { echo ""; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo ""; return 0; }
+
+  local _script
+  _script=$(jq -r '.scripts.lint // ""' "$_pkg" 2>/dev/null || echo "")
+  [ -n "$_script" ] || { echo ""; return 0; }
+
+  local _first
+  _first=$(printf '%s\n' "$_script" | awk '{print $1}' || echo "")
+  [ -n "$_first" ] || { echo ""; return 0; }
+
+  # Delegation: `npm run <X>` / `pnpm run <X>` — resolve one level.
+  # Same pattern as _resolve_node_test_runner: cheap, single-pass, no recursion.
+  if [ "$_first" = "npm" ] || [ "$_first" = "pnpm" ]; then
+    local _second _target _delegated _dtok
+    _second=$(printf '%s\n' "$_script" | awk '{print $2}' || echo "")
+    # Self-delegation (`npm lint` / `pnpm lint`) would recurse — bail.
+    if [ "$_second" = "lint" ]; then
+      echo ""
+      return 0
+    fi
+    if [ "$_second" = "run" ] || [ "$_second" = "run-script" ]; then
+      _target=$(printf '%s\n' "$_script" | awk '{print $3}' || echo "")
+    else
+      _target="$_second"
+    fi
+    if [ -n "$_target" ]; then
+      _delegated=$(jq -r --arg k "$_target" '.scripts[$k] // ""' "$_pkg" 2>/dev/null || echo "")
+      _dtok=$(printf '%s\n' "$_delegated" | awk '{print $1}' || echo "")
+      # Avoid re-emitting another delegation token — keep it one-level only.
+      if [ -n "$_dtok" ] && [ "$_dtok" != "npm" ] && [ "$_dtok" != "pnpm" ]; then
+        echo "$_dtok"
+        return 0
+      fi
+    fi
+    echo ""
+    return 0
+  fi
+
+  echo "$_first"
+}
+
+# ---------------------------------------------------------------------------
+# _normalize_eslint_output — convert ESLint unix-format output to the custom
+# lint format read by _parse_lint_line (issue #1545).
+#
+# ESLint unix format (--format unix):
+#   path/file.jsx:10:5: Unescaped entity found [Error/react/no-unescaped-entities]
+#
+# Output (custom lint format, one line per violation):
+#   path/file.jsx:10: [REACT_NO_UNESCAPED_ENTITIES] Unescaped entity found
+#
+# The rule token is uppercased and / - . are replaced by _ so _parse_lint_line's
+# \[[A-Z_]+\] pattern matches. Lines that do not match the ESLint unix format
+# (summaries, blank lines, warnings about config) are silently skipped.
+#
+# Args: $1=raw_output_file  $2=output_lint_file (normalized lines APPENDED)
+# Returns 0 always; does nothing when raw_output_file is empty.
+# ---------------------------------------------------------------------------
+_normalize_eslint_output() {
+  local _raw="$1"
+  local _out="$2"
+  [ -s "$_raw" ] || return 0
+
+  local _stripped
+  _stripped=$(mktemp "/tmp/rite_gate_eslint_strip_$$_XXXXXX")
+  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' "$_raw" > "$_stripped" || true
+
+  awk '
+    {
+      line = $0
+      # Must start with file:line:col: to be a violation line
+      if (line !~ /^[^:]+:[0-9]+:[0-9]+:/) next
+
+      # Find the trailing [Severity/rule] or [Severity] bracket (unix format).
+      # RSTART/RLENGTH from match() locate it at the end of the line.
+      bracket_pos = 0
+      if (match(line, / \[(error|warning|Error|Warning)\/[^]]+\]$/)) {
+        bracket_pos = RSTART
+      } else if (match(line, / \[(error|warning|Error|Warning)\]$/)) {
+        bracket_pos = RSTART
+      } else {
+        next
+      }
+
+      # Body = file:line:col: message (before the trailing bracket)
+      body = substr(line, 1, bracket_pos - 1)
+      # Bracket content (strip leading space)
+      bracket = substr(line, bracket_pos + 1)
+
+      # Extract rule from bracket: strip [Severity/ prefix and ] suffix.
+      rule = bracket
+      sub(/^\[/, "", rule)
+      sub(/\]$/, "", rule)
+      slash = index(rule, "/")
+      if (slash > 0) {
+        rule = substr(rule, slash + 1)
+      } else {
+        # Bare [Error]/[Warning] with no rule name — use ESLINT placeholder
+        rule = "ESLINT"
+      }
+      # Normalize to [A-Z_]+ for _parse_lint_line: replace -/./space with _,
+      # then uppercase. POSIX awk toupper() is available on gawk/mawk/BWK awk.
+      gsub(/[-\/\. ]/, "_", rule)
+      rule = toupper(rule)
+      if (rule == "" || rule == "_") rule = "ESLINT"
+
+      # Decompose body: file:line:col: message
+      colon1 = index(body, ":")
+      if (colon1 == 0) next
+      f = substr(body, 1, colon1 - 1)
+      rest = substr(body, colon1 + 1)
+      colon2 = index(rest, ":")
+      if (colon2 == 0) next
+      ln = substr(rest, 1, colon2 - 1)
+      rest2 = substr(rest, colon2 + 1)
+      colon3 = index(rest2, ":")
+      if (colon3 == 0) next
+      # Skip col number and leading space: "col: message" → skip "col: "
+      msg = substr(rest2, colon3 + 2)
+      sub(/^[[:space:]]+/, "", msg)
+      sub(/[[:space:]]*$/, "", msg)
+      if (msg == "") next
+
+      # Emit in _parse_lint_line custom format: file:line: [RULE] message
+      print f ":" ln ": [" rule "] " msg
+    }
+  ' "$_stripped" >> "$_out" || true
+
+  rm -f "${_stripped:-}"
+  return 0
+}

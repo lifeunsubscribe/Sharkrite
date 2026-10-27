@@ -272,6 +272,7 @@ run_test_gate() {
   # shellcheck disable=SC2154  # _gate_exit_status assigned inside the trap body via $? at trap execution time
   trap '_gate_exit_status=$?
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}" "${_bats_pretty_capture:-}"
+        rm -f "${_nl_exit_file:-}" "${_nl_raw_file:-}"
         rm -f "${_gate_census_file:-}"
         [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
@@ -1253,6 +1254,84 @@ run_test_gate() {
         # lines so the ^not ok count and JSON loop below see the failures.
         if [ "$_tests_exit" -ne 0 ]; then
           _normalize_node_test_output "$_tests_raw_file" "$project_root"
+        fi
+      fi
+
+      # --- Node scripts.lint (issue #1545) ---
+      # Run the target repo's lint script when present. Scoped to changed
+      # JS/TS files when eslint is the runner (eslint accepts file args);
+      # full-script fallback via the package manager otherwise.
+      # Opt-out: set RITE_GATE_REPO_LINT=false in .rite/config.
+      if [ "${RITE_GATE_REPO_LINT:-true}" != "false" ]; then
+        local _nl_runner
+        _nl_runner=$(_resolve_node_lint_runner "$project_root")
+        if [ -n "$_nl_runner" ]; then
+          local _nl_pm _nl_eslint_bin _nl_exit_file _nl_raw_file _nl_exit
+          _nl_pm=$(_node_pkg_manager "$project_root")
+          _nl_eslint_bin=""
+          # Prefer the project-local eslint binary; fall back to PATH when absent.
+          if printf '%s\n' "$_nl_runner" | grep -qiE '^eslint'; then
+            if [ -x "$project_root/node_modules/.bin/eslint" ]; then
+              _nl_eslint_bin="$project_root/node_modules/.bin/eslint"
+            elif command -v eslint >/dev/null 2>&1; then
+              _nl_eslint_bin=$(command -v eslint 2>/dev/null || true)
+            fi
+          fi
+          _nl_exit_file=$(mktemp "/tmp/rite_gate_nlint_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+          _nl_raw_file=$(mktemp "/tmp/rite_gate_nlint_raw_${PR_NUMBER:-0}_$$_XXXXXX")
+          _nl_exit=0
+          if [ -n "$_nl_eslint_bin" ]; then
+            # eslint supports file args — scope to changed JS/TS/JSX/TSX files.
+            local _nl_abs_files_arr=() _nlf
+            while IFS= read -r _nlf; do
+              [ -n "$_nlf" ] || continue
+              [ -f "$project_root/$_nlf" ] || continue  # skip deleted files
+              _nl_abs_files_arr+=("$project_root/$_nlf")
+            done < <(printf '%s\n' "$_nonsr_changed_files" \
+              | grep -E '\.(js|jsx|ts|tsx|mjs|cjs)$' | grep -v '^$' || true)
+            if [ ${#_nl_abs_files_arr[@]} -gt 0 ]; then
+              echo "[test-gate] lint: eslint --format unix on ${#_nl_abs_files_arr[@]} changed file(s)" >> "$_gate_raw_sink"
+              { (cd "$project_root" && "$_nl_eslint_bin" \
+                  --format unix \
+                  "${_nl_abs_files_arr[@]+"${_nl_abs_files_arr[@]}"}" 2>&1); \
+                echo $? > "$_nl_exit_file"; } \
+                | tee -a "$_nl_raw_file" >> "$_gate_raw_sink" || true
+              _nl_exit=$(cat "$_nl_exit_file" 2>/dev/null || echo 1)
+              _nl_exit=${_nl_exit:-1}
+              if [ "$_nl_exit" -ne 0 ]; then
+                _normalize_eslint_output "$_nl_raw_file" "$_lint_raw_file"
+                _lint_exit=1
+                local _nl_viol
+                _nl_viol=$(grep -c '^[^:]*:[0-9]' "$_nl_raw_file" 2>/dev/null || true)
+                echo "[test-gate] lint: eslint found ${_nl_viol:-?} violation(s) — blocking"
+              fi
+            else
+              echo "[test-gate] lint: no surviving changed JS/TS files — skipping eslint" >> "$_gate_raw_sink"
+              echo 0 > "$_nl_exit_file"
+            fi
+          else
+            # Non-eslint runner or eslint not resolvable: run scripts.lint as-is.
+            echo "[test-gate] lint: running ${_nl_pm} run lint (runner: ${_nl_runner})" >> "$_gate_raw_sink"
+            { (cd "$project_root" && "$_nl_pm" run lint 2>&1); \
+              echo $? > "$_nl_exit_file"; } \
+              | tee -a "$_nl_raw_file" >> "$_gate_raw_sink" || true
+            _nl_exit=$(cat "$_nl_exit_file" 2>/dev/null || echo 1)
+            _nl_exit=${_nl_exit:-1}
+            if [ "$_nl_exit" -ne 0 ]; then
+              # Try ESLint unix normalization first; add a synthetic finding
+              # when the runner's output format is opaque (non-zero exit still blocks).
+              _normalize_eslint_output "$_nl_raw_file" "$_lint_raw_file"
+              local _nl_norm_count
+              _nl_norm_count=$(grep -c '.' "$_lint_raw_file" 2>/dev/null || true)
+              if [ "${_nl_norm_count:-0}" -eq 0 ]; then
+                printf 'package.json:0: [LINT_FAILED] %s run lint exited %s — run %s lint locally for violation details\n' \
+                  "$_nl_pm" "$_nl_exit" "$_nl_pm" >> "$_lint_raw_file"
+              fi
+              _lint_exit=1
+              echo "[test-gate] lint: ${_nl_pm} run lint failed — blocking"
+            fi
+          fi
+          rm -f "${_nl_exit_file:-}" "${_nl_raw_file:-}"
         fi
       fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
