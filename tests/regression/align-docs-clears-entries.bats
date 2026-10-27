@@ -117,8 +117,8 @@ teardown() {
 # Test 1: Entries for audited docs are cleared on all branches; unaudited survive.
 # ---------------------------------------------------------------------------
 @test "audit completion clears entries for audited docs across all branches" {
-  local slug="docs--feature-a.md"
-  local other_slug="docs--other-doc.md"
+  local slug="docs--feature-a.md.log"
+  local other_slug="docs--other-doc.md.log"
 
   # Pre-populate entries for the audited doc on two branches
   mkdir -p "$RITE_STATE_DIR/doc-drift/main"
