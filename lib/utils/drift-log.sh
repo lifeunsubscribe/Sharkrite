@@ -28,6 +28,7 @@
 #   drift_log_append        — append or accumulate-in-place one structured entry
 #   drift_log_entry_count   — count entries (per-doc, per-branch, or total)
 #   drift_log_remove_entry  — remove exactly one (doc, branch, assertion) entry
+#   drift_log_clear_doc     — remove all entries for a doc across all branches
 #   drift_log_union_merge   — deterministic union-merge of a conflicted drift log
 #
 # All functions are re-source safe. Sentinel: drift_log_append.
@@ -528,6 +529,56 @@ drift_log_remove_entry() {
 
   lock_release "$lock_path"
   trap - RETURN
+}
+
+# ---------------------------------------------------------------------------
+# drift_log_clear_doc DOC
+#
+# Remove all drift entries for DOC across every branch in the structured store.
+# This is the "consumed or cleared" operation: after rite align-docs audits a
+# doc, the audit has re-verified it and any prior drift observations are
+# superseded.
+#
+# Per-branch entry files live at:
+#   ${RITE_STATE_DIR}/doc-drift/<branch>/<doc-slug>.log
+#
+# Discovery: iterates branch directories explicitly and constructs the exact
+# entry path — no glob pattern in find -name (prevents false matches on paths
+# containing [, ], ?, * characters — #345 class requirement).
+#
+# Locking: acquires per-file lock_acquire/lock_release (same protocol as
+# drift_log_append/#706) before each rm to prevent a racing appender from
+# resurrecting cleared state.  The .lock file itself is never removed — it is
+# a live ln(1) lock file managed by lock_acquire/lock_release.
+#
+# Returns 0 always — missing files or RITE_STATE_DIR are not errors.
+# ---------------------------------------------------------------------------
+drift_log_clear_doc() {
+  local _dlcd_doc="$1"
+
+  [ -z "${RITE_STATE_DIR:-}" ] && return 0
+
+  local _dlcd_slug="${_dlcd_doc//\//--}"
+  local _dlcd_base="${RITE_STATE_DIR}/doc-drift"
+
+  [ -d "$_dlcd_base" ] || return 0
+
+  local _dlcd_branch_dir _dlcd_f _dlcd_lock
+  while IFS= read -r _dlcd_branch_dir; do
+    [ -d "$_dlcd_branch_dir" ] || continue
+    _dlcd_f="${_dlcd_branch_dir}/${_dlcd_slug}.log"
+    [ -f "$_dlcd_f" ] || continue
+    _dlcd_lock="${_dlcd_f}.lock"
+    if lock_acquire "$_dlcd_lock" 30; then
+      rm -f "$_dlcd_f"
+      lock_release "$_dlcd_lock"
+    else
+      printf 'drift_log_clear_doc: could not acquire lock for "%s" within 30s — skipping\n' \
+        "$_dlcd_f" >&2
+    fi
+  done < <(find "$_dlcd_base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
+
+  return 0
 }
 
 # ===========================================================================
