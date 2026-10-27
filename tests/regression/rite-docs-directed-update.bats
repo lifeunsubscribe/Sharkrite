@@ -698,3 +698,116 @@ DRIFT_EOF
   # The line AFTER the ---END--- must also be present (not truncated)
   printf '%s' "$committed" | grep -qF 'Content after the old terminator must also be preserved.'
 }
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 17 (#1521): wrong-end-token response routes through
+# the feedback loop instead of silently discarding the run
+# ---------------------------------------------------------------------------
+
+@test "wrong-end-token response retries via feedback loop not silent discard (#1521)" {
+  # The model's first response has PROPOSAL markers but uses '---END---' instead
+  # of the per-generation token, so _ue_prop_count stays 0.  The engine must
+  # inject corrective feedback and retry; the second response is valid.
+
+  local _wt_wrong="${BATS_TEST_TMPDIR}/wrong_response.txt"
+  printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: EDIT' \
+    'FILE: docs/test-doc.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: wrong end token' \
+    '---CONTENT---' \
+    '# broken' \
+    '---END---' > "$_wt_wrong"
+
+  local _wt_good="${BATS_TEST_TMPDIR}/good_response.txt"
+  printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: EDIT' \
+    'FILE: docs/test-doc.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Retry after wrong-end-token correction' \
+    '---CONTENT---' \
+    '# Test Doc' \
+    '' \
+    'Updated after wrong-end-token retry.' \
+    '@@END@@' > "$_wt_good"
+
+  local _wt_count="${BATS_TEST_TMPDIR}/call_count.txt"
+  printf '0\n' > "$_wt_count"
+
+  local _wt_helper="${BATS_TEST_TMPDIR}/wt_helper.sh"
+  cat > "$_wt_helper" << 'WT_HELPER_EOF'
+#!/bin/bash
+set -euo pipefail
+
+export RITE_LIB_DIR="${PROJECT_ROOT}/lib"
+export RITE_PROJECT_ROOT="${FAKE_PROJECT}"
+export RITE_DATA_DIR=".rite"
+export RITE_STATE_DIR="${FAKE_PROJECT}/.rite/state"
+export RITE_TARGET_BRANCH=main
+export PATH="${STUB_BIN}:${PATH}"
+export STUB_CALLS_FILE
+
+source "${DOCS_CMD}"
+
+# Re-define stubs AFTER source (env-var-guarded libs overwrite pre-source stubs)
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs redefined post-source to avoid gh-retry.sh _RITE_GH_RETRY_LOADED env-guard overwrite
+load_provider()           { return 0; }
+provider_resolve_model()  { printf 'claude-sonnet-4-6\n'; }
+docs_map_ensure()         { [ -s "${FAKE_PROJECT}/.rite/state/docs-map.tsv" ] || printf 'docs/test-doc.md\n' > "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
+docs_map_path()           { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
+gh_safe()                 { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 0; }
+
+provider_run_prompt_with_timeout() {
+  local _prompt="$1"
+  local _n=0
+  _n="$(cat "${WT_COUNT_FILE}" 2>/dev/null || echo 0)"
+  _n=$((_n + 1))
+  printf '%d\n' "$_n" > "${WT_COUNT_FILE}"
+
+  local _end_tok=""
+  _end_tok="$(printf '%s\n' "$_prompt" | grep -oE -- '---END-[0-9]+---' | head -1 || true)"
+
+  if [ "$_n" -eq 1 ]; then
+    cat "${WT_WRONG_FILE}"
+  else
+    local _good=""
+    _good="$(cat "${WT_GOOD_FILE}")"
+    if [ -n "$_end_tok" ]; then
+      printf '%s\n' "$_good" | sed "s/@@END@@/${_end_tok}/"
+    else
+      printf '%s\n' "$_good"
+    fi
+  fi
+}
+
+git -C "${FAKE_PROJECT}" update-ref refs/remotes/origin/main HEAD
+
+"$@"
+WT_HELPER_EOF
+  chmod +x "$_wt_helper"
+
+  run bash -c "
+    export WT_COUNT_FILE='${_wt_count}'
+    export WT_WRONG_FILE='${_wt_wrong}'
+    export WT_GOOD_FILE='${_wt_good}'
+    bash '${_wt_helper}' docs_directed_update 'update test doc' <<< 'y'
+  " || true
+
+  # Provider must have been called at least twice: first returned wrong-end-token,
+  # second returned the valid proposal after corrective feedback was injected.
+  local _n=0
+  _n="$(cat "${_wt_count}" 2>/dev/null || echo 0)"
+  [ "$_n" -ge 2 ]
+
+  # A docs branch must have been created — the retry produced an approvable proposal
+  local _branch=""
+  _branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
+  [ -n "$_branch" ]
+
+  # Committed content matches the valid proposal from the retry, not the broken one
+  local _committed=""
+  _committed="$(git -C "$FAKE_PROJECT" show "${_branch}:docs/test-doc.md" 2>/dev/null || true)"
+  printf '%s' "$_committed" | grep -qF 'Updated after wrong-end-token retry.'
+}
