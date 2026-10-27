@@ -1878,6 +1878,99 @@ EOF_AUDIT
 }
 
 # ---------------------------------------------------------------------------
+# docs_resume_proposal BRANCH
+#
+# Resume a saved doc proposal created by a terminal-less promote run.
+#
+# Loads ${RITE_STATE_DIR}/doc-proposal-${safe_branch}.md, runs each listed
+# doc through _docs_main_entries_pass (the same y/n/f approval loop used in
+# the TTY promote path), then removes the proposal file after the loop
+# completes.
+#
+# Missing proposal file → return 1 listing ${RITE_STATE_DIR}/doc-proposal-*.md
+# candidates so the operator knows what is available.
+#
+# Slash-containing branch names are resolved via the safe-name convention
+# (slashes replaced with dashes) used when the file was originally saved.
+# The original branch name is recovered from the proposal-file header so
+# _docs_main_entries_pass reads the correct drift entry store.
+# ---------------------------------------------------------------------------
+docs_resume_proposal() {
+  local _rp_branch="${1:-}"
+  if [ -z "$_rp_branch" ]; then
+    print_error "rite docs --resume requires a branch name"
+    echo "  Usage: rite docs --resume <branch>" >&2
+    return 1
+  fi
+
+  local _rp_safe="${_rp_branch//\//-}"
+  local _rp_state_dir="${RITE_STATE_DIR:-${RITE_PROJECT_ROOT}/.rite/state}"
+  local _rp_proposal="${_rp_state_dir}/doc-proposal-${_rp_safe}.md"
+
+  if [ ! -f "$_rp_proposal" ]; then
+    print_error "No saved proposal for branch '${_rp_branch}' (expected: ${_rp_proposal})"
+    local _rp_candidates
+    _rp_candidates="$(find "$_rp_state_dir" -name 'doc-proposal-*.md' -type f 2>/dev/null | sort || true)"
+    if [ -n "$_rp_candidates" ]; then
+      echo "  Saved proposals available:" >&2
+      local _rp_c
+      while IFS= read -r _rp_c || [ -n "$_rp_c" ]; do
+        [ -n "$_rp_c" ] || continue
+        printf '    %s\n' "$_rp_c" >&2
+      done <<CAND_EOF
+$_rp_candidates
+CAND_EOF
+    else
+      printf '  No saved proposals found in %s\n' "$_rp_state_dir" >&2
+    fi
+    return 1
+  fi
+
+  # Recover original branch name (may contain slashes) from the file header.
+  local _rp_file_branch
+  _rp_file_branch="$(grep '^# Pending doc proposal:' "$_rp_proposal" | head -1 | \
+    sed 's/^# Pending doc proposal: //' || true)"
+  _rp_file_branch="${_rp_file_branch:-${_rp_branch}}"
+
+  print_info "Resuming doc proposal for branch '${_rp_file_branch}'"
+
+  # Parse doc list: lines matching "- <path>" under the "Docs with pending entries:" header.
+  local _rp_docs="" _rp_in_list=0 _rp_dl
+  while IFS= read -r _rp_dl || [ -n "$_rp_dl" ]; do
+    case "$_rp_dl" in
+      "Docs with pending entries:") _rp_in_list=1 ;;
+      "- "*)
+        [ "$_rp_in_list" = "1" ] && _rp_docs="${_rp_docs}${_rp_dl#- }"$'\n'
+        ;;
+      "") _rp_in_list=0 ;;
+    esac
+  done < "$_rp_proposal"
+
+  if [ -z "$_rp_docs" ]; then
+    print_warning "No docs listed in proposal file — nothing to process"
+    rm -f "$_rp_proposal"
+    return 0
+  fi
+
+  docs_map_ensure || true
+
+  local _rp_tmp _rp_doc
+  _rp_tmp="$(mktemp)"
+  printf '%s' "$_rp_docs" > "$_rp_tmp"
+  while IFS= read -r _rp_doc || [ -n "$_rp_doc" ]; do
+    [ -n "$_rp_doc" ] || continue
+    echo "" >&2
+    print_info "Processing doc: ${_rp_doc}"
+    _docs_main_entries_pass "$_rp_doc" "$_rp_file_branch" "main" || true
+  done < "$_rp_tmp"
+  rm -f "$_rp_tmp"
+
+  rm -f "$_rp_proposal"
+  print_success "Doc resume complete for branch '${_rp_file_branch}' — proposal file removed"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # docs_run_promote_doc_pass BRANCH
 #
 # Tier 2 post-merge doc pass for a completed promotion.  Called from
@@ -1980,13 +2073,14 @@ DOCS_EOF
 rite_docs() {
   local instructions="${*:-}"
 
-  # --resume is reserved for a future issue; guard it so the operator's
-  # `rite docs --resume <branch>` doesn't silently fall through to the
-  # directed-update engine with garbage instructions.
+  # --resume <branch>: load a saved proposal from a terminal-less promote and
+  # run it through the interactive approval loop.
   case "${instructions:-}" in
     --resume|--resume\ *)
-      print_warning "rite docs --resume is not yet implemented. Find saved proposals at: ${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/doc-proposal-*.md"
-      return 0
+      local _rd_resume_branch="${instructions#--resume}"
+      _rd_resume_branch="${_rd_resume_branch# }"
+      docs_resume_proposal "$_rd_resume_branch"
+      return $?
       ;;
   esac
 
