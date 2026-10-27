@@ -1204,8 +1204,10 @@ _normalize_eslint_output() {
         # Bare [Error]/[Warning] with no rule name — use ESLINT placeholder
         rule = "ESLINT"
       }
-      # Normalize to [A-Z_]+ for _parse_lint_line: replace -/./space with _,
+      # Normalize to [A-Z_]+ for _parse_lint_line: strip leading @-scope prefix
+      # (e.g. @typescript-eslint → typescript-eslint), replace -/./space with _,
       # then uppercase. POSIX awk toupper() is available on gawk/mawk/BWK awk.
+      sub(/^@/, "", rule)
       gsub(/[-\/\. ]/, "_", rule)
       rule = toupper(rule)
       if (rule == "" || rule == "_") rule = "ESLINT"

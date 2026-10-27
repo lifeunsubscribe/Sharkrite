@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/gate-runners.sh::_resolve_node_lint_runner|_normalize_eslint_output
+# sharkrite-test-covers: lib/utils/gate-runners.sh::_resolve_node_lint_runner|_normalize_eslint_output, lib/utils/test-gate.sh
 
 # Tests for issue #1545: run target repo scripts.lint in post-commit gate.
 # Covers:
@@ -204,4 +204,56 @@ setup() {
   result=$(cat "$out")
   [ "$result" = "src/App.tsx:5: [NO_VAR] Colorful message" ]
   rm -f "$raw" "$out"
+}
+
+@test "_normalize_eslint_output: strips @-scope prefix from scoped plugin rules" {
+  local raw out
+  raw=$(mktemp "/tmp/rite_test_neo_raw_$$_XXXXXX")
+  out=$(mktemp "/tmp/rite_test_neo_out_$$_XXXXXX")
+  # @typescript-eslint/no-unused-vars is a scoped plugin rule; @ must be stripped
+  printf 'src/foo.ts:12:5: Unused variable [Error/@typescript-eslint/no-unused-vars]\n' > "$raw"
+  _normalize_eslint_output "$raw" "$out"
+  result=$(cat "$out")
+  [ "$result" = "src/foo.ts:12: [TYPESCRIPT_ESLINT_NO_UNUSED_VARS] Unused variable" ]
+  rm -f "$raw" "$out"
+}
+
+@test "_gate_build_verdict: no scripts.lint in package.json produces empty lint[] in verdict" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: gate-verdict.sh uses function-sentinel guard (declare -f _gate_write_json); pre-source stubs are preserved.
+  source "$RITE_LIB_DIR/utils/gate-verdict.sh" 2>/dev/null || true
+  local lint_raw tests_raw out_json dir
+  lint_raw=$(mktemp "/tmp/rite_test_gbv_lint_$$_XXXXXX")
+  tests_raw=$(mktemp "/tmp/rite_test_gbv_tests_$$_XXXXXX")
+  out_json=$(mktemp "/tmp/rite_test_gbv_json_$$_XXXXXX")
+  # Empty lint raw = no scripts.lint ran (pass, no findings)
+  : > "$lint_raw"
+  : > "$tests_raw"
+  _gate_build_verdict "$lint_raw" "$tests_raw" 0 0 "$out_json"
+  lint_count=$(jq '.lint | length' "$out_json")
+  [ "$lint_count" -eq 0 ]
+  outcome=$(jq -r '.outcome' "$out_json")
+  [ "$outcome" = "passed" ]
+  rm -f "$lint_raw" "$tests_raw" "$out_json"
+}
+
+@test "_gate_build_verdict: eslint violation in lint_raw produces blocking lint[] finding in verdict JSON" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: gate-verdict.sh uses function-sentinel guard (declare -f _gate_write_json); pre-source stubs are preserved.
+  source "$RITE_LIB_DIR/utils/gate-verdict.sh" 2>/dev/null || true
+  local lint_raw tests_raw out_json
+  lint_raw=$(mktemp "/tmp/rite_test_gbv_lint_$$_XXXXXX")
+  tests_raw=$(mktemp "/tmp/rite_test_gbv_tests_$$_XXXXXX")
+  out_json=$(mktemp "/tmp/rite_test_gbv_json_$$_XXXXXX")
+  # Pre-normalized lint finding (as _normalize_eslint_output would produce)
+  printf 'src/foo.ts:12: [TYPESCRIPT_ESLINT_NO_UNUSED_VARS] Unused variable\n' > "$lint_raw"
+  : > "$tests_raw"
+  _gate_build_verdict "$lint_raw" "$tests_raw" 1 0 "$out_json"
+  lint_count=$(jq '.lint | length' "$out_json")
+  [ "$lint_count" -ge 1 ]
+  outcome=$(jq -r '.outcome' "$out_json")
+  [ "$outcome" = "failed" ]
+  rule=$(jq -r '.lint[0].rule' "$out_json")
+  [ "$rule" = "TYPESCRIPT_ESLINT_NO_UNUSED_VARS" ]
+  rm -f "$lint_raw" "$tests_raw" "$out_json"
 }

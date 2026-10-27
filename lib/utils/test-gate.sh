@@ -1282,28 +1282,36 @@ run_test_gate() {
           _nl_exit=0
           if [ -n "$_nl_eslint_bin" ]; then
             # eslint supports file args — scope to changed JS/TS/JSX/TSX files.
-            local _nl_abs_files_arr=() _nlf
+            # Pass relative paths (not absolute): eslint runs under (cd "$project_root")
+            # so relative paths produce repo-relative file fields in findings.
+            local _nl_rel_files_arr=() _nlf
             while IFS= read -r _nlf; do
               [ -n "$_nlf" ] || continue
               [ -f "$project_root/$_nlf" ] || continue  # skip deleted files
-              _nl_abs_files_arr+=("$project_root/$_nlf")
+              _nl_rel_files_arr+=("$_nlf")
             done < <(printf '%s\n' "$_nonsr_changed_files" \
               | grep -E '\.(js|jsx|ts|tsx|mjs|cjs)$' | grep -v '^$' || true)
-            if [ ${#_nl_abs_files_arr[@]} -gt 0 ]; then
-              echo "[test-gate] lint: eslint --format unix on ${#_nl_abs_files_arr[@]} changed file(s)" >> "$_gate_raw_sink"
+            if [ ${#_nl_rel_files_arr[@]} -gt 0 ]; then
+              echo "[test-gate] lint: eslint --format unix on ${#_nl_rel_files_arr[@]} changed file(s)" >> "$_gate_raw_sink"
               { (cd "$project_root" && "$_nl_eslint_bin" \
                   --format unix \
-                  "${_nl_abs_files_arr[@]+"${_nl_abs_files_arr[@]}"}" 2>&1); \
+                  "${_nl_rel_files_arr[@]+"${_nl_rel_files_arr[@]}"}" 2>&1); \
                 echo $? > "$_nl_exit_file"; } \
                 | tee -a "$_nl_raw_file" >> "$_gate_raw_sink" || true
               _nl_exit=$(cat "$_nl_exit_file" 2>/dev/null || echo 1)
               _nl_exit=${_nl_exit:-1}
               if [ "$_nl_exit" -ne 0 ]; then
                 _normalize_eslint_output "$_nl_raw_file" "$_lint_raw_file"
+                local _nl_norm_count
+                _nl_norm_count=$(grep -c '.' "$_lint_raw_file" 2>/dev/null || true)
+                if [ "${_nl_norm_count:-0}" -eq 0 ]; then
+                  printf 'package.json:0: [LINT_FAILED] eslint exited %s — run eslint locally for violation details\n' \
+                    "$_nl_exit" >> "$_lint_raw_file"
+                fi
                 _lint_exit=1
                 local _nl_viol
                 _nl_viol=$(grep -c '^[^:]*:[0-9]' "$_nl_raw_file" 2>/dev/null || true)
-                echo "[test-gate] lint: eslint found ${_nl_viol:-?} violation(s) — blocking"
+                _gate_status "[test-gate] lint: eslint found ${_nl_viol:-?} violation(s) — blocking"
               fi
             else
               echo "[test-gate] lint: no surviving changed JS/TS files — skipping eslint" >> "$_gate_raw_sink"
@@ -1328,7 +1336,7 @@ run_test_gate() {
                   "$_nl_pm" "$_nl_exit" "$_nl_pm" >> "$_lint_raw_file"
               fi
               _lint_exit=1
-              echo "[test-gate] lint: ${_nl_pm} run lint failed — blocking"
+              _gate_status "[test-gate] lint: ${_nl_pm} run lint failed — blocking"
             fi
           fi
           rm -f "${_nl_exit_file:-}" "${_nl_raw_file:-}"
