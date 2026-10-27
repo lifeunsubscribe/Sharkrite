@@ -659,6 +659,8 @@ For each item, use EXACTLY this format (no deviations):
 {FOR ACTIONABLE_LATER: **Location:** {specific file(s), module, or domain this finding applies to — must be concrete enough that someone unfamiliar with the PR can find the right code}}
 {FOR ACTIONABLE_LATER: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget|Architectural refactor needed|Needs separate focused PR}}
+{FOR ACTIONABLE_LATER: **Suggested Fix:** {1-2 sentences describing the concrete remedy the reviewer identified}}
+{FOR ACTIONABLE_LATER: **Verification:** {a single runnable command that confirms the fix is applied}}
 
 DO NOT add any summary section, recommendations, or extra text after the items.
 
@@ -1066,6 +1068,8 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_FIX_EFFORT=""
         # Reset Location so a finding without one can't inherit the prior finding's.
         ITEM_LOCATION=""
+        ITEM_SUGGESTED_FIX=""
+        ITEM_VERIFICATION=""
         ;;
       \*\*Severity:\*\**)
         ITEM_SEVERITY="${line#\*\*Severity:\*\* }"
@@ -1087,6 +1091,12 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ;;
       \*\*Fix\ Effort:\*\**)
         ITEM_FIX_EFFORT="${line#\*\*Fix Effort:\*\* }"
+        ;;
+      \*\*Suggested\ Fix:\*\**)
+        ITEM_SUGGESTED_FIX="${line#\*\*Suggested Fix:\*\* }"
+        ;;
+      \*\*Verification:\*\**)
+        ITEM_VERIFICATION="${line#\*\*Verification:\*\* }"
         ;;
       ---END---)
         # Severity gate: LOW findings are logged but do not justify issue overhead.
@@ -1255,7 +1265,10 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # as the per-finding loop: acceptance criterion + concrete verification
           # command derived from Location + severity-appropriate done definition.
           _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}"
-          if [ -n "${ITEM_LOCATION:-}" ]; then
+          if [ -n "${ITEM_VERIFICATION:-}" ]; then
+            # Assessor supplied a concrete verification command — use it directly.
+            _verification_cmd="${ITEM_VERIFICATION}"
+          elif [ -n "${ITEM_LOCATION:-}" ]; then
             # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
             # Strip any trailing description after whitespace; then split on the last colon
             # that is followed only by digits so we handle paths like lib/core/foo.sh:142
@@ -1321,6 +1334,8 @@ $([ -n "${ITEM_DEFER:-}" ] && echo "
 **Defer Reason:** ${ITEM_DEFER:-}" || echo "")
 $([ -n "${ITEM_CONTEXT:-}" ] && echo "
 **Context:** ${ITEM_CONTEXT:-}" || echo "")
+$([ -n "${ITEM_SUGGESTED_FIX:-}" ] && echo "
+**Suggested Fix:** ${ITEM_SUGGESTED_FIX:-}" || echo "")
 
 ## Time Estimate
 ${_time_estimate:-30min}
