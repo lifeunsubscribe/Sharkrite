@@ -3200,7 +3200,7 @@ DOCS_SCOPE_EOF
   echo "" >&2
 
   local _aau_confirm="n"
-  read -p "  Proceed with assertion audit? [y/N] " -n 1 -r _aau_confirm || true
+  read -p "  Proceed with assertion audit? [y/N] " -r _aau_confirm || true
   echo "" >&2
   case "${_aau_confirm:-n}" in
     [Yy]|[Yy][Ee][Ss]) ;;
@@ -3266,12 +3266,17 @@ ${_aau_ref_excerpt}
     # Rubric selection: map's rubric column wins over shipped defaults.
     local _aau_acc_rubric="$_DOCS_AUDIT_RUBRIC_ACCURACY"
     local _aau_role_rubric=""
+    local _aau_override_loaded=false
     if [ "${_aau_sl_rb:-}" != "-" ] && [ -n "${_aau_sl_rb:-}" ]; then
       local _aau_rb_abs="${RITE_PROJECT_ROOT}/${_aau_sl_rb}"
       if [ -f "$_aau_rb_abs" ]; then
         _aau_acc_rubric="$(cat "$_aau_rb_abs" 2>/dev/null || true)"
+        _aau_override_loaded=true
+      else
+        print_warning "Assertion audit: rubric-override '${_aau_sl_rb}' not found; using type-based default" >&2
       fi
-    else
+    fi
+    if [ "$_aau_override_loaded" = "false" ]; then
       case "${_aau_sl_dt:-other}" in
         feature) _aau_role_rubric="$_DOCS_AUDIT_RUBRIC_FEATURE" ;;
         adr)     _aau_role_rubric="$_DOCS_AUDIT_RUBRIC_ADR" ;;
@@ -3369,6 +3374,8 @@ AUDIT_SECTION_EOF
           [ "$_aau_f_rest" = "$_aau_raw_line" ] && _aau_f_rest="${_aau_raw_line#FINDING:}"
           local _aau_f_type="${_aau_f_rest%%|*}"
           local _aau_f_desc="${_aau_f_rest#*|}"
+          # Sanitize tabs so the TSV's cut -f4 read-back returns the full description.
+          _aau_f_desc="${_aau_f_desc//$'\t'/ }"
           [ -n "$_aau_f_type" ] && [ -n "$_aau_f_desc" ] && [ "$_aau_f_type" != "$_aau_f_rest" ] && \
             printf '%s\t%s\t%s\t%s\n' \
               "$_aau_sl_doc" "${_aau_sl_ht:-(preamble)}" "$_aau_f_type" "$_aau_f_desc" >> "$_aau_findings_file"
@@ -3406,7 +3413,7 @@ SECTION_LOOP_EOF
     _aau_fi_doc="$(printf '%s' "$_aau_fi" | cut -f1 || true)"
     _aau_fi_sec="$(printf '%s' "$_aau_fi" | cut -f2 || true)"
     _aau_fi_type="$(printf '%s' "$_aau_fi" | cut -f3 || true)"
-    _aau_fi_desc="$(printf '%s' "$_aau_fi" | cut -f4 || true)"
+    _aau_fi_desc="$(printf '%s' "$_aau_fi" | cut -f4- || true)"
 
     local _aau_fi_kind="refinement"
     case "$_aau_fi_type" in

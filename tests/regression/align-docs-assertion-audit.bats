@@ -74,7 +74,7 @@ source "\${RITE_LIB_DIR}/core/docs-command.sh"
 provider_run_prompt_with_timeout() {
   local _prompt="\$1"
   if [ -n "${call_log}" ]; then
-    printf '%s\n' "\$(printf '%s' "\$_prompt" | head -5)" >> "${call_log}"
+    printf '%s' "\$_prompt" >> "${call_log}"
     printf -- '---CALL-BOUNDARY---\n' >> "${call_log}"
   fi
   printf '%s\n' "${provider_output}"
