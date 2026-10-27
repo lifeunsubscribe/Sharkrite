@@ -198,10 +198,20 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
 
   PR_EXISTS=true
 
-  # If PR is draft, mark it as ready for review (work is complete)
+  # If PR is draft, mark it as ready for review (work is complete).
+  # A failed promotion is known-fatal at merge time — hard-fail here to avoid
+  # burning the full phase-3 spend for a condition detectable at phase 2.
   if [ "$IS_DRAFT" = "true" ]; then
     print_status "PR is draft - marking as ready for review..."
-    gh_safe pr ready "$PR_NUMBER" 2>/dev/null || print_warning "Could not mark PR as ready"
+    _prready_stderr=$(mktemp)
+    _prready_rc=0
+    gh_safe pr ready "$PR_NUMBER" 2>"$_prready_stderr" || _prready_rc=$?
+    _prready_msg=$(cat "$_prready_stderr" 2>/dev/null || true)
+    rm -f "$_prready_stderr"
+    if [ "$_prready_rc" -ne 0 ]; then
+      print_error "Could not mark PR #${PR_NUMBER} as ready for review${_prready_msg:+ — ${_prready_msg}}"
+      exit 1
+    fi
   fi
 
   # Push new commits if needed
