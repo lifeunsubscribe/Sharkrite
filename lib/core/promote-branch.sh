@@ -1062,6 +1062,23 @@ ${_promo_review_body}"
       --body "Promoted to main in PR #$PROMO_PR" 2>/dev/null || true
   done
 
+  # ── Phase 8: Post-merge doc pass (best-effort, #1435) ─────────────────────
+  #
+  # The code has already merged. Doc rejection never blocks anything. Every
+  # failure path warns and falls through — promote's exit code is unchanged
+  # (the #1278 no-bare-exit property). No bare `exit` in this block.
+  if ! declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
+    if [ -f "$RITE_LIB_DIR/core/docs-command.sh" ]; then
+      source "$RITE_LIB_DIR/core/docs-command.sh" 2>/dev/null || true
+    fi
+  fi
+  if declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
+    echo ""
+    docs_run_promote_doc_pass "$BRANCH" || true
+  else
+    print_warning "Phase 8: docs_run_promote_doc_pass unavailable — skipping post-merge doc pass for '${BRANCH}'" >&2
+  fi
+
   # Summary
   echo ""
   print_success "Branch '$BRANCH' promoted to main via PR #$PROMO_PR"
