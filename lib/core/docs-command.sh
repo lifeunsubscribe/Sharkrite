@@ -1109,6 +1109,45 @@ _docs_list_branch_entry_docs() {
 }
 
 # ---------------------------------------------------------------------------
+# _docs_is_adr_in_map DOC
+#
+# Returns 0 (true) when DOC is classified as an ADR type in the docs-map
+# (adr_flag col 3 = "adr" or type col 7 = "adr").
+# Returns 1 when the map is absent or DOC has no ADR classification.
+# Internal helper — used by the promote doc-pass to route ADR observations.
+# ---------------------------------------------------------------------------
+_docs_is_adr_in_map() {
+  local _diam_doc="${1:-}"
+  [ -n "$_diam_doc" ] || return 1
+  local _diam_map
+  _diam_map="$(docs_map_path)"
+  [ -f "$_diam_map" ] || return 1
+  awk -F'\t' -v doc="$_diam_doc" \
+    'NR>1 && !/^#/ && $1==doc && ($3=="adr" || $7=="adr"){found=1; exit} END{exit (found+0 ? 0 : 1)}' \
+    "$_diam_map" 2>/dev/null || return 1
+}
+
+# ---------------------------------------------------------------------------
+# _docs_list_adr_drift_docs
+#
+# Echo one doc path per line for every ADR doc that has pending ADR drift
+# entries in RITE_STATE_DIR/doc-drift-adr/.
+# ---------------------------------------------------------------------------
+_docs_list_adr_drift_docs() {
+  local _ladd_base="${RITE_STATE_DIR:-}/doc-drift-adr"
+  [ -d "$_ladd_base" ] || return 0
+  local _ladd_f _ladd_doc _ladd_cnt
+  while IFS= read -r _ladd_f || [ -n "$_ladd_f" ]; do
+    [ -f "$_ladd_f" ] || continue
+    _ladd_doc="$(awk -F'\t' '{for(i=1;i<=NF;i++){if(substr($i,1,4)=="doc="){print substr($i,5); exit}}}' \
+      "$_ladd_f" | head -1 || true)"
+    [ -n "$_ladd_doc" ] || continue
+    _ladd_cnt="$(grep -c '^doc=' "$_ladd_f" || true)"
+    [ "${_ladd_cnt:-0}" -gt 0 ] && printf '%s\n' "$_ladd_doc"
+  done < <(find "$_ladd_base" -name '*.log' -type f 2>/dev/null | sort || true)
+}
+
+# ---------------------------------------------------------------------------
 # _docs_bounded_context_for_doc DOC
 #
 # Assemble bounded LLM context for a single doc:
@@ -1723,6 +1762,202 @@ ${_mp_feedback_this_round}"
 }
 
 # ---------------------------------------------------------------------------
+# _adr_approval_history_path
+#
+# Returns the path to the ADR drift approval history file.
+# Human-editable; machine-readable markers drive suppression.
+# Default: ${RITE_STATE_DIR}/adr-approval-history.md
+# ---------------------------------------------------------------------------
+_adr_approval_history_path() {
+  local _aahp_state_dir="${RITE_STATE_DIR:-${RITE_PROJECT_ROOT:-${PWD}}/.rite/state}"
+  printf '%s/adr-approval-history.md' "$_aahp_state_dir"
+}
+
+# ---------------------------------------------------------------------------
+# _adr_approval_history_lookup DOC ASSERTION
+#
+# Returns 0 (suppressed) when the (DOC, ASSERTION) pair already has a recorded
+# decision in the ADR approval history file.  Returns 1 when no entry found.
+#
+# Machine-readable marker format searched:
+#   <!-- adrhist doc=<doc> assertion=<assertion> decision=<val> date=<date> -->
+# ---------------------------------------------------------------------------
+_adr_approval_history_lookup() {
+  local _aahl_doc="${1:-}"
+  local _aahl_assertion="${2:-}"
+  [ -n "$_aahl_doc" ] || return 1
+
+  local _aahl_hist_path
+  _aahl_hist_path="$(_adr_approval_history_path)"
+  [ -f "$_aahl_hist_path" ] || return 1
+
+  local _aahl_norm="${_aahl_assertion//$'\t'/ }"
+  _aahl_norm="${_aahl_norm//$'\n'/ }"
+
+  local _aahl_line
+  while IFS= read -r _aahl_line || [ -n "$_aahl_line" ]; do
+    case "$_aahl_line" in
+      "<!-- adrhist doc=${_aahl_doc} "*)
+        if printf '%s' "$_aahl_line" | grep -qF "assertion=${_aahl_norm}" 2>/dev/null; then
+          return 0
+        fi
+        ;;
+    esac
+  done < "$_aahl_hist_path"
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# _adr_approval_history_record DOC ASSERTION DECISION RATIONALE
+#
+# Append one ADR approval record to the history file.
+# Creates the file with a header block when absent.
+#
+# DECISION must be one of: addressed, rejected, deferred
+# ---------------------------------------------------------------------------
+_adr_approval_history_record() {
+  local _aahr_doc="${1:-}"
+  local _aahr_assertion="${2:-}"
+  local _aahr_decision="${3:-rejected}"
+  local _aahr_rationale="${4:-}"
+  [ -n "$_aahr_doc" ] || return 1
+
+  local _aahr_hist_path
+  _aahr_hist_path="$(_adr_approval_history_path)"
+  mkdir -p "$(dirname "$_aahr_hist_path")" 2>/dev/null || true
+
+  if [ ! -f "$_aahr_hist_path" ]; then
+    cat > "$_aahr_hist_path" << 'ADRHIST_HEADER_EOF'
+# ADR Drift Approval History
+
+<!-- Human-editable. Each entry records one decision per (doc, assertion) pair. -->
+<!-- The machine-readable marker (<!-- adrhist ... -->) drives suppression in align-docs reconcile. -->
+
+ADRHIST_HEADER_EOF
+  fi
+
+  local _aahr_norm="${_aahr_assertion//$'\t'/ }"
+  _aahr_norm="${_aahr_norm//$'\n'/ }"
+
+  local _aahr_date
+  _aahr_date="$(date -u +%Y-%m-%d 2>/dev/null || echo 'unknown')"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: doc, assertion, decision, rationale, date vars must expand
+  cat >> "$_aahr_hist_path" <<ADRHIST_RECORD_EOF
+<!-- adrhist doc=${_aahr_doc} assertion=${_aahr_norm} decision=${_aahr_decision} date=${_aahr_date} -->
+## ${_aahr_doc}
+
+**Assertion**: ${_aahr_norm}
+**Decision**: ${_aahr_decision}
+**Date**: ${_aahr_date}
+**Rationale**: ${_aahr_rationale:-none recorded}
+
+ADRHIST_RECORD_EOF
+}
+
+# ---------------------------------------------------------------------------
+# docs_reconcile_adr_drift
+#
+# Reconcile pending ADR drift observations (doc-drift-adr/) with history-aware
+# suppression.  Run as part of `rite align-docs` reconcile.
+#
+# For each ADR doc with pending entries:
+#   1. Skip entries already decided in the ADR approval history.
+#   2. Present unsuppressed entries interactively via a y/r/s loop.
+#   3. (y) Address: route through _docs_main_entries_pass for propose/approve
+#      loop + docs-PR creation, then record the decision and remove the entry.
+#   4. (r) Reject: record rejection (suppresses future re-ask) and remove the entry.
+#   5. (s) Skip: leave the entry in place for the next reconcile.
+#
+# Non-TTY: print pending observations and exit (no prompts, no mutations).
+# Zero entries → prints an info line and exits 0.
+# ---------------------------------------------------------------------------
+docs_reconcile_adr_drift() {
+  local _ard_count=0
+  if declare -f adr_drift_log_entry_count >/dev/null 2>&1; then
+    _ard_count="$(adr_drift_log_entry_count --total || echo 0)"
+  fi
+  _ard_count="${_ard_count:-0}"
+
+  if [ "$_ard_count" -eq 0 ]; then
+    print_info "No ADR drift observations — nothing to reconcile"
+    return 0
+  fi
+
+  print_info "Reconciling ${_ard_count} ADR observation(s)..."
+
+  local _ard_adr_base="${RITE_STATE_DIR:-}/doc-drift-adr"
+  [ -d "$_ard_adr_base" ] || return 0
+
+  local _ard_entry_file
+  while IFS= read -r _ard_entry_file || [ -n "${_ard_entry_file:-}" ]; do
+    [ -f "$_ard_entry_file" ] || continue
+
+    # Extract the doc path from the first entry in the file
+    local _ard_doc
+    _ard_doc="$(awk -F'\t' '{for(i=1;i<=NF;i++){if(substr($i,1,4)=="doc="){print substr($i,5); exit}}}' \
+      "$_ard_entry_file" | head -1 || true)"
+    [ -n "${_ard_doc:-}" ] || continue
+
+    # Process each entry line in this file
+    local _ard_line _ard_assertion _ard_kind
+    while IFS= read -r _ard_line || [ -n "${_ard_line:-}" ]; do
+      # Only process data lines (start with doc=)
+      case "$_ard_line" in doc=*) ;; *) continue ;; esac
+
+      _ard_assertion="$(printf '%s' "$_ard_line" \
+        | awk -F'\t' '{for(i=1;i<=NF;i++){if(substr($i,1,10)=="assertion="){print substr($i,11); exit}}}' \
+        || true)"
+      _ard_kind="$(printf '%s' "$_ard_line" \
+        | awk -F'\t' '{for(i=1;i<=NF;i++){if(substr($i,1,5)=="kind="){print substr($i,6); exit}}}' \
+        || true)"
+
+      # Suppress entries already decided in the approval history
+      if _adr_approval_history_lookup "$_ard_doc" "${_ard_assertion:-}" 2>/dev/null; then
+        print_info "  Already decided — skipping: ${_ard_assertion:-}"
+        continue
+      fi
+
+      # Non-TTY: just report pending observations; no prompts
+      if [ "${_RITE_FORCE_TTY:-0}" != "1" ] && [ ! -t 0 ]; then
+        print_info "  Pending ADR observation (${_ard_kind:-unknown}) for ${_ard_doc}: ${_ard_assertion:-}"
+        continue
+      fi
+
+      # TTY: interactive y/r/s loop
+      echo "" >&2
+      print_info "ADR observation for ${_ard_doc}"
+      printf '  Kind: %s\n' "${_ard_kind:-unknown}" >&2
+      printf '  Assertion: %s\n' "${_ard_assertion:-}" >&2
+      echo "" >&2
+      local _ard_reply=""
+      read -p "  Address (y), Reject (r), Skip (s)? [y/r/s] " -n 1 -r
+      echo "" >&2
+      _ard_reply="${REPLY:-s}"
+
+      case "${_ard_reply:-s}" in
+        [Yy])
+          # Propose/approve loop for edits — accepted changes go through docs-PR path
+          _docs_main_entries_pass "$_ard_doc" "main" "main" || true
+          _adr_approval_history_record "$_ard_doc" "${_ard_assertion:-}" \
+            "addressed" "Reconciled via rite align-docs" || true
+          adr_drift_log_remove_entry "$_ard_doc" "${_ard_assertion:-}" || true
+          ;;
+        [Rr])
+          # Rejection: record so the same question is not re-asked
+          _adr_approval_history_record "$_ard_doc" "${_ard_assertion:-}" \
+            "rejected" "Rejected during rite align-docs reconcile" || true
+          adr_drift_log_remove_entry "$_ard_doc" "${_ard_assertion:-}" || true
+          ;;
+        *)
+          print_info "  Skipped — observation kept for next reconcile"
+          ;;
+      esac
+    done < "$_ard_entry_file"
+  done < <(find "$_ard_adr_base" -name '*.log' -type f 2>/dev/null | sort || true)
+}
+
+# ---------------------------------------------------------------------------
 # docs_reconcile_drift
 #
 # Reconcile mode: run the Tier 2 doc-update pass over pending drift entries.
@@ -1755,6 +1990,8 @@ docs_reconcile_drift() {
       print_info "Processing doc: ${_rd_doc}"
       _docs_main_entries_pass "$_rd_doc" || true
     done 3< <(_docs_list_main_entry_docs || true)
+    # Also reconcile ADR drift observations after the main entry pass
+    docs_reconcile_adr_drift || true
     return 0
   fi
 
@@ -1778,6 +2015,9 @@ docs_reconcile_drift() {
   print_info "Reconciling ${_rd_count} drift entr$([ "$_rd_count" -eq 1 ] && echo 'y' || echo 'ies') from flat log..."
   docs_map_ensure || true
   _docs_update_engine "reconcile" ""
+
+  # Always run ADR drift reconcile after the regular reconcile pass
+  docs_reconcile_adr_drift || true
 }
 
 # _docs_enable_flow was removed — consent is now owned by `rite align-docs`.
@@ -2376,16 +2616,28 @@ Output ONLY the JSON array, no prose."
       addition|refinement|contradiction|test-scope|reference-missing) ;;
       *) _ji_rec_kind="refinement" ;;
     esac
-    # Write drift entry — entries only, never edits
-    drift_log_append \
-      "$_ji_rec_doc" \
-      "$_ji_branch" \
-      "${_ji_pr:-}" \
-      "-" \
-      "${_ji_rec_assert:-just-in-case cross-doc hit}" \
-      "$_ji_rec_kind" \
-      "promote cross-doc pass: promotion diff intersected doc fingerprint set" \
-      2>/dev/null || true
+    # ADR docs: route to the ADR namespace — never edits at promote time.
+    # Non-ADR docs: write to the regular branch drift store.
+    if _docs_is_adr_in_map "$_ji_rec_doc" 2>/dev/null; then
+      adr_drift_log_append \
+        "$_ji_rec_doc" \
+        "${_ji_pr:-}" \
+        "-" \
+        "${_ji_rec_assert:-just-in-case cross-doc hit}" \
+        "$_ji_rec_kind" \
+        "promote cross-doc pass: promotion diff intersected doc fingerprint set" \
+        2>/dev/null || true
+    else
+      drift_log_append \
+        "$_ji_rec_doc" \
+        "$_ji_branch" \
+        "${_ji_pr:-}" \
+        "-" \
+        "${_ji_rec_assert:-just-in-case cross-doc hit}" \
+        "$_ji_rec_kind" \
+        "promote cross-doc pass: promotion diff intersected doc fingerprint set" \
+        2>/dev/null || true
+    fi
     _ji_entry_count=$((_ji_entry_count + 1))
   done < <(printf '%s\n' "$_ji_jq_out")
 
@@ -2457,6 +2709,13 @@ docs_run_promote_doc_pass() {
         local _dp_doc
         while IFS= read -r _dp_doc <&3 || [ -n "${_dp_doc:-}" ]; do
           [ -n "$_dp_doc" ] || continue
+          # ADR docs must never be edited at promote — a wrong ADR edit is a wrong
+          # product. ADR observations go to the ADR namespace (doc-drift-adr/) via
+          # _docs_cross_doc_just_in_case_pass and are reconciled by docs_reconcile_adr_drift.
+          if _docs_is_adr_in_map "$_dp_doc" 2>/dev/null; then
+            print_info "  ADR doc ${_dp_doc}: observations in ADR namespace — skipping promote edit pass"
+            continue
+          fi
           echo "" >&2
           print_info "Processing doc: ${_dp_doc}"
           _docs_main_entries_pass "$_dp_doc" "$_dp_branch" "main" || true
