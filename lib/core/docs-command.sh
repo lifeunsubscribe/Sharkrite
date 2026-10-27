@@ -1926,6 +1926,15 @@ CAND_EOF
     return 1
   fi
 
+  # Require a terminal — the approval loop is meaningless without one; a
+  # non-TTY run would auto-skip everything then destroy the proposal file.
+  # _RITE_FORCE_TTY=1 allows tests to exercise this path without a real terminal.
+  if [ "${_RITE_FORCE_TTY:-0}" != "1" ] && [ ! -t 0 ]; then
+    print_error "rite docs --resume requires a terminal (no TTY detected)"
+    printf '  Proposal preserved at: %s\n' "$_rp_proposal" >&2
+    return 1
+  fi
+
   # Recover original branch name (may contain slashes) from the file header.
   local _rp_file_branch
   _rp_file_branch="$(grep '^# Pending doc proposal:' "$_rp_proposal" | head -1 | \
@@ -1947,23 +1956,29 @@ CAND_EOF
   done < "$_rp_proposal"
 
   if [ -z "$_rp_docs" ]; then
-    print_warning "No docs listed in proposal file — nothing to process"
-    rm -f "$_rp_proposal"
-    return 0
+    print_warning "No docs listed in proposal file — format drift suspected; proposal preserved at: ${_rp_proposal}"
+    return 1
   fi
 
   docs_map_ensure || true
 
-  local _rp_tmp _rp_doc
+  # Use fd 3 for the doc list so fd 0 (stdin/TTY) stays available for
+  # interactive read prompts inside _docs_main_entries_pass.
+  local _rp_tmp _rp_doc _rp_failed=0
   _rp_tmp="$(mktemp)"
   printf '%s' "$_rp_docs" > "$_rp_tmp"
-  while IFS= read -r _rp_doc || [ -n "$_rp_doc" ]; do
+  while IFS= read -r _rp_doc <&3 || [ -n "${_rp_doc:-}" ]; do
     [ -n "$_rp_doc" ] || continue
     echo "" >&2
     print_info "Processing doc: ${_rp_doc}"
-    _docs_main_entries_pass "$_rp_doc" "$_rp_file_branch" "main" || true
-  done < "$_rp_tmp"
+    _docs_main_entries_pass "$_rp_doc" "$_rp_file_branch" "main" || _rp_failed=1
+  done 3< "$_rp_tmp"
   rm -f "$_rp_tmp"
+
+  if [ "$_rp_failed" = "1" ]; then
+    print_warning "One or more docs failed to process — proposal preserved at: ${_rp_proposal}"
+    return 1
+  fi
 
   rm -f "$_rp_proposal"
   print_success "Doc resume complete for branch '${_rp_file_branch}' — proposal file removed"
