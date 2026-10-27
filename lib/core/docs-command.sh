@@ -3045,6 +3045,10 @@ RECORD_EOF
 # No args: assess every doc in the docs map.
 # ---------------------------------------------------------------------------
 docs_run_restructure_assessment() {
+  # Migrate legacy flat drift log to schema store on first align-docs run.
+  # Non-interactive; runs before the TTY guard so it fires in any invocation context.
+  migrate_legacy_drift_log || true
+
   local _rra_docs_raw=""
   local _rra_arg
   for _rra_arg in "$@"; do
