@@ -153,7 +153,7 @@ _docs_burn_drift_entries() {
 }
 
 # ---------------------------------------------------------------------------
-# _docs_apply_approved APPROVED_DIR DRIFT_PATH INSTRUCTIONS MODE TARGET_BRANCH [SKIP_BURNDOWN]
+# _docs_apply_approved APPROVED_DIR DRIFT_PATH INSTRUCTIONS MODE TARGET_BRANCH [SKIP_BURNDOWN] [ENTRY_FILE]
 #
 # Apply every approved proposal (files in APPROVED_DIR) inside a temporary
 # worktree forked from origin/${TARGET_BRANCH:-main}, burn down covered drift
@@ -163,6 +163,13 @@ _docs_burn_drift_entries() {
 # SKIP_BURNDOWN (6th arg, default false): pass "true" to suppress legacy
 # flat-log burn-down (used by _docs_main_entries_pass whose scope boundary
 # explicitly forbids legacy entry removal).
+#
+# ENTRY_FILE (7th arg, optional): path to a structured drift entry TSV file
+# (RITE_STATE_DIR/doc-drift/<branch>/<slug>.log).  When provided:
+#   - All entries in the file are folded into the PR body as a readable block
+#     (the permanent record of why the doc changed).
+#   - Entries are removed from the store only after gh pr create succeeds;
+#     a failed PR creation leaves the file intact.
 #
 # Consent-gate rationale: this function is reached ONLY after explicit human
 # approval in the preview loop — explicit command + preview approval IS consent.
@@ -175,6 +182,7 @@ _docs_apply_approved() {
   local _aa_mode="${4:-directed}"
   local _aa_target="${5:-${RITE_TARGET_BRANCH:-main}}"
   local _aa_skip_burndown="${6:-false}"
+  local _aa_entry_file="${7:-}"
 
   # Count approved proposals
   local _aa_count=0
@@ -184,6 +192,48 @@ _docs_apply_approved() {
   if [ "$_aa_count" -eq 0 ]; then
     print_info "No approved proposals to apply"
     return 0
+  fi
+
+  # Read the structured entry file snapshot BEFORE any worktree/git operations.
+  # Used for PR body folding and post-PR-create removal.  Read once so the
+  # removal loop iterates the same content even if the file is partially written
+  # by a concurrent process between fold and remove.
+  local _aa_entries_snapshot=""
+  if [ -n "$_aa_entry_file" ] && [ -f "$_aa_entry_file" ]; then
+    _aa_entries_snapshot="$(cat "$_aa_entry_file" 2>/dev/null || true)"
+  fi
+
+  # Build the folded entries markdown block for the PR body.
+  local _aa_folded_block=""
+  if [ -n "$_aa_entries_snapshot" ]; then
+    local _aa_fold_lines=""
+    local _aa_el
+    while IFS= read -r _aa_el || [ -n "$_aa_el" ]; do
+      [ -n "$_aa_el" ] || continue
+      local _aa_e_doc _aa_e_assertion _aa_e_kind _aa_e_pr _aa_e_evidence
+      _aa_e_doc="$(printf '%s' "$_aa_el" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,4)=="doc="){print substr($i,5);exit}}}' || true)"
+      _aa_e_assertion="$(printf '%s' "$_aa_el" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,10)=="assertion="){print substr($i,11);exit}}}' || true)"
+      _aa_e_kind="$(printf '%s' "$_aa_el" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,5)=="kind="){print substr($i,6);exit}}}' || true)"
+      _aa_e_pr="$(printf '%s' "$_aa_el" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,3)=="pr="){print substr($i,4);exit}}}' || true)"
+      _aa_e_evidence="$(printf '%s' "$_aa_el" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,9)=="evidence="){print substr($i,10);exit}}}' || true)"
+      [ -n "$_aa_e_doc" ] || continue
+      _aa_fold_lines="${_aa_fold_lines}- **${_aa_e_doc}** — \"${_aa_e_assertion}\" _(${_aa_e_kind})_
+  PRs: ${_aa_e_pr} | Evidence: \`${_aa_e_evidence}\`
+"
+    done <<FOLD_EOF
+$_aa_entries_snapshot
+FOLD_EOF
+    if [ -n "$_aa_fold_lines" ]; then
+      _aa_folded_block="
+**Drift entries consumed by this PR:**
+
+${_aa_fold_lines}"
+    fi
   fi
 
   # Build docs branch name (unique: PID + seconds)
@@ -330,7 +380,7 @@ _docs_apply_approved() {
   _aa_pr_title="$(printf '%s' "$_aa_pr_title" | cut -c1-70)"
 
   local _aa_pr_body
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: branch, mode, and instruction vars must expand
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: branch, mode, instruction, and folded-entries vars must expand
   _aa_pr_body="$(cat <<PR_BODY_EOF
 ## Docs update
 
@@ -342,24 +392,53 @@ This PR was created by \`rite docs\`. Review and merge when ready.
 **No auto-merge** — this PR requires human review before merging.
 
 ${_aa_all_drift_refs:+**Drift entries addressed**:${_aa_all_drift_refs}}
+${_aa_folded_block}
 PR_BODY_EOF
 )"
 
   echo "" >&2
   print_info "Creating docs PR targeting '${_aa_target}'..."
 
-  # gh_safe must be called from within the worktree so gh can detect the repo remote
+  # gh_safe must be called from within the worktree so gh can detect the repo remote.
+  # Capture the exit code: structured entries are removed only on success (#1432).
+  local _aa_pr_rc=0
   ( cd "$_aa_wt_path" && gh_safe pr create \
     --base "${_aa_target}" \
     --title "$_aa_pr_title" \
-    --body "$_aa_pr_body" ) || \
+    --body "$_aa_pr_body" ) || _aa_pr_rc=$?
+
+  if [ "$_aa_pr_rc" -ne 0 ]; then
     print_warning "PR creation failed — branch '${_aa_branch}' was pushed; create PR manually" >&2
+  fi
 
   # Remove worktree; branch remains for the open PR
   git -C "$RITE_PROJECT_ROOT" worktree remove "$_aa_wt_path" --force 2>/dev/null || true
   git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
 
-  print_success "Docs PR created on base '${_aa_target}' — review and merge when ready"
+  # Remove consumed structured entries only after PR creation succeeded.
+  # Iterates the pre-read snapshot so file modifications during removal do not
+  # affect the loop.  Scoped to exact (doc, branch, assertion) keys — no glob.
+  if [ "$_aa_pr_rc" -eq 0 ] && [ -n "$_aa_entries_snapshot" ]; then
+    local _aa_rl
+    while IFS= read -r _aa_rl || [ -n "$_aa_rl" ]; do
+      [ -n "$_aa_rl" ] || continue
+      local _aa_r_doc _aa_r_branch _aa_r_assertion
+      _aa_r_doc="$(printf '%s' "$_aa_rl" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,4)=="doc="){print substr($i,5);exit}}}' || true)"
+      _aa_r_branch="$(printf '%s' "$_aa_rl" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,7)=="branch="){print substr($i,8);exit}}}' || true)"
+      _aa_r_assertion="$(printf '%s' "$_aa_rl" | awk -F'\t' \
+        '{for(i=1;i<=NF;i++){if(substr($i,1,10)=="assertion="){print substr($i,11);exit}}}' || true)"
+      [ -n "$_aa_r_doc" ] || continue
+      drift_log_remove_entry "$_aa_r_doc" "${_aa_r_branch:-main}" "$_aa_r_assertion" || true
+    done <<REMOVE_EOF
+$_aa_entries_snapshot
+REMOVE_EOF
+  fi
+
+  if [ "$_aa_pr_rc" -eq 0 ]; then
+    print_success "Docs PR created on base '${_aa_target}' — review and merge when ready"
+  fi
   return 0
 }
 
@@ -1497,7 +1576,8 @@ ${_mp_feedback_this_round}"
       "" \
       "reconcile" \
       "$_mp_target" \
-      "true" || _mp_apply_rc=$?
+      "true" \
+      "$_mp_entry_file" || _mp_apply_rc=$?
     rm -rf "$_mp_appr_dir"
     return "$_mp_apply_rc"
   done
