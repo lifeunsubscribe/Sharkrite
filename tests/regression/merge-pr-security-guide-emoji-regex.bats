@@ -21,7 +21,8 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# The canonical emoji-tolerant pattern now in update_security_guide_from_pr.
+# The canonical emoji-tolerant pattern lives in parse_review_severity_counts
+# (lib/utils/format-review.sh); update_security_guide_from_pr delegates to it.
 # These tests assert the regex itself is correct — no stubs or sources needed.
 # ---------------------------------------------------------------------------
 
@@ -68,10 +69,10 @@ setup() {
   [ "$bad_count" -eq 0 ]
 }
 
-@test "update_security_guide_from_pr uses .* between field anchors (structural pin)" {
+@test "update_security_guide_from_pr delegates to parse_review_severity_counts (structural pin)" {
   local src="$PROJECT_ROOT/lib/core/merge-pr.sh"
-  # The emoji-tolerant pattern must be present.
-  local good_count
-  good_count=$(grep -c 'CRITICAL: \*\[0-9\]+\.\*HIGH:' "$src" || true)
-  [ "$good_count" -ge 1 ]
+  # The shared helper must be called — inline copy was the drift risk.
+  local call_count
+  call_count=$(grep -c 'parse_review_severity_counts' "$src" || true)
+  [ "$call_count" -ge 1 ]
 }
