@@ -1274,10 +1274,10 @@ _docs_warn_doc_pass_threshold() {
   local _dwt_thresh="${RITE_DOC_PASS_WARN_SECONDS:-120}"
   # threshold=0 means "silence suggestion entirely" (documented in config/project.conf.example)
   [ "$_dwt_thresh" -gt 0 ] 2>/dev/null || return 0
-  # doc=- is an aggregate placeholder; printing "rite align-docs -" is nonsense
+  # doc=- is an aggregate placeholder; skip — aggregate passes never print the suggestion
   [ "$_dwt_doc" = "-" ] && return 0
   if [ "$_dwt_dur" -gt "$_dwt_thresh" ] 2>/dev/null; then
-    print_info "Doc pass took ${_dwt_dur}s — for targeted runs: rite align-docs ${_dwt_doc}"
+    print_info "Doc pass took ${_dwt_dur}s — run 'rite align-docs' to audit doc drift"
   fi
 }
 

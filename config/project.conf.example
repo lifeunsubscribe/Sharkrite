@@ -296,7 +296,8 @@
 # When a doc model pass (promote, docs, or align) takes longer than this many
 # seconds, an info-level suggestion is printed recommending `rite align-docs`
 # for targeted follow-up on that document. The pass completes normally — this
-# is informational only. Applies to every DOC_PASS diag emission.
+# is informational only. Applies to per-doc passes; aggregate passes (doc=-)
+# never print the suggestion.
 # Default: 120 (warn when a single pass exceeds 2 minutes).
 # Set to 0 to silence the suggestion entirely.
 # RITE_DOC_PASS_WARN_SECONDS=120

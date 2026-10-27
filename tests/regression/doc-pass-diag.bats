@@ -238,5 +238,5 @@ HELPER_EOF
 
   run bash "$helper"
   [ -f "$info_log" ]
-  grep -q "rite align-docs docs/feature-a.md" "$info_log"
+  grep -q "rite align-docs" "$info_log"
 }
