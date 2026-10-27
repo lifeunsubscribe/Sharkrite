@@ -3729,6 +3729,25 @@ SECTION_LOOP_EOF
   echo "" >&2
   local _aau_recorded=$((_aau_approved + _aau_auto))
   print_info "Assertion audit: ${_aau_recorded} finding(s) recorded (${_aau_auto} auto-refinement, ${_aau_approved} user-accepted)"
+
+  # Clear pre-existing drift entries for every audited doc (across all branches)
+  # and rebuild the docs map.  The audit has just re-verified these docs against
+  # the code, so prior drift observations are superseded.
+  # This is the "consumed or cleared" half of the bounded-entries contract.
+  if [ -n "${_aau_docs_raw:-}" ] && declare -f drift_log_clear_doc >/dev/null 2>&1; then
+    local _aau_clear_doc
+    while IFS= read -r _aau_clear_doc || [ -n "$_aau_clear_doc" ]; do
+      [ -n "$_aau_clear_doc" ] || continue
+      drift_log_clear_doc "$_aau_clear_doc" || true
+    done <<CLEAR_DOCS_EOF
+$_aau_docs_raw
+CLEAR_DOCS_EOF
+  fi
+
+  if declare -f docs_map_build >/dev/null 2>&1; then
+    docs_map_build || true
+    print_info "Docs map rebuilt post-audit"
+  fi
 }
 
 # ---------------------------------------------------------------------------

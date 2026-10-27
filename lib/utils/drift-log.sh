@@ -28,6 +28,7 @@
 #   drift_log_append        — append or accumulate-in-place one structured entry
 #   drift_log_entry_count   — count entries (per-doc, per-branch, or total)
 #   drift_log_remove_entry  — remove exactly one (doc, branch, assertion) entry
+#   drift_log_clear_doc     — remove all entries for a doc across all branches
 #   drift_log_union_merge   — deterministic union-merge of a conflicted drift log
 #
 # All functions are re-source safe. Sentinel: drift_log_append.
@@ -528,6 +529,43 @@ drift_log_remove_entry() {
 
   lock_release "$lock_path"
   trap - RETURN
+}
+
+# ---------------------------------------------------------------------------
+# drift_log_clear_doc DOC
+#
+# Remove all drift entries for DOC across every branch in the structured store.
+# This is the "consumed or cleared" operation: after rite align-docs audits a
+# doc, the audit has re-verified it and any prior drift observations are
+# superseded.
+#
+# Per-branch entry files live at:
+#   ${RITE_STATE_DIR}/doc-drift/<branch>/<doc-slug>.log
+#
+# Discovery: find by exact filename so each match is removed individually
+# (no glob pattern in a trap handler — #345 class requirement).
+# Lock files for in-flight appends are also removed.
+#
+# Returns 0 always — missing files or RITE_STATE_DIR are not errors.
+# ---------------------------------------------------------------------------
+drift_log_clear_doc() {
+  local _dlcd_doc="$1"
+
+  [ -z "${RITE_STATE_DIR:-}" ] && return 0
+
+  local _dlcd_slug="${_dlcd_doc//\//--}"
+  local _dlcd_base="${RITE_STATE_DIR}/doc-drift"
+
+  [ -d "$_dlcd_base" ] || return 0
+
+  local _dlcd_f
+  while IFS= read -r _dlcd_f; do
+    [ -f "$_dlcd_f" ] || continue
+    rm -f "$_dlcd_f"
+    rm -f "${_dlcd_f}.lock"
+  done < <(find "$_dlcd_base" -name "${_dlcd_slug}.log" -type f 2>/dev/null || true)
+
+  return 0
 }
 
 # ===========================================================================
