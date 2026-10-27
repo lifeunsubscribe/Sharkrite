@@ -1075,6 +1075,8 @@ ${_promo_review_body}"
   if declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
     echo ""
     docs_run_promote_doc_pass "$BRANCH" || true
+  else
+    print_warning "Phase 8: docs_run_promote_doc_pass unavailable — skipping post-merge doc pass for '${BRANCH}'" >&2
   fi
 
   # Summary

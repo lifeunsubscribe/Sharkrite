@@ -249,6 +249,62 @@ RUNEOF
   echo "$output" | grep -q "rite docs --resume releases/v1.2"
 }
 
+@test "docs_run_promote_doc_pass: TTY path calls _docs_main_entries_pass per doc; per-doc reads come from stdin, not doc list" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  _write_docs_command_stubs "$_lib"
+
+  local _state_dir="$RITE_TEST_TMPDIR/state"
+  mkdir -p "$_state_dir"
+
+  # Provide two lines of "TTY input" — one per doc processed.
+  local _stdin_file="$RITE_TEST_TMPDIR/tty_sim.txt"
+  printf 'TTY_INPUT_DOC1\nTTY_INPUT_DOC2\n' > "$_stdin_file"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_STATE_DIR="$_state_dir"
+# RITE_FORCE_TTY=1 exercises the TTY branch without a real terminal.
+export RITE_FORCE_TTY=1
+source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
+
+drift_log_entry_count() { echo 2; }
+_docs_list_branch_entry_docs() { printf 'docs/adr.md\ndocs/readme.md\n'; }
+
+# Stub _docs_main_entries_pass: record the doc arg, then read one line from
+# stdin (fd 0) to verify it is NOT shadowed by the doc list.
+_docs_main_entries_pass() {
+  printf 'DOC_CALLED:%s\n' "\$1"
+  local _stdin_sample=""
+  IFS= read -r _stdin_sample 2>/dev/null || true
+  printf 'STDIN_SAMPLE:%s\n' "\$_stdin_sample"
+  return 0
+}
+
+docs_run_promote_doc_pass "my-integration-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" < "$_stdin_file"
+  [ "$status" -eq 0 ]
+
+  # Both docs must have been processed via _docs_main_entries_pass
+  echo "$output" | grep -q "DOC_CALLED:docs/adr.md"
+  echo "$output" | grep -q "DOC_CALLED:docs/readme.md"
+
+  # stdin reads inside _docs_main_entries_pass must get the TTY input lines,
+  # NOT lines from the doc list (which would indicate stdin was shadowed).
+  echo "$output" | grep -q "STDIN_SAMPLE:TTY_INPUT_DOC1"
+  echo "$output" | grep -q "STDIN_SAMPLE:TTY_INPUT_DOC2"
+
+  # Verify no doc path leaked into stdin reads
+  [[ "$output" != *"STDIN_SAMPLE:docs/"* ]]
+}
+
 @test "docs_run_promote_doc_pass: best-effort — returns 0 even when doc pass stub errors" {
   local _lib="$RITE_TEST_TMPDIR/lib"
   _write_promote_stubs_base "$_lib"

@@ -989,17 +989,7 @@ _docs_extract_section() {
 # directly (avoids slug-reversal ambiguity).
 # ---------------------------------------------------------------------------
 _docs_list_main_entry_docs() {
-  local _lme_dir="${RITE_STATE_DIR:-}/doc-drift/main"
-  [ -d "$_lme_dir" ] || return 0
-  local _lme_f _lme_doc _lme_cnt
-  while IFS= read -r _lme_f || [ -n "$_lme_f" ]; do
-    [ -f "$_lme_f" ] || continue
-    _lme_doc="$(awk -F'\t' '{for(i=1;i<=NF;i++){if(substr($i,1,4)=="doc="){print substr($i,5); exit}}}' \
-      "$_lme_f" | head -1 || true)"
-    [ -n "$_lme_doc" ] || continue
-    _lme_cnt="$(grep -c '^doc=' "$_lme_f" || true)"
-    [ "$_lme_cnt" -gt 0 ] && printf '%s\n' "$_lme_doc"
-  done < <(find "$_lme_dir" -name '*.log' -type f 2>/dev/null | sort || true)
+  _docs_list_branch_entry_docs "main"
 }
 
 # ---------------------------------------------------------------------------
@@ -1641,12 +1631,12 @@ docs_reconcile_drift() {
     print_info "Reconciling ${_rd_main_count} drift entr$([ "$_rd_main_count" -eq 1 ] && echo 'y' || echo 'ies') for branch=main..."
     docs_map_ensure || true
     local _rd_doc
-    while IFS= read -r _rd_doc || [ -n "$_rd_doc" ]; do
+    while IFS= read -r _rd_doc <&3 || [ -n "${_rd_doc:-}" ]; do
       [ -n "$_rd_doc" ] || continue
       echo "" >&2
       print_info "Processing doc: ${_rd_doc}"
       _docs_main_entries_pass "$_rd_doc" || true
-    done < <(_docs_list_main_entry_docs || true)
+    done 3< <(_docs_list_main_entry_docs || true)
     return 0
   fi
 
@@ -1934,25 +1924,27 @@ docs_run_promote_doc_pass() {
 
   docs_map_ensure || true  # best-effort; engine can proceed with stale/missing map
 
-  if [ -t 0 ]; then
+  # RITE_FORCE_TTY=1 allows tests to exercise the TTY branch without a real terminal.
+  if [ "${RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
     # TTY: run the interactive propose/approve loop for each implicated doc.
     # _mp_target is explicitly "main" so the docs PR is not routed to the
     # now-deleted integration branch.
+    # Use fd 3 for the doc list so fd 0 (stdin/TTY) remains available for
+    # interactive read prompts inside _docs_main_entries_pass.
     local _dp_doc
-    while IFS= read -r _dp_doc || [ -n "$_dp_doc" ]; do
+    while IFS= read -r _dp_doc <&3 || [ -n "${_dp_doc:-}" ]; do
       [ -n "$_dp_doc" ] || continue
       echo "" >&2
       print_info "Processing doc: ${_dp_doc}"
       _docs_main_entries_pass "$_dp_doc" "$_dp_branch" "main" || true
-    done <<ENTRIES_EOF
-$_dp_docs
-ENTRIES_EOF
+    done 3< <(_docs_list_branch_entry_docs "$_dp_branch" || true)
   else
     # No TTY: save a proposal summary so the operator can review and apply
     # with `rite docs --resume <branch>` (loading implemented in the next issue).
     local _dp_safe_branch="${_dp_branch//\//-}"
     local _dp_proposal="${RITE_STATE_DIR:-}/doc-proposal-${_dp_safe_branch}.md"
     mkdir -p "$(dirname "$_dp_proposal")" 2>/dev/null || true
+    local _dp_write_ok=0
     {
       printf '# Pending doc proposal: %s\n\n' "$_dp_branch"
       printf 'Recorded: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
@@ -1965,9 +1957,13 @@ ENTRIES_EOF
       done <<DOCS_EOF
 $_dp_docs
 DOCS_EOF
-    } > "$_dp_proposal" 2>/dev/null || true
-    print_info "Promote doc proposal saved — review when ready"
-    printf '\n  Run: rite docs --resume %s\n' "$_dp_branch" >&2
+    } > "$_dp_proposal" 2>/dev/null && _dp_write_ok=1 || true
+    if [ "$_dp_write_ok" = "1" ]; then
+      print_info "Promote doc proposal saved — review when ready"
+      printf '\n  Run: rite docs --resume %s\n' "$_dp_branch" >&2
+    else
+      print_warning "Could not write doc proposal to '${_dp_proposal}' — drift entries remain for manual review" >&2
+    fi
   fi
 
   return 0
@@ -1983,6 +1979,16 @@ DOCS_EOF
 # ---------------------------------------------------------------------------
 rite_docs() {
   local instructions="${*:-}"
+
+  # --resume is reserved for a future issue; guard it so the operator's
+  # `rite docs --resume <branch>` doesn't silently fall through to the
+  # directed-update engine with garbage instructions.
+  case "${instructions:-}" in
+    --resume|--resume\ *)
+      print_warning "rite docs --resume is not yet implemented. Find saved proposals at: ${RITE_STATE_DIR:-$RITE_PROJECT_ROOT/.rite/state}/doc-proposal-*.md"
+      return 0
+      ;;
+  esac
 
   local state
   state="$(_docs_resolve_state)"
