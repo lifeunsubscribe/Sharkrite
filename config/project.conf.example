@@ -272,3 +272,11 @@
 # LEAVE UNSET (default: empty) to be asked on the next supervised run or
 # `rite docs`. Unset records nothing — unattended runs never opt a repo in.
 # RITE_DOC_MODE="off"
+
+# Doc proposal growth warning threshold (percent).
+# In every doc-proposal preview, the computed byte delta is displayed.
+# When an edit grows the doc by more than this percentage, the preview shows a
+# visible flag prompting the operator to verify the description explains why.
+# The flag is informational only — the operator can still approve or skip.
+# Default: 15 (flag edits that grow the doc by more than 15%).
+# RITE_DOC_GROWTH_WARN_PCT=15
