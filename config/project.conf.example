@@ -291,3 +291,12 @@
 # .rite/state/doc-approval-history.md relative to the project root).
 # Default: 25 (re-raise when the doc has grown by ≥25% since last decision).
 # RITE_DOC_RESTRUCTURE_REGROWTH_PCT=25
+
+# Doc pass duration warning threshold (seconds).
+# When a doc model pass (promote, docs, or align) takes longer than this many
+# seconds, an info-level suggestion is printed recommending `rite align-docs`
+# for targeted follow-up on that document. The pass completes normally — this
+# is informational only. Applies to every DOC_PASS diag emission.
+# Default: 120 (warn when a single pass exceeds 2 minutes).
+# Set to 0 to silence the suggestion entirely.
+# RITE_DOC_PASS_WARN_SECONDS=120
