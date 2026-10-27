@@ -2134,13 +2134,23 @@ _docs_cross_doc_just_in_case_pass() {
     _ji_fp_set="$(_docs_jic_covers_for_doc "$_ji_doc" 2>/dev/null || true)"
     [ -n "${_ji_fp_set:-}" ] || continue
 
-    # Intersect fingerprint set with diff
+    # Intersect fingerprint set with diff — supports exact paths and glob patterns
+    # (grep -qxF would reject globs like lib/core/** that covers headers legitimately emit)
     local _ji_hits=""
     local _ji_fp
     while IFS= read -r _ji_fp || [ -n "${_ji_fp:-}" ]; do
       [ -n "$_ji_fp" ] || continue
-      # grep -xF: exact whole-line match (no glob expansion)
-      if printf '%s\n' "$_ji_diff" | grep -qxF "$_ji_fp"; then
+      local _ji_fp_hit=0
+      local _ji_dp
+      while IFS= read -r _ji_dp || [ -n "${_ji_dp:-}" ]; do
+        [ -n "$_ji_dp" ] || continue
+        # case with unquoted pattern enables glob expansion (e.g. lib/core/**)
+        case "$_ji_dp" in
+          # shellcheck disable=SC2254
+          $_ji_fp) _ji_fp_hit=1; break ;;
+        esac
+      done < <(printf '%s\n' "$_ji_diff")
+      if [ "$_ji_fp_hit" -eq 1 ]; then
         if [ -n "${_ji_hits:-}" ]; then
           _ji_hits="${_ji_hits},${_ji_fp}"
         else
@@ -2223,9 +2233,15 @@ Output ONLY the JSON array, no prose."
 
   local _ji_entry_count=0
   local _ji_jq_out=""
+  local _ji_jq_exit=0
   _ji_jq_out="$(printf '%s' "$_ji_clean" \
     | jq -r '.[] | select(.implicated == true) | "\(.doc)\t\(.kind)\t\(.assertion)"' \
-    2>/dev/null || true)"
+    2>/dev/null)" || _ji_jq_exit=$?
+
+  if [ "$_ji_jq_exit" -ne 0 ]; then
+    print_warning "Just-in-case pass: triage response unparseable (jq exit ${_ji_jq_exit}) — findings discarded" >&2
+    return 0
+  fi
 
   [ -n "${_ji_jq_out:-}" ] || return 0
 
@@ -2292,10 +2308,12 @@ docs_run_promote_doc_pass() {
   local _dp_branch="${1:?docs_run_promote_doc_pass: branch required}"
   local _dp_pr="${2:-}"
 
-  # Capture the promotion diff now (squash-merge commit is HEAD on main).
-  # Used by the cross-doc just-in-case pass below; best-effort.
+  # Capture the promotion diff now.  The squash-merge happened via GitHub API so
+  # the local HEAD may be stale — fetch origin/main first so the diff reflects
+  # the actual squash-merge commit, not whatever was checked out locally.
   local _dp_diff=""
-  _dp_diff="$(git -C "${RITE_PROJECT_ROOT:-.}" diff HEAD~1..HEAD --name-only 2>/dev/null || true)"
+  git -C "${RITE_PROJECT_ROOT:-.}" fetch origin main --quiet 2>/dev/null || true
+  _dp_diff="$(git -C "${RITE_PROJECT_ROOT:-.}" diff origin/main~1..origin/main --name-only 2>/dev/null || true)"
 
   docs_map_ensure || true  # best-effort; engine can proceed with stale/missing map
 

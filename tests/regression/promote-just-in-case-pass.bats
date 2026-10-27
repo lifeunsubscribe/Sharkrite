@@ -178,6 +178,11 @@ RUNEOF
   local _bats="$_bats_dir/test-a.bats"
   printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/utils/foo.sh\n' > "$_bats"
 
+  # Use a file-based counter: provider_run_prompt_with_timeout runs inside a
+  # $() subshell so a shell variable counter would always read 0 in the parent.
+  local _pcount_file="$RITE_TEST_TMPDIR/pcount.txt"
+  printf '0\n' > "$_pcount_file"
+
   local _runner
   _runner=$(_write_promote_runner << RUNEOF
 #!/bin/bash
@@ -190,9 +195,9 @@ source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
 
 docs_map_enforcing_tests() { printf '%s\n' "$_bats"; }
 
-_PROVIDER_CALL_COUNT=0
 provider_run_prompt_with_timeout() {
-  _PROVIDER_CALL_COUNT=$(( _PROVIDER_CALL_COUNT + 1 ))
+  # Increment file-based counter (subshell-safe)
+  local _c; _c=\$(cat "$_pcount_file"); printf '%d\n' \$(( _c + 1 )) > "$_pcount_file"
   # Return JSON indicating docs/feature-a.md is implicated
   printf '[{"doc":"docs/feature-a.md","implicated":true,"kind":"test-scope","assertion":"test coverage changed"}]\n'
   return 0
@@ -201,14 +206,13 @@ _docs_list_branch_entry_docs() { return 0; }
 
 # Diff: lib/utils/foo.sh — matches the covers path
 _docs_cross_doc_just_in_case_pass "my-branch" "42" "lib/utils/foo.sh" 2>&1
-echo "provider_call_count=\${_PROVIDER_CALL_COUNT}"
 RUNEOF
 )
 
   run bash "$_runner"
   [ "$status" -eq 0 ]
   # Provider must have been called exactly once
-  echo "$output" | grep -q "provider_call_count=1"
+  [ "$(cat "$_pcount_file")" = "1" ]
   # drift_log_append must have been called for docs/feature-a.md
   [ -s "$_call_log" ]
   grep -q "doc=docs/feature-a.md" "$_call_log"
@@ -305,10 +309,13 @@ RUNEOF
     'NR > start && /^[a-zA-Z_][a-zA-Z0-9_]*\(\)/ { print NR; exit }' "$_src" || true)
   [ -n "$_fn_end" ] || _fn_end=$(wc -l < "$_src" || true)
 
-  # The function body must NOT call any editing functions
+  # The function body must NOT call any editing functions.
+  # Skip comment lines — the next function's header comment (which sits between
+  # the closing } and the next function definition) mentions _docs_main_entries_pass
+  # in its description; that must not trip this assertion.
   local _edit_calls
   _edit_calls=$(awk -v s="$_fn_start" -v e="$_fn_end" \
-    'NR > s && NR < e && /_docs_main_entries_pass|docs_directed_update|_mp_raw|_docs_apply/' \
+    'NR > s && NR < e && !/^[[:space:]]*#/ && /_docs_main_entries_pass|docs_directed_update|_mp_raw|_docs_apply/' \
     "$_src" || true)
   if [ -n "${_edit_calls:-}" ]; then
     echo "FAIL: edit function called from _docs_cross_doc_just_in_case_pass:"
