@@ -970,7 +970,7 @@ migrate_legacy_drift_log() {
   # Do NOT use git rm here: _docs_apply_approved commits in a separate worktree
   # forked from origin/<target>, so any staged deletion in the main checkout never
   # lands. Notify the operator to commit the removal themselves.
-  cp "$_mld_legacy_path" "$_mld_archive_path" || return 0
+  cat "$_mld_legacy_path" >> "$_mld_archive_path" || return 0
   rm -f "$_mld_legacy_path"
 
   if declare -f print_info >/dev/null 2>&1; then

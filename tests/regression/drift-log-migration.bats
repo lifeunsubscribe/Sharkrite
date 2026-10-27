@@ -32,6 +32,13 @@ _FIXTURE_UNPARSEABLE='<!-- sharkrite-doc-drift pr:1302 issue:1300 recorded:2026-
 # Char accounting (rough):
 #   header ~165, +cont1 ~170 → 336, +backtick ~240 → 576 (added; 336<500)
 #   final line: 576>=500 → NOT added (MUST_NOT_APPEAR_SENTINEL absent)
+_FIXTURE_NEW_ENTRY='<!-- sharkrite-doc-drift pr:1310 issue:1310 recorded:2026-10-18T08:00:00Z -->
+**Changed files**: lib/utils/new-file.sh
+**Implicated docs**:
+- docs/architecture/adr-001.md — "ADR-001 Title"
+**Suspected inaccuracy**: adr-001 omits a required section.
+<!-- /sharkrite-doc-drift -->'
+
 _FIXTURE_MULTI_PARA='<!-- sharkrite-doc-drift pr:1305 issue:1303 recorded:2026-10-17T10:00:00Z -->
 **Changed files**: lib/utils/drift-log.sh
 **Implicated docs**:
@@ -162,7 +169,7 @@ teardown() {
   local count_after_first
   count_after_first="$(drift_log_entry_count --total)"
 
-  # Re-create legacy file to confirm second run doesn't re-process it
+  # Re-create legacy file with the same content — dedup prevents duplicate entries
   mkdir -p "$_TMPDIR/docs"
   printf '%s\n' "$_FIXTURE_PARSEABLE" > "$_TMPDIR/docs/sharkrite-drift-log.md"
 
@@ -172,6 +179,22 @@ teardown() {
   count_after_second="$(drift_log_entry_count --total)"
 
   [ "$count_after_first" -eq "$count_after_second" ]
+}
+
+@test "migrate_legacy_drift_log: new entry in re-created legacy file reaches schema store" {
+  printf '%s\n' "$_FIXTURE_PARSEABLE" > "$_TMPDIR/docs/sharkrite-drift-log.md"
+
+  migrate_legacy_drift_log
+
+  # Re-create legacy file with a new entry covering a doc not seen in the first run
+  mkdir -p "$_TMPDIR/docs"
+  printf '%s\n' "$_FIXTURE_NEW_ENTRY" > "$_TMPDIR/docs/sharkrite-drift-log.md"
+
+  migrate_legacy_drift_log
+
+  local count_new
+  count_new="$(drift_log_entry_count --doc "docs/architecture/adr-001.md" --branch "main")"
+  [ "$count_new" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
