@@ -152,6 +152,13 @@ RITE_MARKER_GATE_SERIAL="sharkrite-gate-serial"
 # (BARE_MARKER_GREP rule). See lib/utils/drift-log.sh for the format library.
 RITE_MARKER_DOC_DRIFT="sharkrite-doc-drift"
 
+# Enforced-by marker — inline in documentation files to declare which bats
+# test file(s) enforce the behaviour described in the surrounding section.
+# Format: <!-- sharkrite-enforced-by: tests/regression/foo.bats, tests/regression/bar.bats -->
+# Used by docs_map_enforcing_tests() in lib/utils/docs-map.sh to implement
+# tier-1 drift detection (Trigger A/B in assess-documentation.sh).
+RITE_MARKER_ENFORCED_BY="sharkrite-enforced-by"
+
 # ---------------------------------------------------------------------------
 # Planning markers
 # ---------------------------------------------------------------------------

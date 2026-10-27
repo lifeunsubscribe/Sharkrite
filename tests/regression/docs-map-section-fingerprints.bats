@@ -57,26 +57,26 @@ _source_docs_map() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Map header is v2 format
+# 1. Map header is v4 format
 # ---------------------------------------------------------------------------
 @test "docs-map fingerprints: header is docs-map v2" {
   _source_docs_map
   docs_map_build
   local header
   header="$(head -1 "$RITE_STATE_DIR/docs-map.tsv")"
-  [[ "$header" == "# docs-map v2 sha="* ]]
+  [[ "$header" == "# docs-map v4 sha="* ]]
 }
 
 # ---------------------------------------------------------------------------
-# 2. Every data row has exactly 6 tab-separated columns
+# 2. Every data row has exactly 10 tab-separated columns (v4 format)
 # ---------------------------------------------------------------------------
 @test "docs-map fingerprints: every data row has 6 columns" {
   _source_docs_map
   docs_map_build
-  # Count rows that do NOT have exactly 6 tab-separated fields
+  # Count rows that do NOT have exactly 10 tab-separated fields (v4: adds dtype, rubric, tags, note)
   local bad_rows
   bad_rows="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" | \
-    awk -F'\t' 'NF != 6' || true)"
+    awk -F'\t' 'NF != 10' || true)"
   [ -z "$bad_rows" ]
 }
 
@@ -285,11 +285,11 @@ _source_docs_map() {
 }
 
 # ---------------------------------------------------------------------------
-# 13. docs_map_ensure upgrades a v1 map to v2
+# 13. docs_map_ensure upgrades a v1 map to v4 (current format)
 # ---------------------------------------------------------------------------
 @test "docs-map ensure: v1 map triggers a rebuild to v2" {
   _source_docs_map
-  # Write a v1-style header (no "v2") to simulate a pre-existing stale map.
+  # Write a v1-style header (no "v4") to simulate a pre-existing stale map.
   local map_file
   map_file="$(docs_map_path)"
   mkdir -p "$(dirname "$map_file")"
@@ -301,5 +301,5 @@ _source_docs_map() {
 
   local header
   header="$(head -1 "$map_file")"
-  [[ "$header" == "# docs-map v2"* ]]
+  [[ "$header" == "# docs-map v4"* ]]
 }

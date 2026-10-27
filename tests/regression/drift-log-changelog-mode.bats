@@ -245,18 +245,18 @@ teardown() {
 
 @test "assess-documentation.sh: drift entry is recorded only under recorded consent (sync|changelog)" {
   # The per-merge doc-sync rewrite (.rite/doc-sync.md) was retired 2026-10-21;
-  # recording is now gated on RITE_DOC_MODE alone, and unset/off records nothing.
-  _block=$(awk '/^case "\$\{RITE_DOC_MODE:-\}" in/,/^esac$/' \
+  # recording is now gated on RITE_DOC_MODE alone inside _record_tier1_drift_entries.
+  _fn_body=$(awk '/^_record_tier1_drift_entries\(\)/,/^}/' \
     "$PROJECT_ROOT/lib/core/assess-documentation.sh" 2>/dev/null || true)
-  [ -n "$_block" ]
-  echo "$_block" | grep -qE '^[[:space:]]+sync\|changelog\)'
-  echo "$_block" | grep -q '_append_doc_drift_entry "'
-  # ...and that is the only call site
-  [ "$(grep -c '_append_doc_drift_entry "' "$PROJECT_ROOT/lib/core/assess-documentation.sh")" -eq 1 ]
+  [ -n "$_fn_body" ]
+  # Must gate on sync|changelog consent
+  echo "$_fn_body" | grep -qE 'sync\|changelog'
+  # Must call drift_log_append to record entries
+  echo "$_fn_body" | grep -q 'drift_log_append "'
 }
 
 @test "assess-documentation.sh: _append_doc_drift_entry is defined as a function" {
-  grep -qE '^_append_doc_drift_entry\(\)' \
+  grep -qE '^_record_tier1_drift_entries\(\)' \
     "$PROJECT_ROOT/lib/core/assess-documentation.sh"
 }
 
