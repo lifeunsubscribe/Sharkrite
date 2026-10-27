@@ -146,6 +146,18 @@ provider_resolve_model() {
 }
 PROVIDER_EOF
 
+  # Stub review-helper.sh — sourced by assess-review-issues.sh since PR #1446.
+  # None of its functions are called on the supervised-mode provider path these
+  # tests exercise; minimal no-op stubs suffice.
+  cat > "$RITE_LIB_DIR/utils/review-helper.sh" <<'REVIEWHELPER_EOF'
+#!/bin/bash
+trigger_local_review()  { return 0; }
+get_review_for_pr()     { return 0; }
+handle_stale_review()   { return 0; }
+extract_review_sha()    { echo ""; }
+resolve_pr_head_sha()   { echo ""; }
+REVIEWHELPER_EOF
+
   # Stub assess-and-resolve.sh — the script functions-only-sources it since
   # #795 to reuse _resolve_done_def (guarded by `declare -f`, loaded with
   # RITE_SOURCE_FUNCTIONS_ONLY=1). Only called on the ACTIONABLE_LATER

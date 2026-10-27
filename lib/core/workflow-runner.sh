@@ -2372,15 +2372,15 @@ check_branch_mismatch() {
 
   local _mismatch_target
   local _mismatch_source
-  # Call in the same shell so RESOLVED_TARGET_BRANCH and RESOLVED_TARGET_SOURCE
-  # are set here (not discarded in a subshell). $(...) capture would lose them.
+  # Resolve target without PR number to avoid tier-1 circular match.
+  # In-shell call sets RESOLVED_TARGET_SOURCE in this shell — $() subshell cannot
+  # propagate it back, but the state-file source must be correct to generate the
+  # right corrected command (state-file mismatches need --branch to clear the file).
   resolve_target_branch "$_cbm_issue" >/dev/null 2>&1 || true
-  _mismatch_target="${RESOLVED_TARGET_BRANCH:-main}"
-  # Capture the source tier that won the resolution (set by resolve_target_branch).
-  # Passed to handle_branch_mismatch so it can name the source in the error message
-  # and generate the right corrected command (state-file mismatches need --branch
-  # to trigger the state-file cleanup in main()'s --base handler).
   _mismatch_source="${RESOLVED_TARGET_SOURCE:-default}"
+  # Capture the echoed branch name via $() form (re-call is idempotent;
+  # RESOLVED_TARGET_SOURCE from the in-shell call above is already captured).
+  _mismatch_target=$(resolve_target_branch "$_cbm_issue" 2>/dev/null || true)
 
   local _pr_base_for_check="${_cbm_base:-}"
   if [ -z "$_pr_base_for_check" ]; then
