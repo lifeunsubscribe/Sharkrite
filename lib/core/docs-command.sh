@@ -1798,7 +1798,7 @@ _adr_approval_history_lookup() {
   while IFS= read -r _aahl_line || [ -n "$_aahl_line" ]; do
     case "$_aahl_line" in
       "<!-- adrhist doc=${_aahl_doc} "*)
-        if printf '%s' "$_aahl_line" | grep -qF "assertion=${_aahl_norm}" 2>/dev/null; then
+        if printf '%s' "$_aahl_line" | grep -qF "assertion=${_aahl_norm} decision=" 2>/dev/null; then
           return 0
         fi
         ;;
@@ -1890,7 +1890,7 @@ docs_reconcile_adr_drift() {
   [ -d "$_ard_adr_base" ] || return 0
 
   local _ard_entry_file
-  while IFS= read -r _ard_entry_file || [ -n "${_ard_entry_file:-}" ]; do
+  while IFS= read -r _ard_entry_file <&3 || [ -n "${_ard_entry_file:-}" ]; do
     [ -f "$_ard_entry_file" ] || continue
 
     # Extract the doc path from the first entry in the file
@@ -1901,7 +1901,7 @@ docs_reconcile_adr_drift() {
 
     # Process each entry line in this file
     local _ard_line _ard_assertion _ard_kind
-    while IFS= read -r _ard_line || [ -n "${_ard_line:-}" ]; do
+    while IFS= read -r _ard_line <&4 || [ -n "${_ard_line:-}" ]; do
       # Only process data lines (start with doc=)
       case "$_ard_line" in doc=*) ;; *) continue ;; esac
 
@@ -1937,8 +1937,12 @@ docs_reconcile_adr_drift() {
 
       case "${_ard_reply:-s}" in
         [Yy])
-          # Propose/approve loop for edits — accepted changes go through docs-PR path
+          # Write a temporary main-branch entry so _docs_main_entries_pass can
+          # run the propose/approve loop for this ADR observation; remove it after.
+          drift_log_append "$_ard_doc" "main" "-" "-" "${_ard_assertion:-}" \
+            "${_ard_kind:-refinement}" "-" || true
           _docs_main_entries_pass "$_ard_doc" "main" "main" || true
+          drift_log_remove_entry "$_ard_doc" "main" "${_ard_assertion:-}" || true
           _adr_approval_history_record "$_ard_doc" "${_ard_assertion:-}" \
             "addressed" "Reconciled via rite align-docs" || true
           adr_drift_log_remove_entry "$_ard_doc" "${_ard_assertion:-}" || true
@@ -1953,8 +1957,8 @@ docs_reconcile_adr_drift() {
           print_info "  Skipped — observation kept for next reconcile"
           ;;
       esac
-    done < "$_ard_entry_file"
-  done < <(find "$_ard_adr_base" -name '*.log' -type f 2>/dev/null | sort || true)
+    done 4< "$_ard_entry_file"
+  done 3< <(find "$_ard_adr_base" -name '*.log' -type f 2>/dev/null | sort || true)
 }
 
 # ---------------------------------------------------------------------------
@@ -2001,6 +2005,7 @@ docs_reconcile_drift() {
 
   if [ -z "$_rd_drift_path" ] || [ ! -f "$_rd_drift_path" ]; then
     print_info "No drift log found — nothing to reconcile"
+    docs_reconcile_adr_drift || true
     return 0
   fi
 
@@ -2009,6 +2014,7 @@ docs_reconcile_drift() {
 
   if [ "$_rd_count" -eq 0 ]; then
     print_info "Drift log is empty — nothing to reconcile"
+    docs_reconcile_adr_drift || true
     return 0
   fi
 

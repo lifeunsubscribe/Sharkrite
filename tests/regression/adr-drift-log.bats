@@ -309,11 +309,15 @@ HELPER_EOF
 }
 
 @test "AC2: docs_reconcile_adr_drift skips entries matching approval history" {
-  # Write an ADR drift entry
+  # Write a suppressed ADR drift entry (matched by history)
   adr_drift_log_append "docs/architecture/adr-001.md" "55" "-" \
     "Scope may be outdated" "contradiction" "lib/core/foo.sh"
 
-  # Write a matching history entry directly to simulate a prior decision
+  # Write a second entry that has NO history record — should appear as Pending
+  adr_drift_log_append "docs/architecture/adr-001.md" "56" "-" \
+    "Boundary not described in current section" "addition" "lib/core/bar.sh"
+
+  # Write a history entry matching only the first assertion
   local hist_file="$RITE_STATE_DIR/adr-approval-history.md"
   cat > "$hist_file" << 'HIST_EOF'
 # ADR Drift Approval History
@@ -348,14 +352,16 @@ docs_reconcile_adr_drift
 HELPER_EOF
   chmod +x "$helper"
 
-  # Non-TTY run: should print "Already decided" and NOT remove the entry
+  # Non-TTY run: suppressed entry prints "Already decided"; pending prints "Pending"
   run bash "$helper"
   [ "$status" -eq 0 ]
+  [[ "$output" == *"Already decided"* ]]
+  [[ "$output" == *"Pending ADR observation"* ]]
 
-  # Entry must still exist (non-TTY doesn't prompt, history suppression just prints)
+  # Suppressed entry must still exist (history suppression does not remove it)
   local cnt
   cnt="$(adr_drift_log_entry_count --doc "docs/architecture/adr-001.md")"
-  [ "$cnt" -eq 1 ]
+  [ "$cnt" -eq 2 ]
 }
 
 # AC3: structural check that accepted edits route through docs-PR path
