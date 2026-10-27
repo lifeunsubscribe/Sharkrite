@@ -1097,20 +1097,36 @@ run_test_gate() {
               case "$_ws_runner" in
                 jest)
                   echo "[test-gate] per-cycle: jest --findRelatedTests for workspace '$_ws_rel'" >> "$_gate_raw_sink"
-                  local _ws_abs_files="" _wfa
+                  local _ws_abs_files_arr=() _wfa
                   while IFS= read -r _wfa; do
                     [ -n "$_wfa" ] || continue
-                    _ws_abs_files="${_ws_abs_files} ${project_root}/${_wfa}"
+                    local _wfa_abs="${project_root}/${_wfa}"
+                    # Skip deleted files — they no longer exist on disk and cause
+                    # jest "file not found" errors. Unquoted string expansion also
+                    # splits paths containing spaces into bogus separate args; the
+                    # array expansion below fixes both issues together.
+                    [ -f "$_wfa_abs" ] || continue
+                    _ws_abs_files_arr+=("$_wfa_abs")
                   done < <(printf '%s\n' "$_ws_rel_files")
-                  _ws_abs_files="${_ws_abs_files## }"
-                  if [ "$_ws_pm" = "pnpm" ]; then
-                    # shellcheck disable=SC2086
-                    { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
-                      | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  if [ ${#_ws_abs_files_arr[@]} -eq 0 ]; then
+                    # All changed files were deleted — jest has nothing to trace from;
+                    # run the workspace full suite so deletions are still verified.
+                    echo "[test-gate] per-cycle: all changed files deleted in '$_ws_rel' — running workspace full suite" >> "$_gate_raw_sink"
+                    if [ "$_ws_pm" = "pnpm" ]; then
+                      { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
+                        | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                    else
+                      { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                        | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                    fi
                   else
-                    # shellcheck disable=SC2086
-                    { (cd "$project_root" && npm test --workspace="$_ws_rel" -- --findRelatedTests $_ws_abs_files --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
-                      | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                    if [ "$_ws_pm" = "pnpm" ]; then
+                      { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test -- --findRelatedTests "${_ws_abs_files_arr[@]+"${_ws_abs_files_arr[@]}"}" --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
+                        | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                    else
+                      { (cd "$project_root" && npm test --workspace="$_ws_rel" -- --findRelatedTests "${_ws_abs_files_arr[@]+"${_ws_abs_files_arr[@]}"}" --passWithNoTests 2>&1); echo $? > "$_ws_exit_f"; } \
+                        | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                    fi
                   fi
                   _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
                   _ws_test_exit=${_ws_test_exit:-1}
@@ -1137,15 +1153,26 @@ run_test_gate() {
                   ;;
                 vitest)
                   echo "[test-gate] per-cycle: vitest related for workspace '$_ws_rel'" >> "$_gate_raw_sink"
-                  local _ws_vf_files="" _wfv
+                  local _ws_vf_files_arr=() _wfv
                   while IFS= read -r _wfv; do
                     [ -n "$_wfv" ] || continue
-                    _ws_vf_files="${_ws_vf_files} ${_wfv#"${_ws_rel}/"}"
+                    # Skip deleted files for the same reasons as the jest path above.
+                    [ -f "${project_root}/${_wfv}" ] || continue
+                    _ws_vf_files_arr+=("${_wfv#"${_ws_rel}/"}")
                   done < <(printf '%s\n' "$_ws_rel_files")
-                  _ws_vf_files="${_ws_vf_files## }"
-                  # shellcheck disable=SC2086
-                  { (cd "$_ws_dir" && npx vitest related $_ws_vf_files --run 2>&1); echo $? > "$_ws_exit_f"; } \
-                    | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  if [ ${#_ws_vf_files_arr[@]} -eq 0 ]; then
+                    echo "[test-gate] per-cycle: all changed files deleted in '$_ws_rel' — running workspace full suite" >> "$_gate_raw_sink"
+                    if [ "$_ws_pm" = "pnpm" ]; then
+                      { (cd "$project_root" && pnpm --filter="./${_ws_rel}" test 2>&1); echo $? > "$_ws_exit_f"; } \
+                        | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                    else
+                      { (cd "$project_root" && npm test --workspace="$_ws_rel" 2>&1); echo $? > "$_ws_exit_f"; } \
+                        | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                    fi
+                  else
+                    { (cd "$_ws_dir" && npx vitest related "${_ws_vf_files_arr[@]+"${_ws_vf_files_arr[@]}"}" --run 2>&1); echo $? > "$_ws_exit_f"; } \
+                      | tee -a "$_ws_raw_f" >> "$_gate_raw_sink" || true
+                  fi
                   _ws_test_exit=$(cat "$_ws_exit_f" 2>/dev/null || echo 1)
                   _ws_test_exit=${_ws_test_exit:-1}
                   # Sanity valve

@@ -2,6 +2,7 @@
 # sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-runners.sh, lib/core/workflow-runner.sh
 # Issue #975: tiered gating — per-cycle scoped workspace runs + merge-decision
 # full suite.  Covers:
+# Issue #1214: deleted files and space paths in --findRelatedTests / vitest related args.
 #   - _detect_workspace_runner: jest/vitest from devDependencies, fallback unknown
 #   - _changed_files_to_workspace_dirs: maps diff paths to workspace dirs
 #   - _node_scope_zero_tests: sanity-valve zero-test detection
@@ -556,4 +557,192 @@ PNPMSTUB
   [ "$status" -eq 0 ]
   run jq -r '.exit_code' "$TEST_REPO/gate.json"
   [ "$output" = "0" ]
+}
+
+# ===========================================================================
+# Issue #1214: deleted files and space paths in --findRelatedTests / vitest
+# related args.
+# ===========================================================================
+
+# npm stub that simulates jest's "file not found" error: exits 1 when any path
+# passed after --findRelatedTests does not exist on disk.  This makes the tests
+# fail before the fix (non-existent deleted path is forwarded) and pass after
+# (deleted file is filtered, or full suite runs instead).
+_write_jest_fail_on_missing_npm_stub() {
+  cat > "$STUB_DIR/npm" <<'NPMSTUB'
+#!/bin/bash
+TEST_REPO="${TEST_REPO:-}"
+WS_ARG=""
+for a in "$@"; do
+  case "$a" in --workspace=*) WS_ARG="$a" ;; esac
+done
+LOG="${INVOCATION_LOG:-/dev/null}"
+echo "npm:$1:${WS_ARG}" >> "$LOG"
+case "$1" in
+  ci|install)
+    mkdir -p "${TEST_REPO}/node_modules/.bin"
+    printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "${TEST_REPO}/node_modules/.bin/jest"
+    chmod +x "${TEST_REPO}/node_modules/.bin/jest"
+    exit 0
+    ;;
+  test)
+    _after_dd=false
+    _after_frt=false
+    for _a in "$@"; do
+      [ "$_a" = "--" ] && _after_dd=true && continue
+      [ "$_after_dd" = "false" ] && continue
+      if [ "$_a" = "--findRelatedTests" ]; then _after_frt=true; continue; fi
+      if [ "$_a" = "--passWithNoTests" ]; then break; fi
+      if [ "$_after_frt" = "true" ] && [ ! -f "$_a" ]; then
+        printf 'jest: Cannot find: %s\n' "$_a" >&2
+        exit 1
+      fi
+    done
+    printf 'TAP version 13\n1..1\nok 1 test\n'
+    exit 0
+    ;;
+esac
+exit 0
+NPMSTUB
+  chmod +x "$STUB_DIR/npm"
+}
+
+# npx stub that simulates vitest's "file not found" error: exits 1 when any
+# path argument to `npx vitest related` does not exist relative to cwd.
+_write_vitest_fail_on_missing_npx_stub() {
+  cat > "$STUB_DIR/npx" <<'NPXSTUB'
+#!/bin/bash
+LOG="${INVOCATION_LOG:-/dev/null}"
+echo "npx:$*" >> "$LOG"
+if [ "$1" = "vitest" ] && [ "$2" = "related" ]; then
+  for _arg in "${@:3}"; do
+    [ "$_arg" = "--run" ] && break
+    if [ ! -f "$_arg" ] && [ ! -f "$(pwd)/$_arg" ]; then
+      printf 'Error: Cannot find source file: %s\n' "$_arg" >&2
+      exit 1
+    fi
+  done
+  printf 'RAN 0 tests in 0ms\n'
+  exit 0
+fi
+exit 0
+NPXSTUB
+  chmod +x "$STUB_DIR/npx"
+}
+
+# Vitest monorepo fixture (packages/api uses vitest).
+_make_vitest_ws_repo() {
+  printf '%s\n' '{"name":"mono","version":"1.0.0","private":true,"workspaces":["packages/*"],"scripts":{"test":"npm run test --workspaces --if-present"}}' \
+    > "$TEST_REPO/package.json"
+  printf '{"lockfileVersion":3}\n' > "$TEST_REPO/package-lock.json"
+  mkdir -p "$TEST_REPO/packages/api"
+  printf '%s\n' '{"name":"api","version":"1.0.0","devDependencies":{"vitest":"^2.0.0"},"scripts":{"test":"npx vitest run"}}' \
+    > "$TEST_REPO/packages/api/package.json"
+}
+
+@test "(#1214) jest: deleted file excluded from --findRelatedTests — gate passes" {
+  # Gate must pass even when the only changed file in the workspace was deleted.
+  # Before the fix, the deleted path was forwarded to jest which errors on it.
+  _make_two_ws_repo
+  (cd "$TEST_REPO" \
+     && git init -q && git config user.email t@t && git config user.name t \
+     && mkdir -p packages/api/src \
+     && printf 'export const old = 1;\n' > packages/api/src/old.ts \
+     && git add -A && git commit -qm base \
+     && git update-ref refs/remotes/origin/main HEAD \
+     && git rm -qf packages/api/src/old.ts \
+     && git commit -qm "delete file") >/dev/null 2>&1
+  mkdir -p "$TEST_REPO/node_modules/.bin"
+  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
+  chmod +x "$TEST_REPO/node_modules/.bin/jest"
+  _write_jest_fail_on_missing_npm_stub
+  : > "$TEST_REPO/invocations.log"
+
+  _run_gate_with_env ""
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+}
+
+@test "(#1214) jest: path with space correctly quoted — gate passes" {
+  # A changed file whose path contains a space must arrive at jest as one
+  # argument.  Before the fix the unquoted expansion split it into two bogus
+  # args, the first of which did not exist on disk.
+  _make_two_ws_repo
+  _init_git_with_ws_change "packages/api" "packages/api/src/has space.ts"
+  mkdir -p "$TEST_REPO/node_modules/.bin"
+  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
+  chmod +x "$TEST_REPO/node_modules/.bin/jest"
+  _write_jest_fail_on_missing_npm_stub
+  : > "$TEST_REPO/invocations.log"
+
+  _run_gate_with_env ""
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+}
+
+@test "(#1214) jest: partial deletion — existing file passed, deleted file filtered" {
+  # When a diff contains both a deleted and a modified file in the same
+  # workspace, only the existing file should reach --findRelatedTests.
+  _make_two_ws_repo
+  (cd "$TEST_REPO" \
+     && git init -q && git config user.email t@t && git config user.name t \
+     && mkdir -p packages/api/src \
+     && printf 'export const old = 1;\n' > packages/api/src/old.ts \
+     && printf 'export const kept = 1;\n' > packages/api/src/kept.ts \
+     && git add -A && git commit -qm base \
+     && git update-ref refs/remotes/origin/main HEAD \
+     && git rm -qf packages/api/src/old.ts \
+     && printf 'export const kept = 2;\n' > packages/api/src/kept.ts \
+     && git add -A && git commit -qm "delete old, update kept") >/dev/null 2>&1
+  mkdir -p "$TEST_REPO/node_modules/.bin"
+  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
+  chmod +x "$TEST_REPO/node_modules/.bin/jest"
+  _write_jest_fail_on_missing_npm_stub
+  : > "$TEST_REPO/invocations.log"
+
+  _run_gate_with_env ""
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  # Gate must pass: old.ts was filtered, kept.ts (exists) was forwarded.
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+}
+
+@test "(#1214) vitest: deleted file triggers workspace full suite fallback" {
+  # When all changed files in a vitest workspace were deleted the gate must
+  # fall back to the workspace full suite rather than passing the non-existent
+  # path to vitest related (which would error).
+  _make_vitest_ws_repo
+  (cd "$TEST_REPO" \
+     && git init -q && git config user.email t@t && git config user.name t \
+     && mkdir -p packages/api/src \
+     && printf 'export const old = 1;\n' > packages/api/src/old.ts \
+     && git add -A && git commit -qm base \
+     && git update-ref refs/remotes/origin/main HEAD \
+     && git rm -qf packages/api/src/old.ts \
+     && git commit -qm "delete file") >/dev/null 2>&1
+  _write_vitest_fail_on_missing_npx_stub
+  _write_tracking_npm_stub
+  : > "$TEST_REPO/invocations.log"
+
+  _run_gate_with_env ""
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
+
+  # Gate must pass: deleted file was filtered → full suite ran instead.
+  [ "$status" -eq 0 ]
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+  # Full suite (npm test --workspace=packages/api) must have been logged.
+  grep -q "npm:test:--workspace=packages/api" "$TEST_REPO/invocations.log" || {
+    echo "FAIL: workspace full suite was not invoked; log:"
+    cat "$TEST_REPO/invocations.log" || true
+    false
+  }
 }
