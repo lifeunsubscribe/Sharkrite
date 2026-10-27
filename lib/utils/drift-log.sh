@@ -865,8 +865,15 @@ migrate_legacy_drift_log() {
   local _mld_archive_dir="${RITE_STATE_DIR}/drift"
   local _mld_archive_path="${_mld_archive_dir}/legacy-archive.md"
 
-  # Idempotence guard: migration already ran on a prior align-docs run
-  [ -f "$_mld_archive_path" ] && return 0
+  # Idempotence guard: migration already ran on a prior align-docs run.
+  # If the legacy file was git-restored, stage its deletion again before returning.
+  if [ -f "$_mld_archive_path" ]; then
+    if [ -f "$_mld_legacy_path" ]; then
+      git -C "${RITE_PROJECT_ROOT:-.}" rm -f -- "$_mld_legacy_path" >/dev/null 2>&1 \
+        || rm -f "$_mld_legacy_path"
+    fi
+    return 0
+  fi
 
   mkdir -p "$_mld_archive_dir" || return 0
 
@@ -936,7 +943,7 @@ migrate_legacy_drift_log() {
     }
   ' "$_mld_legacy_path" || true)"
 
-  local _mld_archive_path_rel=".rite/state/drift/legacy-archive.md"
+  local _mld_archive_path_rel="${_mld_archive_path#${RITE_PROJECT_ROOT:-}/}"
   local _mld_count=0
 
   while IFS=$'\001' read -r _mld_pr _mld_issue _mld_ts _mld_changed _mld_doc _mld_inaccuracy \
@@ -959,9 +966,12 @@ migrate_legacy_drift_log() {
     fi
   done <<< "$_mld_entries"
 
-  # Archive and remove legacy file so this migration never re-runs
+  # Archive and remove legacy file so this migration never re-runs.
+  # git rm stages the deletion so the commit picks it up; fallback rm -f
+  # handles untracked files (e.g. in tests or non-git contexts).
   cp "$_mld_legacy_path" "$_mld_archive_path" || return 0
-  rm -f "$_mld_legacy_path"
+  git -C "${RITE_PROJECT_ROOT:-.}" rm -f -- "$_mld_legacy_path" >/dev/null 2>&1 \
+    || rm -f "$_mld_legacy_path"
 
   if declare -f print_info >/dev/null 2>&1; then
     if [ "$_mld_count" -gt 0 ]; then

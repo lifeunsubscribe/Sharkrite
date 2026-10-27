@@ -27,6 +27,24 @@ _FIXTURE_UNPARSEABLE='<!-- sharkrite-doc-drift pr:1302 issue:1300 recorded:2026-
 **Suspected inaccuracy**: not assessed — provider unavailable
 <!-- /sharkrite-doc-drift -->'
 
+# Multi-paragraph block: blank-line separator, backtick-led continuation, >500 chars
+# total so the 500-char cap code path is exercised.
+# Char accounting (rough):
+#   header ~165, +cont1 ~170 → 336, +backtick ~240 → 576 (added; 336<500)
+#   final line: 576>=500 → NOT added (MUST_NOT_APPEAR_SENTINEL absent)
+_FIXTURE_MULTI_PARA='<!-- sharkrite-doc-drift pr:1305 issue:1303 recorded:2026-10-17T10:00:00Z -->
+**Changed files**: lib/utils/drift-log.sh
+**Implicated docs**:
+- docs/architecture/behavioral-design.md — "Behavioral Design"
+**Suspected inaccuracy**: HEADER_MARKER the drift detection subsystem documentation does not document the hard 500-char cap on assertion text applied during legacy migration and normal appends.
+
+CONTINUATION_MARKER this blank-separated paragraph verifies that multi-paragraph block content is joined into the assertion field with a space separator during migration.
+
+`drift_log_append` BACKTICK_MARKER backtick-led continuation lines are treated identically to prose lines, and their content is appended with a single space separator before the cumulative length is checked against the 500-char hard cap.
+
+MUST_NOT_APPEAR_SENTINEL beyond this point the cap threshold was reached and the parser must exclude this line entirely.
+<!-- /sharkrite-doc-drift -->'
+
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   LIB_DIR="$PROJECT_ROOT/lib"
@@ -169,4 +187,39 @@ teardown() {
   local total
   total="$(drift_log_entry_count --total)"
   [ "$total" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# 5. Multi-paragraph inaccuracy → header and continuation text in assertion
+# ---------------------------------------------------------------------------
+
+@test "migrate_legacy_drift_log: multi-paragraph inaccuracy — header text present in assertion field" {
+  printf '%s\n' "$_FIXTURE_MULTI_PARA" > "$_TMPDIR/docs/sharkrite-drift-log.md"
+
+  migrate_legacy_drift_log
+
+  local entry_file
+  entry_file="$(_drift_entry_path "docs/architecture/behavioral-design.md" "main")"
+  grep -q 'assertion=.*HEADER_MARKER' "$entry_file"
+}
+
+@test "migrate_legacy_drift_log: multi-paragraph inaccuracy — backtick-led continuation line present in assertion field" {
+  printf '%s\n' "$_FIXTURE_MULTI_PARA" > "$_TMPDIR/docs/sharkrite-drift-log.md"
+
+  migrate_legacy_drift_log
+
+  local entry_file
+  entry_file="$(_drift_entry_path "docs/architecture/behavioral-design.md" "main")"
+  grep -q 'assertion=.*BACKTICK_MARKER' "$entry_file"
+}
+
+@test "migrate_legacy_drift_log: multi-paragraph inaccuracy — 500-char cap drops text past threshold" {
+  printf '%s\n' "$_FIXTURE_MULTI_PARA" > "$_TMPDIR/docs/sharkrite-drift-log.md"
+
+  migrate_legacy_drift_log
+
+  local entry_file
+  entry_file="$(_drift_entry_path "docs/architecture/behavioral-design.md" "main")"
+  run grep -q 'MUST_NOT_APPEAR_SENTINEL' "$entry_file"
+  [ "$status" -ne 0 ]
 }
