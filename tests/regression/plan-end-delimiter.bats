@@ -205,7 +205,7 @@ setup() {
 # E — structural: _request_missing_blocks accepts token arg and uses it
 # ---------------------------------------------------------------------------
 
-@test "E: _request_missing_blocks accepts _end_token param and normalises via frame rebuild" {
+@test "E: _request_missing_blocks accepts _end_token param and routes completion output through _plan_streaming_awk" {
   local plan_issues_sh="${BATS_TEST_DIRNAME}/../../lib/core/plan-issues.sh"
 
   local fn_body
@@ -227,19 +227,15 @@ setup() {
     false
   }
 
-  # Completion awk must receive the token via -v end_tok=
-  echo "$fn_body" | grep -q '\-v end_tok=.*_end_token' || {
-    echo "FAIL: _request_missing_blocks completion awk does not receive _end_token via -v end_tok=" >&2
+  # Must route completion output through _plan_streaming_awk (not an inline awk
+  # with a near-duplicate frame-rebuild block — the escape logic lives once in
+  # _plan_streaming_awk; fixes there apply to both generation and completion paths).
+  echo "$fn_body" | grep -q '_plan_streaming_awk.*_end_token' || {
+    echo "FAIL: _request_missing_blocks does not route completion output through _plan_streaming_awk with _end_token" >&2
     false
   }
 
-  # Completion awk must rebuild the frame deterministically (same contract
-  # as the streaming awk; gsub(end_tok, ...) is banned, #1485).
-  echo "$fn_body" | grep -q 'body = substr(buf, head_len + 1' || {
-    echo "FAIL: _request_missing_blocks completion awk does not carve the body via substr" >&2
-    false
-  }
-
+  # The banned all-occurrences gsub(end_tok, ...) must not appear (#1485).
   if echo "$fn_body" | grep -q 'gsub(end_tok'; then
     echo "FAIL: banned all-occurrences gsub(end_tok, ...) is present (#1485)" >&2
     false
