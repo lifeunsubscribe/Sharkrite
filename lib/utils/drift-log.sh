@@ -841,7 +841,11 @@ adr_drift_log_remove_entry() {
 # Convert docs/sharkrite-drift-log.md legacy markdown entries into per-doc/
 # per-branch schema entries in the structured store (RITE_STATE_DIR/doc-drift/).
 #
-# Idempotent: no-op when RITE_STATE_DIR/drift/legacy-archive.md exists.
+# Idempotent: no-op when legacy-archive.md already exists AND the legacy file
+# is gone.  If the legacy file was re-created (changelog mode re-appends to it
+# via _drift_log_append_legacy), falls through and migrates the new entries —
+# drift_log_append is accumulate-in-place by (doc,assertion), so re-processing
+# already-migrated entries is safe.
 # Silent no-op when the legacy file does not exist or RITE_STATE_DIR is unset.
 #
 # Parsing (best-effort):
@@ -851,8 +855,9 @@ adr_drift_log_remove_entry() {
 #     doc=.rite/state/drift/legacy-archive.md, kind=reference-missing,
 #     assertion naming the block's recorded timestamp.
 #
-# After conversion: copies legacy file to RITE_STATE_DIR/drift/legacy-archive.md
-# and removes docs/sharkrite-drift-log.md so migration never re-runs.
+# After conversion: appends legacy file to RITE_STATE_DIR/drift/legacy-archive.md
+# (accumulating across multiple migration passes) and removes
+# docs/sharkrite-drift-log.md from disk.
 # ---------------------------------------------------------------------------
 migrate_legacy_drift_log() {
   [ -z "${RITE_STATE_DIR:-}" ] && return 0

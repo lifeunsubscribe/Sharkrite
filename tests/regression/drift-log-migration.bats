@@ -195,6 +195,11 @@ teardown() {
   local count_new
   count_new="$(drift_log_entry_count --doc "docs/architecture/adr-001.md" --branch "main")"
   [ "$count_new" -eq 1 ]
+
+  # Archive must accumulate: gen-1 content (pr:1299) still present after gen-2 append
+  grep -q 'pr:1299' "$RITE_STATE_DIR/drift/legacy-archive.md"
+  # Gen-2 content (pr:1310) also present in the archive
+  grep -q 'pr:1310' "$RITE_STATE_DIR/drift/legacy-archive.md"
 }
 
 # ---------------------------------------------------------------------------
