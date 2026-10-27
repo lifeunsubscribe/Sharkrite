@@ -134,7 +134,7 @@ run_align_docs_switch() {
     return 1
   fi
 
-  # Already enabled: report and exit without re-prompting
+  # Already enabled: run the align-docs passes (restructure assessment first).
   case "${RITE_DOC_MODE:-}" in
     sync|changelog)
       if declare -f print_info >/dev/null 2>&1; then
@@ -142,8 +142,15 @@ run_align_docs_switch() {
       else
         echo "  Doc drift tracking is on (mode: ${RITE_DOC_MODE}). Run 'rite align-docs --disable' to turn it off." >&2
       fi
-      if declare -f print_info >/dev/null 2>&1; then
-        print_info "Audit not yet implemented."
+      # Restructure assessment first — invoked when docs-command.sh is loaded
+      # (sourced by bin/rite before run_align_docs_switch for the no-args path).
+      # Guard: non-TTY runs must not trigger the interactive approval loop.
+      if declare -f docs_run_restructure_assessment >/dev/null 2>&1; then
+        if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+          docs_run_restructure_assessment
+        else
+          print_info "Restructure assessment skipped (not an interactive terminal — run 'rite align-docs' interactively)."
+        fi
       fi
       return 0
       ;;

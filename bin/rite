@@ -1539,8 +1539,11 @@ if [ "$MODE" = "align-docs" ]; then
     docs_resolve_doc_scope "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
     exit $?
   fi
-  # --disable flag or no args: existing consent/status flow.
-  source "$RITE_LIB_DIR/utils/doc-consent.sh"
+  # --disable flag or no args: source docs-command.sh so the restructure
+  # assessment hook (docs_run_restructure_assessment) is available when
+  # run_align_docs_switch fires for an already-enabled repo.
+  # docs-command.sh sources doc-consent.sh internally.
+  source "$RITE_LIB_DIR/core/docs-command.sh"
   run_align_docs_switch "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
   exit $?
 fi

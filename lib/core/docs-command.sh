@@ -2517,6 +2517,7 @@ DOCS_EOF
 # Unknown name: prints an error and closest candidates to stderr; exits 1.
 #               Never auto-adopts a candidate — block with instructions.
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2120
 docs_resolve_doc_scope() {
   docs_map_ensure || true
   local _rs_map_file
@@ -2614,6 +2615,488 @@ _RS_CAND_EOF
   done
 
   printf '%s' "$_rs_resolved"
+}
+
+# ---------------------------------------------------------------------------
+# _docs_restructure_history_path
+#
+# Returns the path to the restructure approval history file.
+# Default: ${RITE_STATE_DIR:-${RITE_PROJECT_ROOT}/.rite/state}/doc-approval-history.md
+# ---------------------------------------------------------------------------
+_docs_restructure_history_path() {
+  local _rhp_state_dir="${RITE_STATE_DIR:-${RITE_PROJECT_ROOT:-${PWD}}/.rite/state}"
+  printf '%s/doc-approval-history.md' "$_rhp_state_dir"
+}
+
+# ---------------------------------------------------------------------------
+# _docs_restructure_history_lookup DOC
+#
+# Echo "decision<TAB>size_bytes" for the most recent history entry for DOC.
+# Echoes empty string when no entry exists for the doc.
+#
+# Machine-readable marker format searched:
+#   <!-- reshist doc=<doc> decision=<val> size_bytes=<N> date=<YYYY-MM-DD> -->
+# ---------------------------------------------------------------------------
+_docs_restructure_history_lookup() {
+  local _rhl_doc="${1:-}"
+  [ -n "$_rhl_doc" ] || return 0
+
+  local _rhl_hist_path
+  _rhl_hist_path="$(_docs_restructure_history_path)"
+  [ -f "$_rhl_hist_path" ] || return 0
+
+  # Parse machine-readable marker lines; keep the last match (most recent entry).
+  local _rhl_decision="" _rhl_size="" _rhl_line
+  while IFS= read -r _rhl_line || [ -n "$_rhl_line" ]; do
+    case "$_rhl_line" in
+      "<!-- reshist doc=${_rhl_doc} "*)
+        local _rhl_d _rhl_s
+        _rhl_d="$(printf '%s' "$_rhl_line" \
+          | grep -oE 'decision=[^ >]+' | cut -d= -f2 || true)"
+        _rhl_s="$(printf '%s' "$_rhl_line" \
+          | grep -oE 'size_bytes=[0-9]+' | cut -d= -f2 || true)"
+        [ -n "$_rhl_d" ] && _rhl_decision="$_rhl_d"
+        [ -n "$_rhl_s" ] && _rhl_size="$_rhl_s"
+        ;;
+    esac
+  done < "$_rhl_hist_path"
+
+  [ -n "$_rhl_decision" ] || return 0
+  printf '%s\t%s' "$_rhl_decision" "${_rhl_size:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# _docs_restructure_should_propose DOC CURRENT_SIZE_BYTES
+#
+# Returns 0 when a restructure proposal should be raised, 1 when suppressed.
+#
+# Suppression rule: a prior decision exists AND the doc has NOT grown by at
+# least RITE_DOC_RESTRUCTURE_REGROWTH_PCT (default 25) percent since the
+# size recorded at that decision.  When the doc grows past the threshold the
+# proposal is re-raised.
+# ---------------------------------------------------------------------------
+_docs_restructure_should_propose() {
+  local _rsp_doc="${1:-}"
+  local _rsp_current="${2:-0}"
+  [ -n "$_rsp_doc" ] || return 0
+
+  local _rsp_threshold="${RITE_DOC_RESTRUCTURE_REGROWTH_PCT:-25}"
+  case "$_rsp_threshold" in
+    *[!0-9]*|"") _rsp_threshold=25 ;;
+  esac
+
+  local _rsp_lookup
+  _rsp_lookup="$(_docs_restructure_history_lookup "$_rsp_doc" || true)"
+  [ -n "$_rsp_lookup" ] || return 0  # No history entry → always propose
+
+  local _rsp_recorded
+  _rsp_recorded="$(printf '%s' "$_rsp_lookup" | cut -f2 || true)"
+
+  case "${_rsp_recorded:-}" in ''|*[!0-9]*) _rsp_recorded=0 ;; esac
+
+  # Can't compute growth when recorded_size is 0 — re-raise
+  [ "$_rsp_recorded" -gt 0 ] || return 0
+
+  # Validate current size
+  case "${_rsp_current:-}" in ''|*[!0-9]*) _rsp_current=0 ;; esac
+
+  # Growth percentage: integer arithmetic, truncates toward zero
+  local _rsp_growth
+  _rsp_growth=$(( (_rsp_current - _rsp_recorded) * 100 / _rsp_recorded ))
+
+  # Re-raise only when growth is strictly at or above the threshold
+  if [ "$_rsp_growth" -ge "$_rsp_threshold" ]; then
+    return 0
+  fi
+  return 1  # Below threshold — suppress
+}
+
+# ---------------------------------------------------------------------------
+# _docs_restructure_record_decision DOC QUESTION DECISION RATIONALE SIZE_BYTES
+#
+# Append a restructure decision record to the approval history file.
+# Creates the file with a header block when it does not yet exist.
+#
+# DECISION must be one of: accepted, rejected, no-restructure-needed
+# ---------------------------------------------------------------------------
+_docs_restructure_record_decision() {
+  local _rrd_doc="${1:-}"
+  local _rrd_question="${2:-Should this doc be restructured?}"
+  local _rrd_decision="${3:-rejected}"
+  local _rrd_rationale="${4:-}"
+  local _rrd_size="${5:-0}"
+
+  [ -n "$_rrd_doc" ] || return 1
+
+  local _rrd_hist_path
+  _rrd_hist_path="$(_docs_restructure_history_path)"
+  local _rrd_dir
+  _rrd_dir="$(dirname "$_rrd_hist_path")"
+  mkdir -p "$_rrd_dir" 2>/dev/null || true
+
+  if [ ! -f "$_rrd_hist_path" ]; then
+    cat > "$_rrd_hist_path" << 'HIST_HEADER_EOF'
+# Doc Restructure Approval History
+
+<!-- Human-editable. Each entry records one restructure decision per doc. -->
+<!-- The machine-readable marker (<!-- reshist ... -->) drives the stability suppression rule. -->
+
+HIST_HEADER_EOF
+  fi
+
+  local _rrd_date
+  _rrd_date="$(date -u +%Y-%m-%d 2>/dev/null || echo 'unknown')"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: doc, question, decision, rationale, size, date vars must expand
+  cat >> "$_rrd_hist_path" <<RECORD_EOF
+<!-- reshist doc=${_rrd_doc} decision=${_rrd_decision} size_bytes=${_rrd_size} date=${_rrd_date} -->
+## ${_rrd_doc}
+
+**Question**: ${_rrd_question}
+**Decision**: ${_rrd_decision}
+**Date**: ${_rrd_date}
+**Rationale**: ${_rrd_rationale:-none recorded}
+**Size at decision**: ${_rrd_size} bytes
+
+RECORD_EOF
+}
+
+# ---------------------------------------------------------------------------
+# docs_run_restructure_assessment [DOC ...]
+#
+# Restructure assessment pass for rite align-docs.  Runs FIRST in the
+# align-docs sequence, before any assertion audit.
+#
+# For each in-scope doc:
+#   1. Check stability rule: suppress when the doc has not grown by at least
+#      RITE_DOC_RESTRUCTURE_REGROWTH_PCT (default 25%) since the last decision.
+#   2. Call provider_resolve_model doc_update to generate restructure proposals.
+#   3. Surface proposals through the per-proposal approval loop (y/n).
+#   4. Record every decision (accepted/rejected/no-restructure-needed) in
+#      ${RITE_STATE_DIR}/doc-approval-history.md.
+#   5. Approved proposals are applied through _docs_apply_approved — never
+#      written directly to docs files.
+#
+# No args: assess every doc in the docs map.
+# ---------------------------------------------------------------------------
+docs_run_restructure_assessment() {
+  local _rra_docs_raw=""
+  local _rra_arg
+  for _rra_arg in "$@"; do
+    _rra_docs_raw="${_rra_docs_raw}${_rra_arg}"$'\n'
+  done
+
+  if [ -z "$_rra_docs_raw" ]; then
+    _rra_docs_raw="$(docs_resolve_doc_scope 2>/dev/null || true)"
+    if [ -z "$_rra_docs_raw" ]; then
+      print_info "Restructure assessment: no docs in scope"
+      return 0
+    fi
+  fi
+
+  # Non-TTY: skip to avoid recording false rejections for proposals no human saw.
+  # Tests may bypass with _RITE_FORCE_TTY=1 (same pattern as _docs_promote_pass).
+  if [ "${_RITE_FORCE_TTY:-0}" != "1" ] && [ ! -t 0 ]; then
+    print_info "Restructure assessment: not an interactive terminal — skipped (run 'rite align-docs' interactively)"
+    return 0
+  fi
+
+  local _rra_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+  local _rra_target="${RITE_TARGET_BRANCH:-main}"
+  local _rra_threshold="${RITE_DOC_RESTRUCTURE_REGROWTH_PCT:-25}"
+  case "$_rra_threshold" in *[!0-9]*|"") _rra_threshold=25 ;; esac
+
+  git -C "$RITE_PROJECT_ROOT" fetch origin "$_rra_target" 2>/dev/null || true
+
+  local _rra_doc
+  while IFS= read -r _rra_doc <&3 || [ -n "$_rra_doc" ]; do
+    [ -n "$_rra_doc" ] || continue
+
+    local _rra_abs="${RITE_PROJECT_ROOT}/${_rra_doc}"
+    local _rra_size=0
+    if [ -f "$_rra_abs" ]; then
+      _rra_size="$(wc -c < "$_rra_abs" 2>/dev/null || echo 0)"
+      _rra_size="$(printf '%s' "$_rra_size" | tr -d ' ')"
+    fi
+
+    # Stability check: suppress when below regrowth threshold
+    if ! _docs_restructure_should_propose "$_rra_doc" "$_rra_size"; then
+      print_info "Restructure assessment: ${_rra_doc} below regrowth threshold (${_rra_threshold}%) — skipped"
+      continue
+    fi
+
+    # Gather docs-map section list for this doc
+    local _rra_map_file
+    _rra_map_file="$(docs_map_path)"
+    local _rra_section_list=""
+    if [ -f "$_rra_map_file" ]; then
+      local _rra_ml
+      while IFS= read -r _rra_ml || [ -n "$_rra_ml" ]; do
+        case "$_rra_ml" in '#'*) continue ;; esac
+        local _rra_ml_path _rra_ml_heading
+        _rra_ml_path="$(printf '%s' "$_rra_ml" | cut -f1 || true)"
+        [ "$_rra_ml_path" = "$_rra_doc" ] || continue
+        _rra_ml_heading="$(printf '%s' "$_rra_ml" | cut -f5 || true)"
+        [ -n "$_rra_ml_heading" ] && \
+          _rra_section_list="${_rra_section_list}  - ${_rra_ml_heading}"$'\n'
+      done < "$_rra_map_file"
+    fi
+
+    local _rra_doc_ctx=""
+    [ -f "$_rra_abs" ] && _rra_doc_ctx="$(head -c 4000 "$_rra_abs" 2>/dev/null || true)"
+
+    local _rra_end_token="${_RITE_RESTRUCT_END_TOKEN:-"---RESTRUCT-END-${RANDOM}${RANDOM}---"}"
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_ENFORCED_BY is a marker constant defined in markers.sh; _RITE_ prefix cannot be used; ledger frozen
+    local _rra_enforced_by_marker="$RITE_MARKER_ENFORCED_BY"
+
+    local _rra_prompt_file
+    _rra_prompt_file="$(mktemp)"
+    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: doc, size, sections, context, and end-token vars must expand
+    cat > "$_rra_prompt_file" <<RESTRUCTURE_PROMPT_EOF
+You are a documentation architect reviewing a single documentation file.
+
+Doc: ${_rra_doc}
+Current size: ${_rra_size} bytes
+
+Sections (from docs-map):
+${_rra_section_list:-  (no sections mapped yet)}
+
+Content excerpt (first 4KB):
+${_rra_doc_ctx}
+
+Assess whether this doc should be split, merged, or consolidated:
+- An oversized doc can split into an ADR plus feature docs.
+- Overlapping sections with other docs can be merged or de-duplicated.
+- ${_rra_enforced_by_marker} markers and cross-links must be re-pointed after restructuring.
+- Quality-of-vision judgements (philosophy, budget vs scale) are NOT in scope.
+
+If restructuring is warranted, output EXACTLY this format:
+
+---RESTRUCTURE-QUESTION---
+<one sentence: the specific restructure question for the approval history>
+---END-QUESTION---
+
+For each file change needed (EDIT an existing file or CREATE a new file):
+---PROPOSAL---
+ACTION: EDIT|CREATE
+FILE: <project-relative path>
+DRIFT_REFS: none
+DESCRIPTION: <one-line summary>
+---CONTENT---
+<complete new content of the file>
+${_rra_end_token}
+
+If no restructuring is needed, output ONLY: NO_RESTRUCTURE_NEEDED
+RESTRUCTURE_PROMPT_EOF
+
+    print_info "Running restructure assessment for ${_rra_doc}..."
+
+    local _rra_raw="" _rra_llm_rc=0
+    _rra_raw="$(provider_run_prompt_with_timeout \
+      "$(cat "$_rra_prompt_file")" \
+      "$(provider_resolve_model doc_update)" \
+      true \
+      "$_rra_timeout" 2>/dev/null)" || _rra_llm_rc=$?
+    rm -f "$_rra_prompt_file"
+
+    if [ "$_rra_llm_rc" -eq 124 ]; then
+      print_warning "Restructure assessment timed out after ${_rra_timeout}s for ${_rra_doc}" >&2
+      continue
+    elif [ "$_rra_llm_rc" -ne 0 ]; then
+      print_warning "Restructure assessment provider call failed (exit ${_rra_llm_rc}) for ${_rra_doc}" >&2
+      continue
+    fi
+
+    if [ -z "$_rra_raw" ]; then
+      print_info "No restructure proposals returned for ${_rra_doc}"
+      continue
+    fi
+
+    if printf '%s\n' "$_rra_raw" | grep -q "^NO_RESTRUCTURE_NEEDED"; then
+      print_info "Restructure assessment: no restructuring needed for ${_rra_doc}"
+      _docs_restructure_record_decision \
+        "$_rra_doc" \
+        "Should ${_rra_doc} be restructured?" \
+        "no-restructure-needed" \
+        "LLM assessment: no restructuring warranted" \
+        "$_rra_size" || true
+      continue
+    fi
+
+    # Extract the restructure question from the response
+    local _rra_question="Should ${_rra_doc} be restructured?"
+    local _rra_in_q=0 _rra_q_line
+    while IFS= read -r _rra_q_line || [ -n "$_rra_q_line" ]; do
+      case "$_rra_q_line" in
+        "---RESTRUCTURE-QUESTION---") _rra_in_q=1 ;;
+        "---END-QUESTION---") _rra_in_q=0 ;;
+        *) [ "$_rra_in_q" = "1" ] && [ -n "$_rra_q_line" ] && _rra_question="$_rra_q_line" ;;
+      esac
+    done <<QUESTION_PARSE_EOF
+$_rra_raw
+QUESTION_PARSE_EOF
+
+    # Parse proposals (same structure as _docs_update_engine)
+    local _rra_props_dir
+    _rra_props_dir="$(mktemp -d)"
+    local _rra_prop_count=0
+    local _rra_in_prop=0 _rra_in_content=0
+    local _rra_cur_action="" _rra_cur_file="" _rra_cur_drift="" _rra_cur_desc="" _rra_cur_content=""
+
+    local _rra_raw_file
+    _rra_raw_file="$(mktemp)"
+    printf '%s\n' "$_rra_raw" > "$_rra_raw_file"
+
+    local _rra_rl
+    while IFS= read -r _rra_rl || [ -n "$_rra_rl" ]; do
+      case "$_rra_rl" in
+        "---RESTRUCTURE-QUESTION---"|"---END-QUESTION---")
+          [ "$_rra_in_content" = "1" ] && \
+            _rra_cur_content="${_rra_cur_content}${_rra_rl}"$'\n'
+          ;;
+        "---PROPOSAL---")
+          if [ "$_rra_in_content" = "1" ]; then
+            _rra_cur_content="${_rra_cur_content}${_rra_rl}"$'\n'
+          else
+            _rra_in_prop=1; _rra_in_content=0
+            _rra_cur_action=""; _rra_cur_file=""; _rra_cur_drift=""
+            _rra_cur_desc=""; _rra_cur_content=""
+          fi
+          ;;
+        "---CONTENT---")
+          if [ "$_rra_in_content" = "1" ]; then
+            _rra_cur_content="${_rra_cur_content}${_rra_rl}"$'\n'
+          else
+            [ "$_rra_in_prop" = "1" ] && _rra_in_content=1
+          fi
+          ;;
+        "${_rra_end_token}")
+          if [ "$_rra_in_prop" = "1" ] && [ -n "$_rra_cur_file" ]; then
+            _rra_prop_count=$((_rra_prop_count + 1))
+            {
+              printf 'ACTION: %s\n' "$_rra_cur_action"
+              printf 'FILE: %s\n' "$_rra_cur_file"
+              printf 'DRIFT_REFS: %s\n' "${_rra_cur_drift:-none}"
+              printf 'DESCRIPTION: %s\n' "$_rra_cur_desc"
+              printf -- '---CONTENT---\n'
+              printf '%s' "$_rra_cur_content"
+            } > "${_rra_props_dir}/proposal_${_rra_prop_count}.txt"
+          fi
+          _rra_in_prop=0; _rra_in_content=0
+          ;;
+        *)
+          if [ "$_rra_in_prop" = "1" ]; then
+            if [ "$_rra_in_content" = "1" ]; then
+              _rra_cur_content="${_rra_cur_content}${_rra_rl}"$'\n'
+            else
+              case "$_rra_rl" in
+                "ACTION: "*)      _rra_cur_action="${_rra_rl#ACTION: }" ;;
+                "FILE: "*)        _rra_cur_file="${_rra_rl#FILE: }" ;;
+                "DRIFT_REFS: "*)  _rra_cur_drift="${_rra_rl#DRIFT_REFS: }" ;;
+                "DESCRIPTION: "*) _rra_cur_desc="${_rra_rl#DESCRIPTION: }" ;;
+              esac
+            fi
+          fi
+          ;;
+      esac
+    done < "$_rra_raw_file"
+    rm -f "$_rra_raw_file"
+
+    if [ "$_rra_prop_count" -eq 0 ]; then
+      rm -rf "$_rra_props_dir"
+      if printf '%s\n' "$_rra_raw" | grep -q "^---PROPOSAL---"; then
+        # Proposals were started but the end token never matched — transient parse
+        # error, not a genuine "no restructuring needed". Don't record a decision;
+        # the proposal will re-raise on the next run.
+        print_warning "Restructure parse error for ${_rra_doc}: end token unmatched — not recording a decision (will re-raise on next run)" >&2
+      else
+        print_info "No actionable restructure proposals for ${_rra_doc}"
+      fi
+      continue
+    fi
+
+    echo "" >&2
+    print_info "${_rra_prop_count} restructure proposal(s) for ${_rra_doc}:"
+    printf '  Question: %s\n' "$_rra_question" >&2
+    echo "" >&2
+
+    # Per-proposal approval loop
+    local _rra_appr_dir
+    _rra_appr_dir="$(mktemp -d)"
+    local _rra_appr_count=0 _rra_pi=1
+
+    while [ "$_rra_pi" -le "$_rra_prop_count" ]; do
+      local _rra_pf="${_rra_props_dir}/proposal_${_rra_pi}.txt"
+      [ -f "$_rra_pf" ] || { _rra_pi=$((_rra_pi + 1)); continue; }
+
+      local _rra_p_action _rra_p_file _rra_p_desc
+      _rra_p_action="$(grep '^ACTION: ' "$_rra_pf" | head -1 | cut -d' ' -f2- || true)"
+      _rra_p_file="$(grep '^FILE: ' "$_rra_pf" | head -1 | cut -d' ' -f2- || true)"
+      _rra_p_desc="$(grep '^DESCRIPTION: ' "$_rra_pf" | head -1 || true)"
+      _rra_p_desc="${_rra_p_desc#DESCRIPTION: }"
+
+      # Reject unsafe paths
+      # shellcheck disable=SC2221,SC2222
+      case "$_rra_p_file" in
+        /*|*../*|*/..|../*|..)
+          print_warning "  Skipping proposal with unsafe FILE path: '$_rra_p_file'" >&2
+          _rra_pi=$((_rra_pi + 1))
+          continue
+          ;;
+      esac
+
+      echo "──────────────────────────────────────────────" >&2
+      printf '  Restructure %d/%d  [%s]  %s\n' \
+        "$_rra_pi" "$_rra_prop_count" "$_rra_p_action" "$_rra_p_file" >&2
+      [ -n "$_rra_p_desc" ] && printf '  %s\n' "$_rra_p_desc" >&2
+      echo "" >&2
+
+      local _rra_input="n"
+      read -p "  Accept this restructure change? (y)es / (n)o: " -r _rra_input || true
+      echo "" >&2
+
+      case "$_rra_input" in
+        [Yy]|[Yy][Ee][Ss])
+          _rra_appr_count=$((_rra_appr_count + 1))
+          cp "$_rra_pf" "${_rra_appr_dir}/approved_${_rra_appr_count}.txt"
+          print_info "  Accepted: ${_rra_p_file}"
+          ;;
+        *)
+          print_info "  Skipped: ${_rra_p_file}"
+          ;;
+      esac
+      _rra_pi=$((_rra_pi + 1))
+    done
+
+    rm -rf "$_rra_props_dir"
+
+    local _rra_decision _rra_rationale
+    if [ "$_rra_appr_count" -gt 0 ]; then
+      _rra_decision="accepted"
+      _rra_rationale="User approved ${_rra_appr_count} restructure proposal(s)"
+      # Approved restructures go through the docs-PR apply path — never written directly
+      _docs_apply_approved \
+        "$_rra_appr_dir" \
+        "" \
+        "restructure ${_rra_doc}" \
+        "restructure" \
+        "$_rra_target" || true
+    else
+      _rra_decision="rejected"
+      _rra_rationale="User rejected all restructure proposals"
+    fi
+
+    rm -rf "$_rra_appr_dir"
+
+    _docs_restructure_record_decision \
+      "$_rra_doc" \
+      "$_rra_question" \
+      "$_rra_decision" \
+      "$_rra_rationale" \
+      "$_rra_size" || true
+  done 3<<DOCS_LOOP_EOF
+$_rra_docs_raw
+DOCS_LOOP_EOF
 }
 
 # ---------------------------------------------------------------------------

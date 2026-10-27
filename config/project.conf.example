@@ -281,3 +281,13 @@
 # The flag is informational only — the operator can still approve or skip.
 # Default: 15 (flag edits that grow the doc by more than 15%).
 # RITE_DOC_GROWTH_WARN_PCT=15
+
+# Restructure re-raise threshold (percent growth since last decision).
+# rite align-docs runs a restructure assessment before the assertion audit.
+# A restructure proposal for a doc is suppressed after a prior decision until
+# the doc grows by at least this percentage since the size recorded at that
+# decision.  When the doc crosses the threshold the proposal is re-raised.
+# History is written to ${RITE_STATE_DIR}/doc-approval-history.md (default:
+# .rite/state/doc-approval-history.md relative to the project root).
+# Default: 25 (re-raise when the doc has grown by ≥25% since last decision).
+# RITE_DOC_RESTRUCTURE_REGROWTH_PCT=25
