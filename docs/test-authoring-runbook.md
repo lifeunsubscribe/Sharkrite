@@ -240,3 +240,30 @@ function changes:
 no subprocesses and are safe to run in parallel.
 
 **Canonical reference:** `tests/regression/gate-verdict-seam.bats`.
+
+### 10. Shared mocks (prompt-residue)
+
+When three or more test files in a repo each carry their own copy of the same
+module mock block or mock-client factory, extract it to the framework's shared
+setup **before adding a fourth**. The threshold is ≥3 duplicating files; at
+that point the cost of a future per-file patch (update N files, rerun, miss
+one) outweighs the one-time extraction.
+
+**Per-framework extraction targets:**
+
+- **vitest** — add the mock to `setupFiles` in `vitest.config.ts`
+  (e.g. `setupFiles: ['test/setup/mocks.ts']`); hoisted `vi.mock()` calls in
+  that file are visible to every test without re-declaring.
+- **jest** — add the mock to `setupFilesAfterEach` (or `setupFiles` for
+  module-level mocks) in `jest.config.*`; shared factory functions go in
+  `test/helpers/` and are imported where needed.
+- **bats** — add the shared helper function or stub-dir setup to
+  `tests/helpers/`; source it from each `setup()` via
+  `source "$BATS_TEST_DIRNAME/../helpers/mock-client.bash"`.
+
+Live failure (orrery batch 2026-10-27): five vitest files each carried their
+own `vi.mock('react-native'|'expo-crypto'|'expo-linking')` blocks and a
+per-file `makeMockClient` variant. A review-fix polyfill import broke all 14
+tests in one file at module load; the fix was to add yet another per-file
+hoisted mock, where a centralized `setupFiles` entry would have been a
+one-line change in one place.
