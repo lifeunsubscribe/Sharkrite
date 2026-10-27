@@ -1986,7 +1986,302 @@ CAND_EOF
 }
 
 # ---------------------------------------------------------------------------
-# docs_run_promote_doc_pass BRANCH
+# _docs_jic_covers_for_doc DOC
+#
+# Emit the fingerprint set for doc DOC — the union of paths that, if changed,
+# would plausibly affect this doc's accuracy.  Used by the cross-doc
+# just-in-case pass to compute the deterministic intersection with a
+# promotion diff before any model is consulted.
+#
+# Emits one path per line (deduplicated):
+#   1. Enforcing bats file paths (from sharkrite-enforced-by markers in doc)
+#   2. Source paths from those bats files' sharkrite-test-covers: headers
+#      (function-scope suffix stripped: lib/foo.sh::func → lib/foo.sh)
+#   3. ADR-linked doc paths for this doc (via docs_map_adr_links)
+#
+# Returns 0 with empty output when no fingerprint data is available.
+# ---------------------------------------------------------------------------
+_docs_jic_covers_for_doc() {
+  local _jc_doc="$1"
+  local _jc_project_root="${RITE_PROJECT_ROOT:-.}"
+
+  # Use a temp file to accumulate paths before deduplication so the caller
+  # sees a clean deduplicated stream without a nested function.
+  local _jc_tmp=""
+  _jc_tmp="$(mktemp "${TMPDIR:-/tmp}/rite_jic_XXXXXX" 2>/dev/null)" || return 0
+
+  # 1+2: enforcing tests (from sharkrite-enforced-by markers) and their covers paths
+  local _jc_bats
+  while IFS= read -r _jc_bats || [ -n "${_jc_bats:-}" ]; do
+    [ -n "$_jc_bats" ] || continue
+    _jc_bats="${_jc_bats#./}"
+    printf '%s\n' "$_jc_bats" >> "$_jc_tmp"
+
+    # resolve bats file to absolute path for reading
+    local _jc_bats_abs
+    case "$_jc_bats" in
+      /*) _jc_bats_abs="$_jc_bats" ;;
+      *)  _jc_bats_abs="${_jc_project_root}/${_jc_bats}" ;;
+    esac
+    [ -f "$_jc_bats_abs" ] || continue
+
+    # read sharkrite-test-covers: header (first 15 lines)
+    local _jc_header
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_TEST_COVERS is a marker constant defined in markers.sh; _RITE_ prefix cannot be used; ledger frozen
+    _jc_header="$(head -15 "$_jc_bats_abs" 2>/dev/null \
+      | grep -E "^# ${RITE_MARKER_TEST_COVERS}:" \
+      | head -1 \
+      | sed -E "s/^# ${RITE_MARKER_TEST_COVERS}:[[:space:]]*//" || true)"
+    [ -n "$_jc_header" ] || continue
+
+    # Split comma-separated paths, strip function-scope suffix (::func)
+    local _jc_entry
+    while IFS= read -r _jc_entry || [ -n "${_jc_entry:-}" ]; do
+      [ -n "$_jc_entry" ] || continue
+      _jc_entry="$(printf '%s' "$_jc_entry" \
+        | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)"
+      [ -n "$_jc_entry" ] || continue
+      _jc_entry="${_jc_entry%%::*}"
+      [ -n "$_jc_entry" ] || continue
+      printf '%s\n' "$_jc_entry" >> "$_jc_tmp"
+    done < <(printf '%s\n' "$_jc_header" | tr ',' '\n' || true)
+  done < <(docs_map_enforcing_tests "$_jc_doc" 2>/dev/null || true)
+
+  # 3: ADR-linked doc paths (docs_map_adr_links works on any markdown, not just ADRs)
+  local _jc_link
+  while IFS= read -r _jc_link || [ -n "${_jc_link:-}" ]; do
+    [ -n "$_jc_link" ] || continue
+    printf '%s\n' "${_jc_link#./}" >> "$_jc_tmp"
+  done < <(docs_map_adr_links "$_jc_doc" 2>/dev/null || true)
+
+  # Emit deduplicated paths then clean up (|| true: empty file is fine)
+  sort -u "$_jc_tmp" 2>/dev/null || true
+  rm -f "$_jc_tmp"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _docs_cross_doc_just_in_case_pass BRANCH PR DIFF_NEWLINE
+#
+# Cross-doc just-in-case drift detector.  Called from docs_run_promote_doc_pass
+# after the primary declared-doc pass completes.
+#
+# Intersection stage (zero model calls):
+#   For every doc in the map that does NOT already have drift entries for BRANCH,
+#   compute its fingerprint set (_docs_jic_covers_for_doc) and intersect it with
+#   DIFF_NEWLINE.  Docs with a non-empty intersection form the residue.
+#
+# If residue is empty → return 0 with no provider invocation.
+#
+# Triage stage (one bounded model call):
+#   Send all (doc, evidence) residue pairs to provider_resolve_model triage in a
+#   single call.  Parse the JSON response; write a drift entry for every doc
+#   where the model returns implicated=true.
+#
+# Contract:
+#   - Never proposes or applies edits to any doc — entries only.
+#   - Declared docs (those already in the drift store for BRANCH) are excluded.
+#   - The ADR is NOT excluded — it may receive entries but never edits.
+#   - All failures warn and return 0 (best-effort, never blocks promote).
+#   - No bare `exit`.
+# ---------------------------------------------------------------------------
+_docs_cross_doc_just_in_case_pass() {
+  local _ji_branch="${1:?_docs_cross_doc_just_in_case_pass: branch required}"
+  local _ji_pr="${2:-}"
+  local _ji_diff="${3:-}"
+
+  # Guard: no diff → nothing to intersect
+  [ -n "${_ji_diff:-}" ] || return 0
+
+  # Guard: map required
+  local _ji_map
+  _ji_map="$(docs_map_path)"
+  [ -f "$_ji_map" ] || return 0
+
+  # Guard: provider required for the triage stage
+  if ! declare -f provider_run_prompt_with_timeout >/dev/null 2>&1 || \
+     ! declare -f provider_resolve_model >/dev/null 2>&1; then
+    # Provider not loaded; skip silently — caller must load provider first
+    return 0
+  fi
+
+  # Get docs already processed by the main pass (the "declared docs")
+  local _ji_declared_docs=""
+  _ji_declared_docs="$(_docs_list_branch_entry_docs "$_ji_branch" 2>/dev/null || true)"
+
+  # Enumerate all unique docs in the map (column 1, skip comment header)
+  local _ji_all_docs=""
+  _ji_all_docs="$(awk -F'\t' 'NR>1 && !/^#/ && $1!="" {print $1}' "$_ji_map" \
+    | sort -u 2>/dev/null || true)"
+  [ -n "${_ji_all_docs:-}" ] || return 0
+
+  # ── Intersection stage (zero model calls) ─────────────────────────────────
+  # _ji_residue: newline-separated "doc|evidence" pairs where evidence is
+  # comma-separated matched paths
+  local _ji_residue=""
+
+  local _ji_doc
+  while IFS= read -r _ji_doc || [ -n "${_ji_doc:-}" ]; do
+    [ -n "$_ji_doc" ] || continue
+
+    # Skip declared docs — already handled by the main pass
+    if printf '%s\n' "${_ji_declared_docs:-}" | grep -qxF "$_ji_doc"; then
+      continue
+    fi
+
+    # Build fingerprint set for this doc
+    local _ji_fp_set=""
+    _ji_fp_set="$(_docs_jic_covers_for_doc "$_ji_doc" 2>/dev/null || true)"
+    [ -n "${_ji_fp_set:-}" ] || continue
+
+    # Intersect fingerprint set with diff — supports exact paths and glob patterns
+    # (grep -qxF would reject globs like lib/core/** that covers headers legitimately emit)
+    local _ji_hits=""
+    local _ji_fp
+    while IFS= read -r _ji_fp || [ -n "${_ji_fp:-}" ]; do
+      [ -n "$_ji_fp" ] || continue
+      local _ji_fp_hit=0
+      local _ji_dp
+      while IFS= read -r _ji_dp || [ -n "${_ji_dp:-}" ]; do
+        [ -n "$_ji_dp" ] || continue
+        # case with unquoted pattern enables glob expansion (e.g. lib/core/**)
+        # shellcheck disable=SC2254
+        case "$_ji_dp" in
+          $_ji_fp) _ji_fp_hit=1; break ;;
+        esac
+      done < <(printf '%s\n' "$_ji_diff")
+      if [ "$_ji_fp_hit" -eq 1 ]; then
+        if [ -n "${_ji_hits:-}" ]; then
+          _ji_hits="${_ji_hits},${_ji_fp}"
+        else
+          _ji_hits="$_ji_fp"
+        fi
+      fi
+    done < <(printf '%s\n' "$_ji_fp_set")
+
+    [ -n "${_ji_hits:-}" ] || continue
+
+    if [ -n "${_ji_residue:-}" ]; then
+      _ji_residue="${_ji_residue}
+${_ji_doc}|${_ji_hits}"
+    else
+      _ji_residue="${_ji_doc}|${_ji_hits}"
+    fi
+  done < <(printf '%s\n' "$_ji_all_docs")
+
+  # Clean intersection → no model call
+  [ -n "${_ji_residue:-}" ] || return 0
+
+  # ── Triage stage (one bounded model call) ──────────────────────────────────
+  local _ji_timeout="${RITE_DOC_CLAUDE_TIMEOUT:-30}"
+  local _ji_diff_summary
+  _ji_diff_summary="$(printf '%s\n' "$_ji_diff" | head -20 || true)"
+
+  local _ji_prompt
+  _ji_prompt="You are a documentation drift classifier.
+
+A promotion PR (#${_ji_pr:-unknown}) merged these files (up to 20 shown):
+${_ji_diff_summary}
+
+The following docs may be affected (doc path | intersecting evidence files):
+${_ji_residue}
+
+For each doc, decide: does the evidence suggest this doc may need a drift entry?
+Output a JSON array with one object per doc:
+[
+  {
+    \"doc\": \"docs/path/to/doc.md\",
+    \"implicated\": true,
+    \"kind\": \"test-scope\",
+    \"assertion\": \"one-sentence description of what may be stale (max 120 chars)\"
+  }
+]
+
+kind must be one of: addition, refinement, contradiction, test-scope, reference-missing
+- test-scope: only a test file changed (testing strategy may need doc update)
+- contradiction: a behavior-defining source file changed in a way that may contradict the doc
+- addition: new behavior was added that the doc should describe
+- refinement: an assertion may need clarifying wording
+- reference-missing: a referenced doc or linked file changed
+If a hit is unlikely to cause genuine drift in that doc, set implicated=false.
+Output ONLY the JSON array, no prose."
+
+  local _ji_raw=""
+  local _ji_triage_exit=0
+  _ji_raw="$(provider_run_prompt_with_timeout \
+    "$_ji_prompt" \
+    "$(provider_resolve_model triage)" \
+    true \
+    "$_ji_timeout" \
+    2>/dev/null)" || _ji_triage_exit=$?
+
+  if [ "$_ji_triage_exit" -ne 0 ] || [ -z "${_ji_raw:-}" ]; then
+    print_warning "Just-in-case pass: triage call failed (exit ${_ji_triage_exit}) — no cross-doc entries written" >&2
+    return 0
+  fi
+
+  # Strip fenced JSON if present (models wrap output in ```json...```)
+  local _ji_clean
+  _ji_clean="$(printf '%s' "$_ji_raw" | sed 's/^```[a-zA-Z]*$//' | sed 's/^```$//' || true)"
+  [ -n "${_ji_clean:-}" ] || _ji_clean="$_ji_raw"
+
+  # Parse and write entries
+  if ! command -v jq >/dev/null 2>&1; then
+    print_warning "Just-in-case pass: jq not available — cannot parse triage response" >&2
+    return 0
+  fi
+
+  local _ji_entry_count=0
+  local _ji_jq_out=""
+  local _ji_jq_exit=0
+  _ji_jq_out="$(printf '%s' "$_ji_clean" \
+    | jq -r '.[] | select(.implicated == true) | "\(.doc)\t\(.kind)\t\(.assertion)"' \
+    2>/dev/null)" || _ji_jq_exit=$?
+
+  if [ "$_ji_jq_exit" -ne 0 ]; then
+    print_warning "Just-in-case pass: triage response unparseable (jq exit ${_ji_jq_exit}) — findings discarded" >&2
+    return 0
+  fi
+
+  [ -n "${_ji_jq_out:-}" ] || return 0
+
+  local _ji_rec
+  while IFS= read -r _ji_rec || [ -n "${_ji_rec:-}" ]; do
+    [ -n "$_ji_rec" ] || continue
+    local _ji_rec_doc _ji_rec_kind _ji_rec_assert
+    _ji_rec_doc="$(printf '%s' "$_ji_rec" | cut -f1 || true)"
+    _ji_rec_kind="$(printf '%s' "$_ji_rec" | cut -f2 || true)"
+    _ji_rec_assert="$(printf '%s' "$_ji_rec" | cut -f3- || true)"
+    [ -n "${_ji_rec_doc:-}" ] || continue
+    # Validate kind — drift_log_append rejects invalid kinds anyway but guard early
+    case "${_ji_rec_kind:-}" in
+      addition|refinement|contradiction|test-scope|reference-missing) ;;
+      *) _ji_rec_kind="refinement" ;;
+    esac
+    # Write drift entry — entries only, never edits
+    drift_log_append \
+      "$_ji_rec_doc" \
+      "$_ji_branch" \
+      "${_ji_pr:-}" \
+      "-" \
+      "${_ji_rec_assert:-just-in-case cross-doc hit}" \
+      "$_ji_rec_kind" \
+      "promote cross-doc pass: promotion diff intersected doc fingerprint set" \
+      2>/dev/null || true
+    _ji_entry_count=$((_ji_entry_count + 1))
+  done < <(printf '%s\n' "$_ji_jq_out")
+
+  if [ "$_ji_entry_count" -gt 0 ]; then
+    print_info "Just-in-case pass: ${_ji_entry_count} cross-doc entr$([ "$_ji_entry_count" -eq 1 ] && echo 'y' || echo 'ies') written"
+  else
+    print_info "Just-in-case pass: triage found no implicated cross-docs"
+  fi
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# docs_run_promote_doc_pass BRANCH [PR]
 #
 # Tier 2 post-merge doc pass for a completed promotion.  Called from
 # promote-branch.sh Phase 8 after the squash merge succeeds.
@@ -2006,72 +2301,87 @@ CAND_EOF
 #   - At most one doc update per promotion (one docs PR per doc).
 #   - All failures warn and return 0 — promote's exit code is never altered.
 #   - No bare `exit`.
+#   - After the declared-doc pass, runs _docs_cross_doc_just_in_case_pass
+#     (best-effort, entries only, never edits or prompts).
 # ---------------------------------------------------------------------------
 docs_run_promote_doc_pass() {
   local _dp_branch="${1:?docs_run_promote_doc_pass: branch required}"
+  local _dp_pr="${2:-}"
 
-  # Count entries for this branch; skip silently when there is nothing to do.
+  # Capture the promotion diff now.  The squash-merge happened via GitHub API so
+  # the local HEAD may be stale — fetch origin/main first so the diff reflects
+  # the actual squash-merge commit, not whatever was checked out locally.
+  local _dp_diff=""
+  git -C "${RITE_PROJECT_ROOT:-.}" fetch origin main --quiet 2>/dev/null || true
+  _dp_diff="$(git -C "${RITE_PROJECT_ROOT:-.}" diff origin/main~1..origin/main --name-only 2>/dev/null || true)"
+
+  docs_map_ensure || true  # best-effort; engine can proceed with stale/missing map
+
+  # Count entries for this branch; skip declared-doc pass when nothing to do.
   local _dp_count=0
   _dp_count="$(drift_log_entry_count --branch "$_dp_branch" || echo 0)"
   _dp_count="${_dp_count:-0}"
 
-  if [ "$_dp_count" -eq 0 ]; then
-    print_info "No drift entries for branch '${_dp_branch}' — skipping doc pass"
-    return 0
-  fi
+  if [ "$_dp_count" -gt 0 ]; then
+    print_info "Tier 2 doc pass for branch '${_dp_branch}' (${_dp_count} entr$([ "$_dp_count" -eq 1 ] && echo 'y' || echo 'ies'))..."
 
-  print_info "Tier 2 doc pass for branch '${_dp_branch}' (${_dp_count} entr$([ "$_dp_count" -eq 1 ] && echo 'y' || echo 'ies'))..."
+    local _dp_docs=""
+    _dp_docs="$(_docs_list_branch_entry_docs "$_dp_branch" || true)"
 
-  local _dp_docs=""
-  _dp_docs="$(_docs_list_branch_entry_docs "$_dp_branch" || true)"
-
-  if [ -z "${_dp_docs:-}" ]; then
-    print_info "No doc entries found for branch '${_dp_branch}'"
-    return 0
-  fi
-
-  docs_map_ensure || true  # best-effort; engine can proceed with stale/missing map
-
-  # _RITE_FORCE_TTY=1 allows tests to exercise the TTY branch without a real terminal.
-  if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
-    # TTY: run the interactive propose/approve loop for each implicated doc.
-    # _mp_target is explicitly "main" so the docs PR is not routed to the
-    # now-deleted integration branch.
-    # Use fd 3 for the doc list so fd 0 (stdin/TTY) remains available for
-    # interactive read prompts inside _docs_main_entries_pass.
-    local _dp_doc
-    while IFS= read -r _dp_doc <&3 || [ -n "${_dp_doc:-}" ]; do
-      [ -n "$_dp_doc" ] || continue
-      echo "" >&2
-      print_info "Processing doc: ${_dp_doc}"
-      _docs_main_entries_pass "$_dp_doc" "$_dp_branch" "main" || true
-    done 3< <(_docs_list_branch_entry_docs "$_dp_branch" || true)
-  else
-    # No TTY: save a proposal summary so the operator can review and apply
-    # with `rite docs --resume <branch>` (loading implemented in the next issue).
-    local _dp_safe_branch="${_dp_branch//\//-}"
-    local _dp_proposal="${RITE_STATE_DIR:-}/doc-proposal-${_dp_safe_branch}.md"
-    mkdir -p "$(dirname "$_dp_proposal")" 2>/dev/null || true
-    local _dp_write_ok=0
-    {
-      printf '# Pending doc proposal: %s\n\n' "$_dp_branch"
-      printf 'Recorded: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
-      printf 'Drift entries: %s\n\n' "$_dp_count"
-      printf 'Docs with pending entries:\n'
-      local _dp_d
-      while IFS= read -r _dp_d || [ -n "$_dp_d" ]; do
-        [ -n "$_dp_d" ] || continue
-        printf -- '- %s\n' "$_dp_d"
-      done <<DOCS_EOF
+    if [ -n "${_dp_docs:-}" ]; then
+      # _RITE_FORCE_TTY=1 allows tests to exercise the TTY branch without a real terminal.
+      if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+        # TTY: run the interactive propose/approve loop for each implicated doc.
+        # _mp_target is explicitly "main" so the docs PR is not routed to the
+        # now-deleted integration branch.
+        # Use fd 3 for the doc list so fd 0 (stdin/TTY) remains available for
+        # interactive read prompts inside _docs_main_entries_pass.
+        local _dp_doc
+        while IFS= read -r _dp_doc <&3 || [ -n "${_dp_doc:-}" ]; do
+          [ -n "$_dp_doc" ] || continue
+          echo "" >&2
+          print_info "Processing doc: ${_dp_doc}"
+          _docs_main_entries_pass "$_dp_doc" "$_dp_branch" "main" || true
+        done 3< <(_docs_list_branch_entry_docs "$_dp_branch" || true)
+      else
+        # No TTY: save a proposal summary so the operator can review and apply
+        # with `rite docs --resume <branch>` (loading implemented in the next issue).
+        local _dp_safe_branch="${_dp_branch//\//-}"
+        local _dp_proposal="${RITE_STATE_DIR:-}/doc-proposal-${_dp_safe_branch}.md"
+        mkdir -p "$(dirname "$_dp_proposal")" 2>/dev/null || true
+        local _dp_write_ok=0
+        {
+          printf '# Pending doc proposal: %s\n\n' "$_dp_branch"
+          printf 'Recorded: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+          printf 'Drift entries: %s\n\n' "$_dp_count"
+          printf 'Docs with pending entries:\n'
+          local _dp_d
+          while IFS= read -r _dp_d || [ -n "$_dp_d" ]; do
+            [ -n "$_dp_d" ] || continue
+            printf -- '- %s\n' "$_dp_d"
+          done <<DOCS_EOF
 $_dp_docs
 DOCS_EOF
-    } > "$_dp_proposal" 2>/dev/null && _dp_write_ok=1 || true
-    if [ "$_dp_write_ok" = "1" ]; then
-      print_info "Promote doc proposal saved — review when ready"
-      printf '\n  Run: rite docs --resume %s\n' "$_dp_branch" >&2
+        } > "$_dp_proposal" 2>/dev/null && _dp_write_ok=1 || true
+        if [ "$_dp_write_ok" = "1" ]; then
+          print_info "Promote doc proposal saved — review when ready"
+          printf '\n  Run: rite docs --resume %s\n' "$_dp_branch" >&2
+        else
+          print_warning "Could not write doc proposal to '${_dp_proposal}' — drift entries remain for manual review" >&2
+        fi
+      fi
     else
-      print_warning "Could not write doc proposal to '${_dp_proposal}' — drift entries remain for manual review" >&2
+      print_info "No doc entries found for branch '${_dp_branch}'"
     fi
+  else
+    print_info "No drift entries for branch '${_dp_branch}' — skipping declared-doc pass"
+  fi
+
+  # ── Cross-doc just-in-case pass (§ #1435) ─────────────────────────────────
+  # Runs after the declared-doc pass, even when that pass found nothing.
+  # Best-effort: failures warn and return 0.
+  if [ -n "${_dp_diff:-}" ]; then
+    _docs_cross_doc_just_in_case_pass "$_dp_branch" "${_dp_pr:-}" "$_dp_diff" || true
   fi
 
   return 0
