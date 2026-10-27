@@ -152,6 +152,15 @@ run_align_docs_switch() {
           print_info "Restructure assessment skipped (not an interactive terminal — run 'rite align-docs' interactively)."
         fi
       fi
+      # Assertion audit second — one doc_update call per map section.
+      # Uses the same TTY guard; the audit shows a confirmation gate before making calls.
+      if declare -f docs_run_assertion_audit >/dev/null 2>&1; then
+        if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+          docs_run_assertion_audit
+        else
+          print_info "Assertion audit skipped (not an interactive terminal — run 'rite align-docs' interactively)."
+        fi
+      fi
       return 0
       ;;
   esac
@@ -194,9 +203,9 @@ _align_docs_prompt_and_record() {
       echo "  Doc drift tracking enabled." >&2
     fi
     if declare -f print_info >/dev/null 2>&1; then
-      print_info "Audit not yet implemented — run 'rite docs' to check docs against code."
+      print_info "Run 'rite align-docs' again to start the restructure assessment and assertion audit."
     else
-      echo "  Audit not yet implemented — run 'rite docs' to check docs against code." >&2
+      echo "  Run 'rite align-docs' again to start the restructure assessment and assertion audit." >&2
     fi
   else
     record_doc_mode "off"
