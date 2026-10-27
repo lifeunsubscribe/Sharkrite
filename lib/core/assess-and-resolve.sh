@@ -337,6 +337,32 @@ _resolve_priority_label() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_issue_labels — derive the comma-separated label set for a follow-up issue
+#
+# Args: $1 = base label (e.g. "tech-debt" or "review-follow-up")
+#       $2 = severity token (CRITICAL, HIGH, MEDIUM, LOW — already normalized)
+#       $3 = category string from assessor (e.g. "Security", "Performance")
+# Output: comma-separated label string (echoed to stdout)
+#
+# Security floor: Category=Security forces priority-high regardless of severity,
+# and adds the "security" label. CRITICAL/HIGH non-Security stay high; MEDIUM/LOW
+# Security is raised to high. All other categories are unchanged.
+# ---------------------------------------------------------------------------
+_resolve_issue_labels() {
+  local _base="${1:-tech-debt}"
+  local _sev="${2:-MEDIUM}"
+  local _cat="${3:-}"
+  local _priority
+  _priority=$(_resolve_priority_label "$_sev")
+  if echo "${_cat}" | grep -qiE "^[[:space:]]*security[[:space:]]*$"; then
+    _priority="priority-high"
+    echo "${_base},${_priority},security"
+  else
+    echo "${_base},${_priority}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # _resolve_done_def — map a normalized severity token to a done definition
 #
 # Args: $1 = severity token (CRITICAL, HIGH, MEDIUM, LOW — already normalized)
@@ -2412,9 +2438,8 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # sentinel/evidence calls below.
     _FOLLOWUP_FINDING_KEY=$(derive_followup_finding_key "${ISSUE_NUMBER:-0}" "$_clean_title" "$_finding_index")
 
-    # --- Derive priority label from per-finding severity ---
-    _priority_label=$(_resolve_priority_label "${_f_severity}")
-    _finding_labels="${_rollup_base_label},${_priority_label}"
+    # --- Derive label set: severity + category (Security floor) ---
+    _finding_labels=$(_resolve_issue_labels "${_rollup_base_label}" "${_f_severity}" "${_f_category:-}")
 
     # --- Build per-finding acceptance criterion and verification command ---
     # Seed from Location (file:line) when available; fall back to the clean title.

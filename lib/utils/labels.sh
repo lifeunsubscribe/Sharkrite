@@ -49,6 +49,7 @@ ensure_labels_exist() {
         from-review)      gh_safe label create "$label" --color "BFD4F2" --description "Identified during code review" || true ;;
         automated)        gh_safe label create "$label" --color "ededed" --description "Automatically created by Sharkrite" || true ;;
         needs-re-triage)  gh_safe label create "$label" --color "F9D0C4" --description "Parent PR merged — re-verify this finding against main" || true ;;
+        security)         gh_safe label create "$label" --color "D93F0B" --description "Security finding — must land before next ship" || true ;;
         *)                gh_safe label create "$label" --color "ededed" || true ;;
       esac
     fi
