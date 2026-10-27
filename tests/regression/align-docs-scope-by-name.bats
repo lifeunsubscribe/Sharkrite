@@ -23,6 +23,7 @@ _write_fake_map() {
 # docs-map v4 sha=abc123 built=2026-01-01T00:00:00Z
 docs/architecture/behavioral-design.md	abc123	-	1	Behavioral Design	fp	feature	-	-	-
 docs/architecture/conventions.md	abc123	-	1	Conventions	fp	feature	-	-	-
+docs/other/conventions.md	abc123	-	1	Conventions Alt	fp	feature	-	-	-
 README.md	abc123	-		README	fp	other	-	-	-
 MAP_EOF
 }
@@ -134,6 +135,7 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"docs/architecture/behavioral-design.md"* ]]
   [[ "$output" == *"docs/architecture/conventions.md"* ]]
+  [[ "$output" == *"docs/other/conventions.md"* ]]
   [[ "$output" == *"README.md"* ]]
 }
 
@@ -144,7 +146,7 @@ teardown() {
   [ "$status" -eq 0 ]
   local count
   count="$(printf '%s\n' "$output" | grep -c '.md' || true)"
-  [ "$count" -eq 3 ]
+  [ "$count" -eq 4 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -154,10 +156,10 @@ teardown() {
 @test "multiple names returns all resolved paths" {
   local helper
   helper="$(_scope_helper)"
-  run bash "$helper" behavioral-design conventions < /dev/null 2>&1
+  run bash "$helper" behavioral-design README < /dev/null 2>&1
   [ "$status" -eq 0 ]
   [[ "$output" == *"docs/architecture/behavioral-design.md"* ]]
-  [[ "$output" == *"docs/architecture/conventions.md"* ]]
+  [[ "$output" == *"README.md"* ]]
 }
 
 @test "duplicate names are deduped in output" {
@@ -173,9 +175,51 @@ teardown() {
 @test "mixed with-ext and without-ext deduped to one entry" {
   local helper
   helper="$(_scope_helper)"
-  run bash "$helper" conventions conventions.md < /dev/null 2>&1
+  # behavioral-design has a unique basename; conventions is ambiguous (two paths)
+  run bash "$helper" behavioral-design behavioral-design.md < /dev/null 2>&1
   [ "$status" -eq 0 ]
   local count
-  count="$(printf '%s\n' "$output" | grep -c 'conventions.md' || true)"
+  count="$(printf '%s\n' "$output" | grep -c 'behavioral-design.md' || true)"
   [ "$count" -eq 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# AC5: ambiguous basename exits 1 and lists all matching paths.
+# ---------------------------------------------------------------------------
+
+@test "ambiguous basename exits 1" {
+  local helper
+  helper="$(_scope_helper)"
+  # 'conventions' matches both docs/architecture/conventions.md and docs/other/conventions.md
+  run bash "$helper" conventions < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+}
+
+@test "ambiguous basename error message names the doc and lists candidates" {
+  local helper
+  helper="$(_scope_helper)"
+  run bash "$helper" conventions < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"ambiguous"* ]]
+  [[ "$output" == *"docs/architecture/conventions.md"* ]]
+  [[ "$output" == *"docs/other/conventions.md"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AC6: whitespace-containing arg exits 1 with a helpful message.
+# ---------------------------------------------------------------------------
+
+@test "arg containing a space exits 1" {
+  local helper
+  helper="$(_scope_helper)"
+  run bash "$helper" "behavioral design" < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+}
+
+@test "arg containing a space prints whitespace error message" {
+  local helper
+  helper="$(_scope_helper)"
+  run bash "$helper" "behavioral design" < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"whitespace"* ]]
 }
