@@ -321,9 +321,18 @@ claude_provider_run_agentic_session() {
   # immediately with a remediation message instead of burning ~2min per issue
   # on guaranteed-futile retries. See: lib/core/batch-process-issues.sh exit-18
   # handler and docs/architecture/exit-codes.md.
+  #
+  # stdout: line-anchored — every legitimate stream-json line starts with '{',
+  # so an auth phrase at column 0 can only be the CLI's own out-of-envelope
+  # notice. A substring match would false-abort any session whose transcript
+  # merely CONTAINS the phrase (same root cause as the cap scan false-abort in
+  # issue #1169; sibling fixed here per issue #1409).
+  # stderr: unanchored — stderr is always the CLI's own output, never the
+  # streamed transcript.
   elif [ "$_exit_code" -ne 0 ] && \
-     grep -qiE "invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error" \
-       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+     { grep -qiE "^(invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error)" "$_stdout_capture" 2>/dev/null || \
+       grep -qiE "invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error" \
+         "$stderr_file" 2>/dev/null; }; then
     _exit_code=18
   fi
   # When a cap was detected, persist the raw "resets H:MMpm (Zone)" line so
