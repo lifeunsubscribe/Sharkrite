@@ -1166,6 +1166,13 @@ EOF_AUDIT
 rite_docs() {
   local instructions="${*:-}"
 
+  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284).
+  # load_provider was called at module top; detect_cli populates CLAUDE_PROVIDER_CMD.
+  provider_detect_cli || true
+  if ! provider_healthcheck; then
+    exit 1
+  fi
+
   local state
   state="$(_docs_resolve_state)"
 

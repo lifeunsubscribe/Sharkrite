@@ -409,6 +409,15 @@ run_promote() {
   local BRANCH="${1:?run_promote: branch argument required}"
   local _si_issue_arg="${2:-}"
 
+  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284).
+  # Covers both the full-branch and single-issue cherry-pick paths; runs before
+  # any dispatch so neither path burns time discovering the trust failure later.
+  load_provider "${RITE_DEV_PROVIDER:-claude}"
+  provider_detect_cli || true
+  if ! provider_healthcheck; then
+    exit 1
+  fi
+
   # Single-issue path: explicit issue number → cherry-pick promote
   if [ -n "${_si_issue_arg:-}" ]; then
     promote_single_issue "$BRANCH" "$_si_issue_arg"

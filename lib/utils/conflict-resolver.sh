@@ -502,6 +502,12 @@ the resolved files after this session ends."
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_DEV_PROVIDER:-claude}"
 
+  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+  provider_detect_cli || true
+  if ! provider_healthcheck; then
+    return 1
+  fi
+
   # Publish the pre-session conflict-path list for commit_resolved_conflicts.
   # The resolver SESSION can only WRITE file content (git side effects are
   # policy-blocked), so staging must happen in the script after the session.

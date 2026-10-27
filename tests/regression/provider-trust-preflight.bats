@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/providers/claude.sh::claude_provider_healthcheck, lib/core/batch-process-issues.sh, lib/providers/provider-interface.sh, lib/core/workflow-runner.sh::main
-# Regression tests for the provider trust preflight (issue #1488).
+# sharkrite-test-covers: lib/providers/claude.sh::claude_provider_healthcheck, lib/core/batch-process-issues.sh, lib/providers/provider-interface.sh, lib/core/workflow-runner.sh::main, lib/core/promote-branch.sh, lib/core/plan-issues.sh, lib/core/docs-command.sh, lib/utils/conflict-resolver.sh, bin/rite-health-report
+# Regression tests for the provider trust preflight (issues #1488, #1492).
 #
 # Claude CLI >=2.1.284 emits "has not been trusted" to stderr in untrusted
 # workspaces and ignores all permissions.allow entries. These tests verify that:
@@ -8,6 +8,7 @@
 #   2. The abort message contains hasTrustDialogAccepted and the repo path
 #   3. A healthy stub passes with exit 0
 #   4. The stub receives --print (trivial invocation, not a full agentic session)
+#   5. All session-launching orchestrators call provider_healthcheck before running sessions
 
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
@@ -170,4 +171,43 @@ _make_trusted_stub() {
   "
   [ "$status" -eq 0 ]
   [[ "$output" == *"ALIAS_OK"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Tests 7-12: Structural wiring — every session-launching orchestrator that
+# was identified as missing the healthcheck in issue #1492 must call it.
+#
+# These are structural grep tests (section 8 of the test authoring runbook):
+# the invariant is "the call is present in the right place" — a property that
+# code cannot express behaviorally without sourcing and exercising giant
+# orchestrators. One grep per file, targeted to the function that owns the
+# provider sessions.
+# ---------------------------------------------------------------------------
+
+@test "batch-process-issues.sh calls provider_healthcheck before processing issues" {
+  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/batch-process-issues.sh"
+}
+
+@test "workflow-runner.sh calls provider_healthcheck in run_workflow" {
+  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/workflow-runner.sh"
+}
+
+@test "promote-branch.sh calls provider_healthcheck in run_promote" {
+  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/promote-branch.sh"
+}
+
+@test "plan-issues.sh calls provider_healthcheck in plan_issues" {
+  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/plan-issues.sh"
+}
+
+@test "docs-command.sh calls provider_healthcheck in rite_docs" {
+  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/docs-command.sh"
+}
+
+@test "conflict-resolver.sh calls provider_healthcheck before agentic session" {
+  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/utils/conflict-resolver.sh"
+}
+
+@test "rite-health-report calls provider_healthcheck before provider_run_prompt" {
+  grep -q "provider_healthcheck" "$PROJECT_ROOT/bin/rite-health-report"
 }

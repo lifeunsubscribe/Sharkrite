@@ -347,6 +347,11 @@ plan_issues() {
   # Check provider CLI
   provider_detect_cli || exit 1
 
+  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+  if ! provider_healthcheck; then
+    exit 1
+  fi
+
   # Load context files
   local doc_content=""
   # +idiom: an instructions-only invocation (`rite plan "<text>"`) reaches here
