@@ -2506,6 +2506,117 @@ DOCS_EOF
 }
 
 # ---------------------------------------------------------------------------
+# docs_resolve_doc_scope [name ...]
+#
+# Resolve zero or more doc name arguments against the docs map, emitting one
+# resolved project-relative path per line on stdout.
+#
+# No args:      echoes every unique file path in the map.
+# With args:    each name is accepted with or without the .md extension and
+#               matched by basename; results are deduped.
+# Unknown name: prints an error and closest candidates to stderr; exits 1.
+#               Never auto-adopts a candidate — block with instructions.
+# ---------------------------------------------------------------------------
+docs_resolve_doc_scope() {
+  docs_map_ensure || true
+  local _rs_map_file
+  _rs_map_file="$(docs_map_path)"
+
+  # Collect all unique doc paths from the map (column 1, skip header/comments).
+  local _rs_all_docs=""
+  if [ -f "$_rs_map_file" ]; then
+    _rs_all_docs="$(awk -F'\t' '/^#/{next} NF>=1 && $1!=""{print $1}' "$_rs_map_file" \
+      | sort -u || true)"
+  fi
+
+  # No args: return everything in the map.
+  if [ "$#" -eq 0 ]; then
+    printf '%s\n' "$_rs_all_docs"
+    return 0
+  fi
+
+  local _rs_resolved=""
+
+  local _rs_arg
+  for _rs_arg in "$@"; do
+    # Guard empty or whitespace-only arg.
+    case "$_rs_arg" in
+      "") continue ;;
+      *[[:space:]]*)
+        printf 'error: doc name "%s" contains whitespace — did you mean to quote two separate names?\n' "$_rs_arg" >&2
+        printf 'to specify a doc: rite align-docs <basename-without-extension>\n' >&2
+        return 1
+        ;;
+    esac
+
+    # Normalize: strip .md suffix so both "foo" and "foo.md" yield the same key.
+    local _rs_base="${_rs_arg%.md}"
+
+    # Find ALL matching map entries by comparing basenames without extension.
+    # Collect into a newline-separated list; error if more than one match found.
+    local _rs_match=""
+    local _rs_all_matches=""
+    local _rs_doc
+    while IFS= read -r _rs_doc || [ -n "$_rs_doc" ]; do
+      [ -n "$_rs_doc" ] || continue
+      local _rs_doc_base
+      _rs_doc_base="$(basename "$_rs_doc" .md)"
+      if [ "$_rs_doc_base" = "$_rs_base" ]; then
+        _rs_all_matches="${_rs_all_matches}${_rs_doc}"$'\n'
+      fi
+    done <<_RS_MAP_EOF
+$_rs_all_docs
+_RS_MAP_EOF
+
+    # Count matches; refuse to auto-adopt when ambiguous.
+    local _rs_match_count
+    _rs_match_count="$(printf '%s' "$_rs_all_matches" | grep -c '.' || true)"
+    if [ "$_rs_match_count" -gt 1 ]; then
+      printf 'error: "%s" is ambiguous — multiple docs share that basename:\n' "$_rs_arg" >&2
+      printf '%s' "$_rs_all_matches" | sed 's/^/  /' >&2
+      printf 'use the full project-relative path to disambiguate\n' >&2
+      return 1
+    fi
+    _rs_match="$(printf '%s' "$_rs_all_matches" | head -1 || true)"
+
+    if [ -z "$_rs_match" ]; then
+      printf 'error: unknown doc "%s" — not found in docs-map.tsv\n' "$_rs_arg" >&2
+      # List candidates whose basename contains the query string as a substring.
+      local _rs_cands=""
+      local _rs_cd
+      while IFS= read -r _rs_cd || [ -n "$_rs_cd" ]; do
+        [ -n "$_rs_cd" ] || continue
+        local _rs_cb
+        _rs_cb="$(basename "$_rs_cd" .md)"
+        case "$_rs_cb" in
+          *"$_rs_base"*) _rs_cands="${_rs_cands}  ${_rs_cd}"$'\n' ;;
+        esac
+      done <<_RS_CAND_EOF
+$_rs_all_docs
+_RS_CAND_EOF
+
+      if [ -n "$_rs_cands" ]; then
+        printf 'closest matches:\n' >&2
+        printf '%s' "$_rs_cands" >&2
+      else
+        printf 'no close matches; available docs (first 5):\n' >&2
+        printf '%s\n' "$_rs_all_docs" | head -5 | sed 's/^/  /' >&2
+      fi
+      printf 'to specify a doc: rite align-docs <basename-without-extension>\n' >&2
+      return 1
+    fi
+
+    # Dedupe: skip if this path is already in the resolved list.
+    case $'\n'"$_rs_resolved"$'\n' in
+      *$'\n'"$_rs_match"$'\n'*) ;;
+      *) _rs_resolved="${_rs_resolved}${_rs_match}"$'\n' ;;
+    esac
+  done
+
+  printf '%s' "$_rs_resolved"
+}
+
+# ---------------------------------------------------------------------------
 # rite_docs [instructions]
 #
 # Main entry point. Dispatches based on effective documentation state.

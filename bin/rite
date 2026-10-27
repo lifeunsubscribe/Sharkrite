@@ -709,7 +709,11 @@ resolve_dispatch_plan() {
       return 0
       ;;
     align-docs)
-      echo "doc-consent.sh::run_align_docs_switch ${ALIGN_DOCS_ARGS[*]:-}  (enable/disable doc drift tracking)"
+      if [ -n "${ALIGN_DOCS_ARGS[*]:-}" ] && [ "${ALIGN_DOCS_ARGS[0]:-}" != "--disable" ]; then
+        echo "docs-command.sh::docs_resolve_doc_scope ${ALIGN_DOCS_ARGS[*]:-}  (resolve doc scope by name)"
+      else
+        echo "doc-consent.sh::run_align_docs_switch ${ALIGN_DOCS_ARGS[*]:-}  (enable/disable doc drift tracking)"
+      fi
       return 0
       ;;
     status-repo-wide)
@@ -1527,8 +1531,15 @@ if [ "$MODE" = "docs" ]; then
   exit $?
 fi
 
-# Handle align-docs mode — the single on/off switch for doc drift tracking
+# Handle align-docs mode — on/off switch and (with doc names) scope resolver
 if [ "$MODE" = "align-docs" ]; then
+  if [ -n "${ALIGN_DOCS_ARGS[*]:-}" ] && [ "${ALIGN_DOCS_ARGS[0]:-}" != "--disable" ]; then
+    # Positional doc names: resolve scope and echo resolved paths.
+    source "$RITE_LIB_DIR/core/docs-command.sh"
+    docs_resolve_doc_scope "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
+    exit $?
+  fi
+  # --disable flag or no args: existing consent/status flow.
   source "$RITE_LIB_DIR/utils/doc-consent.sh"
   run_align_docs_switch "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
   exit $?
