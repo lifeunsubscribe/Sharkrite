@@ -427,6 +427,14 @@ update_security_guide_from_pr() {
   fi
   parse_review_severity_counts "$REVIEW_COMMENTS"
 
+  # _PRC_TIER=0 means none of the three parse tiers found data — the review
+  # exists but is unparseable. Log distinctly so silent-failure is visible
+  # (same class as issue #1346).
+  if [ "$_PRC_TIER" -eq 0 ]; then
+    print_warning "Could not parse severity counts from review (all three tiers failed) — skipping security guide update"
+    return 0
+  fi
+
   # Sum severity counts to check if any security findings exist (LOW excluded:
   # the security guide is only updated when CRITICAL/HIGH/MEDIUM findings exist).
   SEVERITY_SUM=$((_PRC_CRITICAL + _PRC_HIGH + _PRC_MEDIUM))
