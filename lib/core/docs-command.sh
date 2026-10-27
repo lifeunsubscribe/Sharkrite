@@ -2518,6 +2518,7 @@ DOCS_EOF
 #               Never auto-adopts a candidate — block with instructions.
 # ---------------------------------------------------------------------------
 docs_resolve_doc_scope() {
+  docs_map_ensure || true
   local _rs_map_file
   _rs_map_file="$(docs_map_path)"
 
@@ -2540,26 +2541,43 @@ docs_resolve_doc_scope() {
   for _rs_arg in "$@"; do
     # Guard empty or whitespace-only arg.
     case "$_rs_arg" in
-      ""|*[[:space:]]*) continue ;;
+      "") continue ;;
+      *[[:space:]]*)
+        printf 'error: doc name "%s" contains whitespace — did you mean to quote two separate names?\n' "$_rs_arg" >&2
+        printf 'to specify a doc: rite align-docs <basename-without-extension>\n' >&2
+        return 1
+        ;;
     esac
 
     # Normalize: strip .md suffix so both "foo" and "foo.md" yield the same key.
     local _rs_base="${_rs_arg%.md}"
 
-    # Find the matching map entry by comparing basenames without extension.
+    # Find ALL matching map entries by comparing basenames without extension.
+    # Collect into a newline-separated list; error if more than one match found.
     local _rs_match=""
+    local _rs_all_matches=""
     local _rs_doc
     while IFS= read -r _rs_doc || [ -n "$_rs_doc" ]; do
       [ -n "$_rs_doc" ] || continue
       local _rs_doc_base
       _rs_doc_base="$(basename "$_rs_doc" .md)"
       if [ "$_rs_doc_base" = "$_rs_base" ]; then
-        _rs_match="$_rs_doc"
-        break
+        _rs_all_matches="${_rs_all_matches}${_rs_doc}"$'\n'
       fi
     done <<_RS_MAP_EOF
 $_rs_all_docs
 _RS_MAP_EOF
+
+    # Count matches; refuse to auto-adopt when ambiguous.
+    local _rs_match_count
+    _rs_match_count="$(printf '%s' "$_rs_all_matches" | grep -c '.' || true)"
+    if [ "$_rs_match_count" -gt 1 ]; then
+      printf 'error: "%s" is ambiguous — multiple docs share that basename:\n' "$_rs_arg" >&2
+      printf '%s' "$_rs_all_matches" | sed 's/^/  /' >&2
+      printf 'use the full project-relative path to disambiguate\n' >&2
+      return 1
+    fi
+    _rs_match="$(printf '%s' "$_rs_all_matches" | head -1 || true)"
 
     if [ -z "$_rs_match" ]; then
       printf 'error: unknown doc "%s" — not found in docs-map.tsv\n' "$_rs_arg" >&2
