@@ -128,7 +128,11 @@ rite_markers_loaded() { return 0; }
 RITE_MARKER_REVIEW="sharkrite-local-review"
 RITE_MARKER_ASSESSMENT="sharkrite-assessment"
 RITE_MARKER_FOLLOWUP="sharkrite-followup-issue"
+RITE_MARKER_TEST_COVERS="sharkrite-test-covers"
+RITE_MARKER_ENFORCED_BY="sharkrite-enforced-by"
+RITE_MARKER_DOC_DRIFT="sharkrite-doc-drift"
 export RITE_MARKER_REVIEW RITE_MARKER_ASSESSMENT RITE_MARKER_FOLLOWUP
+export RITE_MARKER_TEST_COVERS RITE_MARKER_ENFORCED_BY RITE_MARKER_DOC_DRIFT
 STUB
 
   cat > "$_lib/utils/format-review.sh" << 'STUB'
