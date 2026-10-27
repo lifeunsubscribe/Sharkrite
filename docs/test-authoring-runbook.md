@@ -254,7 +254,7 @@ one) outweighs the one-time extraction.
 - **vitest** — add the mock to `setupFiles` in `vitest.config.ts`
   (e.g. `setupFiles: ['test/setup/mocks.ts']`); hoisted `vi.mock()` calls in
   that file are visible to every test without re-declaring.
-- **jest** — add the mock to `setupFilesAfterEach` (or `setupFiles` for
+- **jest** — add the mock to `setupFilesAfterEnv` (or `setupFiles` for
   module-level mocks) in `jest.config.*`; shared factory functions go in
   `test/helpers/` and are imported where needed.
 - **bats** — add the shared helper function or stub-dir setup to
