@@ -413,7 +413,7 @@ run_promote() {
   # Covers both the full-branch and single-issue cherry-pick paths; runs before
   # any dispatch so neither path burns time discovering the trust failure later.
   load_provider "${RITE_DEV_PROVIDER:-claude}"
-  provider_detect_cli || true
+  provider_detect_cli || exit 1
   if ! provider_healthcheck; then
     exit 1
   fi

@@ -1168,7 +1168,7 @@ rite_docs() {
 
   # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284).
   # load_provider was called at module top; detect_cli populates CLAUDE_PROVIDER_CMD.
-  provider_detect_cli || true
+  provider_detect_cli || exit 1
   if ! provider_healthcheck; then
     exit 1
   fi

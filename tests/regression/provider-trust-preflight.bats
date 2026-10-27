@@ -8,7 +8,10 @@
 #   2. The abort message contains hasTrustDialogAccepted and the repo path
 #   3. A healthy stub passes with exit 0
 #   4. The stub receives --print (trivial invocation, not a full agentic session)
-#   5. All session-launching orchestrators call provider_healthcheck before running sessions
+#   5. Wired orchestrators (batch-process-issues.sh, workflow-runner.sh, promote-branch.sh,
+#      plan-issues.sh, docs-command.sh, conflict-resolver.sh, rite-health-report) call
+#      provider_healthcheck before running sessions (--review-latest, --assess-and-fix,
+#      rite-full-suite --investigate are not covered here)
 
 setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
@@ -185,29 +188,29 @@ _make_trusted_stub() {
 # ---------------------------------------------------------------------------
 
 @test "batch-process-issues.sh calls provider_healthcheck before processing issues" {
-  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/batch-process-issues.sh"
+  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/batch-process-issues.sh"
 }
 
 @test "workflow-runner.sh calls provider_healthcheck in run_workflow" {
-  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/workflow-runner.sh"
+  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/workflow-runner.sh"
 }
 
 @test "promote-branch.sh calls provider_healthcheck in run_promote" {
-  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/promote-branch.sh"
+  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/promote-branch.sh"
 }
 
 @test "plan-issues.sh calls provider_healthcheck in plan_issues" {
-  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/plan-issues.sh"
+  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/plan-issues.sh"
 }
 
 @test "docs-command.sh calls provider_healthcheck in rite_docs" {
-  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/core/docs-command.sh"
+  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/docs-command.sh"
 }
 
 @test "conflict-resolver.sh calls provider_healthcheck before agentic session" {
-  grep -q "provider_healthcheck" "$PROJECT_ROOT/lib/utils/conflict-resolver.sh"
+  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/utils/conflict-resolver.sh"
 }
 
 @test "rite-health-report calls provider_healthcheck before provider_run_prompt" {
-  grep -q "provider_healthcheck" "$PROJECT_ROOT/bin/rite-health-report"
+  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/bin/rite-health-report"
 }
