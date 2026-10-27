@@ -474,7 +474,7 @@ _docs_proposal_guards() {
       printf '  Size: %d → %d bytes (-%d bytes, %d%%)\n' \
         "$_pg_old_bytes" "$_pg_new_bytes" "$_pg_abs_delta" "$_pg_pct" >&2
     fi
-    if [ "$_pg_delta" -gt 0 ] && [ "$_pg_pct" -gt "$_pg_threshold" ]; then
+    if [ "$_pg_delta" -gt 0 ] && [ "$_pg_pct" -gt "$_pg_threshold" ] && [ -z "$_pg_desc" ]; then
       printf '  [FLAG] Growth +%d%% exceeds %d%% threshold — verify the description explains why\n' \
         "$_pg_pct" "$_pg_threshold" >&2
     fi
@@ -485,7 +485,7 @@ _docs_proposal_guards() {
   # ── Guard 2: shipped-product-only — date patterns ───────────────────────
   local _pg_date_hits=""
   _pg_date_hits="$(printf '%s' "$_pg_content" \
-    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}|[A-Z][a-z]+ [0-9]{4}|[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}' \
+    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}|(January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{4}|[0-9]{1,2}/[0-9]{1,2}/[0-9]{4}' \
     | sort -u || true)"
   if [ -n "$_pg_date_hits" ]; then
     printf '  [FLAG] Date patterns in proposed text (verify these are not implementation-specific):\n' >&2
@@ -609,6 +609,12 @@ ${_ue_excerpt}
   _ue_committer_names="$(git -C "$RITE_PROJECT_ROOT" log --format='%an' 2>/dev/null \
     | sort -u | awk 'length >= 3' || true)"
   local _ue_growth_threshold="${RITE_DOC_GROWTH_WARN_PCT:-15}"
+  case "$_ue_growth_threshold" in
+    *[!0-9]*|"")
+      printf 'Notice: RITE_DOC_GROWTH_WARN_PCT="%s" is not a valid integer — using default 15\n' \
+        "$_ue_growth_threshold" >&2
+      _ue_growth_threshold=15 ;;
+  esac
 
   local _ue_accum_fb=""
   local _ue_attempt=0
@@ -881,7 +887,7 @@ DOC_UPDATE_EOF
         [ "$_ue_total_lines" -gt 40 ] && \
           printf '  ... (%d lines total)\n' "$_ue_total_lines" >&2
         echo "" >&2
-        _docs_proposal_guards 0 "${#_ue_p_content}" "$_ue_p_content" \
+        _docs_proposal_guards 0 "$(printf '%s' "$_ue_p_content" | wc -c | tr -d ' ')" "$_ue_p_content" \
           "$_ue_p_desc" "$_ue_growth_threshold" "$_ue_committer_names"
       else
         # EDIT: show unified diff against origin/<target> content (what the worktree
@@ -901,13 +907,14 @@ DOC_UPDATE_EOF
         printf '%s' "$_ue_p_content" > "$_ue_new_tmp"
         diff -u "$_ue_old_tmp" "$_ue_new_tmp" >&2 || true
         echo "" >&2
-        local _ue_old_bytes _ue_new_bytes
+        local _ue_old_bytes _ue_new_bytes _ue_added_lines
         _ue_old_bytes="$(wc -c < "$_ue_old_tmp" 2>/dev/null || echo 0)"
         _ue_old_bytes="$(printf '%s' "$_ue_old_bytes" | tr -d ' ')"
         _ue_new_bytes="$(wc -c < "$_ue_new_tmp" 2>/dev/null || echo 0)"
         _ue_new_bytes="$(printf '%s' "$_ue_new_bytes" | tr -d ' ')"
+        _ue_added_lines="$(diff "$_ue_old_tmp" "$_ue_new_tmp" | grep '^>' | cut -c3- || true)"
         rm -f "$_ue_old_tmp" "$_ue_new_tmp"
-        _docs_proposal_guards "$_ue_old_bytes" "$_ue_new_bytes" "$_ue_p_content" \
+        _docs_proposal_guards "$_ue_old_bytes" "$_ue_new_bytes" "$_ue_added_lines" \
           "$_ue_p_desc" "$_ue_growth_threshold" "$_ue_committer_names"
       fi
 
@@ -1256,6 +1263,12 @@ _docs_main_entries_pass() {
   _mp_committer_names="$(git -C "$RITE_PROJECT_ROOT" log --format='%an' 2>/dev/null \
     | sort -u | awk 'length >= 3' || true)"
   local _mp_growth_threshold="${RITE_DOC_GROWTH_WARN_PCT:-15}"
+  case "$_mp_growth_threshold" in
+    *[!0-9]*|"")
+      printf 'Notice: RITE_DOC_GROWTH_WARN_PCT="%s" is not a valid integer — using default 15\n' \
+        "$_mp_growth_threshold" >&2
+      _mp_growth_threshold=15 ;;
+  esac
 
   local _mp_accum_fb=""
   local _mp_attempt=0
@@ -1599,7 +1612,7 @@ EOF_NAR
         [ "$_mp_total_lines" -gt 40 ] && \
           printf '  ... (%d lines total)\n' "$_mp_total_lines" >&2
         echo "" >&2
-        _docs_proposal_guards 0 "${#_mp_p_content}" "$_mp_p_content" \
+        _docs_proposal_guards 0 "$(printf '%s' "$_mp_p_content" | wc -c | tr -d ' ')" "$_mp_p_content" \
           "$_mp_p_desc" "$_mp_growth_threshold" "$_mp_committer_names"
       else
         local _mp_old_tmp _mp_new_tmp
@@ -1616,13 +1629,14 @@ EOF_NAR
         printf '%s' "$_mp_p_content" > "$_mp_new_tmp"
         diff -u "$_mp_old_tmp" "$_mp_new_tmp" >&2 || true
         echo "" >&2
-        local _mp_old_bytes _mp_new_bytes
+        local _mp_old_bytes _mp_new_bytes _mp_added_lines
         _mp_old_bytes="$(wc -c < "$_mp_old_tmp" 2>/dev/null || echo 0)"
         _mp_old_bytes="$(printf '%s' "$_mp_old_bytes" | tr -d ' ')"
         _mp_new_bytes="$(wc -c < "$_mp_new_tmp" 2>/dev/null || echo 0)"
         _mp_new_bytes="$(printf '%s' "$_mp_new_bytes" | tr -d ' ')"
+        _mp_added_lines="$(diff "$_mp_old_tmp" "$_mp_new_tmp" | grep '^>' | cut -c3- || true)"
         rm -f "$_mp_old_tmp" "$_mp_new_tmp"
-        _docs_proposal_guards "$_mp_old_bytes" "$_mp_new_bytes" "$_mp_p_content" \
+        _docs_proposal_guards "$_mp_old_bytes" "$_mp_new_bytes" "$_mp_added_lines" \
           "$_mp_p_desc" "$_mp_growth_threshold" "$_mp_committer_names"
       fi
 
