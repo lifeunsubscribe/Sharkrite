@@ -568,6 +568,12 @@ rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file cr
                            # Works in any consent mode — explicit command + preview approval
                            # IS consent. Can CREATE new docs (e.g. ADRs). Nothing in sharkrite
                            # edits docs without this approval loop (per-merge doc-sync retired).
+rite docs --resume <branch> # Resume a saved doc proposal from a terminal-less promote:
+                           # loads ${RITE_STATE_DIR}/doc-proposal-<safe-branch>.md, runs each
+                           # listed doc through the y/n/f approval loop (same as the TTY promote
+                           # path), applies approved changes via the docs-PR path, and removes
+                           # the proposal file after completion. Missing proposal → exit 1
+                           # listing available ${RITE_STATE_DIR}/doc-proposal-*.md files.
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
