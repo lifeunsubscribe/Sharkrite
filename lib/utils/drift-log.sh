@@ -865,13 +865,12 @@ migrate_legacy_drift_log() {
   local _mld_archive_dir="${RITE_STATE_DIR}/drift"
   local _mld_archive_path="${_mld_archive_dir}/legacy-archive.md"
 
-  # Idempotence guard: migration already ran on a prior align-docs run.
-  # If the legacy file was git-restored, stage its deletion again before returning.
-  if [ -f "$_mld_archive_path" ]; then
-    if [ -f "$_mld_legacy_path" ]; then
-      git -C "${RITE_PROJECT_ROOT:-.}" rm -f -- "$_mld_legacy_path" >/dev/null 2>&1 \
-        || rm -f "$_mld_legacy_path"
-    fi
+  # Idempotence guard: migration already ran AND the legacy file is gone — nothing to do.
+  # If the legacy file was re-created (changelog mode re-appends to it via
+  # _drift_log_append_legacy), fall through and migrate the new entries.
+  # drift_log_append is accumulate-in-place by (doc,assertion), so re-processing
+  # old entries that already landed is safe — only genuinely new entries are added.
+  if [ -f "$_mld_archive_path" ] && [ ! -f "$_mld_legacy_path" ]; then
     return 0
   fi
 
@@ -966,19 +965,23 @@ migrate_legacy_drift_log() {
     fi
   done <<< "$_mld_entries"
 
-  # Archive and remove legacy file so this migration never re-runs.
-  # git rm stages the deletion so the commit picks it up; fallback rm -f
-  # handles untracked files (e.g. in tests or non-git contexts).
+  # Archive and remove legacy file from disk. The idempotence guard (archive exists
+  # + no legacy file) prevents re-running when neither file changes.
+  # Do NOT use git rm here: _docs_apply_approved commits in a separate worktree
+  # forked from origin/<target>, so any staged deletion in the main checkout never
+  # lands. Notify the operator to commit the removal themselves.
   cp "$_mld_legacy_path" "$_mld_archive_path" || return 0
-  git -C "${RITE_PROJECT_ROOT:-.}" rm -f -- "$_mld_legacy_path" >/dev/null 2>&1 \
-    || rm -f "$_mld_legacy_path"
+  rm -f "$_mld_legacy_path"
 
   if declare -f print_info >/dev/null 2>&1; then
+    local _legacy_relpath
+    _legacy_relpath="${_mld_legacy_path#${RITE_PROJECT_ROOT:-}/}"
     if [ "$_mld_count" -gt 0 ]; then
       print_info "Migrated legacy drift log (${_mld_count} entries) — archived at ${_mld_archive_path_rel}"
     else
       print_info "Legacy drift log empty — archived at ${_mld_archive_path_rel}"
     fi
+    print_info "Legacy file removed from disk: commit the deletion — git rm ${_legacy_relpath}"
   fi
   return 0
 }
