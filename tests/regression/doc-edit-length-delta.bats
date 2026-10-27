@@ -128,6 +128,25 @@ teardown() {
   [[ "$output" == *"15%"* ]]
 }
 
+@test "1b: description present suppresses growth FLAG despite threshold exceeded" {
+  # Guard 1 fires only when _pg_desc is empty; a non-empty description suppresses it.
+  GUARD_OLD=100 GUARD_NEW=120 GUARD_CONTENT="extra content" \
+    GUARD_THRESHOLD=15 \
+    GUARD_DESC="Expanding section to cover new API surface introduced in PR #1234" \
+    run bash "$HELPER"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"[FLAG]"*"Growth"* ]]
+}
+
+@test "1b: description absent allows growth FLAG when threshold exceeded" {
+  # Explicit description-conditionality check: empty desc + growth > threshold → FLAG.
+  GUARD_OLD=100 GUARD_NEW=120 GUARD_CONTENT="extra content" \
+    GUARD_THRESHOLD=15 GUARD_DESC="" \
+    run bash "$HELPER"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[FLAG]"*"Growth"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Guard 1c: growth <= threshold → no FLAG
 # ---------------------------------------------------------------------------

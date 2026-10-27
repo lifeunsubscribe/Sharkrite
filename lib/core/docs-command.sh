@@ -475,7 +475,7 @@ _docs_proposal_guards() {
         "$_pg_old_bytes" "$_pg_new_bytes" "$_pg_abs_delta" "$_pg_pct" >&2
     fi
     if [ "$_pg_delta" -gt 0 ] && [ "$_pg_pct" -gt "$_pg_threshold" ] && [ -z "$_pg_desc" ]; then
-      printf '  [FLAG] Growth +%d%% exceeds %d%% threshold — verify the description explains why\n' \
+      printf '  [FLAG] Growth +%d%% exceeds %d%% threshold — no DESCRIPTION: line found; add one to explain the growth\n' \
         "$_pg_pct" "$_pg_threshold" >&2
     fi
   else
