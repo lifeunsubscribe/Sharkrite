@@ -1924,8 +1924,8 @@ docs_run_promote_doc_pass() {
 
   docs_map_ensure || true  # best-effort; engine can proceed with stale/missing map
 
-  # RITE_FORCE_TTY=1 allows tests to exercise the TTY branch without a real terminal.
-  if [ "${RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+  # _RITE_FORCE_TTY=1 allows tests to exercise the TTY branch without a real terminal.
+  if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
     # TTY: run the interactive propose/approve loop for each implicated doc.
     # _mp_target is explicitly "main" so the docs PR is not routed to the
     # now-deleted integration branch.

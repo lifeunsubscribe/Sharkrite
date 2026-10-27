@@ -268,8 +268,8 @@ set -euo pipefail
 export RITE_LIB_DIR="$_lib"
 export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
 export RITE_STATE_DIR="$_state_dir"
-# RITE_FORCE_TTY=1 exercises the TTY branch without a real terminal.
-export RITE_FORCE_TTY=1
+# _RITE_FORCE_TTY=1 exercises the TTY branch without a real terminal.
+export _RITE_FORCE_TTY=1
 source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
 
 drift_log_entry_count() { echo 2; }
