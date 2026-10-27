@@ -642,29 +642,40 @@ _build_available_tags_context() {
 
 _plan_streaming_awk() {
   local _end_tok="$1"
-  awk -v end_tok="$_end_tok" '
+  # dedup mode: "exit" (default) stops awk on a duplicate title (generate/regen
+  # paths — the model is looping); "skip" discards the duplicate block and
+  # continues (completion path — a dup title + a real missing block after it
+  # must not silently drop the real block).
+  local _dedup="${2:-exit}"
+  awk -v end_tok="$_end_tok" -v dedup="$_dedup" '
       # !in_issue guard: body content that is ---ISSUE--- does not reset the current block.
-      !in_issue && /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
+      !in_issue && /^---ISSUE---$/ { in_issue = 1; skip_blk = 0; buf = $0 "\n"; title = ""; next }
       in_issue {
         buf = buf $0 "\n"
         if ($0 ~ /^TITLE: /) {
           title = substr($0, 8)
-          if (title in seen) { exit }
-          seen[title] = 1
+          if (title in seen) {
+            if (dedup == "skip") { skip_blk = 1 } else { exit }
+          } else {
+            seen[title] = 1
+          }
         }
         if ($0 == end_tok) {
-          # Escape canonical markers ONLY in the body: carve off the structural
-          # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
-          # rebuild it with a literal canonical terminator. gsub over the whole
-          # buf destroyed the opening marker (#1483); the all-occurrences token
-          # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
-          head_len = length("---ISSUE---\n")
-          tail_len = length($0) + 1
-          body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
-          gsub("---END---",   "<!--rite-end-esc-->",   body)
-          gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
-          buf = "---ISSUE---\n" body "---END---\n"
-          in_issue = 0; printf "%s", buf; buf = ""
+          if (!skip_blk) {
+            # Escape canonical markers ONLY in the body: carve off the structural
+            # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+            # rebuild it with a literal canonical terminator. gsub over the whole
+            # buf destroyed the opening marker (#1483); the all-occurrences token
+            # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+            head_len = length("---ISSUE---\n")
+            tail_len = length($0) + 1
+            body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+            gsub("---END---",   "<!--rite-end-esc-->",   body)
+            gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+            buf = "---ISSUE---\n" body "---END---\n"
+            printf "%s", buf
+          }
+          in_issue = 0; skip_blk = 0; buf = ""
         }
         next
       }
@@ -3768,12 +3779,13 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
   # prose or a re-emitted checklist must not leak into the slate.
   # Route through _plan_streaming_awk so the frame-rebuild + escape logic has
   # one implementation; a fix there applies to both the primary generation path
-  # and this targeted completion path automatically. Targeted completion never
-  # re-emits already-seen titles, so the dedup-exit in _plan_streaming_awk is a
-  # non-event here; non-issue pass-through lines are harmless (the title-guard
-  # shell loop below ignores anything that is not an ---ISSUE--- block).
+  # and this targeted completion path automatically. Use "skip" dedup mode so
+  # that a completion response echoing a known title followed by a real missing
+  # block doesn't exit awk early and silently drop the real block. Non-issue
+  # pass-through lines are harmless (the title-guard shell loop below ignores
+  # anything that is not an ---ISSUE--- block).
   local _blocks
-  _blocks=$(_plan_streaming_awk "$_end_token" < "$_completion_file" || true)
+  _blocks=$(_plan_streaming_awk "$_end_token" "skip" < "$_completion_file" || true)
   rm -f "$_completion_file"
 
   if [ -z "$_blocks" ]; then
@@ -3823,7 +3835,11 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
   done < <(printf '%s\n' "$_blocks")
 
   if [ -z "$_filtered_blocks" ]; then
-    print_warning "Targeted completion: all ${_rejected_count} block(s) rejected by title-guard — keeping the partial slate" >&2
+    if [ "${_rejected_count}" -eq 0 ]; then
+      print_warning "Targeted completion emitted no well-formed issue block — keeping the partial slate" >&2
+    else
+      print_warning "Targeted completion: all ${_rejected_count} block(s) rejected by title-guard — keeping the partial slate" >&2
+    fi
     return 0
   fi
   [ "${_rejected_count}" -gt 0 ] && \
