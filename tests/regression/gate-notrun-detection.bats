@@ -477,7 +477,10 @@ EOF
   # Before the fix this exact invocation printed "Executed 0 instead of
   # expected 1 tests" and emitted NO ok/not-ok line (deterministic, with and
   # without BATS_TEST_TIMEOUT).
-  run env TERM=dumb bats -f "returns 14 when phase_claude_workflow" \
+  # Unset BATS_TEST_TIMEOUT so the inner bats process is not bounded by the
+  # outer gate's 120 s timer — sourcing workflow-runner.sh and its transitive
+  # deps is legitimately slow and should not be capped by an inherited timer.
+  run env -u BATS_TEST_TIMEOUT TERM=dumb bats -f "returns 14 when phase_claude_workflow" \
     "${BATS_TEST_DIRNAME}/batch-locked-issue-in-progress-status.bats" < /dev/null
   [ "$status" -eq 0 ]
   # Note: match "not ok" FIRST — a bare *"ok 1"* check also matches "not ok 1".

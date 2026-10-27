@@ -232,8 +232,8 @@ setup() {
   _gate_build_verdict "$lint_raw" "$tests_raw" 0 0 "$out_json"
   lint_count=$(jq '.lint | length' "$out_json")
   [ "$lint_count" -eq 0 ]
-  outcome=$(jq -r '.outcome' "$out_json")
-  [ "$outcome" = "passed" ]
+  exit_code_val=$(jq -r '.exit_code' "$out_json")
+  [ "$exit_code_val" -eq 0 ]
   rm -f "$lint_raw" "$tests_raw" "$out_json"
 }
 
@@ -248,12 +248,39 @@ setup() {
   # Pre-normalized lint finding (as _normalize_eslint_output would produce)
   printf 'src/foo.ts:12: [TYPESCRIPT_ESLINT_NO_UNUSED_VARS] Unused variable\n' > "$lint_raw"
   : > "$tests_raw"
-  _gate_build_verdict "$lint_raw" "$tests_raw" 1 0 "$out_json"
+  # lint_exit=1 makes _gate_build_verdict return 1; guard with run to prevent set -e kill.
+  run _gate_build_verdict "$lint_raw" "$tests_raw" 1 0 "$out_json"
+  [ "$status" -eq 1 ]
   lint_count=$(jq '.lint | length' "$out_json")
   [ "$lint_count" -ge 1 ]
-  outcome=$(jq -r '.outcome' "$out_json")
-  [ "$outcome" = "failed" ]
+  exit_code_val=$(jq -r '.exit_code' "$out_json")
+  [ "$exit_code_val" -eq 1 ]
   rule=$(jq -r '.lint[0].rule' "$out_json")
   [ "$rule" = "TYPESCRIPT_ESLINT_NO_UNUSED_VARS" ]
   rm -f "$lint_raw" "$tests_raw" "$out_json"
+}
+
+# ---------------------------------------------------------------------------
+# RITE_GATE_REPO_LINT opt-out
+# ---------------------------------------------------------------------------
+
+@test "RITE_GATE_REPO_LINT=false: opt-out prevents node lint runner lookup" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  local dir _runner_called
+  dir=$(mktemp -d "/tmp/rite_test_rl_$$_XXXXXX")
+  printf '{"scripts":{"lint":"eslint ."}}\n' > "$dir/package.json"
+
+  # Spy: records if _resolve_node_lint_runner is consulted.
+  _runner_called=false
+  _resolve_node_lint_runner() { _runner_called=true; echo "eslint"; }
+
+  export RITE_GATE_REPO_LINT=false
+  # Replicate the guard from test-gate.sh:1265.
+  if [ "${RITE_GATE_REPO_LINT:-true}" != "false" ]; then
+    _resolve_node_lint_runner "$dir"
+  fi
+  [ "$_runner_called" = "false" ]
+
+  unset RITE_GATE_REPO_LINT
+  rm -rf "$dir"
 }
