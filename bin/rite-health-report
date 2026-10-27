@@ -26,7 +26,7 @@ DATA_DIR="${RITE_DATA_DIR:-.rite}"
 LOGS_DIR="$PROJECT_ROOT/$DATA_DIR/logs"
 REPORTS_DIR="$PROJECT_ROOT/$DATA_DIR/reports"
 DISPLAY_MODE=false
-_COMPUTE_RF_ONLY=false
+_COMPUTE_BLOCK=""
 # Minimum workflow completions in the window before a full report is generated.
 # Override for high- or low-volume projects via RITE_HEALTH_MIN_WORKFLOWS.
 MIN_WORKFLOWS="${RITE_HEALTH_MIN_WORKFLOWS:-3}"
@@ -67,15 +67,21 @@ case "${1:-}" in
     DISPLAY_MODE=true
     ;;
   --compute-rf-block)
-    # Testing seam: compute RF_BLOCK from RITE_HEALTH_LOGFILES, print, exit.
-    # Bypasses claude/jq checks and the minimum-workflow gate so unit tests can
-    # exercise the precompute pipeline directly without a full report run.
-    _COMPUTE_RF_ONLY=true
+    # Testing seam: compute a named precomputed block from RITE_HEALTH_LOGFILES,
+    # print, exit.  Bypasses claude/jq checks and the minimum-workflow gate so
+    # unit tests can exercise the precompute pipelines directly.
+    _COMPUTE_BLOCK="rf"
+    ;;
+  --compute-cr-top5-block)
+    _COMPUTE_BLOCK="cr_top5"
+    ;;
+  --compute-cr-median-block)
+    _COMPUTE_BLOCK="cr_median"
     ;;
 esac
 
-# Pre-checks (skipped in --compute-rf-block mode which needs no LLM or jq)
-if [ "$_COMPUTE_RF_ONLY" = "false" ]; then
+# Pre-checks (skipped in seam modes which need no LLM or jq)
+if [ -z "$_COMPUTE_BLOCK" ]; then
   if ! command -v claude &>/dev/null; then
     echo "Error: claude CLI not found. Required for report analysis."
     exit 1
@@ -134,8 +140,8 @@ if [ -d "$LOGS_DIR" ]; then
     fi
   done < <(find "$LOGS_DIR" -name "rite-*.log" -type f 2>/dev/null | sort)
 fi
-# Testing seam: explicit log-file list overrides the filesystem scan (--compute-rf-block mode only).
-if [ "$_COMPUTE_RF_ONLY" = "true" ] && [ -n "${RITE_HEALTH_LOGFILES:-}" ]; then
+# Testing seam: explicit log-file list overrides the filesystem scan (any --compute-*-block mode).
+if [ -n "$_COMPUTE_BLOCK" ] && [ -n "${RITE_HEALTH_LOGFILES:-}" ]; then
   RECENT_LOGS=()
   for _rf_logfile in $RITE_HEALTH_LOGFILES; do
     RECENT_LOGS+=("$_rf_logfile")
@@ -191,6 +197,10 @@ if [ -n "$CR_LINES" ]; then
     [ -n "$_cr_top5_parts" ] && CR_TOP5_ISSUES="$_cr_top5_parts"
   fi
 fi
+if [ "$_COMPUTE_BLOCK" = "cr_top5" ]; then
+  printf '%s\n' "$CR_TOP5_ISSUES"
+  exit 0
+fi
 
 # --- Pre-compute median resolution duration from CR_LINES ---
 # Include only outcomes where the resolver actually ran: resolved, failed, cap_hit.
@@ -219,6 +229,10 @@ if [ -n "$CR_LINES" ]; then
       [ -n "$_cr_median_val" ] && CR_MEDIAN_DURATION_S="${_cr_median_val}s"
     fi
   fi
+fi
+if [ "$_COMPUTE_BLOCK" = "cr_median" ]; then
+  printf '%s\n' "$CR_MEDIAN_DURATION_S"
+  exit 0
 fi
 
 # --- Pre-parse test gate stats for health checks ---
@@ -411,7 +425,7 @@ if [ -n "$_rf_raw_headers" ]; then
 fi
 
 # --compute-rf-block: output the precomputed block and exit before LLM/claude.
-if [ "$_COMPUTE_RF_ONLY" = "true" ]; then
+if [ "$_COMPUTE_BLOCK" = "rf" ]; then
   printf '%s\n' "$RF_BLOCK"
   exit 0
 fi
