@@ -542,9 +542,14 @@ drift_log_remove_entry() {
 # Per-branch entry files live at:
 #   ${RITE_STATE_DIR}/doc-drift/<branch>/<doc-slug>.log
 #
-# Discovery: find by exact filename so each match is removed individually
-# (no glob pattern in a trap handler — #345 class requirement).
-# Lock files for in-flight appends are also removed.
+# Discovery: iterates branch directories explicitly and constructs the exact
+# entry path — no glob pattern in find -name (prevents false matches on paths
+# containing [, ], ?, * characters — #345 class requirement).
+#
+# Locking: acquires per-file lock_acquire/lock_release (same protocol as
+# drift_log_append/#706) before each rm to prevent a racing appender from
+# resurrecting cleared state.  The .lock file itself is never removed — it is
+# a live ln(1) lock file managed by lock_acquire/lock_release.
 #
 # Returns 0 always — missing files or RITE_STATE_DIR are not errors.
 # ---------------------------------------------------------------------------
@@ -558,12 +563,20 @@ drift_log_clear_doc() {
 
   [ -d "$_dlcd_base" ] || return 0
 
-  local _dlcd_f
-  while IFS= read -r _dlcd_f; do
+  local _dlcd_branch_dir _dlcd_f _dlcd_lock
+  while IFS= read -r _dlcd_branch_dir; do
+    [ -d "$_dlcd_branch_dir" ] || continue
+    _dlcd_f="${_dlcd_branch_dir}/${_dlcd_slug}.log"
     [ -f "$_dlcd_f" ] || continue
-    rm -f "$_dlcd_f"
-    rm -f "${_dlcd_f}.lock"
-  done < <(find "$_dlcd_base" -name "${_dlcd_slug}.log" -type f 2>/dev/null || true)
+    _dlcd_lock="${_dlcd_f}.lock"
+    if lock_acquire "$_dlcd_lock" 30; then
+      rm -f "$_dlcd_f"
+      lock_release "$_dlcd_lock"
+    else
+      printf 'drift_log_clear_doc: could not acquire lock for "%s" within 30s — skipping\n' \
+        "$_dlcd_f" >&2
+    fi
+  done < <(find "$_dlcd_base" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)
 
   return 0
 }
