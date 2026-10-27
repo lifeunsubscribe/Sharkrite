@@ -183,28 +183,53 @@ _make_trusted_stub() {
 # These are structural grep tests (section 8 of the test authoring runbook):
 # the invariant is "the call is present in the right place" — a property that
 # code cannot express behaviorally without sourcing and exercising giant
-# orchestrators. One grep per file, targeted to the function that owns the
-# provider sessions.
+# orchestrators. One grep per file; tests that name a specific function use
+# awk to extract that function's body before grepping so a guard relocated
+# to a different function in the same file would be caught.
 # ---------------------------------------------------------------------------
 
 @test "batch-process-issues.sh calls provider_healthcheck before processing issues" {
   grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/batch-process-issues.sh"
 }
 
-@test "workflow-runner.sh calls provider_healthcheck in run_workflow" {
-  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/workflow-runner.sh"
+@test "workflow-runner.sh calls provider_healthcheck in main before run_workflow" {
+  _body=$(awk '
+    /^main[(][)]/ { in_func=1 }
+    in_func && /^[a-z_]+[(][)] \{/ && !/^main/ { exit }
+    in_func { print }
+  ' "$PROJECT_ROOT/lib/core/workflow-runner.sh")
+  [ -n "$_body" ]
+  echo "$_body" | grep -qE "^[[:space:]]*if ! provider_healthcheck"
 }
 
 @test "promote-branch.sh calls provider_healthcheck in run_promote" {
-  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/promote-branch.sh"
+  _body=$(awk '
+    /^run_promote[(][)]/ { in_func=1 }
+    in_func && /^[a-z_]+[(][)] \{/ && !/^run_promote/ { exit }
+    in_func { print }
+  ' "$PROJECT_ROOT/lib/core/promote-branch.sh")
+  [ -n "$_body" ]
+  echo "$_body" | grep -qE "^[[:space:]]*if ! provider_healthcheck"
 }
 
 @test "plan-issues.sh calls provider_healthcheck in plan_issues" {
-  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/plan-issues.sh"
+  _body=$(awk '
+    /^plan_issues[(][)]/ { in_func=1 }
+    in_func && /^[a-z_]+[(][)] \{/ && !/^plan_issues/ { exit }
+    in_func { print }
+  ' "$PROJECT_ROOT/lib/core/plan-issues.sh")
+  [ -n "$_body" ]
+  echo "$_body" | grep -qE "^[[:space:]]*if ! provider_healthcheck"
 }
 
 @test "docs-command.sh calls provider_healthcheck in rite_docs" {
-  grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/lib/core/docs-command.sh"
+  _body=$(awk '
+    /^rite_docs[(][)]/ { in_func=1 }
+    in_func && /^[a-z_]+[(][)] \{/ && !/^rite_docs/ { exit }
+    in_func { print }
+  ' "$PROJECT_ROOT/lib/core/docs-command.sh")
+  [ -n "$_body" ]
+  echo "$_body" | grep -qE "^[[:space:]]*if ! provider_healthcheck"
 }
 
 @test "conflict-resolver.sh calls provider_healthcheck before agentic session" {

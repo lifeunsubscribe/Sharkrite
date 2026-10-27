@@ -503,7 +503,7 @@ the resolved files after this session ends."
   load_provider "${RITE_DEV_PROVIDER:-claude}"
 
   # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
-  provider_detect_cli || return 1
+  provider_detect_cli || { git merge --abort 2>/dev/null || true; return 1; }
   if ! provider_healthcheck; then
     git merge --abort 2>/dev/null || true
     return 1
