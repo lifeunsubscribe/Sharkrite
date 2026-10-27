@@ -243,9 +243,24 @@ _docs_apply_approved() {
       continue
     fi
 
+    # Apply-site TOCTOU guard for REFINE: the file must exist in the worktree.
+    # If it was deleted between preview and apply, skip rather than create.
+    if [ "$_aa_action" = "REFINE" ] && [ ! -f "$_aa_target_file" ]; then
+      print_warning "Skipping REFINE for '${_aa_file}': file no longer exists in worktree — cannot append to a missing file" >&2
+      continue
+    fi
+
     mkdir -p "$(dirname "$_aa_target_file")"
-    # Strip trailing newline added by the accumulation loop (printf is idempotent)
-    printf '%s' "$_aa_content" > "$_aa_target_file"
+    if [ "$_aa_action" = "REFINE" ]; then
+      # REFINE appends to the existing file — does NOT overwrite it and does NOT
+      # call drift_log_append. The referenced drift entries are burned down via
+      # _aa_all_drift_refs below; no new entry is written (avoiding the
+      # feedback loop where approving a REFINE grows the trigger store).
+      printf '\n%s' "$_aa_content" >> "$_aa_target_file"
+    else
+      # EDIT / CREATE: write full content (strip trailing newline from accumulation)
+      printf '%s' "$_aa_content" > "$_aa_target_file"
+    fi
 
     # Accumulate drift refs (strip "none")
     if [ -n "$_aa_drift" ] && [ "$_aa_drift" != "none" ]; then
@@ -503,6 +518,18 @@ DESCRIPTION: <one-line summary>
 <complete content of the new file>
 ${_ue_end_token}
 
+For a targeted ADDITION to an existing file (use when the file is too large for EDIT, or only a small addition addresses the drift):
+---PROPOSAL---
+ACTION: REFINE
+FILE: <project-relative path of the existing file>
+DRIFT_REFS: <space-separated pr:N entries from drift log this addresses — REQUIRED, must not be "none">
+DESCRIPTION: <one-line summary of what is added and why>
+---CONTENT---
+<content to append to the file (new section, clarifying note, etc.)>
+${_ue_end_token}
+
+IMPORTANT: REFINE must never have DRIFT_REFS: none — a REFINE that addresses no drift entry will grow the backlog without burning any entry, so it is rejected. Use EDIT or CREATE for changes unrelated to drift entries.
+
 If no changes are needed, output only the line: NO_PROPOSALS_NEEDED
 DOC_UPDATE_EOF
 
@@ -675,6 +702,25 @@ DOC_UPDATE_EOF
           fi
         elif ! git -C "$RITE_PROJECT_ROOT" cat-file -e "origin/${_ue_target}:${_ue_p_file}" 2>/dev/null; then
           print_warning "  Auto-skipping EDIT for '${_ue_p_file}': file does not exist locally or on origin/${_ue_target} — use ACTION: CREATE for a new file" >&2
+          _ue_pi=$((_ue_pi + 1))
+          continue
+        fi
+      fi
+
+      # Refuse REFINE proposals with no drift refs — they would append to the file
+      # without burning any entry, growing the trigger store instead of shrinking it.
+      # This is the feedback-loop guard: every REFINE must address at least one entry.
+      if [ "$_ue_p_action" = "REFINE" ]; then
+        if [ -z "$_ue_p_drift" ] || [ "$_ue_p_drift" = "none" ]; then
+          print_warning "  Auto-skipping REFINE for '${_ue_p_file}': DRIFT_REFS is empty or 'none' — REFINE must address at least one drift entry; use EDIT or CREATE for changes unrelated to drift" >&2
+          _ue_pi=$((_ue_pi + 1))
+          continue
+        fi
+        # REFINE requires the target file to exist (it appends, not creates)
+        local _ue_abs_refine_check="${RITE_PROJECT_ROOT}/${_ue_p_file}"
+        if [ ! -f "$_ue_abs_refine_check" ] && \
+            ! git -C "$RITE_PROJECT_ROOT" cat-file -e "origin/${_ue_target}:${_ue_p_file}" 2>/dev/null; then
+          print_warning "  Auto-skipping REFINE for '${_ue_p_file}': file does not exist — use ACTION: CREATE for new files" >&2
           _ue_pi=$((_ue_pi + 1))
           continue
         fi
