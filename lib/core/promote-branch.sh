@@ -1067,6 +1067,11 @@ ${_promo_review_body}"
   # The code has already merged. Doc rejection never blocks anything. Every
   # failure path warns and falls through — promote's exit code is unchanged
   # (the #1278 no-bare-exit property). No bare `exit` in this block.
+  #
+  # ADR observations: the cross-doc just-in-case pass in docs_run_promote_doc_pass
+  # writes ADR observations to the ADR drift namespace (doc-drift-adr/) via
+  # adr_drift_log_append — NEVER as edits.  A wrong ADR edit is a wrong product.
+  # Observations are reconciled on-demand via `rite align-docs` (docs_reconcile_adr_drift).
   if ! declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
     if [ -f "$RITE_LIB_DIR/core/docs-command.sh" ]; then
       source "$RITE_LIB_DIR/core/docs-command.sh" 2>/dev/null || true
@@ -1075,6 +1080,14 @@ ${_promo_review_body}"
   if declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
     echo ""
     docs_run_promote_doc_pass "$BRANCH" "${PROMO_PR:-}" || true
+    # Report ADR observations recorded during this promotion (entries only, no edits)
+    if declare -f adr_drift_log_entry_count >/dev/null 2>&1; then
+      local _ph8_adr_count=0
+      _ph8_adr_count="$(adr_drift_log_entry_count --total || echo 0)"
+      if [ "${_ph8_adr_count:-0}" -gt 0 ]; then
+        print_info "Phase 8: ${_ph8_adr_count} ADR observation(s) recorded — run 'rite align-docs' to reconcile"
+      fi
+    fi
   else
     print_warning "Phase 8: docs_run_promote_doc_pass unavailable — skipping post-merge doc pass for '${BRANCH}'" >&2
   fi

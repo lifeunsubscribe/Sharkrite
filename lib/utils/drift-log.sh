@@ -530,6 +530,260 @@ drift_log_remove_entry() {
   trap - RETURN
 }
 
+# ===========================================================================
+# ADR DRIFT LOG — separate namespace for architectural observations at promote
+#
+# ADR entries live in ${RITE_STATE_DIR}/doc-drift-adr/<doc-slug>.log.
+# No branch dimension: ADR observations are global (the ADR describes the
+# whole product; promote sees only one branch's slice and must never edit it).
+#
+# Cleared only on reconcile (docs_reconcile_adr_drift in docs-command.sh) or
+# when the ADR itself is audited via `rite align-docs`.
+#
+# Public API (same naming pattern as the regular drift-log API above):
+#   adr_drift_log_append        — accumulate-in-place one ADR observation
+#   adr_drift_log_entry_count   — count entries (per-doc or total)
+#   adr_drift_log_remove_entry  — remove exactly one (doc, assertion) entry
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# _adr_drift_entry_path DOC
+#
+# Returns the absolute path to the ADR drift entry file for DOC.
+# Stored in a separate namespace (doc-drift-adr/) with no branch dimension.
+# Internal helper — not part of the public API.
+# ---------------------------------------------------------------------------
+_adr_drift_entry_path() {
+  local _adep_doc="$1"
+  local _adep_slug
+  _adep_slug="${_adep_doc//\//--}"
+  echo "${RITE_STATE_DIR:-}/doc-drift-adr/${_adep_slug}.log"
+}
+
+# ---------------------------------------------------------------------------
+# adr_drift_log_append DOC PR ISSUE ASSERTION KIND EVIDENCE
+#
+# Append or accumulate-in-place one ADR drift entry.
+# Reuses the same entry schema and lock protocol as drift_log_append but
+# writes to the ADR namespace (doc-drift-adr/) with no branch field.
+#
+# Arguments:
+#   $1  DOC       — repo-relative path of the implicated ADR doc
+#   $2  PR        — promotion PR number (or '-')
+#   $3  ISSUE     — issue number or '-'
+#   $4  ASSERTION — the architectural observation (one sentence, < 120 chars)
+#   $5  KIND      — one of: addition refinement contradiction test-scope
+#                   reference-missing
+#   $6  EVIDENCE  — changed paths or grep pattern that fired
+#
+# Returns 0 on success; 1 + stderr for invalid KIND.
+# ---------------------------------------------------------------------------
+adr_drift_log_append() {
+  local _adla_doc="$1"
+  local _adla_pr="$2"
+  local _adla_issue="$3"
+  local _adla_assertion="$4"
+  local _adla_kind="$5"
+  local _adla_evidence="$6"
+
+  if ! _drift_kind_valid "$_adla_kind"; then
+    printf 'adr_drift_log_append: invalid kind "%s"; valid: %s\n' \
+      "$_adla_kind" "$_DRIFT_VALID_KINDS" >&2
+    return 1
+  fi
+
+  if [ -z "${RITE_STATE_DIR:-}" ]; then
+    if declare -f print_warning >/dev/null 2>&1; then
+      print_warning "adr-drift-log: RITE_STATE_DIR unset — skipping append"
+    fi
+    return 0
+  fi
+
+  # Normalize free-text fields (same transforms as drift_log_append)
+  local _adla_assertion_norm _adla_evidence_norm
+  _adla_assertion_norm="${_adla_assertion//$'\t'/ }"
+  _adla_assertion_norm="${_adla_assertion_norm//$'\n'/ }"
+  _adla_assertion_norm="${_adla_assertion_norm//\\/}"
+  _adla_evidence_norm="${_adla_evidence//$'\t'/ }"
+  _adla_evidence_norm="${_adla_evidence_norm//$'\n'/ }"
+  _adla_evidence_norm="${_adla_evidence_norm//\\/}"
+
+  local _adla_entry_file
+  _adla_entry_file="$(_adr_drift_entry_path "$_adla_doc")"
+
+  mkdir -p "$(dirname "$_adla_entry_file")" || {
+    printf 'adr_drift_log_append: mkdir failed for "%s" — skipping\n' \
+      "$(dirname "$_adla_entry_file")" >&2
+    return 0
+  }
+
+  local _adla_recorded
+  _adla_recorded="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  local _adla_lock_path="${_adla_entry_file}.lock"
+  if ! lock_acquire "$_adla_lock_path" 30; then
+    printf 'adr_drift_log_append: could not acquire lock for "%s" within 30s\n' \
+      "$_adla_entry_file" >&2
+    return 0
+  fi
+  # shellcheck disable=SC2064
+  trap "lock_release '$_adla_lock_path'" RETURN
+
+  local _adla_found=0
+  local _adla_tmp="${_adla_entry_file}.tmp.$$"
+
+  if [ -f "$_adla_entry_file" ]; then
+    local _adla_awk_exit=0
+    awk -F'\t' 'BEGIN{OFS="\t"; matched=0}
+    {
+      hasdoc=0; hasassert=0; prfldidx=0
+      for (i=1; i<=NF; i++) {
+        if ($i == "doc=" _doc)                hasdoc=1
+        if ($i == "assertion=" _assertion)    hasassert=1
+        if (substr($i, 1, 3) == "pr=")        prfldidx=i
+      }
+      if (hasdoc && hasassert && prfldidx > 0) {
+        _prnums = substr($prfldidx, 4)
+        _check  = "," _prnums ","
+        if (index(_check, "," _newpr ",") == 0) {
+          $prfldidx = $prfldidx "," _newpr
+        }
+        matched=1
+      }
+      print
+    }
+    END { exit (matched ? 0 : 1) }
+    ' _doc="$_adla_doc" _assertion="$_adla_assertion_norm" _newpr="$_adla_pr" \
+      "$_adla_entry_file" > "$_adla_tmp" || _adla_awk_exit=$?
+
+    if [ "$_adla_awk_exit" -eq 0 ]; then
+      _adla_found=1
+      mv "$_adla_tmp" "$_adla_entry_file"
+    elif [ "$_adla_awk_exit" -eq 1 ]; then
+      rm -f "$_adla_tmp"
+    else
+      rm -f "$_adla_tmp"
+      lock_release "$_adla_lock_path"
+      trap - RETURN
+      return 0
+    fi
+  fi
+
+  if [ "$_adla_found" -eq 0 ]; then
+    printf 'doc=%s\tpr=%s\tissue=%s\tassertion=%s\tkind=%s\tevidence=%s\trecorded=%s\n' \
+      "$_adla_doc" "$_adla_pr" "$_adla_issue" \
+      "$_adla_assertion_norm" "$_adla_kind" "$_adla_evidence_norm" "$_adla_recorded" \
+      >> "$_adla_entry_file" || {
+      lock_release "$_adla_lock_path"
+      trap - RETURN
+      return 0
+    }
+  fi
+
+  lock_release "$_adla_lock_path"
+  trap - RETURN
+}
+
+# ---------------------------------------------------------------------------
+# adr_drift_log_entry_count [--doc DOC | --total]
+#
+# Count ADR drift entries in the doc-drift-adr/ namespace.
+# Returns 0 even when nothing exists (echoes "0").
+# ---------------------------------------------------------------------------
+adr_drift_log_entry_count() {
+  if [ -z "${RITE_STATE_DIR:-}" ]; then
+    echo "0"; return 0
+  fi
+
+  local _adlc_doc=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --doc)   _adlc_doc="$2"; shift 2 ;;
+      --total) shift ;;
+      *)       shift ;;
+    esac
+  done
+
+  local _adlc_base="${RITE_STATE_DIR}/doc-drift-adr"
+
+  if [ -n "$_adlc_doc" ]; then
+    local _adlc_entry
+    _adlc_entry="$(_adr_drift_entry_path "$_adlc_doc")"
+    [ -f "$_adlc_entry" ] || { echo "0"; return 0; }
+    grep -c '^doc=' "$_adlc_entry" || true
+    return 0
+  fi
+
+  [ -d "$_adlc_base" ] || { echo "0"; return 0; }
+  local _adlc_total=0 _adlc_f _adlc_fc
+  while IFS= read -r _adlc_f; do
+    [ -f "$_adlc_f" ] || continue
+    _adlc_fc="$(grep -c '^doc=' "$_adlc_f" || true)"
+    _adlc_total=$((_adlc_total + _adlc_fc))
+  done < <(find "$_adlc_base" -name '*.log' -type f 2>/dev/null || true)
+  echo "$_adlc_total"
+}
+
+# ---------------------------------------------------------------------------
+# adr_drift_log_remove_entry DOC ASSERTION
+#
+# Remove exactly the (DOC, ASSERTION) entry from the ADR drift store.
+# No-op when the file does not exist or no matching entry is found.
+# Returns 0 always.
+# ---------------------------------------------------------------------------
+adr_drift_log_remove_entry() {
+  local _adlre_doc="$1"
+  local _adlre_assertion="$2"
+
+  [ -z "${RITE_STATE_DIR:-}" ] && return 0
+
+  local _adlre_norm="${_adlre_assertion//$'\t'/ }"
+  _adlre_norm="${_adlre_norm//$'\n'/ }"
+  _adlre_norm="${_adlre_norm//\\/}"
+
+  local _adlre_entry_file
+  _adlre_entry_file="$(_adr_drift_entry_path "$_adlre_doc")"
+  [ -f "$_adlre_entry_file" ] || return 0
+
+  local _adlre_lock_path="${_adlre_entry_file}.lock"
+  if ! lock_acquire "$_adlre_lock_path" 30; then
+    return 0
+  fi
+  # shellcheck disable=SC2064
+  trap "lock_release '$_adlre_lock_path'" RETURN
+
+  local _adlre_tmp="${_adlre_entry_file}.tmp.$$"
+  local _adlre_awk_exit=0
+  awk -F'\t' '
+    {
+      hasdoc=0; hasassert=0
+      for (i=1; i<=NF; i++) {
+        if ($i == "doc=" _doc)             hasdoc=1
+        if ($i == "assertion=" _assertion) hasassert=1
+      }
+      if (hasdoc && hasassert) next
+      print
+    }
+  ' _doc="$_adlre_doc" _assertion="$_adlre_norm" \
+    "$_adlre_entry_file" > "$_adlre_tmp" || _adlre_awk_exit=$?
+
+  if [ "$_adlre_awk_exit" -ne 0 ]; then
+    rm -f "$_adlre_tmp"
+    lock_release "$_adlre_lock_path"
+    trap - RETURN
+    return 0
+  fi
+
+  mv "$_adlre_tmp" "$_adlre_entry_file"
+
+  local _adlre_remaining
+  _adlre_remaining="$(grep -c '^doc=' "$_adlre_entry_file" || true)"
+  [ "${_adlre_remaining:-0}" -eq 0 ] && rm -f "$_adlre_entry_file"
+
+  lock_release "$_adlre_lock_path"
+  trap - RETURN
+}
+
 # ===================================================================
 # PUBLIC: drift_log_union_merge <log_path>
 # ===================================================================
