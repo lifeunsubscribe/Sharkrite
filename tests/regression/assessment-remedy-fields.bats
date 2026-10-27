@@ -55,7 +55,7 @@ teardown() {
 # ─── Test 3: Static — parse case for Suggested Fix ───────────────────────────
 
 @test "assess-review-issues.sh: while-read loop has case arm for **Suggested Fix:**" {
-  run grep -n 'Suggested.*Fix:\*\*\*)' "$ASSESS_REVIEW_SCRIPT"
+  run grep -Fn '\*\*Suggested\ Fix:\*\**)' "$ASSESS_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
     echo "FAIL: No case arm for '**Suggested Fix:**' found in $ASSESS_REVIEW_SCRIPT"
     false
@@ -65,7 +65,7 @@ teardown() {
 # ─── Test 4: Static — parse case for Verification ────────────────────────────
 
 @test "assess-review-issues.sh: while-read loop has case arm for **Verification:**" {
-  run grep -n 'Verification:\*\*\*)' "$ASSESS_REVIEW_SCRIPT"
+  run grep -Fn '\*\*Verification:\*\**)' "$ASSESS_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
     echo "FAIL: No case arm for '**Verification:**' found in $ASSESS_REVIEW_SCRIPT"
     false

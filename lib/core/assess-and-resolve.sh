@@ -2332,9 +2332,9 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       in_field { print }
     ' | sed 's/[[:space:]]*$//' | awk 'NF || in_content { in_content=1; print }' || true)
     _f_context="${_f_context:-}"
-    _f_suggested_fix=$(echo "$_finding_block" | grep -oE '\*\*Suggested Fix:\*\*.*' | head -1 | sed 's/\*\*Suggested Fix:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_suggested_fix=$(echo "$_finding_block" | grep -oE '\*\*Suggested Fix:\*\*.*' | head -1 | sed 's/\*\*Suggested Fix:\*\*[[:space:]]*//' || true)
     _f_suggested_fix="${_f_suggested_fix:-}"
-    _f_verification=$(echo "$_finding_block" | grep -oE '\*\*Verification:\*\*.*' | head -1 | sed 's/\*\*Verification:\*\*[[:space:]]*//' | sed 's/\*//g' || true)
+    _f_verification=$(echo "$_finding_block" | grep -oE '\*\*Verification:\*\*.*' | head -1 | sed 's/\*\*Verification:\*\*[[:space:]]*//' || true)
     _f_verification="${_f_verification:-}"
 
     # Skip LOW severity items — excluded from follow-up issues (same as per-item path).
@@ -2420,8 +2420,15 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # Seed from Location (file:line) when available; fall back to the clean title.
     _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
     if [ -n "${_f_verification:-}" ]; then
-      # Assessor supplied a concrete verification command — use it directly.
-      _verification_cmd="${_f_verification}"
+      # Allowlist validation: _f_verification is LLM-derived; block shell injection
+      # metacharacters (backtick, dollar, semicolon, pipe, ampersand, redirections)
+      # before embedding in generated issue bodies.  Degrade to prose on failure so
+      # the finding is never silently lost.  Aligns with _loc_path sanitization below.
+      if printf '%s' "${_f_verification}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
+        _verification_cmd="${_f_verification}"
+      else
+        _verification_cmd="# TODO: verify manually — assessor suggested: ${_f_verification}"
+      fi
     elif [ -n "$_f_location" ]; then
       # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
       # Strip any trailing description after whitespace; then split on the last colon

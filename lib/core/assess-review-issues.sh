@@ -1266,8 +1266,15 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # command derived from Location + severity-appropriate done definition.
           _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}"
           if [ -n "${ITEM_VERIFICATION:-}" ]; then
-            # Assessor supplied a concrete verification command — use it directly.
-            _verification_cmd="${ITEM_VERIFICATION}"
+            # Allowlist validation: ITEM_VERIFICATION is LLM-derived; block shell
+            # injection metacharacters before embedding in generated issue bodies.
+            # Degrade to prose on failure so the finding is never silently lost.
+            # Aligns with _loc_path sanitization below and assess-and-resolve.sh.
+            if printf '%s' "${ITEM_VERIFICATION}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
+              _verification_cmd="${ITEM_VERIFICATION}"
+            else
+              _verification_cmd="# TODO: verify manually — assessor suggested: ${ITEM_VERIFICATION}"
+            fi
           elif [ -n "${ITEM_LOCATION:-}" ]; then
             # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
             # Strip any trailing description after whitespace; then split on the last colon
