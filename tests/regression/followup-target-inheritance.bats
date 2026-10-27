@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/claude-workflow.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/assess-review-issues.sh, lib/core/claude-workflow.sh, lib/core/workflow-runner.sh
 # tests/regression/followup-target-inheritance.bats
 #
 # Regression test: follow-ups filed during a --branch X batch run must NOT
@@ -46,6 +46,7 @@
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
 ASSESS_AND_RESOLVE="$REPO_ROOT/lib/core/assess-and-resolve.sh"
+ASSESS_REVIEW_ISSUES="$REPO_ROOT/lib/core/assess-review-issues.sh"
 CLAUDE_WORKFLOW="$REPO_ROOT/lib/core/claude-workflow.sh"
 
 setup() {
@@ -55,6 +56,10 @@ setup() {
   }
   [ -f "$ASSESS_AND_RESOLVE" ] || {
     echo "FATAL: $ASSESS_AND_RESOLVE not found" >&2
+    return 1
+  }
+  [ -f "$ASSESS_REVIEW_ISSUES" ] || {
+    echo "FATAL: $ASSESS_REVIEW_ISSUES not found" >&2
     return 1
   }
   [ -f "$CLAUDE_WORKFLOW" ] || {
@@ -85,6 +90,27 @@ setup() {
   echo "$_creation_block" | grep -qF "followup-no-inherit" || {
     echo "FAIL: followup-no-inherit marker write is not near the FOLLOWUP_NUMBERS assignment" >&2
     echo "      It must be in the same _new_issue_num confirmed block" >&2
+    return 1
+  }
+}
+
+@test "structural: assess-review-issues.sh writes followup-no-inherit marker at per-item creation site" {
+  grep -qF "followup-no-inherit" "$ASSESS_REVIEW_ISSUES" || {
+    echo "FAIL: 'followup-no-inherit' marker write not found in assess-review-issues.sh" >&2
+    echo "      assess-review-issues.sh per-item ACTIONABLE_LATER creation must write the marker" >&2
+    return 1
+  }
+
+  # Marker write must be near the NEW_ISSUE confirmation block
+  _creation_block=$(awk '
+    /if \[ -n "\$NEW_ISSUE" \]/ { found=1 }
+    found { print; count++ }
+    count > 20 { exit }
+  ' "$ASSESS_REVIEW_ISSUES")
+
+  echo "$_creation_block" | grep -qF "followup-no-inherit" || {
+    echo "FAIL: followup-no-inherit marker write is not near the NEW_ISSUE confirmation block" >&2
+    echo "      It must be written immediately after NEW_ISSUE is confirmed non-empty" >&2
     return 1
   }
 }
@@ -472,22 +498,27 @@ set -euo pipefail
 RITE_STATE_DIR="${_tmpdir}"
 ISSUE_NUMBER="${_issue_num}"
 
-# Simulate resolve_target_branch: returns state-file value when present, else main
+# Simulate resolve_target_branch: sets RESOLVED_TARGET_BRANCH/SOURCE and echoes.
+# Called in the same shell (not subshell) so the variable assignments survive.
 resolve_target_branch() {
   local _issue="\${1:-}"
   local _state="\${RITE_STATE_DIR}/target-branch-\${_issue}.txt"
   if [ -f "\$_state" ]; then
-    cat "\$_state"
+    RESOLVED_TARGET_BRANCH="\$(cat "\$_state")"
     RESOLVED_TARGET_SOURCE="state"
+    echo "\$RESOLVED_TARGET_BRANCH"
   else
-    echo "main"
+    RESOLVED_TARGET_BRANCH="main"
     RESOLVED_TARGET_SOURCE="default"
+    echo "\$RESOLVED_TARGET_BRANCH"
   fi
 }
 RESOLVED_TARGET_SOURCE="default"
 
-# Step 2: first resolution hits the poisoned state file
-_target1=\$(resolve_target_branch "\$ISSUE_NUMBER")
+# Step 2: first resolution hits the poisoned state file.
+# Call in the same shell (>/dev/null suppresses echo) so RESOLVED_TARGET_SOURCE is set.
+resolve_target_branch "\$ISSUE_NUMBER" >/dev/null
+_target1="\${RESOLVED_TARGET_BRANCH:-main}"
 [ "\$_target1" = "doc-refactor" ] || {
   echo "FAIL: expected state file to return 'doc-refactor', got '\$_target1'" >&2
   exit 1
@@ -504,8 +535,10 @@ if [ "\$RITE_TARGET_BRANCH" = "main" ] && [ -n "\${RITE_STATE_DIR:-}" ] && [ -n 
   rm -f "\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt" 2>/dev/null || true
 fi
 
-# Step 5: re-resolve (simulates check_branch_mismatch on the corrected-command run)
-_target2=\$(resolve_target_branch "\$ISSUE_NUMBER")
+# Step 5: re-resolve (simulates check_branch_mismatch on the corrected-command run).
+# Same-shell call so RESOLVED_TARGET_BRANCH is set.
+resolve_target_branch "\$ISSUE_NUMBER" >/dev/null
+_target2="\${RESOLVED_TARGET_BRANCH:-main}"
 
 # Step 6: must now return "main" (no state file, default wins)
 [ "\$_target2" = "main" ] || {
