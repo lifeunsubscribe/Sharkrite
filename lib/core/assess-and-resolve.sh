@@ -354,7 +354,7 @@ _resolve_issue_labels() {
   local _cat="${3:-}"
   local _priority
   _priority=$(_resolve_priority_label "$_sev")
-  if echo "${_cat}" | grep -qiE "^[[:space:]]*security[[:space:]]*$"; then
+  if echo "${_cat}" | grep -qiE "(^|[^[:alnum:]])security([^[:alnum:]]|$)"; then
     _priority="priority-high"
     echo "${_base},${_priority},security"
   else

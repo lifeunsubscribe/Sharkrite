@@ -14,8 +14,9 @@
 #   4. Unit: Performance/MEDIUM → priority-medium (non-Security unchanged)
 #   5. Unit: UX/LOW → priority-low (non-Security unchanged)
 #   6. Unit: multi-part base label (tech-debt,from-review) + Security/MEDIUM → correct string
-#   7. Static: assess-review-issues.sh calls _resolve_issue_labels for the per-item path
-#   8. Static: assess-and-resolve.sh calls _resolve_issue_labels for the rollup path
+#   7. Unit: compound category "Security / Input Validation" fires security floor
+#   8. Static: assess-review-issues.sh calls _resolve_issue_labels for the per-item path
+#   9. Static: assess-and-resolve.sh calls _resolve_issue_labels for the rollup path
 
 load '../helpers/setup.bash'
 
@@ -136,27 +137,45 @@ _run_resolve() {
   }
 }
 
-# ─── Test 7: Static — assess-review-issues.sh uses _resolve_issue_labels ─────
+# ─── Test 7: Compound category "Security / Input Validation" still fires floor ─
+
+@test "_resolve_issue_labels: compound category 'Security / Input Validation' fires security floor" {
+  # Regression: word-boundary pattern must match "security" within a compound
+  # category like "Security / Input Validation", not just bare "Security".
+  _run_resolve "tech-debt" "MEDIUM" "Security / Input Validation"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: subshell exited non-zero ($status): $output"
+    false
+  }
+  [ "$output" = "tech-debt,priority-high,security" ] || {
+    echo "FAIL: expected 'tech-debt,priority-high,security', got: '$output'"
+    false
+  }
+}
+
+# ─── Test 9: Static — assess-review-issues.sh uses _resolve_issue_labels ─────
 
 @test "assess-review-issues.sh: per-item creation calls _resolve_issue_labels" {
   # Structural pin: the per-item ACTIONABLE_LATER creation path must use
   # _resolve_issue_labels (not the old inline severity-only case statement).
-  run grep -n "_resolve_issue_labels" "$ASSESS_REVIEW_SCRIPT"
+  # Grep for the assignment expression to avoid matching the comment that names it.
+  run grep -n -E '_item_labels=\$\(_resolve_issue_labels' "$ASSESS_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: _resolve_issue_labels not found in $ASSESS_REVIEW_SCRIPT"
+    echo "FAIL: _item_labels=\$(_resolve_issue_labels ...) not found in $ASSESS_REVIEW_SCRIPT"
     echo "Expected: _item_labels=\$(_resolve_issue_labels ...)"
     false
   }
 }
 
-# ─── Test 8: Static — assess-and-resolve.sh uses _resolve_issue_labels ────────
+# ─── Test 10: Static — assess-and-resolve.sh uses _resolve_issue_labels ────────
 
 @test "assess-and-resolve.sh: per-finding creation calls _resolve_issue_labels" {
   # Structural pin: the rollup per-finding loop must use _resolve_issue_labels
   # (not the old two-line _resolve_priority_label + string concat).
-  run grep -n "_resolve_issue_labels" "$ASSESS_RESOLVE_SCRIPT"
+  # Grep for the assignment expression to avoid matching the function definition comment.
+  run grep -n -E '_finding_labels=\$\(_resolve_issue_labels' "$ASSESS_RESOLVE_SCRIPT"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: _resolve_issue_labels not found in $ASSESS_RESOLVE_SCRIPT"
+    echo "FAIL: _finding_labels=\$(_resolve_issue_labels ...) not found in $ASSESS_RESOLVE_SCRIPT"
     echo "Expected: _finding_labels=\$(_resolve_issue_labels ...)"
     false
   }

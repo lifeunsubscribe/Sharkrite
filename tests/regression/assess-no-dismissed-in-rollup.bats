@@ -243,8 +243,8 @@ teardown() {
     false
   }
 
-  # Verify the gh issue create call includes --label "$_priority_label"
-  run grep -n 'label.*_priority_label\|_priority_label.*label' "$ASSESS_REVIEW_SCRIPT"
+  # Verify the gh issue create call includes --label "$_item_labels"
+  run grep -n -E 'label.*_item_labels|_item_labels.*label' "$ASSESS_REVIEW_SCRIPT"
 
   [ "$status" -eq 0 ] || {
     echo "FAIL: gh issue create does not pass priority label in $ASSESS_REVIEW_SCRIPT"
