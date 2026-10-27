@@ -1250,15 +1250,9 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           SOURCE_ISSUE_MARKER=""
           [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER} -->"
 
-          # Priority label fix (defect #4): derive priority from the item's severity
-          # so HIGH findings are distinguishable from cosmetic items in triage.
-          _priority_label="priority-medium"
-          case "${ITEM_SEVERITY:-MEDIUM}" in
-            CRITICAL|HIGH) _priority_label="priority-high" ;;
-            MEDIUM)        _priority_label="priority-medium" ;;
-            LOW)           _priority_label="priority-low" ;;
-            *)             _priority_label="priority-medium" ;;
-          esac
+          # Derive label set: severity + category (Security floor forces priority-high + security label).
+          # _resolve_issue_labels is provided by assess-and-resolve.sh, sourced above (line 81-83).
+          _item_labels=$(_resolve_issue_labels "tech-debt,from-review" "${ITEM_SEVERITY:-MEDIUM}" "${ITEM_CATEGORY:-}")
 
           # --- Synthesize runbook-compliant body fields (mirrors assess-and-resolve.sh:1829-1865) ---
           # The surviving ACTIONABLE_LATER follow-up uses the SAME rich body shape
@@ -1374,13 +1368,11 @@ _Parent PR: #${PR_NUMBER}_"
           ISSUE_BODY=$(sanitize_generated_commands "$ISSUE_BODY")
           CREATE_BODY_FILE=$(mktemp)
           printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
-          ensure_labels_exist "tech-debt,from-review,${_priority_label}"
+          ensure_labels_exist "$_item_labels"
           ISSUE_URL=$(gh_safe issue create \
             --title "$ITEM_TITLE" \
             --body-file "$CREATE_BODY_FILE" \
-            --label "tech-debt" \
-            --label "from-review" \
-            --label "$_priority_label" || true)
+            --label "$_item_labels" || true)
           ISSUE_URL="${ISSUE_URL:-}"
           rm -f "$CREATE_BODY_FILE"
 
