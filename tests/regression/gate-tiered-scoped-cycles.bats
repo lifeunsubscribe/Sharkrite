@@ -686,9 +686,11 @@ _make_vitest_ws_repo() {
   [ "$output" = "0" ]
 }
 
-@test "(#1214) jest: partial deletion — existing file passed, deleted file filtered" {
+@test "(#1214) jest: partial deletion — full suite runs to catch deleted-module consumers" {
   # When a diff contains both a deleted and a modified file in the same
-  # workspace, only the existing file should reach --findRelatedTests.
+  # workspace, the gate must run the workspace full suite (not --findRelatedTests
+  # on only the surviving file) — a test importing the deleted module would
+  # otherwise never be selected, leaving a silent false-green.
   _make_two_ws_repo
   (cd "$TEST_REPO" \
      && git init -q && git config user.email t@t && git config user.name t \
@@ -700,19 +702,28 @@ _make_vitest_ws_repo() {
      && git rm -qf packages/api/src/old.ts \
      && printf 'export const kept = 2;\n' > packages/api/src/kept.ts \
      && git add -A && git commit -qm "delete old, update kept") >/dev/null 2>&1
-  mkdir -p "$TEST_REPO/node_modules/.bin"
-  printf '#!/bin/bash\necho "PASS"\nexit 0\n' > "$TEST_REPO/node_modules/.bin/jest"
-  chmod +x "$TEST_REPO/node_modules/.bin/jest"
-  _write_jest_fail_on_missing_npm_stub
+  _write_tracking_npm_stub
   : > "$TEST_REPO/invocations.log"
 
   _run_gate_with_env ""
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
-  # Gate must pass: old.ts was filtered, kept.ts (exists) was forwarded.
+  # Gate must pass.
   [ "$status" -eq 0 ]
   run jq -r '.exit_code' "$TEST_REPO/gate.json"
   [ "$output" = "0" ]
+  # Full suite (npm test --workspace=packages/api) must have been invoked —
+  # not --findRelatedTests on only kept.ts.
+  grep -q "npm:test:--workspace=packages/api" "$TEST_REPO/invocations.log" || {
+    echo "FAIL: workspace full suite was not invoked for partial deletion; log:"
+    cat "$TEST_REPO/invocations.log" || true
+    false
+  }
+  if grep -q -- "--findRelatedTests" "$TEST_REPO/invocations.log"; then
+    echo "FAIL: --findRelatedTests must not be used when deletions are present; log:"
+    cat "$TEST_REPO/invocations.log" || true
+    false
+  fi
 }
 
 @test "(#1214) vitest: deleted file triggers workspace full suite fallback" {
