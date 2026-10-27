@@ -60,7 +60,7 @@ EOF
   chmod +x "$STUB_BIN/gh"
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_GH_MAX_RETRIES=3
     export RITE_GH_RETRY_MAX_SLEEP=0
     source '$GH_RETRY_SH'
@@ -87,7 +87,7 @@ EOF
   local err_file="$TEST_TMPDIR/captured_err"
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_GH_MAX_RETRIES=3
     export RITE_GH_RETRY_MAX_SLEEP=0
     source '$GH_RETRY_SH'
@@ -111,7 +111,7 @@ EOF
   chmod +x "$STUB_BIN/gh"
 
   run bash -c "
-    export PATH='$STUB_BIN:\$PATH'
+    export PATH=\"$STUB_BIN:\$PATH\"
     source '$GH_RETRY_SH'
     gh_safe pr ready 123
   "
@@ -120,21 +120,55 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# 4. Structural: 2>/dev/null swallow removed from pr ready call
+# 4. Retry exhaustion: persistent 503 exhausts all retries, non-zero + stderr
+# ---------------------------------------------------------------------------
+@test "gh_safe pr ready exhausts RITE_GH_MAX_RETRIES on persistent 503 and propagates stderr" {
+  local attempt_file="$TEST_TMPDIR/exhaustion_attempts"
+  echo "0" > "$attempt_file"
+
+  cat > "$STUB_BIN/gh" <<EOF
+#!/bin/bash
+count=\$(cat "$attempt_file")
+count=\$((count + 1))
+echo "\$count" > "$attempt_file"
+echo "HTTP 503 Service Unavailable" >&2
+exit 1
+EOF
+  chmod +x "$STUB_BIN/gh"
+
+  local err_file="$TEST_TMPDIR/exhaustion_err"
+
+  run bash -c "
+    export PATH=\"$STUB_BIN:\$PATH\"
+    export RITE_GH_MAX_RETRIES=3
+    export RITE_GH_RETRY_MAX_SLEEP=0
+    source '$GH_RETRY_SH'
+    sleep() { :; }
+    export -f sleep
+    gh_safe pr ready 123 2>'$err_file'
+  "
+
+  [ "$status" -ne 0 ]
+  [ "$(cat "$attempt_file")" -eq 3 ]
+  grep -q "503" "$err_file"
+}
+
+# ---------------------------------------------------------------------------
+# 5. Structural: 2>/dev/null swallow removed from pr ready call
 # ---------------------------------------------------------------------------
 @test "create-pr.sh does not swallow pr ready stderr via 2>/dev/null" {
   ! grep -qE 'pr ready.*2>/dev/null' "$CREATE_PR_SH"
 }
 
 # ---------------------------------------------------------------------------
-# 5. Structural: hard exit replaces print_warning soft fallback
+# 6. Structural: hard exit replaces print_warning soft fallback
 # ---------------------------------------------------------------------------
 @test "create-pr.sh draft block no longer uses print_warning for pr ready failure" {
   ! grep -qE 'pr ready[^#]*\|\|[^#]*print_warning' "$CREATE_PR_SH"
 }
 
 # ---------------------------------------------------------------------------
-# 6. Structural: pr ready guarded by IS_DRAFT — non-draft PRs untouched
+# 7. Structural: pr ready guarded by IS_DRAFT — non-draft PRs untouched
 # ---------------------------------------------------------------------------
 @test "pr ready call in create-pr.sh only appears inside IS_DRAFT block" {
   local prready_line isdraft_line
