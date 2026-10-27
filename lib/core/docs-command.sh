@@ -2517,6 +2517,7 @@ DOCS_EOF
 # Unknown name: prints an error and closest candidates to stderr; exits 1.
 #               Never auto-adopts a candidate — block with instructions.
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2120
 docs_resolve_doc_scope() {
   docs_map_ensure || true
   local _rs_map_file
@@ -2688,8 +2689,7 @@ _docs_restructure_should_propose() {
   _rsp_lookup="$(_docs_restructure_history_lookup "$_rsp_doc" || true)"
   [ -n "$_rsp_lookup" ] || return 0  # No history entry → always propose
 
-  local _rsp_decision _rsp_recorded
-  _rsp_decision="$(printf '%s' "$_rsp_lookup" | cut -f1 || true)"
+  local _rsp_recorded
   _rsp_recorded="$(printf '%s' "$_rsp_lookup" | cut -f2 || true)"
 
   case "${_rsp_recorded:-}" in ''|*[!0-9]*) _rsp_recorded=0 ;; esac
@@ -2794,6 +2794,13 @@ docs_run_restructure_assessment() {
     fi
   fi
 
+  # Non-TTY: skip to avoid recording false rejections for proposals no human saw.
+  # Tests may bypass with _RITE_FORCE_TTY=1 (same pattern as _docs_promote_pass).
+  if [ "${_RITE_FORCE_TTY:-0}" != "1" ] && [ ! -t 0 ]; then
+    print_info "Restructure assessment: not an interactive terminal — skipped (run 'rite align-docs' interactively)"
+    return 0
+  fi
+
   local _rra_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
   local _rra_target="${RITE_TARGET_BRANCH:-main}"
   local _rra_threshold="${RITE_DOC_RESTRUCTURE_REGROWTH_PCT:-25}"
@@ -2802,7 +2809,7 @@ docs_run_restructure_assessment() {
   git -C "$RITE_PROJECT_ROOT" fetch origin "$_rra_target" 2>/dev/null || true
 
   local _rra_doc
-  while IFS= read -r _rra_doc || [ -n "$_rra_doc" ]; do
+  while IFS= read -r _rra_doc <&3 || [ -n "$_rra_doc" ]; do
     [ -n "$_rra_doc" ] || continue
 
     local _rra_abs="${RITE_PROJECT_ROOT}/${_rra_doc}"
@@ -2838,7 +2845,7 @@ docs_run_restructure_assessment() {
     local _rra_doc_ctx=""
     [ -f "$_rra_abs" ] && _rra_doc_ctx="$(head -c 4000 "$_rra_abs" 2>/dev/null || true)"
 
-    local _rra_end_token="---RESTRUCT-END-${RANDOM}${RANDOM}---"
+    local _rra_end_token="${_RITE_RESTRUCT_END_TOKEN:-"---RESTRUCT-END-${RANDOM}${RANDOM}---"}"
     # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_ENFORCED_BY is a marker constant defined in markers.sh; _RITE_ prefix cannot be used; ledger frozen
     local _rra_enforced_by_marker="$RITE_MARKER_ENFORCED_BY"
 
@@ -2996,14 +3003,15 @@ QUESTION_PARSE_EOF
     rm -f "$_rra_raw_file"
 
     if [ "$_rra_prop_count" -eq 0 ]; then
-      print_info "No actionable restructure proposals for ${_rra_doc}"
       rm -rf "$_rra_props_dir"
-      _docs_restructure_record_decision \
-        "$_rra_doc" \
-        "$_rra_question" \
-        "no-restructure-needed" \
-        "Model returned no parseable restructure proposals" \
-        "$_rra_size" || true
+      if printf '%s\n' "$_rra_raw" | grep -q "^---PROPOSAL---"; then
+        # Proposals were started but the end token never matched — transient parse
+        # error, not a genuine "no restructuring needed". Don't record a decision;
+        # the proposal will re-raise on the next run.
+        print_warning "Restructure parse error for ${_rra_doc}: end token unmatched — not recording a decision (will re-raise on next run)" >&2
+      else
+        print_info "No actionable restructure proposals for ${_rra_doc}"
+      fi
       continue
     fi
 
@@ -3086,7 +3094,7 @@ QUESTION_PARSE_EOF
       "$_rra_decision" \
       "$_rra_rationale" \
       "$_rra_size" || true
-  done <<DOCS_LOOP_EOF
+  done 3<<DOCS_LOOP_EOF
 $_rra_docs_raw
 DOCS_LOOP_EOF
 }

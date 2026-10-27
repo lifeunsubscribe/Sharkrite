@@ -144,8 +144,13 @@ run_align_docs_switch() {
       fi
       # Restructure assessment first — invoked when docs-command.sh is loaded
       # (sourced by bin/rite before run_align_docs_switch for the no-args path).
+      # Guard: non-TTY runs must not trigger the interactive approval loop.
       if declare -f docs_run_restructure_assessment >/dev/null 2>&1; then
-        docs_run_restructure_assessment
+        if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+          docs_run_restructure_assessment
+        else
+          print_info "Restructure assessment skipped (not an interactive terminal — run 'rite align-docs' interactively)."
+        fi
       fi
       return 0
       ;;

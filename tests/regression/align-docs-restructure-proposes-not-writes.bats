@@ -76,6 +76,10 @@ setup() {
   export RITE_INSTALL_DIR="$RITE_REPO_ROOT"
   export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
   export RITE_STATE_DIR="$RITE_PROJECT_ROOT/.rite/state"
+  # Deterministic end token so tests can craft fully-parseable proposals.
+  export _RITE_RESTRUCT_END_TOKEN="---RESTRUCT-END-TESTTOKEN---"
+  # Force TTY so the interactive approval loop runs in the non-TTY test env.
+  export _RITE_FORCE_TTY=1
   mkdir -p "$RITE_STATE_DIR"
   mkdir -p "$RITE_PROJECT_ROOT/docs"
   printf '# Foo\n\nThis is the original content.\n' \
@@ -114,6 +118,26 @@ _proposal_no_parse() {
 }
 
 # ---------------------------------------------------------------------------
+# Build a fully parseable proposal using the test-injected end token.
+# Requires _RITE_RESTRUCT_END_TOKEN to be set in the environment.
+# ---------------------------------------------------------------------------
+_proposal_with_end_token() {
+  local end_token="${_RITE_RESTRUCT_END_TOKEN:-MISSING_TOKEN}"
+  printf '%s\n' \
+    "---RESTRUCTURE-QUESTION---" \
+    "Should foo.md be split into an ADR plus feature docs?" \
+    "---END-QUESTION---" \
+    "---PROPOSAL---" \
+    "ACTION: EDIT" \
+    "FILE: docs/foo.md" \
+    "DRIFT_REFS: none" \
+    "DESCRIPTION: Split foo into foo-adr.md" \
+    "---CONTENT---" \
+    "new content" \
+    "$end_token"
+}
+
+# ---------------------------------------------------------------------------
 # AC: NO_RESTRUCTURE_NEEDED → doc file is unchanged.
 # ---------------------------------------------------------------------------
 
@@ -142,22 +166,31 @@ _proposal_no_parse() {
 
 @test "user rejects: doc file is not modified" {
   local helper before after
-  helper="$(_restructure_helper "$(_proposal_no_parse)" "n" "")"
+  helper="$(_restructure_helper "$(_proposal_with_end_token)" "n" "")"
   before="$(_file_content "$RITE_PROJECT_ROOT/docs/foo.md")"
-  run bash "$helper" "docs/foo.md"
-  [ "$status" -eq 0 ]
+  echo "n" | bash "$helper" "docs/foo.md" || true
   after="$(_file_content "$RITE_PROJECT_ROOT/docs/foo.md")"
   [ "$before" = "$after" ]
 }
 
 @test "user rejects: history records rejected decision" {
   local helper hist_file
-  helper="$(_restructure_helper "$(_proposal_no_parse)" "n" "")"
+  helper="$(_restructure_helper "$(_proposal_with_end_token)" "n" "")"
   hist_file="$RITE_STATE_DIR/doc-approval-history.md"
   echo "n" | bash "$helper" "docs/foo.md" || true
-  # Either rejected or no-restructure-needed is valid depending on whether
-  # proposals parsed successfully (end token is random — may not parse).
-  grep -qE 'decision=(rejected|no-restructure-needed)' "$hist_file"
+  grep -q 'decision=rejected' "$hist_file"
+}
+
+@test "parse failure: no decision recorded when end token unmatched" {
+  local helper hist_file
+  helper="$(_restructure_helper "$(_proposal_no_parse)" "" "")"
+  hist_file="$RITE_STATE_DIR/doc-approval-history.md"
+  run bash "$helper" "docs/foo.md"
+  [ "$status" -eq 0 ]
+  # History file must not exist or must not contain any decision for docs/foo.md
+  if [ -f "$hist_file" ]; then
+    ! grep -q 'doc=docs/foo.md' "$hist_file"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -177,16 +210,19 @@ _proposal_no_parse() {
 # ---------------------------------------------------------------------------
 # AC: _docs_apply_approved is the only write path (not direct file writes).
 #
-# The end token is randomly generated at runtime so we cannot craft a
-# fully-parseable proposal in a static test.  Instead we verify that even
-# for the NO_RESTRUCTURE_NEEDED case, the function never touches the doc.
-#
-# The sentinel-based accepted-proposal test is included via an integration
-# note: accepted proposals are routed through _docs_apply_approved (the
-# stub below captures the call).  Because the end token is random, we
-# cannot trigger the acceptance branch from a static test fixture; that
-# path is covered by the function-level code review of docs-command.sh:3068.
+# With _RITE_RESTRUCT_END_TOKEN injected in setup(), we can now craft fully-
+# parseable proposals.  The accepted-proposal path is exercised by the
+# "user accepts" test above; the sentinel file confirms _docs_apply_approved
+# was called and the doc was not written directly.
 # ---------------------------------------------------------------------------
+
+@test "user accepts: _docs_apply_approved called with parseable proposal" {
+  local sentinel helper
+  sentinel="$RITE_TEST_TMPDIR/apply_accepted"
+  helper="$(_restructure_helper "$(_proposal_with_end_token)" "y" "$sentinel")"
+  echo "y" | bash "$helper" "docs/foo.md" || true
+  [ -f "$sentinel" ]
+}
 
 @test "_docs_apply_approved stub not called for NO_RESTRUCTURE_NEEDED" {
   local sentinel helper
