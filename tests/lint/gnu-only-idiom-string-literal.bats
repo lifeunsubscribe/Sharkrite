@@ -164,3 +164,21 @@ echo "use sed \u for uppercase conversion (GNU only, not portable)"'
   r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
   [[ "$r39" != *"fp-39b-sed-u-string"* ]]
 }
+
+# ===========================================================================
+# 39A — genuine violation: sed BRE alternation inside double-quoted cmdsub
+# ===========================================================================
+
+@test "39A fires: GNU BRE alternation inside double-quoted command substitution" {
+  # Regression pin: _r39_strip_quoted's "$(...)" unwrap step must expose the sed
+  # call inside the assignment's double-quoted command substitution so Rule 39A
+  # fires.  Without the unwrap step, the outer double-quote strip erases the entire
+  # "$(... sed "s/a\|b/c/")" block, producing a false negative — the exact failure
+  # mode fixed for 39F by #1504.
+  _run_lint "tp-dq-cmdsub-sed-39a" '#!/usr/bin/env bash
+set -euo pipefail
+_name="$(echo "$x" | sed "s/a\|b/c/")"'
+  local r39
+  r39=$(echo "$output" | grep "GNU_ONLY_IDIOM" || true)
+  [[ "$r39" == *"tp-dq-cmdsub-sed-39a"* ]]
+}
