@@ -3106,7 +3106,8 @@ DOCS_LOOP_EOF
 # ---------------------------------------------------------------------------
 _DOCS_AUDIT_RUBRIC_ACCURACY="${_DOCS_AUDIT_RUBRIC_ACCURACY:-"Accuracy check — verify every assertion in this section against the code it references: (1) does the code actually behave as described? (2) are referenced interfaces, flags, defaults, or return values still current? Flag incorrect or stale assertions."}"
 
-_DOCS_AUDIT_RUBRIC_FEATURE="${_DOCS_AUDIT_RUBRIC_FEATURE:-"Feature-doc role check: (1) does this section stay within one feature boundary — flag anything that describes a sibling feature? (2) does every observable-behavior assertion name an enforcing test via a '<!-- sharkrite-enforced-by: path.bats -->' marker, or is the assertion flagged as un-enforced? (3) does any assertion duplicate content in a sibling feature doc?"}"
+# sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_ENFORCED_BY is a marker constant defined in markers.sh; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention; ledger frozen per 2026-07-14 rule
+_DOCS_AUDIT_RUBRIC_FEATURE="${_DOCS_AUDIT_RUBRIC_FEATURE:-"Feature-doc role check: (1) does this section stay within one feature boundary — flag anything that describes a sibling feature? (2) does every observable-behavior assertion name an enforcing test via a '<!-- ${RITE_MARKER_ENFORCED_BY}: path.bats -->' marker, or is the assertion flagged as un-enforced? (3) does any assertion duplicate content in a sibling feature doc?"}"
 
 _DOCS_AUDIT_RUBRIC_ADR="${_DOCS_AUDIT_RUBRIC_ADR:-"ADR role check — compare across docs: (1) does this ADR section link every feature doc it covers? List any feature docs in the project not linked. (2) does any feature doc contradict a decision in this section? (3) are there code areas this section claims to cover with zero feature-doc coverage? (4) do the architectural decisions in this section still hold given the current codebase?"}"
 
