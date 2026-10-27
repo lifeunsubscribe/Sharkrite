@@ -66,17 +66,15 @@ _make_two_ws_repo() {
 }
 
 # npm stub that records which workspace tests were run.
-# Appends "<subcommand>[--workspace=<ws>]" to INVOCATION_LOG for each call.
+# Appends "npm <full-argv>" to INVOCATION_LOG for each call (full argv so
+# --findRelatedTests and other flags are observable in assertions).
 _write_tracking_npm_stub() {
   cat > "$STUB_DIR/npm" <<'NPMSTUB'
 #!/bin/bash
-# Record how npm was invoked.
+# Record how npm was invoked — log full argv so assertions can observe
+# both the workspace flag and any --findRelatedTests argument.
 LOG="${INVOCATION_LOG:-/dev/null}"
-WS_ARG=""
-for a in "$@"; do
-  case "$a" in --workspace=*) WS_ARG="$a" ;; esac
-done
-echo "npm:$1:${WS_ARG}" >> "$LOG"
+echo "npm $*" >> "$LOG"
 case "$1" in
   ci|install)
     mkdir -p "${TEST_REPO}/node_modules/.bin"
@@ -345,13 +343,13 @@ _run_gate_with_env() {
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # packages/api (changed) must have been tested.
-  grep -q "npm:test:--workspace=packages/api" "$TEST_REPO/invocations.log" || {
+  grep -q "npm test --workspace=packages/api" "$TEST_REPO/invocations.log" || {
     echo "FAIL: changed workspace packages/api was not tested"
     cat "$TEST_REPO/invocations.log" || true
     false
   }
   # packages/cdk (no source change) must NOT have been tested.
-  if grep -q "npm:test:--workspace=packages/cdk" "$TEST_REPO/invocations.log"; then
+  if grep -q "npm test --workspace=packages/cdk" "$TEST_REPO/invocations.log"; then
     echo "FAIL: unchanged CDK workspace packages/cdk was tested unexpectedly"
     cat "$TEST_REPO/invocations.log" || true
     false
@@ -408,7 +406,7 @@ _run_gate_with_env() {
 
   # packages/cdk must NOT have been tested (_changed_files_to_workspace_dirs
   # only returns workspaces with changed source files).
-  if grep -q "npm:test:--workspace=packages/cdk" "$TEST_REPO/invocations.log"; then
+  if grep -q "npm test --workspace=packages/cdk" "$TEST_REPO/invocations.log"; then
     echo "FAIL: unchanged workspace packages/cdk was tested unexpectedly"
     cat "$TEST_REPO/invocations.log" || true
     false
@@ -433,7 +431,7 @@ _run_gate_with_env() {
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # workspace test must have been called without --findRelatedTests
-  grep -q "npm:test:--workspace=packages/api" "$TEST_REPO/invocations.log" || {
+  grep -q "npm test --workspace=packages/api" "$TEST_REPO/invocations.log" || {
     echo "FAIL: workspace test was not invoked"
     cat "$TEST_REPO/invocations.log" || true
     false
@@ -467,7 +465,7 @@ _run_gate_with_env() {
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # No workspace tests run when only root files changed.
-  if grep -q "npm:test:--workspace=" "$TEST_REPO/invocations.log"; then
+  if grep -q "npm test --workspace=" "$TEST_REPO/invocations.log"; then
     echo "FAIL: workspace tests ran despite no workspace source changes"
     cat "$TEST_REPO/invocations.log" || true
     false
@@ -504,8 +502,8 @@ _run_gate_with_env() {
   [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment (see #709)"
 
   # With RITE_GATE_FORCE_FULL=1, per-cycle scoping is bypassed;
-  # root npm test must run.
-  grep -q "npm:test:$" "$TEST_REPO/invocations.log" || {
+  # root npm test must run (no --workspace= argument).
+  grep -qE "^npm test$" "$TEST_REPO/invocations.log" || {
     echo "FAIL: root npm test not invoked with RITE_GATE_FORCE_FULL=1"
     cat "$TEST_REPO/invocations.log" || true
     false
@@ -714,7 +712,7 @@ _make_vitest_ws_repo() {
   [ "$output" = "0" ]
   # Full suite (npm test --workspace=packages/api) must have been invoked —
   # not --findRelatedTests on only kept.ts.
-  grep -q "npm:test:--workspace=packages/api" "$TEST_REPO/invocations.log" || {
+  grep -q "npm test --workspace=packages/api" "$TEST_REPO/invocations.log" || {
     echo "FAIL: workspace full suite was not invoked for partial deletion; log:"
     cat "$TEST_REPO/invocations.log" || true
     false
@@ -751,7 +749,7 @@ _make_vitest_ws_repo() {
   run jq -r '.exit_code' "$TEST_REPO/gate.json"
   [ "$output" = "0" ]
   # Full suite (npm test --workspace=packages/api) must have been logged.
-  grep -q "npm:test:--workspace=packages/api" "$TEST_REPO/invocations.log" || {
+  grep -q "npm test --workspace=packages/api" "$TEST_REPO/invocations.log" || {
     echo "FAIL: workspace full suite was not invoked; log:"
     cat "$TEST_REPO/invocations.log" || true
     false
