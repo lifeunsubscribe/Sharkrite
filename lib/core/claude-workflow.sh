@@ -2963,8 +2963,16 @@ If the changes are unrelated work, answer UNRELATED."
     # Path MUST be absolute — cwd moves into the worktree at the cd above.
     # Write-once Phase-1 semantics; cleanup on --undo/close is #1040.
     # Gated on non-main so the default path stays byte-identical (no new file). # sharkrite-target-transport
+    # Skipped for follow-ups filed by assess-and-resolve.sh: those issues belong
+    # on main and must not inherit the parent batch's integration-branch target.
+    # assess-and-resolve.sh writes a no-inherit marker at filing time; we read it
+    # here to avoid stamping the follow-up with the batch env's RITE_TARGET_BRANCH.
     if [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${ISSUE_NUMBER:-}" ] && [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then  # sharkrite-target-transport
-      echo "$RITE_TARGET_BRANCH" > "${RITE_STATE_DIR}/target-branch-${ISSUE_NUMBER}.txt" 2>/dev/null || true  # sharkrite-target-transport
+      _target_no_inherit_marker="${RITE_STATE_DIR}/followup-no-inherit-${ISSUE_NUMBER}.marker"
+      if [ ! -f "$_target_no_inherit_marker" ]; then
+        echo "$RITE_TARGET_BRANCH" > "${RITE_STATE_DIR}/target-branch-${ISSUE_NUMBER}.txt" 2>/dev/null || true  # sharkrite-target-transport
+      fi
+      unset _target_no_inherit_marker
     fi
 
     # Check for relevant stashed changes and auto-apply if they're from this branch

@@ -874,6 +874,9 @@ ${_promo_now_items}"
           ensure_labels_exist "from-review,tech-debt" 2>/dev/null || true
         fi
 
+        # Promotion follow-ups intentionally do NOT carry a followup-no-inherit
+        # marker (unlike assess-and-resolve.sh follow-ups): they are filed against
+        # an integration branch and the next run should target that same branch.
         local _promo_now_url
         if _promo_now_url=$(gh_safe issue create \
               --title "Promotion review ACTIONABLE_NOW findings: ${BRANCH}" \
@@ -957,6 +960,9 @@ assessed NOW/LATER/DISMISSED. Close the ones that do not warrant work.
 
 ${_promo_review_body}"
 
+    # Fallback follow-ups intentionally do NOT carry a followup-no-inherit
+    # marker: they are filed against an integration branch and the next run
+    # should target that same branch.
     local _promo_issue_url
     if _promo_issue_url=$(gh_safe issue create \
           --title "Promotion review follow-ups: ${BRANCH}" \

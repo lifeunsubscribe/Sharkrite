@@ -1381,6 +1381,13 @@ _Parent PR: #${PR_NUMBER}_"
             if [ -n "$NEW_ISSUE" ]; then
               CREATED_ISSUES="${CREATED_ISSUES}#${NEW_ISSUE} "
               print_success "  Created issue #$NEW_ISSUE"
+              # Prevent this follow-up from inheriting the parent batch's
+              # integration-branch target. Mirrors the rollup site in
+              # assess-and-resolve.sh — both per-item and rollup paths must write
+              # the marker so claude-workflow.sh skips the state-file write.
+              if [ -n "${RITE_STATE_DIR:-}" ]; then
+                touch "${RITE_STATE_DIR}/followup-no-inherit-${NEW_ISSUE}.marker" 2>/dev/null || true
+              fi
               # Telemetry for the batch reporter's "Issues Created" line. Must
               # match the emission in assess-and-resolve.sh: this is the OTHER
               # follow-up creation site in the per-issue path (ACTIONABLE_LATER
