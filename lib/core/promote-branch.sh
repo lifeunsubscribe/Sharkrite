@@ -1079,12 +1079,7 @@ ${_promo_review_body}"
   fi
   if declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
     echo ""
-    local _ph8_start _ph8_end _ph8_dur=0
-    _ph8_start=$(date +%s)
     docs_run_promote_doc_pass "$BRANCH" "${PROMO_PR:-}" || true
-    _ph8_end=$(date +%s)
-    _ph8_dur=$((_ph8_end - _ph8_start))
-    _diag "DOC_PASS kind=promote doc=${BRANCH} duration_s=${_ph8_dur} input_bytes=0 outcome=accepted"
     # Report ADR observations recorded during this promotion (entries only, no edits)
     if declare -f adr_drift_log_entry_count >/dev/null 2>&1; then
       local _ph8_adr_count=0

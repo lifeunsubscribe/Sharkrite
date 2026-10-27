@@ -1272,6 +1272,10 @@ _docs_warn_doc_pass_threshold() {
   local _dwt_doc="${1:-}"
   local _dwt_dur="${2:-0}"
   local _dwt_thresh="${RITE_DOC_PASS_WARN_SECONDS:-120}"
+  # threshold=0 means "silence suggestion entirely" (documented in config/project.conf.example)
+  [ "$_dwt_thresh" -gt 0 ] 2>/dev/null || return 0
+  # doc=- is an aggregate placeholder; printing "rite align-docs -" is nonsense
+  [ "$_dwt_doc" = "-" ] && return 0
   if [ "$_dwt_dur" -gt "$_dwt_thresh" ] 2>/dev/null; then
     print_info "Doc pass took ${_dwt_dur}s — for targeted runs: rite align-docs ${_dwt_doc}"
   fi
@@ -1590,6 +1594,7 @@ EOF_NAR
       print_info "No actionable proposals for ${_mp_doc}"
       rm -rf "$_mp_props_dir"
       _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
       return 0
     fi
 
@@ -2682,6 +2687,7 @@ Output ONLY the JSON array, no prose."
   if ! command -v jq >/dev/null 2>&1; then
     print_warning "Just-in-case pass: jq not available — cannot parse triage response" >&2
     _diag "DOC_PASS kind=promote doc=- duration_s=${_ji_call_elapsed} input_bytes=${_ji_input_bytes} outcome=rejected"
+    _docs_warn_doc_pass_threshold "-" "$_ji_call_elapsed"
     return 0
   fi
 
@@ -3823,6 +3829,8 @@ CLEAR_DOCS_EOF
 
   if [ "$_aau_total" -eq 0 ]; then
     rm -f "$_aau_findings_file"
+    _diag "DOC_PASS kind=align doc=- duration_s=${_aau_total_elapsed} input_bytes=${_aau_total_bytes} outcome=rejected"
+    _docs_warn_doc_pass_threshold "-" "$_aau_total_elapsed"
     return 0
   fi
 

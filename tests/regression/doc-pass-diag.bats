@@ -121,37 +121,6 @@ teardown() {
   grep -q "outcome=rejected" "$log_file"
 }
 
-# ---------------------------------------------------------------------------
-# kind=docs: accepted outcome when proposals are applied
-# ---------------------------------------------------------------------------
-@test "kind=docs: DOC_PASS diag emitted with outcome=accepted when proposal approved" {
-  local log_file="${BATS_TEST_TMPDIR}/diag.log"
-  local end_tok="---END-12345---"
-  local provider_out
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: end_tok var must expand
-  provider_out="$(cat << PROV_EOF
----PROPOSAL---
-ACTION: EDIT
-FILE: docs/feature-a.md
-DRIFT_REFS: none
-DESCRIPTION: add a summary
----CONTENT---
-# Feature A
-
-Updated content.
-${end_tok}
-PROV_EOF
-)"
-
-  # Patch: _docs_update_engine uses a per-run RANDOM end token we can't predict.
-  # Instead test the accepted path via docs_directed_update which goes through
-  # the same engine; we feed "y\n" via stdin for the proposal approval.
-  # Since the end token is dynamically generated we test the happy-path via
-  # the no-proposals case only; the accepted case is covered via the promote path test.
-  # This placeholder asserts the log file mechanism works.
-  touch "$log_file"
-  [ -f "$log_file" ]
-}
 
 # ---------------------------------------------------------------------------
 # kind=promote: DOC_PASS diag emitted from _docs_main_entries_pass with kind=promote
@@ -161,18 +130,16 @@ PROV_EOF
   touch "$log_file"
 
   # docs_run_promote_doc_pass calls _docs_main_entries_pass with kind=promote.
-  # Stub the drift log to return one entry (so the per-doc loop runs).
-  local extra_vars
-  extra_vars="$(cat << 'EXTRA_EOF'
-drift_log_path() { echo "${RITE_STATE_DIR}/doc-drift.log"; }
-EXTRA_EOF
-)"
-  printf 'pr:1|docs/feature-a.md|some assertion|contradiction|pr 1 changed it\n' \
-    > "$RITE_PROJECT_ROOT/.rite/state/doc-drift.log"
+  # Create a drift entry in the per-doc/per-branch layout that drift_log_entry_count reads.
+  # doc-slug: docs/feature-a.md → docs--feature-a.md
+  local entry_dir="$RITE_STATE_DIR/doc-drift/my-branch"
+  mkdir -p "$entry_dir"
+  printf 'doc=docs/feature-a.md\tbranch=my-branch\tpr=1\tissue=42\tassertion=some assertion\tkind=contradiction\tevidence=pr 1 changed it\trecorded=2026-10-26T00:00:00Z\n' \
+    > "$entry_dir/docs--feature-a.md.log"
 
   local helper
   helper="$(_make_helper "NO_PROPOSALS_NEEDED" "$log_file" \
-    'docs_run_promote_doc_pass "my-branch" "42"' "$extra_vars")"
+    'docs_run_promote_doc_pass "my-branch" "42"')"
 
   run bash "$helper"
   [ -f "$log_file" ]
@@ -244,15 +211,13 @@ EXTRA_EOF
 # ---------------------------------------------------------------------------
 # threshold: suggestion printed when duration exceeds RITE_DOC_PASS_WARN_SECONDS
 # ---------------------------------------------------------------------------
-@test "threshold: warn suggestion printed when duration exceeds RITE_DOC_PASS_WARN_SECONDS=0" {
+@test "threshold: warn suggestion printed when duration exceeds RITE_DOC_PASS_WARN_SECONDS" {
   local log_file="${BATS_TEST_TMPDIR}/diag.log"
   local info_log="${BATS_TEST_TMPDIR}/info.log"
   touch "$log_file" "$info_log"
 
-  # Override print_info to capture to info_log for assertion
-  local extra_vars
-  extra_vars="export RITE_DOC_PASS_WARN_SECONDS=0"
-
+  # Call _docs_warn_doc_pass_threshold directly with a fixed duration (100s) that
+  # exceeds the threshold (10s), so the test does not rely on wall-clock timing.
   local helper="${BATS_TEST_TMPDIR}/threshold_helper_$$.sh"
   cat > "$helper" << HELPER_EOF
 #!/bin/bash
@@ -262,37 +227,16 @@ export RITE_PROJECT_ROOT="${RITE_PROJECT_ROOT}"
 export RITE_STATE_DIR="${RITE_STATE_DIR}"
 export RITE_TARGET_BRANCH="main"
 export RITE_LOG_FILE="${log_file}"
-export RITE_DOC_PASS_WARN_SECONDS=0
-export _RITE_FORCE_TTY=1
+export RITE_DOC_PASS_WARN_SECONDS=10
 source "\${RITE_LIB_DIR}/core/docs-command.sh"
 # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs function-sentinel guard; post-source stubs are preserved
-provider_run_prompt_with_timeout() { printf 'NO_PROPOSALS_NEEDED\n'; }
-provider_resolve_model() { echo "claude-sonnet-4-6"; }
-docs_map_path()    { echo "\${RITE_PROJECT_ROOT}/docs/docs-map.tsv"; }
-docs_map_build()   { return 0; }
-docs_map_ensure()  { return 0; }
-drift_log_path()   { echo "\${RITE_STATE_DIR}/doc-drift.log"; }
-drift_log_clear_doc() { return 0; }
-migrate_legacy_drift_log() { return 0; }
-lock_acquire() { return 0; }
-lock_release() { return 0; }
-print_info()    { printf '%s\n' "\$*" >> "${info_log}"; }
-print_warning() { true; }
-print_success() { true; }
-git() {
-  case "\${1:-}" in
-    -C) shift; shift ;;
-  esac
-  case "\${1:-}" in
-    fetch|log) return 0 ;;
-    *) true ;;
-  esac
-}
-_docs_update_engine "directed" "add a summary paragraph"
+print_info() { printf '%s\n' "\$*" >> "${info_log}"; }
+# duration=100s exceeds threshold=10s → suggestion must print
+_docs_warn_doc_pass_threshold "docs/feature-a.md" 100
 HELPER_EOF
   chmod +x "$helper"
 
-  run bash "$helper" <<< ""
+  run bash "$helper"
   [ -f "$info_log" ]
-  grep -q "rite align-docs" "$info_log"
+  grep -q "rite align-docs docs/feature-a.md" "$info_log"
 }
