@@ -3271,9 +3271,13 @@ ${_aau_ref_excerpt}
       local _aau_rb_abs="${RITE_PROJECT_ROOT}/${_aau_sl_rb}"
       if [ -f "$_aau_rb_abs" ]; then
         _aau_acc_rubric="$(cat "$_aau_rb_abs" 2>/dev/null || true)"
-        _aau_override_loaded=true
+        if [ -n "$_aau_acc_rubric" ]; then
+          _aau_override_loaded=true
+        else
+          print_warning "Assertion audit: rubric-override '${_aau_sl_rb}' missing or empty; using type-based default" >&2
+        fi
       else
-        print_warning "Assertion audit: rubric-override '${_aau_sl_rb}' not found; using type-based default" >&2
+        print_warning "Assertion audit: rubric-override '${_aau_sl_rb}' missing or empty; using type-based default" >&2
       fi
     fi
     if [ "$_aau_override_loaded" = "false" ]; then
