@@ -61,7 +61,7 @@ lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthes
 1. **Development** — Claude implements the fix in a worktree
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
-   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit
+   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit; for node target repos, also runs `scripts.lint` (scoped to changed files via eslint `--format unix` when eslint is the runner; opt-out: `RITE_GATE_REPO_LINT=false`)
    - **The INITIAL pass parallelizes too (#531):** `run_workflow`'s Phase 2 fires the gate in the background concurrent with the first review (bounded wait via the #654 backstop), so the first assessment also sees `[GATE]` findings. Previously the gate ran only inside the fix loop.
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - **Block-on-any:** the gate blocks/feeds the fix loop on **any** test failure in the targeted selection. `outcome=passed ⟺ zero failures`. This is sound because `main` is kept green (the green-main work, #707) — so any failure in the selection is this change's to fix. Phase 3 deleted the old baseline-diff machinery (re-run failing files at the diff base, suppress pre-existing reds) once it had nothing to tolerate. See `behavioral-design.md` → "Gate Block-on-Any".
