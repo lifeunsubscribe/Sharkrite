@@ -146,7 +146,9 @@ DRIFT_EOF
   # The drift entry for pr:777 must be burned down
   local committed_drift
   committed_drift="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/sharkrite-drift-log.md" 2>/dev/null || echo "")"
-  ! printf '%s' "$committed_drift" | grep -q 'pr:777'
+  local drift_has_777
+  drift_has_777="$(printf '%s' "$committed_drift" | grep -c 'pr:777' || true)"
+  [ "$drift_has_777" -eq 0 ]
 
   # The drift log must NOT have grown (no new drift_log_append from REFINE)
   # Entry count: 0 (burned) or file deleted; either way pr:777 entry count = 0
@@ -248,6 +250,7 @@ DRIFT_EOF
   # The must-not-be-none instruction must appear in the prompt
   local drift_req_count
   drift_req_count=$(grep -c 'DRIFT_REFS.*none.*REFINE\|REFINE.*DRIFT_REFS.*none' "$DOCS_CMD" || true)
+  [ "$drift_req_count" -ge 1 ]
   # The feedback-loop warning sentence covers both patterns — structural check
   local feedback_guard_count
   feedback_guard_count=$(grep -c 'grow the backlog\|grows the trigger store\|feedback' "$DOCS_CMD" || true)

@@ -213,7 +213,7 @@ _docs_apply_approved() {
         _aa_content="${_aa_content}${_aa_ln}"$'\n'
       else
         case "$_aa_ln" in
-          "ACTION: "*)     _aa_action="${_aa_ln#ACTION: }" ;;
+          "ACTION: "*)     _aa_action="${_aa_ln#ACTION: }"; _aa_action="${_aa_action// /}" ;;
           "FILE: "*)       _aa_file="${_aa_ln#FILE: }" ;;
           "DRIFT_REFS: "*) _aa_drift="${_aa_ln#DRIFT_REFS: }" ;;
           "---CONTENT---") _aa_in_content=1 ;;
@@ -229,6 +229,16 @@ _docs_apply_approved() {
     case "$_aa_file" in
       /*|*../*|*/..|../*|..)
         print_warning "Rejected proposal: unsafe FILE path '$_aa_file'" >&2
+        continue
+        ;;
+    esac
+
+    # Reject unrecognized actions before any write — malformed LLM output must not
+    # fall through to the else-path and overwrite a file with partial content.
+    case "$_aa_action" in
+      EDIT|CREATE|REFINE) : ;;
+      *)
+        print_warning "Skipping proposal for '${_aa_file}': unknown ACTION '${_aa_action}' — expected EDIT, CREATE, or REFINE" >&2
         continue
         ;;
     esac
@@ -610,7 +620,7 @@ DOC_UPDATE_EOF
               _ue_cur_content="${_ue_cur_content}${_ue_rl}"$'\n'
             else
               case "$_ue_rl" in
-                "ACTION: "*)     _ue_cur_action="${_ue_rl#ACTION: }" ;;
+                "ACTION: "*)     _ue_cur_action="${_ue_rl#ACTION: }"; _ue_cur_action="${_ue_cur_action// /}" ;;
                 "FILE: "*)       _ue_cur_file="${_ue_rl#FILE: }" ;;
                 "DRIFT_REFS: "*) _ue_cur_drift="${_ue_rl#DRIFT_REFS: }" ;;
                 "DESCRIPTION: "*) _ue_cur_desc="${_ue_rl#DESCRIPTION: }" ;;
@@ -676,6 +686,17 @@ DOC_UPDATE_EOF
           ;;
       esac
 
+      # Reject unrecognized actions — malformed LLM output must not fall through
+      # to the EDIT diff path and show a misleadingly destructive preview.
+      case "$_ue_p_action" in
+        EDIT|CREATE|REFINE) : ;;
+        *)
+          print_warning "  Auto-skipping proposal for '${_ue_p_file}': unknown ACTION '${_ue_p_action}' — expected EDIT, CREATE, or REFINE" >&2
+          _ue_pi=$((_ue_pi + 1))
+          continue
+          ;;
+      esac
+
       # Refuse EDIT proposals when the file was not in the LLM's context:
       # either dropped by the 15KB budget cap or absent from the docs map entirely.
       # Guard is skipped when _ue_ctx_files is empty (map absent or empty) so that
@@ -716,6 +737,37 @@ DOC_UPDATE_EOF
           _ue_pi=$((_ue_pi + 1))
           continue
         fi
+        # Validate refs against actual drift-log entries — reject fabricated refs.
+        # A plausible-looking pr:N that matches nothing burns nothing and grows the
+        # trigger store instead of shrinking it, defeating the feedback-loop guard.
+        local _ue_ref _ue_any_real=0
+        for _ue_ref in $_ue_p_drift; do
+          case "$_ue_ref" in
+            pr:[0-9]*)
+              if printf '%s\n' "$_ue_drift_content" | grep -qF "<!-- ${RITE_MARKER_DOC_DRIFT} ${_ue_ref} " 2>/dev/null; then
+                _ue_any_real=1
+                break
+              fi
+              ;;
+          esac
+        done
+        if [ "$_ue_any_real" -eq 0 ]; then
+          print_warning "  Auto-skipping REFINE for '${_ue_p_file}': DRIFT_REFS '${_ue_p_drift}' match no entries in the current drift log — refs must correspond to actual drift entries" >&2
+          _ue_pi=$((_ue_pi + 1))
+          continue
+        fi
+        # REFINE must target a file the model actually read — same membership guard
+        # as EDIT (without the size check; appending is safe regardless of file size).
+        if [ -n "$_ue_ctx_files" ]; then
+          case $'\n'"$_ue_ctx_files" in
+            *$'\n'"${_ue_p_file}"$'\n'*) : ;;
+            *)
+              print_warning "  Auto-skipping REFINE for '${_ue_p_file}': file not in model context (absent from docs map or excluded by 15KB cap) — model never read its content; a REFINE on an unread file risks duplicate or contradictory sections" >&2
+              _ue_pi=$((_ue_pi + 1))
+              continue
+              ;;
+          esac
+        fi
         # REFINE requires the target file to exist (it appends, not creates)
         local _ue_abs_refine_check="${RITE_PROJECT_ROOT}/${_ue_p_file}"
         if [ ! -f "$_ue_abs_refine_check" ] && \
@@ -755,6 +807,16 @@ DOC_UPDATE_EOF
         _ue_total_lines="$(printf '%s\n' "$_ue_p_content" | wc -l | tr -d ' ')"
         [ "$_ue_total_lines" -gt 40 ] && \
           printf '  ... (%d lines total)\n' "$_ue_total_lines" >&2
+      elif [ "$_ue_p_action" = "REFINE" ]; then
+        # REFINE appends to the existing file — show append-only preview.
+        # A diff against origin would look destructive (old = full file, new = snippet only)
+        # and would give the wrong consent signal.
+        echo "  [REFINE — content will be appended to existing file]" >&2
+        printf '%s\n' "$_ue_p_content" | head -40 >&2
+        local _ue_refine_lines
+        _ue_refine_lines="$(printf '%s\n' "$_ue_p_content" | wc -l | tr -d ' ')"
+        [ "$_ue_refine_lines" -gt 40 ] && \
+          printf '  ... (%d lines total)\n' "$_ue_refine_lines" >&2
       else
         # EDIT: show unified diff against origin/<target> content (what the worktree
         # forks from) — not the local checkout, which may diverge from origin and
