@@ -571,6 +571,8 @@ rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file cr
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
+rite 42 43 --allow-red-main  # Bypass red-main CI preflight (batch only; not recommended — use when
+                           # fixing main is blocked but work must proceed)
 rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
 rite --sync <N> [<N>...]  # Sync issue feature branches: skips rebase when branch merges cleanly with its base (no stale-review on clean paths); on genuine conflict invokes the resolver before the manual fallback
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
@@ -977,5 +979,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 - `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
+- `MAIN_CI_RED` — batch preflight found red CI on the target branch; `branch=<b> conclusion=<c>`; batch aborts unless `--allow-red-main` was passed
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

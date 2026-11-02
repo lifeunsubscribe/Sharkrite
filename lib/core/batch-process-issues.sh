@@ -170,6 +170,73 @@ record_run() {
   echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $issue $mode" >> "$history_file"
 }
 
+# ---------------------------------------------------------------------------
+# _ci_preflight: one-API-read CI check — halts when the target branch's latest
+# completed workflow run has a red conclusion (failure|timed_out).
+#
+# Soundness guard for block-on-any: any gate failure in the targeted selection
+# is this change's to fix — only valid when the base branch is green. This
+# addresses the LeadFlow 2026-07-01 class and the orrery 2026-10-27 red-main
+# lint state where every intersecting slot's fix-loop retries burned on
+# failures that were not theirs.
+#
+# One gh api call; never runs tests or lint. See CLAUDE.md →
+# "No full suites inside a workflow (CRITICAL)" for why the retired #916
+# full-suite preflight is NOT resurrected here.
+#
+# Reads: RITE_TARGET_BRANCH (defaults to main), RITE_ALLOW_RED_MAIN
+#
+# Returns:
+#   0 — green, absent CI, API unreachable, or --allow-red-main passed
+#   1 — red CI and --allow-red-main not passed (caller must exit)
+# ---------------------------------------------------------------------------
+_ci_preflight() {
+  local _target_branch="${RITE_TARGET_BRANCH:-main}"
+  local _allow="${RITE_ALLOW_RED_MAIN:-false}"
+
+  local _run_json
+  _run_json=$(gh_safe api \
+    "repos/{owner}/{repo}/actions/runs?branch=${_target_branch}&status=completed&per_page=1" \
+    2>/dev/null || true)
+
+  [ -z "$_run_json" ] && return 0
+
+  local _count
+  _count=$(printf '%s' "$_run_json" | jq -r '.total_count // 0' 2>/dev/null || true)
+  [ "${_count:-0}" -eq 0 ] && return 0
+
+  local _conclusion _name _url
+  _conclusion=$(printf '%s' "$_run_json" | jq -r '.workflow_runs[0].conclusion // ""' 2>/dev/null || true)
+  _name=$(printf '%s' "$_run_json" | jq -r '.workflow_runs[0].name // ""' 2>/dev/null || true)
+  _url=$(printf '%s' "$_run_json" | jq -r '.workflow_runs[0].html_url // ""' 2>/dev/null || true)
+
+  case "${_conclusion:-}" in
+    failure|timed_out) ;;
+    *) return 0 ;;
+  esac
+
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "MAIN_CI_RED branch=${_target_branch} conclusion=${_conclusion}"
+  fi
+
+  if [ "$_allow" = "true" ]; then
+    print_warning "${_target_branch} CI is red (${_name:-unknown} → ${_conclusion}) — proceeding via --allow-red-main"
+    return 0
+  fi
+
+  echo "" >&2
+  echo "Batch preflight failed: ${_target_branch} CI is red" >&2
+  echo "" >&2
+  echo "  Failing workflow: ${_name:-unknown}" >&2
+  echo "  URL: ${_url:-unavailable}" >&2
+  echo "" >&2
+  echo "  Next steps:" >&2
+  printf "    1. Fix the breakage on %s first, then retry the batch\n" "${_target_branch}" >&2
+  printf "    2. Or bypass with: rite <issues> --allow-red-main  (not recommended)\n" >&2
+  echo "" >&2
+  return 1
+}
+
 # Batch processing requires associative arrays (bash 4+)
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -229,6 +296,11 @@ while [[ $# -gt 0 ]]; do
       FILTER_TYPE="state"
       FILTER_VALUE="$2"
       shift 2
+      ;;
+    --allow-red-main)
+      RITE_ALLOW_RED_MAIN=true
+      export RITE_ALLOW_RED_MAIN
+      shift
       ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -639,6 +711,16 @@ load_provider "${RITE_DEV_PROVIDER:-claude}"
 provider_detect_cli || true
 if ! provider_healthcheck; then
   print_error "Batch aborted at pre-flight. Fix workspace trust and retry."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# CI preflight: read-only check that the target branch is green before any
+# slot starts. One gh api call — never runs tests or lint. Halts with
+# remediation instructions when the latest completed run is red.
+# Pass --allow-red-main to bypass with a warning.
+# ---------------------------------------------------------------------------
+if ! _ci_preflight; then
   exit 1
 fi
 
