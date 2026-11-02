@@ -745,6 +745,7 @@ DOC_UPDATE_EOF
         for _ue_ref in $_ue_p_drift; do
           case "$_ue_ref" in
             pr:[0-9]*)
+              # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_DOC_DRIFT is an internal marker constant (defined in markers.sh), not a user config var; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention for all marker constants; ledger is frozen per 2026-07-14 rule
               if printf '%s\n' "$_ue_drift_content" | grep -qF "<!-- ${RITE_MARKER_DOC_DRIFT} ${_ue_ref} " 2>/dev/null; then
                 _ue_any_real=1
                 break
