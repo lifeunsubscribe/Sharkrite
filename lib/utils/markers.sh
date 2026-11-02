@@ -57,6 +57,22 @@ RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
 # Format in issue body: <!-- sharkrite-source-issue:N -->
 RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
 
+# Finding location marker — embedded in follow-up issue body to record the code location
+# reported by the assessor for this specific finding.
+# Format in issue body: <!-- sharkrite-finding-location:VALUE -->
+# Value is raw assessor text, may contain spaces/colons — extract up to the closing -->.
+# Omitted entirely when the assessment did not include a Location field (bare-prefix guard
+# contract: never emit this marker with an empty value).
+RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
+
+# Finding SHA marker — embedded in follow-up issue body to record the HEAD SHA of the
+# feature branch at the time the follow-up issue was created.
+# Format in issue body: <!-- sharkrite-finding-sha:XXXXXXX -->
+# Value is a short SHA (≥7 chars) from `git rev-parse --short HEAD` at assessment time;
+# length may exceed 7 chars when git extends it to resolve an abbreviation collision.
+# Used by a reconciliation pass to detect whether the relevant code changed after filing.
+RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
+
 # Issue tags marker (tag-index read-path, #403) — wraps the tags: block in an
 # issue body so the read-path can extract candidate tags for context loading.
 # Format in issue body: <!-- sharkrite-issue-tags --> tags: ... <!-- /sharkrite-issue-tags -->
