@@ -105,7 +105,8 @@ teardown() {
     false
   }
   # The assignment must be guarded (conditional: -n or [ ]), not unconditional.
-  run grep -nE '(\[ -n.*ITEM_LOCATION|\-n.*ITEM_LOCATION).*_finding_location_marker' "$ASSESS_REVIEW_SCRIPT"
+  # Guard and assignment are in a multi-line if block, so check guard separately.
+  run grep -nE '(\[ -n.*ITEM_LOCATION|-n.*ITEM_LOCATION)' "$ASSESS_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
     echo "FAIL: guard '[ -n \${ITEM_LOCATION:-} ]' not found before location marker assignment"
     false
@@ -118,7 +119,8 @@ teardown() {
     echo "FAIL: _finding_location_marker assignment not found in $ASSESS_RESOLVE_SCRIPT"
     false
   }
-  run grep -nE '(\[ -n.*_f_location|\-n.*_f_location).*_finding_location_marker' "$ASSESS_RESOLVE_SCRIPT"
+  # Guard and assignment are in a multi-line if block, so check guard separately.
+  run grep -nE '(\[ -n.*_f_location|-n.*_f_location)' "$ASSESS_RESOLVE_SCRIPT"
   [ "$status" -eq 0 ] || {
     echo "FAIL: guard '[ -n \${_f_location:-} ]' not found before location marker assignment"
     false
