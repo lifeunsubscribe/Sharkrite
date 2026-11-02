@@ -450,11 +450,12 @@ ${_ue_excerpt}
     print_warning "To update these docs, narrow your instruction to target them specifically, or split into separate runs." >&2
   fi
 
-  # Drift log content
-  local _ue_drift_path
-  _ue_drift_path="$(drift_log_path 2>/dev/null || true)"
+  # Drift log content — anchor to RITE_PROJECT_ROOT so the path is correct
+  # regardless of the caller's CWD (drift_log_path falls back to git
+  # rev-parse --show-toplevel which resolves from CWD, not RITE_PROJECT_ROOT).
+  local _ue_drift_path="${RITE_PROJECT_ROOT}/$(drift_log_relpath)"
   local _ue_drift_content=""
-  if [ -n "$_ue_drift_path" ] && [ -f "$_ue_drift_path" ]; then
+  if [ -f "$_ue_drift_path" ]; then
     _ue_drift_content="$(cat "$_ue_drift_path" 2>/dev/null || true)"
   fi
 
