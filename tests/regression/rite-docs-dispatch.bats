@@ -37,6 +37,13 @@ source "${DOCS_CMD}"
 # Override external-call functions AFTER source (last definition wins in bash).
 # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs intentionally defined after source to override real implementations
 load_provider() { return 0; }
+# docs-command.sh gained provider_detect_cli + provider_healthcheck in #1534.
+# Unstubbed, the real detect runs `claude` and `|| exit 1` kills the helper, so
+# every audit-path test failed wherever no claude CLI is installed — i.e. on both
+# CI platforms, while passing on a dev box that has one (live: main red
+# 2026-10-27). Same miss as divergence-merge-target-passed-to-resolver.bats.
+provider_detect_cli() { return 0; }
+provider_healthcheck() { return 0; }
 provider_run_prompt_with_timeout() { echo "${DOCS_AUDIT_OUTPUT:-NOTHING_FOUND}"; }
 provider_resolve_model() { echo "claude-sonnet-4-6"; }
 docs_map_build() {
