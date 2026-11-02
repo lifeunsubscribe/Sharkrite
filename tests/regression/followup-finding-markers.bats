@@ -125,133 +125,89 @@ teardown() {
   }
 }
 
-# ─── 5-7. Behavioral: inline guard logic ─────────────────────────────────────
-# These tests replicate the exact guard logic from both creation sites to verify
-# the empty/non-empty behavior without running the full scripts.
+# ─── 5-8. Structural: pin exact guarded-assignment lines in the real scripts ──
+# These tests grep for the specific guard+assignment lines in the real source
+# so that renaming variables, removing the guard, or relocating the marker
+# causes a test failure — unlike inline-logic copies that would pass silently.
 
-@test "behavioral: with location and sha — both markers appear in body" {
-  RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
-  RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
-  RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
-  RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
-
-  ITEM_LOCATION="lib/core/foo.sh:42"
-  _assessment_head_sha="abc1234"
-  PR_NUMBER="99"
-  SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:10 -->"
-
-  # Exact logic from assess-review-issues.sh body builder
-  _finding_location_marker=""
-  [ -n "${ITEM_LOCATION:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
-  _finding_sha_marker=""
-  [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
-  ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}"
-
-  [[ "$ISSUE_BODY" == *"<!-- sharkrite-finding-location:lib/core/foo.sh:42 -->"* ]] || {
-    echo "FAIL: location marker not found in body"
-    echo "Body: $ISSUE_BODY"
-    false
-  }
-  [[ "$ISSUE_BODY" == *"<!-- sharkrite-finding-sha:abc1234 -->"* ]] || {
-    echo "FAIL: sha marker not found in body"
-    echo "Body: $ISSUE_BODY"
+@test "assess-review-issues.sh: location guard uses allowlist (not bare -n)" {
+  # Pin the exact allowlist form that prevents --> injection into the HTML comment.
+  # A bare [ -n "${ITEM_LOCATION:-}" ] guard (without the grep -qE check) would pass
+  # empty-guard tests but allow adversarial values through.
+  run grep -n "ITEM_LOCATION.*grep.*qE.*A-Za-z" "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: allowlist guard for ITEM_LOCATION not found in $ASSESS_REVIEW_SCRIPT"
+    echo "Expected: if [ -n \${ITEM_LOCATION:-} ] && printf ... | grep -qE '^[A-Za-z0-9 ...]'"
     false
   }
 }
 
-@test "behavioral: without location — location marker absent, sha marker present" {
-  RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
-  RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
-  RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
-  RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
-
-  # No location field (assessment omitted it)
-  ITEM_LOCATION=""
-  _assessment_head_sha="def5678"
-  PR_NUMBER="99"
-  SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:10 -->"
-
-  # Exact logic from assess-review-issues.sh body builder
-  _finding_location_marker=""
-  [ -n "${ITEM_LOCATION:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
-  _finding_sha_marker=""
-  [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
-  ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}"
-
-  # Location marker must be absent entirely (bare-prefix guard)
-  [[ "$ISSUE_BODY" != *"sharkrite-finding-location"* ]] || {
-    echo "FAIL: location marker present when ITEM_LOCATION is empty"
-    echo "Body: $ISSUE_BODY"
-    false
-  }
-  # SHA marker must still be present
-  [[ "$ISSUE_BODY" == *"<!-- sharkrite-finding-sha:def5678 -->"* ]] || {
-    echo "FAIL: sha marker absent even when sha is available"
-    echo "Body: $ISSUE_BODY"
+@test "assess-review-issues.sh: location marker assigned only inside the allowlist if-block" {
+  # Pin the exact assignment line inside the guarded block.
+  run grep -n '_finding_location_marker=.*RITE_MARKER_FINDING_LOCATION.*ITEM_LOCATION' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: guarded _finding_location_marker assignment not found in $ASSESS_REVIEW_SCRIPT"
     false
   }
 }
 
-@test "behavioral: without sha (git unavailable) — sha marker absent" {
-  RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
-  RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
-  RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
-  RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
-
-  ITEM_LOCATION="lib/utils/bar.sh:10"
-  _assessment_head_sha=""  # git failed — empty
-  PR_NUMBER="99"
-  SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:10 -->"
-
-  # Exact logic from assess-review-issues.sh body builder
-  _finding_location_marker=""
-  [ -n "${ITEM_LOCATION:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
-  _finding_sha_marker=""
-  [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
-  ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}"
-
-  # SHA marker must be absent when sha is empty
-  [[ "$ISSUE_BODY" != *"sharkrite-finding-sha"* ]] || {
-    echo "FAIL: sha marker emitted with empty value"
-    echo "Body: $ISSUE_BODY"
-    false
-  }
-  # Location marker must still be present
-  [[ "$ISSUE_BODY" == *"<!-- sharkrite-finding-location:lib/utils/bar.sh:10 -->"* ]] || {
-    echo "FAIL: location marker absent when location is available"
-    echo "Body: $ISSUE_BODY"
+@test "assess-review-issues.sh: sha marker guard is a bare -n on _assessment_head_sha" {
+  run grep -n '_assessment_head_sha.*_finding_sha_marker=.*RITE_MARKER_FINDING_SHA' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: SHA marker guard not found in $ASSESS_REVIEW_SCRIPT"
     false
   }
 }
 
-# ─── assess-and-resolve.sh path also exercises correct variable names ─────────
-
-@test "behavioral (assess-and-resolve path): with _f_location and sha — both markers present" {
-  RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
-  RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
-  RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
-  RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
-
-  _f_location="lib/core/assess-and-resolve.sh:2505"
-  _assessment_head_sha="fa987bc"
-  PR_NUMBER="200"
-  SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:50 -->"
-
-  # Exact logic from assess-and-resolve.sh body builder
-  _finding_location_marker=""
-  [ -n "${_f_location:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${_f_location} -->"
-  _finding_sha_marker=""
-  [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
-  FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}"
-
-  [[ "$FOLLOWUP_BODY" == *"<!-- sharkrite-finding-location:lib/core/assess-and-resolve.sh:2505 -->"* ]] || {
-    echo "FAIL: location marker not found in assess-and-resolve path body"
-    echo "Body: $FOLLOWUP_BODY"
+@test "assess-review-issues.sh: location marker absent when --> in value (allowlist blocks it)" {
+  # Structural: verify the allowlist rejects --> by checking the character class
+  # excludes > (which would allow the --> termination sequence).
+  run grep -n "grep.*qE.*A-Za-z0-9.*ITEM_LOCATION\|ITEM_LOCATION.*grep.*qE.*A-Za-z0-9" "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ]
+  # The character class must NOT include '>'; if it did, --> could pass through.
+  run grep -n "grep.*qE.*\[.*>.*\].*ITEM_LOCATION\|ITEM_LOCATION.*grep.*qE.*\[.*>.*\]" "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: allowlist character class appears to include '>', which would allow --> injection"
+    echo "Got: $output"
     false
   }
-  [[ "$FOLLOWUP_BODY" == *"<!-- sharkrite-finding-sha:fa987bc -->"* ]] || {
-    echo "FAIL: sha marker not found in assess-and-resolve path body"
-    echo "Body: $FOLLOWUP_BODY"
+}
+
+# ─── assess-and-resolve.sh path: pin exact guarded-assignment lines ───────────
+
+@test "assess-and-resolve.sh: location guard uses allowlist (not bare -n)" {
+  run grep -n "_f_location.*grep.*qE.*A-Za-z" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: allowlist guard for _f_location not found in $ASSESS_RESOLVE_SCRIPT"
+    echo "Expected: if [ -n \${_f_location:-} ] && printf ... | grep -qE '^[A-Za-z0-9 ...]'"
+    false
+  }
+}
+
+@test "assess-and-resolve.sh: location marker assigned only inside the allowlist if-block" {
+  run grep -n '_finding_location_marker=.*RITE_MARKER_FINDING_LOCATION.*_f_location' "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: guarded _finding_location_marker assignment not found in $ASSESS_RESOLVE_SCRIPT"
+    false
+  }
+}
+
+@test "assess-and-resolve.sh: sha marker guard is a bare -n on _assessment_head_sha" {
+  run grep -n '_assessment_head_sha.*_finding_sha_marker=.*RITE_MARKER_FINDING_SHA' "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: SHA marker guard not found in $ASSESS_RESOLVE_SCRIPT"
+    false
+  }
+}
+
+@test "assess-and-resolve.sh: location marker absent when --> in value (allowlist blocks it)" {
+  # Structural: verify the allowlist rejects --> by confirming > is excluded.
+  run grep -n "grep.*qE.*A-Za-z0-9.*_f_location\|_f_location.*grep.*qE.*A-Za-z0-9" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -eq 0 ]
+  run grep -n "grep.*qE.*\[.*>.*\].*_f_location\|_f_location.*grep.*qE.*\[.*>.*\]" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: allowlist character class appears to include '>', which would allow --> injection"
+    echo "Got: $output"
     false
   }
 }

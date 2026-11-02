@@ -59,8 +59,8 @@ RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
 
 # Finding location marker — embedded in follow-up issue body to record the code location
 # reported by the assessor for this specific finding.
-# Format in issue body: <!-- sharkrite-finding-location:path[:line] -->
-# Value is the raw Location: field from the assessment output (e.g. "lib/core/foo.sh:42").
+# Format in issue body: <!-- sharkrite-finding-location:VALUE -->
+# Value is raw assessor text, may contain spaces/colons — extract up to the closing -->.
 # Omitted entirely when the assessment did not include a Location field (bare-prefix guard
 # contract: never emit this marker with an empty value).
 RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
@@ -68,7 +68,8 @@ RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
 # Finding SHA marker — embedded in follow-up issue body to record the HEAD SHA of the
 # feature branch at the time the follow-up issue was created.
 # Format in issue body: <!-- sharkrite-finding-sha:XXXXXXX -->
-# Value is a 7-char short SHA from `git rev-parse --short HEAD` at assessment time.
+# Value is a short SHA (≥7 chars) from `git rev-parse --short HEAD` at assessment time;
+# length may exceed 7 chars when git extends it to resolve an abbreviation collision.
 # Used by a reconciliation pass to detect whether the relevant code changed after filing.
 RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
 

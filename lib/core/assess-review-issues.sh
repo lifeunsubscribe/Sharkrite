@@ -1324,9 +1324,16 @@ Files to Modify:
 
           # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh per-finding loop) ---
           # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+          # Location value is LLM-derived; allowlist-check before embedding in an HTML comment
+          # so that a value containing --> cannot terminate the comment early and corrupt the
+          # parent-pr marker on the same line (same contract as ITEM_VERIFICATION, above).
           _finding_location_marker=""
-          [ -n "${ITEM_LOCATION:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
+          if [ -n "${ITEM_LOCATION:-}" ] && printf '%s' "${ITEM_LOCATION}" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+            # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+            _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
+          fi
           _finding_sha_marker=""
+          # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
           [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
           ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description

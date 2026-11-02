@@ -2503,9 +2503,16 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
 
     # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+    # Location value is LLM-derived; allowlist-check before embedding in an HTML comment
+    # so that a value containing --> cannot terminate the comment early and corrupt the
+    # parent-pr marker on the same line (same contract as ITEM_VERIFICATION, above).
     _finding_location_marker=""
-    [ -n "${_f_location:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${_f_location} -->"
+    if [ -n "${_f_location:-}" ] && printf '%s' "${_f_location}" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+      # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+      _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${_f_location} -->"
+    fi
     _finding_sha_marker=""
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
     [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
 
     # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
