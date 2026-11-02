@@ -5181,7 +5181,14 @@ _resolve_ordinal_refs_in_body() {
       printf '%s\n%s\n' "$_body" "$_body_sentinel" >> "$_p2_combined_file"
 
       _body=$(awk '
-        BEGIN { loading_map = 1 }
+        # pat_count tracks the map size instead of length(pat_arr): length() on an
+        # array is a gawk extension, and evaluating it on the first map line types
+        # the still-untyped variable as a scalar, so the subscript assignment that
+        # follows dies with "attempt to use scalar as an array" on GNU awk while
+        # BSD awk tolerates it (live: CI red on ubuntu only, 2026-10-27 — all 12
+        # tests in plan-ordinal-ref-resolution.bats, and rite plan silently
+        # rewriting no ordinal refs at all on Linux).
+        BEGIN { loading_map = 1; pat_count = 0 }
         loading_map {
           if ($0 == "---MAP-END---") { loading_map = 0; next }
           eq = index($0, "=")
@@ -5189,9 +5196,10 @@ _resolve_ordinal_refs_in_body() {
             ord  = substr($0, 1, eq - 1)
             rnum = substr($0, eq + 1)
             if (ord != "" && rnum != "") {
-              pat_arr[length(pat_arr)+1]  = "#" ord
-              rnum_arr[length(rnum_arr)+1] = rnum
-              plen_arr[length(plen_arr)+1] = 1 + length(ord)
+              pat_count++
+              pat_arr[pat_count]  = "#" ord
+              rnum_arr[pat_count] = rnum
+              plen_arr[pat_count] = 1 + length(ord)
             }
           }
           next
@@ -5213,7 +5221,7 @@ _resolve_ordinal_refs_in_body() {
           i = 1
           while (i <= slen) {
             matched = 0
-            for (k = 1; k <= length(pat_arr); k++) {
+            for (k = 1; k <= pat_count; k++) {
               pat    = pat_arr[k]
               patlen = plen_arr[k]
               if (substr(s, i, patlen) == pat) {
