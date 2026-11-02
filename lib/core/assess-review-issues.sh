@@ -1027,6 +1027,9 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
     SCOPE_DO_BULLETS="- DO: Address the specific review finding described above"
   fi
 
+  # Capture HEAD SHA once for all finding provenance markers in this assessment pass.
+  _assessment_head_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+
   # Parse each ACTIONABLE_LATER item and create/update issues
   CREATED_ISSUES=""
   UPDATED_ISSUES=""
@@ -1320,7 +1323,19 @@ Files to Modify:
 - _Determine from the finding above_"
 
           # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh per-finding loop) ---
-          ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+          # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+          # Location value is LLM-derived; allowlist-check before embedding in an HTML comment
+          # so that a value containing --> cannot terminate the comment early and corrupt the
+          # parent-pr marker on the same line (same contract as ITEM_VERIFICATION, above).
+          _finding_location_marker=""
+          if [ -n "${ITEM_LOCATION:-}" ] && printf '%s' "${ITEM_LOCATION}" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+            # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+            _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
+          fi
+          _finding_sha_marker=""
+          # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+          [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
+          ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
 
 ${ITEM_REASONING:-$ITEM_TITLE}

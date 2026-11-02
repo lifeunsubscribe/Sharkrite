@@ -2283,6 +2283,9 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _findings_cap_validated="$_findings_cap_raw"
   fi
 
+  # Capture HEAD SHA once for all finding provenance markers in this assessment pass.
+  _assessment_head_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+
   while IFS= read -r _fh_line; do
     [ -z "$_fh_line" ] && continue
 
@@ -2499,6 +2502,19 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     SOURCE_ISSUE_MARKER=""
     [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
 
+    # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+    # Location value is LLM-derived; allowlist-check before embedding in an HTML comment
+    # so that a value containing --> cannot terminate the comment early and corrupt the
+    # parent-pr marker on the same line (same contract as ITEM_VERIFICATION, above).
+    _finding_location_marker=""
+    if [ -n "${_f_location:-}" ] && printf '%s' "${_f_location}" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+      # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+      _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${_f_location} -->"
+    fi
+    _finding_sha_marker=""
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+    [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
+
     # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
     # For follow-ups, all parent-PR changed files are candidates for inspection;
     # none are guaranteed to require modification, so emit all under "Files to Read:"
@@ -2509,7 +2525,7 @@ ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 Files to Modify:
 - _Determine from the finding above_"
 
-    FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+    FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
 
 ${_f_reasoning:-${_clean_title}}
