@@ -84,11 +84,11 @@ wait_at_barrier() {
   fi
 
   # Busy-wait until all processes arrive.
-  # 300 iterations × 0.1s = 30s. 10s was enough on the dev box but not on a
-  # 2-core CI runner, where git-heavy workers never reached the barrier ("got 1")
+  # 100 iterations × 0.1s = 10s. Bumped from 5s to give bash 4+ subshells
+  # enough headroom on a loaded macOS dev machine.
   local count=0
   local timeout=0
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 300 ]; do
+  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
@@ -96,7 +96,7 @@ wait_at_barrier() {
     fi
   done
 
-  if [ "$timeout" -ge 300 ]; then
+  if [ "$timeout" -ge 100 ]; then
     echo "ERROR: Barrier timeout waiting for $expected_count processes (got $count)" >&2
     return 1
   fi
