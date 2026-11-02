@@ -153,6 +153,11 @@ while [[ $# -gt 0 ]]; do
       _INVOCATION_FLAGS+=("--allow-main-base")
       shift
       ;;
+    --allow-red-main)
+      ARGS+=("--allow-red-main")
+      _INVOCATION_FLAGS+=("--allow-red-main")
+      shift
+      ;;
     --by-label|--group-by-label)
       LABEL_FILTER="--by-label"
       shift
@@ -306,6 +311,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --supervised               Supervised mode (approve hard gates interactively)"
       echo "  --bypass-blockers          Skip hard gates in unsupervised mode (CRITICAL findings, session limits)"
       echo "  --allow-main-base          Allow merging a main-based PR when session target is non-main (overrides integration-branch guard)"
+  echo "  --allow-red-main           Bypass red-main CI preflight (batch only; not recommended)"
       echo "  --branch <name>            Target integration branch (default: main; inert until #1033)"
       echo "  --no-log                   Disable logging (logs are on by default)"
       echo "  --verbose                  Show extra detail (branch cleanup explanations, etc.)"
