@@ -636,7 +636,7 @@ DOC_UPDATE_EOF
     if [ "$_ue_prop_count" -eq 0 ]; then
       rm -rf "$_ue_props_dir"
       if printf '%s\n' "$_ue_proposals_raw" | grep -q "^---PROPOSAL---$" && \
-         ! printf '%s\n' "$_ue_proposals_raw" | grep -qF "${_ue_end_token}"; then
+         ! printf '%s\n' "$_ue_proposals_raw" | grep -qF -- "${_ue_end_token}"; then
         # Model sent PROPOSAL markers but the correct end token never appeared —
         # inject corrective feedback and retry via the loop instead of discarding.
         # Guard: only fires when _ue_end_token is absent. If the correct token IS
