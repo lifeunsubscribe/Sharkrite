@@ -154,7 +154,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --allow-red-main)
-      export RITE_ALLOW_RED_MAIN=true
+      ARGS+=("--allow-red-main")
       _INVOCATION_FLAGS+=("--allow-red-main")
       shift
       ;;

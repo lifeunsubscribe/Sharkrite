@@ -2,9 +2,11 @@
 # sharkrite-test-covers: lib/core/batch-process-issues.sh::_ci_preflight, bin/rite
 # Regression tests for the batch CI preflight (issue #1549).
 #
-# Before any slot starts, a batch reads the latest completed CI run on the target
-# branch (one gh api call). If the conclusion is failure or timed_out, the batch
-# halts with the failing workflow name, URL, and remediation instructions.
+# Before any slot starts, a batch reads the latest completed CI run per
+# workflow on the target branch (one gh api call, per_page=30 + group_by).
+# If any workflow's latest run has a red conclusion (failure, timed_out, or
+# startup_failure), the batch halts with the failing workflow name, URL, and
+# remediation instructions.
 # --allow-red-main bypasses with a single warning line.
 # Missing CI / empty results / API error -> proceed silently.
 #
@@ -27,6 +29,7 @@
 #    13. --allow-red-main with red CI -> returns 0 with one warning
 #    14. Neutral conclusion -> returns 0 silently (not a hard failure)
 #    15. MAIN_CI_RED diag includes branch and conclusion on halt path
+#    16. startup_failure conclusion treated as red
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
@@ -101,8 +104,9 @@ _write_gh_stub() {
 # it in a subshell with:
 #   - a stubbed gh binary on PATH for the API call
 #   - gh_safe() pass-through (calls the stub gh)
-#   - print_warning/print_error/._diag stubs
-#   - RITE_TARGET_BRANCH and RITE_ALLOW_RED_MAIN set per test
+#   - print_warning/print_error/_diag stubs
+#   - RITE_TARGET_BRANCH set per test
+#   - the allow flag passed as $1 (not via env var)
 # =============================================================================
 
 @test "behavioral: red conclusion (failure) returns 1 with halt block" {
@@ -111,17 +115,16 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"failure","name":"CI / Lint","html_url":"https://github.com/org/repo/actions/runs/99"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 1 ]
   [[ "$output" == *"CI is red"* ]] || [[ "$output" == *"preflight failed"* ]]
@@ -133,17 +136,16 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"timed_out","name":"CI","html_url":"https://example.com"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 1 ]
 }
@@ -154,17 +156,16 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"failure","name":"CI / Lint","html_url":"https://github.com/org/repo/actions/runs/99"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 1 ]
   [[ "$output" == *"CI / Lint"* ]]
@@ -177,17 +178,16 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"failure","name":"CI","html_url":"https://example.com"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 1 ]
   [[ "$output" == *"--allow-red-main"* ]]
@@ -199,17 +199,16 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"success","name":"CI","html_url":"https://example.com"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 0 ]
   [ -z "$output" ]
@@ -220,17 +219,16 @@ _write_gh_stub() {
   _write_gh_stub "$_stub_bin/gh" '{"total_count":0,"workflow_runs":[]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 0 ]
   [ -z "$output" ]
@@ -244,17 +242,16 @@ _write_gh_stub() {
   chmod +x "$_stub_bin/gh"
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 0 ]
 }
@@ -265,17 +262,16 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"failure","name":"CI","html_url":"https://example.com"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=true
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight true 2>&1
   "
   [ "$status" -eq 0 ]
   [[ "$output" == *"allow-red-main"* ]] || [[ "$output" == *"red"* ]]
@@ -287,17 +283,16 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"neutral","name":"CI","html_url":"https://example.com"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=main
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 0 ]
 }
@@ -308,19 +303,39 @@ _write_gh_stub() {
     '{"total_count":1,"workflow_runs":[{"conclusion":"failure","name":"CI","html_url":"https://example.com"}]}'
 
   run bash -c "
-    export PATH='${_stub_bin}:\$PATH'
+    export PATH=\"${_stub_bin}:$PATH\"
     gh_safe() { gh \"\$@\"; }
     print_warning() { echo \"WARNING: \$*\"; }
     print_error() { echo \"ERROR: \$*\" >&2; }
     _diag() { echo \"[diag] \$*\"; }
     export RITE_TARGET_BRANCH=my-integration
-    export RITE_ALLOW_RED_MAIN=false
     _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
       '${BATCH_PROCESSOR}')
     eval \"\$_func_src\"
-    _ci_preflight 2>&1
+    _ci_preflight false 2>&1
   "
   [ "$status" -eq 1 ]
   [[ "$output" == *"branch=my-integration"* ]]
   [[ "$output" == *"conclusion=failure"* ]]
+}
+
+@test "behavioral: startup_failure conclusion treated as red (halts batch)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  _write_gh_stub "$_stub_bin/gh" \
+    '{"total_count":1,"workflow_runs":[{"conclusion":"startup_failure","name":"CI / Lint","html_url":"https://example.com/runs/42"}]}'
+
+  run bash -c "
+    export PATH=\"${_stub_bin}:$PATH\"
+    gh_safe() { gh \"\$@\"; }
+    print_warning() { echo \"WARNING: \$*\"; }
+    print_error() { echo \"ERROR: \$*\" >&2; }
+    _diag() { echo \"[diag] \$*\"; }
+    export RITE_TARGET_BRANCH=main
+    _func_src=\$(awk '/^_ci_preflight\(\)/{ in_func=1 } in_func{ print } in_func && /^\}\$/ { exit }' \
+      '${BATCH_PROCESSOR}')
+    eval \"\$_func_src\"
+    _ci_preflight false 2>&1
+  "
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"CI is red"* ]] || [[ "$output" == *"preflight failed"* ]]
 }

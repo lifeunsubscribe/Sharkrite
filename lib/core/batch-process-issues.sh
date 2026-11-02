@@ -172,7 +172,7 @@ record_run() {
 
 # ---------------------------------------------------------------------------
 # _ci_preflight: one-API-read CI check — halts when the target branch's latest
-# completed workflow run has a red conclusion (failure|timed_out).
+# completed workflow run (per workflow) has a red conclusion.
 #
 # Soundness guard for block-on-any: any gate failure in the targeted selection
 # is this change's to fix — only valid when the base branch is green. This
@@ -180,40 +180,50 @@ record_run() {
 # lint state where every intersecting slot's fix-loop retries burned on
 # failures that were not theirs.
 #
+# Fetches per_page=30 completed runs, groups by workflow_id to find the latest
+# run per workflow, then checks if any latest-per-workflow run is red. This
+# prevents a green deploy/scheduled run from masking a red CI run in
+# multi-workflow repos.
+#
 # One gh api call; never runs tests or lint. See CLAUDE.md →
 # "No full suites inside a workflow (CRITICAL)" for why the retired #916
 # full-suite preflight is NOT resurrected here.
 #
-# Reads: RITE_TARGET_BRANCH (defaults to main), RITE_ALLOW_RED_MAIN
+# Args:
+#   $1 — "true" to bypass with a warning (set by --allow-red-main flag only)
+#
+# Reads: RITE_TARGET_BRANCH (defaults to main)
 #
 # Returns:
-#   0 — green, absent CI, API unreachable, or --allow-red-main passed
-#   1 — red CI and --allow-red-main not passed (caller must exit)
+#   0 — green, absent CI, API unreachable, or $1==true (--allow-red-main)
+#   1 — red CI and $1 != true (caller must exit)
 # ---------------------------------------------------------------------------
 _ci_preflight() {
   local _target_branch="${RITE_TARGET_BRANCH:-main}"
-  local _allow="${RITE_ALLOW_RED_MAIN:-false}"
+  local _allow="${1:-false}"
 
   local _run_json
   _run_json=$(gh_safe api \
-    "repos/{owner}/{repo}/actions/runs?branch=${_target_branch}&status=completed&per_page=1" \
+    "repos/{owner}/{repo}/actions/runs?branch=${_target_branch}&status=completed&per_page=30" \
     2>/dev/null || true)
 
   [ -z "$_run_json" ] && return 0
 
-  local _count
-  _count=$(printf '%s' "$_run_json" | jq -r '.total_count // 0' 2>/dev/null || true)
-  [ "${_count:-0}" -eq 0 ] && return 0
+  # Get the latest completed run per workflow; find the first red one.
+  local _red_run
+  _red_run=$(printf '%s' "$_run_json" | jq -r '
+    [.workflow_runs | group_by(.workflow_id)[] | .[0] |
+     select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")] |
+    .[0] | select(.) |
+    [.conclusion, (.name // "unknown"), (.html_url // "")] | join("\t")
+  ' 2>/dev/null || true)
+
+  [ -z "${_red_run:-}" ] && return 0
 
   local _conclusion _name _url
-  _conclusion=$(printf '%s' "$_run_json" | jq -r '.workflow_runs[0].conclusion // ""' 2>/dev/null || true)
-  _name=$(printf '%s' "$_run_json" | jq -r '.workflow_runs[0].name // ""' 2>/dev/null || true)
-  _url=$(printf '%s' "$_run_json" | jq -r '.workflow_runs[0].html_url // ""' 2>/dev/null || true)
-
-  case "${_conclusion:-}" in
-    failure|timed_out) ;;
-    *) return 0 ;;
-  esac
+  _conclusion=$(printf '%s' "$_red_run" | cut -f1 || true)
+  _name=$(printf '%s' "$_red_run" | cut -f2 || true)
+  _url=$(printf '%s' "$_red_run" | cut -f3 || true)
 
   if declare -f _diag >/dev/null 2>&1; then
     _diag "MAIN_CI_RED branch=${_target_branch} conclusion=${_conclusion}"
@@ -275,6 +285,7 @@ ISSUE_LIST=()
 FILTER_TYPE=""
 FILTER_VALUE=""
 SMART_WAIT=false
+_allow_red_main=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -298,8 +309,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --allow-red-main)
-      RITE_ALLOW_RED_MAIN=true
-      export RITE_ALLOW_RED_MAIN
+      _allow_red_main=true
       shift
       ;;
     *)
@@ -720,7 +730,7 @@ fi
 # remediation instructions when the latest completed run is red.
 # Pass --allow-red-main to bypass with a warning.
 # ---------------------------------------------------------------------------
-if ! _ci_preflight; then
+if ! _ci_preflight "$_allow_red_main"; then
   exit 1
 fi
 
