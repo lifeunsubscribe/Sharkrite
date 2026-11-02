@@ -160,6 +160,16 @@
 # file is not reachable via the changed source's import graph).
 # RITE_GATE_NATIVE_SCOPING=true
 
+# Target repo lint script (node repos only, default: true — run scripts.lint).
+# When true, the post-commit gate reads scripts.lint from the target repo's
+# package.json and runs it after the test step. For eslint, the run is
+# automatically scoped to the commit's changed JS/TS files; for other tools
+# the full lint script runs unchanged. Findings are normalized and surfaced
+# as [GATE] ACTIONABLE_NOW items via the lint[] array in the verdict JSON.
+# Set to false to disable entirely (e.g. when the target repo's lint has
+# known persistent failures on main that are not your change's to fix).
+# RITE_GATE_REPO_LINT=true
+
 # Green-main preflight behavior when main is red (default: not set — halt).
 # When unset or "0", a batch run halts with exit 20 if the full gate on
 # origin/main finds failures. This guards gate block-on-any soundness:
