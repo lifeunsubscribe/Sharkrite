@@ -220,8 +220,15 @@ _setup_diverging_branch() {
     return 0
   }
 
-  # Stub load_provider so the resolver doesn't try to source the real claude.sh
-  load_provider() { return 0; }
+  # Stub load_provider so the resolver doesn't try to source the real claude.sh,
+  # and stub the two provider preflights resolver Step 5 added in #1534.  Without
+  # them the REAL provider_healthcheck runs and probes workspace trust for the
+  # current directory — which here is a throwaway temp repo that no one has
+  # trusted — so it returns 1, Step 5 aborts the merge, and _do_rebase_and_push
+  # exits non-zero.  Same three-stub set as conflict-resolver.bats.
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   # Run _do_rebase_and_push in auto mode — invokes the real resolver
   local exit_code=0

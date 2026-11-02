@@ -159,7 +159,7 @@ setup() {
     return 1
   }
 
-  echo "$_func_body" | grep -qE '^\s*return 15' || {
+  echo "$_func_body" | grep -qE '^[[:space:]]*return 15' || {
     echo "FAIL: handle_pr_number_refused() does not contain 'return 15'" >&2
     echo "      Exit code 15 is the batch sentinel for PR-number refusals" >&2
     return 1
@@ -263,7 +263,7 @@ setup() {
     return 1
   }
 
-  _noncomment_body=$(echo "$_branch_body" | grep -v '^\s*#')
+  _noncomment_body=$(echo "$_branch_body" | grep -v '^[[:space:]]*#')
 
   if echo "$_noncomment_body" | grep -qE 'gh.*pr list'; then
     echo "FAIL: 'gh pr list' (non-comment) found in exit-15 branch" >&2
@@ -842,9 +842,16 @@ INLINE_EOF
   # --status routes through pr-detection.sh directly, bypassing run_workflow()'s
   # /pull/ guard. The _reject_if_pr_number() call must appear in the
   # status-per-issue dispatch block, before the gh issue view fetch.
+  # The label is anchored to the dispatcher's two-space indent: bin/rite has a
+  # SECOND, four-space-indented "status-per-issue)" arm in the dry-run help
+  # printer, which legitimately contains no guard. Matching unanchored picks that
+  # one up first. POSIX [[:space:]] rather than \s — \s is a GNU extension that
+  # BSD awk reads as a literal "s", so the ";;" terminator never matched on macOS
+  # and the block ran to EOF, sweeping in the real call site and passing for the
+  # wrong reason (live: CI red on ubuntu only, 2026-10-27).
   _block=$(awk '
-    /status-per-issue[)]\s*$/ { in_block=1; next }
-    in_block && /^\s*;;$/ { exit }
+    /^  status-per-issue[)][[:space:]]*$/ { in_block=1; next }
+    in_block && /^[[:space:]]*;;$/ { exit }
     in_block { print $0 }
   ' "$RITE_BINARY")
 
@@ -864,9 +871,11 @@ INLINE_EOF
   # --review-latest calls normalize_and_resolve which uses 'gh issue view', so
   # a PR number silently passes. The _reject_if_pr_number() call must appear
   # BEFORE normalize_and_resolve in the review-latest dispatch block.
+  # Anchored to the dispatcher's two-space indent and POSIX [[:space:]] — see the
+  # status-per-issue test above for why both matter.
   _block=$(awk '
-    /review-latest[)]\s*$/ { in_block=1; next }
-    in_block && /^\s*;;$/ { exit }
+    /^  review-latest[)][[:space:]]*$/ { in_block=1; next }
+    in_block && /^[[:space:]]*;;$/ { exit }
     in_block { print $0 }
   ' "$RITE_BINARY")
 
@@ -885,9 +894,11 @@ INLINE_EOF
 @test "structural: assess-and-fix dispatch block in bin/rite calls _reject_if_pr_number" {
   # --assess-and-fix calls normalize_and_resolve before PR detection.
   # The _reject_if_pr_number() call must appear BEFORE normalize_and_resolve.
+  # Anchored to the dispatcher's two-space indent and POSIX [[:space:]] — see the
+  # status-per-issue test above for why both matter.
   _block=$(awk '
-    /assess-and-fix[)]\s*$/ { in_block=1; next }
-    in_block && /^\s*;;$/ { exit }
+    /^  assess-and-fix[)][[:space:]]*$/ { in_block=1; next }
+    in_block && /^[[:space:]]*;;$/ { exit }
     in_block { print $0 }
   ' "$RITE_BINARY")
 
