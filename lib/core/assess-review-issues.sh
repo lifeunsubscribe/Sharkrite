@@ -1027,6 +1027,9 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
     SCOPE_DO_BULLETS="- DO: Address the specific review finding described above"
   fi
 
+  # Capture HEAD SHA once for all finding provenance markers in this assessment pass.
+  _assessment_head_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+
   # Parse each ACTIONABLE_LATER item and create/update issues
   CREATED_ISSUES=""
   UPDATED_ISSUES=""
@@ -1320,7 +1323,12 @@ Files to Modify:
 - _Determine from the finding above_"
 
           # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh per-finding loop) ---
-          ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+          # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+          _finding_location_marker=""
+          [ -n "${ITEM_LOCATION:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
+          _finding_sha_marker=""
+          [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
+          ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
 
 ${ITEM_REASONING:-$ITEM_TITLE}

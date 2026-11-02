@@ -2283,6 +2283,9 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _findings_cap_validated="$_findings_cap_raw"
   fi
 
+  # Capture HEAD SHA once for all finding provenance markers in this assessment pass.
+  _assessment_head_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+
   while IFS= read -r _fh_line; do
     [ -z "$_fh_line" ] && continue
 
@@ -2499,6 +2502,12 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     SOURCE_ISSUE_MARKER=""
     [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
 
+    # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+    _finding_location_marker=""
+    [ -n "${_f_location:-}" ] && _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${_f_location} -->"
+    _finding_sha_marker=""
+    [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
+
     # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
     # For follow-ups, all parent-PR changed files are candidates for inspection;
     # none are guaranteed to require modification, so emit all under "Files to Read:"
@@ -2509,7 +2518,7 @@ ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 Files to Modify:
 - _Determine from the finding above_"
 
-    FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+    FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
 
 ${_f_reasoning:-${_clean_title}}
