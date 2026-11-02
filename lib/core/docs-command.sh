@@ -540,6 +540,10 @@ _docs_update_engine() {
   local _ue_target="${RITE_TARGET_BRANCH:-main}"
   local _ue_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
 
+  # DOC_PASS diag tracking.
+  local _ue_llm_elapsed_s=0 _ue_input_bytes=0 _ue_had_feedback=0
+  local _ue_call_start _ue_call_end
+
   # ---- Input assembly ----
 
   # Docs map
@@ -685,6 +689,13 @@ DOC_UPDATE_EOF
 
     print_info "Generating doc proposals (attempt ${_ue_attempt}/5)..."
 
+    # Measure input bytes on first iteration; accumulate timing across all.
+    if [ "$_ue_attempt" -eq 1 ]; then
+      _ue_input_bytes="$(wc -c < "$_ue_prompt_file" 2>/dev/null | tr -d ' ' || true)"
+      _ue_input_bytes="${_ue_input_bytes:-0}"
+    fi
+    _ue_call_start=$(date +%s)
+
     local _ue_proposals_raw="" _ue_llm_rc=0
     _ue_proposals_raw="$(provider_run_prompt_with_timeout \
       "$(cat "$_ue_prompt_file")" \
@@ -693,21 +704,32 @@ DOC_UPDATE_EOF
       "$_ue_timeout" 2>/dev/null)" || _ue_llm_rc=$?
     rm -f "$_ue_prompt_file"
 
+    _ue_call_end=$(date +%s)
+    _ue_llm_elapsed_s=$((_ue_llm_elapsed_s + _ue_call_end - _ue_call_start))
+
     if [ "$_ue_llm_rc" -eq 124 ]; then
       print_warning "Provider call timed out after ${_ue_timeout}s — no proposals generated" >&2
+      _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
       return 1
     elif [ "$_ue_llm_rc" -ne 0 ]; then
       print_warning "Provider call failed (exit ${_ue_llm_rc}) — no proposals generated" >&2
+      _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
       return 1
     fi
 
     if [ -z "$_ue_proposals_raw" ]; then
       print_info "No proposals returned"
+      _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
       return 0
     fi
 
     if printf '%s\n' "$_ue_proposals_raw" | grep -q "^NO_PROPOSALS_NEEDED"; then
       print_info "Doc assessment: no changes needed"
+      _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
       return 0
     fi
 
@@ -778,6 +800,8 @@ DOC_UPDATE_EOF
       fi
       print_info "No actionable proposals in LLM output"
       rm -rf "$_ue_props_dir"
+      _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
       return 0
     fi
 
@@ -975,6 +999,7 @@ DOC_UPDATE_EOF
 
     if [ -n "$_ue_feedback_this_round" ]; then
       rm -rf "$_ue_appr_dir"
+      _ue_had_feedback=1
       if [ -n "$_ue_accum_fb" ]; then
         _ue_accum_fb="${_ue_accum_fb}
 ---
@@ -989,6 +1014,10 @@ ${_ue_feedback_this_round}"
     if [ "$_ue_appr_count" -eq 0 ]; then
       print_info "No changes approved — nothing to apply"
       rm -rf "$_ue_appr_dir"
+      local _ue_outcome_rej="rejected"
+      [ "$_ue_had_feedback" -eq 1 ] && _ue_outcome_rej="feedback"
+      _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=${_ue_outcome_rej}"
+      _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
       return 0
     fi
 
@@ -1001,10 +1030,16 @@ ${_ue_feedback_this_round}"
       "$_ue_mode" \
       "$_ue_target" || _ue_apply_rc=$?
     rm -rf "$_ue_appr_dir"
+    _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=accepted"
+    _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
     return "$_ue_apply_rc"
   done
 
   print_warning "Max proposal regeneration attempts reached — no changes applied"
+  local _ue_outcome_max="rejected"
+  [ "$_ue_had_feedback" -eq 1 ] && _ue_outcome_max="feedback"
+  _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=${_ue_outcome_max}"
+  _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
   return 1
 }
 
@@ -1227,6 +1262,26 @@ ${_bcd_adr_excerpt}
 }
 
 # ---------------------------------------------------------------------------
+# _docs_warn_doc_pass_threshold DOC DURATION_S
+#
+# Prints an info-level suggestion when DURATION_S exceeds
+# RITE_DOC_PASS_WARN_SECONDS (default 120).  Called after every DOC_PASS diag
+# emission so the suggestion appears at most once per pass.
+# ---------------------------------------------------------------------------
+_docs_warn_doc_pass_threshold() {
+  local _dwt_doc="${1:-}"
+  local _dwt_dur="${2:-0}"
+  local _dwt_thresh="${RITE_DOC_PASS_WARN_SECONDS:-120}"
+  # threshold=0 means "silence suggestion entirely" (documented in config/project.conf.example)
+  [ "$_dwt_thresh" -gt 0 ] 2>/dev/null || return 0
+  # doc=- is an aggregate placeholder; skip — aggregate passes never print the suggestion
+  [ "$_dwt_doc" = "-" ] && return 0
+  if [ "$_dwt_dur" -gt "$_dwt_thresh" ] 2>/dev/null; then
+    print_info "Doc pass took ${_dwt_dur}s — run 'rite align-docs' to audit doc drift"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # _docs_main_entries_pass DOC
 #
 # Tier 2 per-doc engine for branch=main drift entries.
@@ -1258,6 +1313,12 @@ _docs_main_entries_pass() {
   # promote; defaults to RITE_TARGET_BRANCH for the rite docs path).
   local _mp_target="${3:-${RITE_TARGET_BRANCH:-main}}"
   local _mp_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+  # kind=promote when called from the post-promote doc pass; kind=docs otherwise.
+  local _mp_kind="${4:-docs}"
+
+  # DOC_PASS diag tracking: accumulated LLM time, last prompt bytes, feedback flag.
+  local _mp_llm_elapsed_s=0 _mp_input_bytes=0 _mp_had_feedback=0
+  local _mp_call_start _mp_call_end
 
   # Read entry file for this doc from the branch's drift store
   local _mp_entry_file
@@ -1381,29 +1442,42 @@ DOC_MAIN_EOF
 
     print_info "Running Tier 2 doc pass for ${_mp_doc} (attempt ${_mp_attempt}/5)..."
 
+    _mp_input_bytes="$(wc -c < "$_mp_prompt_file" 2>/dev/null | tr -d ' ' || true)"
+    _mp_input_bytes="${_mp_input_bytes:-0}"
+    _mp_call_start=$(date +%s)
     local _mp_raw="" _mp_llm_rc=0
     _mp_raw="$(provider_run_prompt_with_timeout \
       "$(cat "$_mp_prompt_file")" \
       "$(provider_resolve_model doc_update)" \
       true \
       "$_mp_timeout" 2>/dev/null)" || _mp_llm_rc=$?
+    _mp_call_end=$(date +%s)
+    _mp_llm_elapsed_s=$((_mp_llm_elapsed_s + _mp_call_end - _mp_call_start))
     rm -f "$_mp_prompt_file"
 
     if [ "$_mp_llm_rc" -eq 124 ]; then
       print_warning "Provider call timed out after ${_mp_timeout}s — no proposals generated for ${_mp_doc}" >&2
+      _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
       return 1
     elif [ "$_mp_llm_rc" -ne 0 ]; then
       print_warning "Provider call failed (exit ${_mp_llm_rc}) — no proposals generated for ${_mp_doc}" >&2
+      _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
       return 1
     fi
 
     if [ -z "$_mp_raw" ]; then
       print_info "No proposals returned for ${_mp_doc}"
+      _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
       return 0
     fi
 
     if printf '%s\n' "$_mp_raw" | grep -q "^NO_PROPOSALS_NEEDED"; then
       print_info "Doc pass: no changes needed for ${_mp_doc}"
+      _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
       return 0
     fi
 
@@ -1519,6 +1593,8 @@ EOF_NAR
       fi
       print_info "No actionable proposals for ${_mp_doc}"
       rm -rf "$_mp_props_dir"
+      _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
       return 0
     fi
 
@@ -1728,6 +1804,7 @@ EOF_NAR
 
     if [ -n "$_mp_feedback_this_round" ]; then
       rm -rf "$_mp_appr_dir"
+      _mp_had_feedback=1
       if [ -n "$_mp_accum_fb" ]; then
         _mp_accum_fb="${_mp_accum_fb}
 ---
@@ -1741,6 +1818,10 @@ ${_mp_feedback_this_round}"
     if [ "$_mp_appr_count" -eq 0 ]; then
       print_info "No changes approved for ${_mp_doc} — nothing to apply"
       rm -rf "$_mp_appr_dir"
+      local _mp_outcome_rej="rejected"
+      [ "$_mp_had_feedback" -eq 1 ] && _mp_outcome_rej="feedback"
+      _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=${_mp_outcome_rej}"
+      _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
       return 0
     fi
 
@@ -1754,9 +1835,15 @@ ${_mp_feedback_this_round}"
       "true" \
       "$_mp_entry_file" || _mp_apply_rc=$?
     rm -rf "$_mp_appr_dir"
+    _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=accepted"
+    _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
     return "$_mp_apply_rc"
   done
 
+  local _mp_outcome_max="rejected"
+  [ "$_mp_had_feedback" -eq 1 ] && _mp_outcome_max="feedback"
+  _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=${_mp_outcome_max}"
+  _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
   print_warning "Max proposal regeneration attempts reached for ${_mp_doc} — no changes applied"
   return 1
 }
@@ -2570,6 +2657,9 @@ kind must be one of: addition, refinement, contradiction, test-scope, reference-
 If a hit is unlikely to cause genuine drift in that doc, set implicated=false.
 Output ONLY the JSON array, no prose."
 
+  local _ji_input_bytes="${#_ji_prompt}"
+  local _ji_call_start _ji_call_end _ji_call_elapsed
+  _ji_call_start=$(date +%s)
   local _ji_raw=""
   local _ji_triage_exit=0
   _ji_raw="$(provider_run_prompt_with_timeout \
@@ -2578,9 +2668,13 @@ Output ONLY the JSON array, no prose."
     true \
     "$_ji_timeout" \
     2>/dev/null)" || _ji_triage_exit=$?
+  _ji_call_end=$(date +%s)
+  _ji_call_elapsed=$((_ji_call_end - _ji_call_start))
 
   if [ "$_ji_triage_exit" -ne 0 ] || [ -z "${_ji_raw:-}" ]; then
     print_warning "Just-in-case pass: triage call failed (exit ${_ji_triage_exit}) — no cross-doc entries written" >&2
+    _diag "DOC_PASS kind=promote doc=- duration_s=${_ji_call_elapsed} input_bytes=${_ji_input_bytes} outcome=rejected"
+    _docs_warn_doc_pass_threshold "-" "$_ji_call_elapsed"
     return 0
   fi
 
@@ -2592,6 +2686,8 @@ Output ONLY the JSON array, no prose."
   # Parse and write entries
   if ! command -v jq >/dev/null 2>&1; then
     print_warning "Just-in-case pass: jq not available — cannot parse triage response" >&2
+    _diag "DOC_PASS kind=promote doc=- duration_s=${_ji_call_elapsed} input_bytes=${_ji_input_bytes} outcome=rejected"
+    _docs_warn_doc_pass_threshold "-" "$_ji_call_elapsed"
     return 0
   fi
 
@@ -2653,6 +2749,10 @@ Output ONLY the JSON array, no prose."
     print_info "Just-in-case pass: triage found no implicated cross-docs"
   fi
 
+  local _ji_outcome="rejected"
+  [ "$_ji_entry_count" -gt 0 ] && _ji_outcome="accepted"
+  _diag "DOC_PASS kind=promote doc=- duration_s=${_ji_call_elapsed} input_bytes=${_ji_input_bytes} outcome=${_ji_outcome}"
+  _docs_warn_doc_pass_threshold "-" "$_ji_call_elapsed"
   return 0
 }
 
@@ -2724,7 +2824,7 @@ docs_run_promote_doc_pass() {
           fi
           echo "" >&2
           print_info "Processing doc: ${_dp_doc}"
-          _docs_main_entries_pass "$_dp_doc" "$_dp_branch" "main" || true
+          _docs_main_entries_pass "$_dp_doc" "$_dp_branch" "main" "promote" || true
         done 3< <(_docs_list_branch_entry_docs "$_dp_branch" || true)
       else
         # No TTY: save a proposal summary so the operator can review and apply
@@ -3081,6 +3181,8 @@ docs_run_restructure_assessment() {
   while IFS= read -r _rra_doc <&3 || [ -n "$_rra_doc" ]; do
     [ -n "$_rra_doc" ] || continue
 
+    local _rra_call_elapsed=0 _rra_input_bytes=0 _rra_call_start _rra_call_end
+
     local _rra_abs="${RITE_PROJECT_ROOT}/${_rra_doc}"
     local _rra_size=0
     if [ -f "$_rra_abs" ]; then
@@ -3160,6 +3262,10 @@ RESTRUCTURE_PROMPT_EOF
 
     print_info "Running restructure assessment for ${_rra_doc}..."
 
+    _rra_input_bytes="$(wc -c < "$_rra_prompt_file" 2>/dev/null | tr -d ' ' || true)"
+    _rra_input_bytes="${_rra_input_bytes:-0}"
+    _rra_call_start=$(date +%s)
+
     local _rra_raw="" _rra_llm_rc=0
     _rra_raw="$(provider_run_prompt_with_timeout \
       "$(cat "$_rra_prompt_file")" \
@@ -3168,16 +3274,25 @@ RESTRUCTURE_PROMPT_EOF
       "$_rra_timeout" 2>/dev/null)" || _rra_llm_rc=$?
     rm -f "$_rra_prompt_file"
 
+    _rra_call_end=$(date +%s)
+    _rra_call_elapsed=$((_rra_call_end - _rra_call_start))
+
     if [ "$_rra_llm_rc" -eq 124 ]; then
       print_warning "Restructure assessment timed out after ${_rra_timeout}s for ${_rra_doc}" >&2
+      _diag "DOC_PASS kind=align doc=${_rra_doc} duration_s=${_rra_call_elapsed} input_bytes=${_rra_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_rra_doc" "$_rra_call_elapsed"
       continue
     elif [ "$_rra_llm_rc" -ne 0 ]; then
       print_warning "Restructure assessment provider call failed (exit ${_rra_llm_rc}) for ${_rra_doc}" >&2
+      _diag "DOC_PASS kind=align doc=${_rra_doc} duration_s=${_rra_call_elapsed} input_bytes=${_rra_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_rra_doc" "$_rra_call_elapsed"
       continue
     fi
 
     if [ -z "$_rra_raw" ]; then
       print_info "No restructure proposals returned for ${_rra_doc}"
+      _diag "DOC_PASS kind=align doc=${_rra_doc} duration_s=${_rra_call_elapsed} input_bytes=${_rra_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_rra_doc" "$_rra_call_elapsed"
       continue
     fi
 
@@ -3189,6 +3304,8 @@ RESTRUCTURE_PROMPT_EOF
         "no-restructure-needed" \
         "LLM assessment: no restructuring warranted" \
         "$_rra_size" || true
+      _diag "DOC_PASS kind=align doc=${_rra_doc} duration_s=${_rra_call_elapsed} input_bytes=${_rra_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_rra_doc" "$_rra_call_elapsed"
       continue
     fi
 
@@ -3281,6 +3398,8 @@ QUESTION_PARSE_EOF
       else
         print_info "No actionable restructure proposals for ${_rra_doc}"
       fi
+      _diag "DOC_PASS kind=align doc=${_rra_doc} duration_s=${_rra_call_elapsed} input_bytes=${_rra_input_bytes} outcome=rejected"
+      _docs_warn_doc_pass_threshold "$_rra_doc" "$_rra_call_elapsed"
       continue
     fi
 
@@ -3363,6 +3482,8 @@ QUESTION_PARSE_EOF
       "$_rra_decision" \
       "$_rra_rationale" \
       "$_rra_size" || true
+    _diag "DOC_PASS kind=align doc=${_rra_doc} duration_s=${_rra_call_elapsed} input_bytes=${_rra_input_bytes} outcome=${_rra_decision}"
+    _docs_warn_doc_pass_threshold "$_rra_doc" "$_rra_call_elapsed"
   done 3<<DOCS_LOOP_EOF
 $_rra_docs_raw
 DOCS_LOOP_EOF
@@ -3490,6 +3611,7 @@ DOCS_SCOPE_EOF
   _aau_findings_file="$(mktemp)"
 
   local _aau_calls=0
+  local _aau_total_elapsed=0 _aau_total_bytes=0
   local _aau_sl
   while IFS= read -r _aau_sl <&4 || [ -n "$_aau_sl" ]; do
     [ -n "$_aau_sl" ] || continue
@@ -3623,6 +3745,11 @@ AUDIT_SECTION_EOF
 
     _aau_calls=$((_aau_calls + 1))
 
+    local _aau_sec_bytes _aau_sec_start _aau_sec_end _aau_sec_elapsed
+    _aau_sec_bytes="$(wc -c < "$_aau_pf" 2>/dev/null | tr -d ' ' || true)"
+    _aau_sec_bytes="${_aau_sec_bytes:-0}"
+    _aau_sec_start=$(date +%s)
+
     local _aau_raw="" _aau_llm_rc=0
     _aau_raw="$(provider_run_prompt_with_timeout \
       "$(cat "$_aau_pf")" \
@@ -3630,6 +3757,11 @@ AUDIT_SECTION_EOF
       true \
       "$_aau_timeout" 2>/dev/null)" || _aau_llm_rc=$?
     rm -f "$_aau_pf"
+
+    _aau_sec_end=$(date +%s)
+    _aau_sec_elapsed=$((_aau_sec_end - _aau_sec_start))
+    _aau_total_elapsed=$((_aau_total_elapsed + _aau_sec_elapsed))
+    _aau_total_bytes=$((_aau_total_bytes + _aau_sec_bytes))
 
     if [ "$_aau_llm_rc" -eq 124 ]; then
       print_warning "Assertion audit: timed out on ${_aau_sl_doc} § ${_aau_sl_ht:-(preamble)}" >&2
@@ -3697,6 +3829,8 @@ CLEAR_DOCS_EOF
 
   if [ "$_aau_total" -eq 0 ]; then
     rm -f "$_aau_findings_file"
+    _diag "DOC_PASS kind=align doc=- duration_s=${_aau_total_elapsed} input_bytes=${_aau_total_bytes} outcome=rejected"
+    _docs_warn_doc_pass_threshold "-" "$_aau_total_elapsed"
     return 0
   fi
 
@@ -3757,6 +3891,10 @@ CLEAR_DOCS_EOF
   echo "" >&2
   local _aau_recorded=$((_aau_approved + _aau_auto))
   print_info "Assertion audit: ${_aau_recorded} finding(s) recorded (${_aau_auto} auto-refinement, ${_aau_approved} user-accepted)"
+  local _aau_outcome="rejected"
+  [ "$_aau_recorded" -gt 0 ] && _aau_outcome="accepted"
+  _diag "DOC_PASS kind=align doc=- duration_s=${_aau_total_elapsed} input_bytes=${_aau_total_bytes} outcome=${_aau_outcome}"
+  _docs_warn_doc_pass_threshold "-" "$_aau_total_elapsed"
 }
 
 # ---------------------------------------------------------------------------
