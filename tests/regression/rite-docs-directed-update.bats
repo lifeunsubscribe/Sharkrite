@@ -811,3 +811,83 @@ WT_HELPER_EOF
   _committed="$(git -C "$FAKE_PROJECT" show "${_branch}:docs/test-doc.md" 2>/dev/null || true)"
   printf '%s' "$_committed" | grep -qF 'Updated after wrong-end-token retry.'
 }
+
+# ---------------------------------------------------------------------------
+# Acceptance criterion 17 (#1521): wrong-end-token exhaustion terminates the
+# loop with return 1 after 5 failed attempts
+# ---------------------------------------------------------------------------
+
+@test "wrong-end-token exhaustion: return 1 after 5 failed attempts (#1521)" {
+  # All 5 provider calls return a response with the wrong end token.
+  # _ue_prop_count stays 0 on every attempt; after 5 the loop exits → return 1.
+
+  local _ex_wrong="${BATS_TEST_TMPDIR}/ex_wrong.txt"
+  printf '%s\n' \
+    '---PROPOSAL---' \
+    'ACTION: EDIT' \
+    'FILE: docs/test-doc.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: always wrong end token' \
+    '---CONTENT---' \
+    '# broken' \
+    '---END---' > "$_ex_wrong"
+
+  local _ex_count="${BATS_TEST_TMPDIR}/ex_call_count.txt"
+  printf '0\n' > "$_ex_count"
+
+  local _ex_helper="${BATS_TEST_TMPDIR}/ex_helper.sh"
+  cat > "$_ex_helper" << 'EX_HELPER_EOF'
+#!/bin/bash
+set -euo pipefail
+
+export RITE_LIB_DIR="${PROJECT_ROOT}/lib"
+export RITE_PROJECT_ROOT="${FAKE_PROJECT}"
+export RITE_DATA_DIR=".rite"
+export RITE_STATE_DIR="${FAKE_PROJECT}/.rite/state"
+export RITE_TARGET_BRANCH=main
+export PATH="${STUB_BIN}:${PATH}"
+export STUB_CALLS_FILE
+
+source "${DOCS_CMD}"
+
+# Re-define stubs AFTER source (env-var-guarded libs overwrite pre-source stubs)
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs redefined post-source to avoid gh-retry.sh _RITE_GH_RETRY_LOADED env-guard overwrite
+load_provider()           { return 0; }
+provider_resolve_model()  { printf 'claude-sonnet-4-6\n'; }
+docs_map_ensure()         { [ -s "${FAKE_PROJECT}/.rite/state/docs-map.tsv" ] || printf 'docs/test-doc.md\n' > "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
+docs_map_path()           { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
+gh_safe()                 { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 0; }
+
+provider_run_prompt_with_timeout() {
+  local _n=0
+  _n="$(cat "${EX_COUNT_FILE}" 2>/dev/null || echo 0)"
+  _n=$((_n + 1))
+  printf '%d\n' "$_n" > "${EX_COUNT_FILE}"
+  cat "${EX_WRONG_FILE}"
+}
+
+git -C "${FAKE_PROJECT}" update-ref refs/remotes/origin/main HEAD
+
+"$@"
+EX_HELPER_EOF
+  chmod +x "$_ex_helper"
+
+  run bash -c "
+    export EX_COUNT_FILE='${_ex_count}'
+    export EX_WRONG_FILE='${_ex_wrong}'
+    bash '${_ex_helper}' docs_directed_update 'update test doc' <<< 'y'
+  " || true
+
+  # Provider must have been called exactly 5 times (all attempts exhausted)
+  local _n=0
+  _n="$(cat "${_ex_count}" 2>/dev/null || echo 0)"
+  [ "$_n" -eq 5 ]
+
+  # No docs branch must have been created — no proposal was ever approved
+  local _branch=""
+  _branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
+  [ -z "$_branch" ]
+
+  # The run must have returned non-zero (exhaustion path → return 1)
+  [ "$status" -ne 0 ]
+}
