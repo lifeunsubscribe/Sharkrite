@@ -238,7 +238,100 @@ DRIFT_EOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: REFINE prompt format appears in the LLM prompt (structural)
+# Test 5: _docs_apply_approved EDIT happy path — directly exercises the
+# apply function with a pre-built proposal file and verifies the full path:
+# file written to worktree, committed, pushed, PR created.
+# ---------------------------------------------------------------------------
+
+@test "_docs_apply_approved EDIT action applies file change, pushes, and opens PR" {
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  # Build the proposal file in the exact format _docs_update_engine writes:
+  # ACTION, FILE, DRIFT_REFS, DESCRIPTION headers, then ---CONTENT--- to EOF.
+  # No end-token in the stored file — the parser strips it before copying.
+  printf '%s\n' \
+    'ACTION: EDIT' \
+    'FILE: docs/large-doc.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Direct apply test' \
+    '---CONTENT---' \
+    '# Large Doc' \
+    '' \
+    'Replaced by direct apply test.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'direct edit test' directed main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  [ "$status" -eq 0 ]
+
+  # A docs/directed-* branch must have been created
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/directed-' | head -1 || true)"
+  [ -n "$docs_branch" ]
+
+  # The file committed on that branch must contain the new content
+  local committed
+  committed="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/large-doc.md" 2>/dev/null || true)"
+  [ -n "$committed" ]
+  printf '%s' "$committed" | grep -q "Replaced by direct apply test"
+
+  # git push must have been called (stubbed)
+  local push_calls
+  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$push_calls" -ge 1 ]
+
+  # gh_safe pr create must have been called
+  local gh_calls
+  gh_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || true)"
+  [ "$gh_calls" -ge 1 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 6: _docs_apply_approved arg order — MODE is arg 4; reconcile mode
+# must produce a docs/reconcile-* branch, not docs/directed-*.
+# ---------------------------------------------------------------------------
+
+@test "_docs_apply_approved mode arg (position 4) controls the docs branch prefix" {
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  # CREATE for a file that does not yet exist on origin/main
+  printf '%s\n' \
+    'ACTION: CREATE' \
+    'FILE: docs/reconcile-arg-probe.md' \
+    'DRIFT_REFS: none' \
+    'DESCRIPTION: Arg order probe — mode must be reconcile' \
+    '---CONTENT---' \
+    '# Reconcile Arg Probe' \
+    '' \
+    'Created to verify MODE is arg 4.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'ignored in reconcile mode' reconcile main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  [ "$status" -eq 0 ]
+
+  # Branch must use the reconcile prefix, confirming MODE is bound to arg 4
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/reconcile-' | head -1 || true)"
+  [ -n "$docs_branch" ]
+
+  # The new file must be committed on that branch
+  local file_content
+  file_content="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/reconcile-arg-probe.md" 2>/dev/null || true)"
+  [ -n "$file_content" ]
+  printf '%s' "$file_content" | grep -q "Reconcile Arg Probe"
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: REFINE prompt format appears in the LLM prompt (structural)
 # ---------------------------------------------------------------------------
 
 @test "docs-command.sh LLM prompt includes ACTION: REFINE format and drift-refs requirement" {
