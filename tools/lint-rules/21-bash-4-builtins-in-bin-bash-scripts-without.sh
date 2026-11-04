@@ -77,7 +77,7 @@ for file in "${SHELL_FILES[@]}"; do
   # Check each line for bash-4+ builtins: mapfile, readarray, declare -A
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
 
@@ -95,7 +95,7 @@ for file in "${SHELL_FILES[@]}"; do
     fi
 
     # Detect declare -A / declare -gA / declare -Ar / local -A (associative arrays, bash 4+ only)
-    if echo "$line_content" | grep -qE '\bdeclare\s+-[a-zA-Z]*A[a-zA-Z]*\b|\blocal\s+-[a-zA-Z]*A[a-zA-Z]*\b'; then
+    if echo "$line_content" | grep -qE '\bdeclare[[:space:]]+-[a-zA-Z]*A[a-zA-Z]*\b|\blocal[[:space:]]+-[a-zA-Z]*A[a-zA-Z]*\b'; then
       print_violation "$file" "$line_num" "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" \
         "'declare/local -A' (associative array) is bash 4+ only — crashes on macOS system bash 3.2. Add a BASH_VERSINFO re-exec guard (see batch-process-issues.sh:69-77)"
     fi
@@ -109,6 +109,6 @@ for file in "${SHELL_FILES[@]}"; do
       print_violation "$file" "$line_num" "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" \
         "bare \$BASHPID is a bash 4+ variable — UNBOUND under set -u on macOS system bash 3.2, which aborts the script. Use \${BASHPID:-\$\$} (or add a BASH_VERSINFO re-exec guard)"
     fi
-  done < <(grep -nE '(mapfile|readarray|declare\s+-[a-zA-Z]*A|local\s+-[a-zA-Z]*A|BASHPID)' "$file" 2>/dev/null || true)
+  done < <(grep -nE '(mapfile|readarray|declare[[:space:]]+-[a-zA-Z]*A|local[[:space:]]+-[a-zA-Z]*A|BASHPID)' "$file" 2>/dev/null || true)
 done
 

@@ -422,7 +422,7 @@ _extract_dep_issues_from_body() {
 
     # Detect the canonical Dependencies: header (with or without ** markdown bold).
     # This is the form produced by the generator (PR #964) and the authoring standard.
-    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
+    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:'; then
       _in_deps=true
       # Strip parallel-with annotations before harvesting inline refs
       local _clean
@@ -441,7 +441,7 @@ _extract_dep_issues_from_body() {
     # Issues authored before PR #964 used this style; deps appear on following
     # lines as "After: #N" / "Blocked by: #N". The header line itself carries
     # no inline refs, so just enter dep-collection mode and continue.
-    if echo "$_bline" | grep -qiE '^##+ Dependencies\s*$'; then
+    if echo "$_bline" | grep -qiE '^##+ Dependencies[[:space:]]*$'; then
       _in_deps=true
       continue
     fi

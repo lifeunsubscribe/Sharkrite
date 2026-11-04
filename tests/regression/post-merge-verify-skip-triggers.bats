@@ -39,7 +39,7 @@ setup() {
   # Defensive: must remain a per-call env var. A global export
   # (export RITE_TEST_GATE_SKIP_TRIGGERS=true) would silently disable the
   # lint trigger list for the regular post-commit gate too, which is wrong.
-  _bad=$(grep -rE '^\s*export\s+RITE_TEST_GATE_SKIP_TRIGGERS' "$PROJECT_ROOT/lib/" 2>/dev/null || true)
+  _bad=$(grep -rE '^[[:space:]]*export[[:space:]]+RITE_TEST_GATE_SKIP_TRIGGERS' "$PROJECT_ROOT/lib/" 2>/dev/null || true)
   [ -z "$_bad" ] || {
     echo "RITE_TEST_GATE_SKIP_TRIGGERS is being exported globally:" >&2
     echo "$_bad" >&2

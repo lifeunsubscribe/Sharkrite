@@ -96,7 +96,7 @@ setup() {
   }
 
   # Must have `return 12` somewhere in the function body
-  echo "$_func_body" | grep -qE '^\s*return 12' || {
+  echo "$_func_body" | grep -qE '^[[:space:]]*return 12' || {
     echo "FAIL: handle_closed_issue does not contain 'return 12'" >&2
     echo "      The sentinel exit code is required so batch can skip post-issue gh calls" >&2
     return 1
@@ -119,7 +119,7 @@ setup() {
   }
 
   # Find the last return statement in the function
-  _last_return=$(echo "$_func_body" | grep -E '^\s*[0-9]+:\s*return [0-9]+' | tail -1)
+  _last_return=$(echo "$_func_body" | grep -E '^[[:space:]]*[0-9]+:[[:space:]]*return [0-9]+' | tail -1)
   [ -n "$_last_return" ] || {
     echo "FAIL: No return statement found in handle_closed_issue" >&2
     return 1
@@ -201,7 +201,7 @@ setup() {
     { print $0 }
   ')
 
-  if echo "$_top_level_block" | grep -qE '^\s*return 0$'; then
+  if echo "$_top_level_block" | grep -qE '^[[:space:]]*return 0$'; then
     echo "FAIL: Unguarded 'return 0' found at top level of CLOSED branch in run_workflow" >&2
     echo "      A bare 'return 0' here discards the exit-12 sentinel from handle_closed_issue" >&2
     echo "      If 'return 0' is intentional for single-issue mode, it must be inside a" >&2
@@ -281,7 +281,7 @@ setup() {
 
   # Strip comment lines before checking for gh calls — comments may mention
   # the gh calls as documentation of what is being skipped.
-  _noncomment_body=$(echo "$_branch_body" | grep -v '^\s*#')
+  _noncomment_body=$(echo "$_branch_body" | grep -v '^[[:space:]]*#')
 
   # No gh pr list in the branch (non-comment lines only)
   if echo "$_noncomment_body" | grep -qE 'gh.*pr list'; then

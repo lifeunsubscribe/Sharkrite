@@ -311,7 +311,7 @@ detect_aws_project() {
 
   # Terraform with AWS provider
   if find "$project_root" -maxdepth 2 -name '*.tf' -print -quit 2>/dev/null | grep -q . && \
-     grep -rlq 'provider\s*"aws"' "$project_root" --include='*.tf' --max-depth=2 2>/dev/null; then
+     grep -rlq 'provider[[:space:]]*"aws"' "$project_root" --include='*.tf' --max-depth=2 2>/dev/null; then
     export RITE_AWS_PROJECT=true
     return 0
   fi

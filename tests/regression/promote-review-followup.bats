@@ -1146,7 +1146,7 @@ RUNEOF
   # Exit code captured, not propagated.
   echo "$_region" | grep -q '|| _promo_assess_exit=\$?'
   # No bare exit anywhere in the assessment region.
-  ! echo "$_region" | grep -qE '^\s*exit [0-9]'
+  ! echo "$_region" | grep -qE '^[[:space:]]*exit [0-9]'
 }
 
 # ===========================================================================

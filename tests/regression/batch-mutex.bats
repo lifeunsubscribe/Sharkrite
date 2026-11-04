@@ -311,7 +311,7 @@ teardown() {
   }
 
   # The block must not contain run_workflow (the per-issue dispatcher).
-  if echo "$_exit17_block" | grep -vE '^\s*#' | grep -q 'run_workflow'; then
+  if echo "$_exit17_block" | grep -vE '^[[:space:]]*#' | grep -q 'run_workflow'; then
     echo "FAIL: run_workflow found in exit-17 block — refused batch must do zero issue processing" >&2
     return 1
   fi

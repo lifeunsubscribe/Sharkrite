@@ -949,7 +949,7 @@ Subjective review finding.'
   local _bad_states
   _bad_states=$(grep -oE '"### .* - [A-Z_]+"' "$_assess_file" | \
     grep -vE '"### .*- (ACTIONABLE_NOW|ACTIONABLE_LATER|DISMISSED)"' | \
-    grep -vE '^\s*#' || true)
+    grep -vE '^[[:space:]]*#' || true)
   if [ -n "$_bad_states" ]; then
     echo "FAIL: new ### - STATE header string introduced in assess-and-resolve.sh"
     echo "Found: $_bad_states"

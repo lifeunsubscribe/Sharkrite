@@ -282,8 +282,8 @@ teardown() {
   local _body
   _body=$(sed -n '/^sync_issue_branch()/,/^}/p' "$_lib")
   local _commit_line _verify_line
-  _commit_line=$(echo "$_body" | grep -vE '^\s*#' | grep -n 'commit_resolved_conflicts' | head -1 | cut -d: -f1 || true)
-  _verify_line=$(echo "$_body" | grep -vE '^\s*#' | grep -n 'verify_post_merge' | head -1 | cut -d: -f1 || true)
+  _commit_line=$(echo "$_body" | grep -vE '^[[:space:]]*#' | grep -n 'commit_resolved_conflicts' | head -1 | cut -d: -f1 || true)
+  _verify_line=$(echo "$_body" | grep -vE '^[[:space:]]*#' | grep -n 'verify_post_merge' | head -1 | cut -d: -f1 || true)
   [ -n "$_commit_line" ]
   [ -n "$_verify_line" ]
   [ "$_verify_line" -gt "$_commit_line" ]
