@@ -1278,11 +1278,19 @@ run_test_gate() {
           # repo and honours the no-full-suites-in-workflow doctrine).
           local _node_lint_scoped=false
           local _node_lint_src_files=""
+          local _node_lint_eslint_noop=false
           if [ "$_node_lint_runner" = "eslint" ] \
              || printf '%s\n' "$_node_lint_script" | grep -q '\beslint\b'; then
             _node_lint_src_files=$(printf '%s\n' "${_nonsr_changed_files:-}" \
               | grep -E '\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$' | grep -v '^$' || true)
-            [ -n "$_node_lint_src_files" ] && _node_lint_scoped=true
+            if [ -n "$_node_lint_src_files" ]; then
+              _node_lint_scoped=true
+            else
+              # eslint runner but no changed JS/TS files — nothing to lint; skip
+              # rather than fall through to a full-repo run (scope boundary: DO NOT
+              # add full-repo lint runs where file-scoping is available).
+              _node_lint_eslint_noop=true
+            fi
           fi
 
           if [ "$_node_lint_scoped" = "true" ]; then
@@ -1299,10 +1307,14 @@ run_test_gate() {
                 { (cd "$project_root" && "$_eslint_bin" "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
                   | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
               elif [ "$_node_lint_pm" = "pnpm" ]; then
-                { (cd "$project_root" && pnpm lint -- "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                # pnpm lint -- <files> passes args to the script but the script's own
+                # positional args (e.g. '.') survive, linting the whole repo.
+                # Use pnpm exec to invoke eslint directly with only the changed files.
+                { (cd "$project_root" && pnpm exec eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
                   | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
               else
-                { (cd "$project_root" && npm run lint -- "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                # npm run lint -- <files> has the same '.' problem; use npx to bypass.
+                { (cd "$project_root" && npx --no-install eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
                   | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
               fi
             else
@@ -1310,6 +1322,9 @@ run_test_gate() {
               echo "[test-gate] Node lint: all changed JS/TS files deleted — skipping" >> "$_gate_raw_sink"
               echo 0 > "$_node_lint_exit_f"
             fi
+          elif [ "$_node_lint_eslint_noop" = "true" ]; then
+            echo "[test-gate] Node lint: eslint runner with no changed JS/TS files — skipping" >> "$_gate_raw_sink"
+            echo 0 > "$_node_lint_exit_f"
           else
             echo "[test-gate] Node lint: ${_node_lint_pm} lint (runner: ${_node_lint_runner:-unknown})" >> "$_gate_raw_sink"
             if [ "$_node_lint_pm" = "pnpm" ]; then

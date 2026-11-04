@@ -113,11 +113,11 @@ _parse_lint_line() {
   fi
   # custom lint tool format: FILE:LINE: [RULE] message
   # E.g.: lib/bar.sh:88: [BARE_MARKER_GREP] Unanchored marker grep
-  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:.*\[[A-Z_]+\]'; then
+  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:.*\[[a-zA-Z0-9@_/.-]+\]'; then
     local file line rule message
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
-    rule=$(echo "$raw_line" | grep -oE '\[[A-Z_]+\]' | head -1 | tr -d '[]' || true)
+    rule=$(echo "$raw_line" | grep -oE '\[[a-zA-Z0-9@_/.-]+\]' | head -1 | tr -d '[]' || true)
     message=$(_sanitize_json_value "$raw_line" || true)
     # JSON-escape file and line the same way as message (same fail-open risk)
     file=$(printf '%s' "$file" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)

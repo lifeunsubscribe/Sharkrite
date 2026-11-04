@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/gate-runners.sh::_resolve_node_lint_runner|_normalize_eslint_output, lib/utils/test-gate.sh
+# sharkrite-gate-serial
 #
 # Issue #1545: target repo lint script (scripts.lint) integration with the
 # post-commit gate. Tests cover:

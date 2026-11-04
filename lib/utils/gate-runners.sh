@@ -411,10 +411,10 @@ _resolve_node_lint_runner() {
 #   Compact: "path: line LINE, col COL, Error|Warning - msg (rule)"
 #
 # Output format: file:line: [rule] message — matches _parse_lint_line's custom
-# lint rule (`^[^:]+:[0-9]+:.*\[[A-Z_]+\]`). Rule names like
-# react/no-unescaped-entities contain / which _parse_lint_line accepts in
-# the `[A-Z_]+` bracket class via its grep-oE match; the full rule string is
-# preserved intact.
+# lint rule (`^[^:]+:[0-9]+:.*\[[a-zA-Z0-9@_/.-]+\]`). Rule names are always
+# lowercase with hyphens (e.g. prefer-const) and may be scoped with /
+# (e.g. react/no-unescaped-entities) or prefixed with @ (e.g.
+# @typescript-eslint/no-unsafe-assignment); all are preserved intact.
 # Returns 0 always; leaves target file untouched when no findings parse.
 # ---------------------------------------------------------------------------
 _normalize_eslint_output() {
@@ -435,24 +435,9 @@ _normalize_eslint_output() {
         r = p
       return r
     }
-    # eslint stylish file header: no leading whitespace, contains "/" or ".", is
-    # not a summary/stats line (those start with digits, special chars, or spaces)
-    /^[^[:space:]]/ && /[\/.]/ && !/^[0-9]/ && !/^[✖✓✗x]/ {
-      f = $0; sub(/[[:space:]]+$/, "", f); cur = rel(f); next
-    }
-    # eslint stylish problem line: leading space, LINE:COL, error|warning, msg, rule
-    /^[[:space:]]+[0-9]+:[0-9]+[[:space:]]+(error|warning)/ {
-      line = $0; sub(/^[[:space:]]+/, "", line)
-      n = split(line, tok, /[[:space:]]+/)
-      if (n < 3) next
-      split(tok[1], lc, ":"); lineno = lc[1]
-      rule = tok[n]
-      msg = ""; for (i=3; i<=n-1; i++) { if (msg != "") msg = msg " "; msg = msg tok[i] }
-      if (cur != "" && rule != "" && msg != "")
-        print cur ":" lineno ": [" rule "] " msg
-      next
-    }
     # eslint compact: "path: line N, col N, Error|Warning - msg (rule)"
+    # Must be checked BEFORE the stylish-header rule because compact lines are
+    # also non-indented and contain ".", which the header rule would consume first.
     /: line [0-9]+, col [0-9]+, (Error|Warning) - / {
       idx = index($0, ": line ")
       path = rel(substr($0, 1, idx - 1))
@@ -469,6 +454,23 @@ _normalize_eslint_output() {
       }
       if (path != "")
         print path ":" lineno ": [" rule "] " msg
+      next
+    }
+    # eslint stylish file header: no leading whitespace, contains "/" or ".", is
+    # not a summary/stats line (those start with digits, special chars, or spaces)
+    /^[^[:space:]]/ && /[\/.]/ && !/^[0-9]/ && !/^[✖✓✗x]/ {
+      f = $0; sub(/[[:space:]]+$/, "", f); cur = rel(f); next
+    }
+    # eslint stylish problem line: leading space, LINE:COL, error|warning, msg, rule
+    /^[[:space:]]+[0-9]+:[0-9]+[[:space:]]+(error|warning)/ {
+      line = $0; sub(/^[[:space:]]+/, "", line)
+      n = split(line, tok, /[[:space:]]+/)
+      if (n < 3) next
+      split(tok[1], lc, ":"); lineno = lc[1]
+      rule = tok[n]
+      msg = ""; for (i=3; i<=n-1; i++) { if (msg != "") msg = msg " "; msg = msg tok[i] }
+      if (cur != "" && rule != "" && msg != "")
+        print cur ":" lineno ": [" rule "] " msg
       next
     }
   ' "$_eo_stripped" >> "$_eo_lint" || true
