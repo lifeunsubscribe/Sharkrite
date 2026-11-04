@@ -106,7 +106,7 @@ for _r36_file in "${_r36_lib_files[@]}"; do
     fi
 
     # Collect all distinct RITE_* var names from this line.
-    _r36_vars_on_line=$(echo "$_r36_line_content" | grep -oE '\$\{?RITE_[A-Z0-9_]+' | sed 's/\$[{]*//' | sort -u || true)
+    _r36_vars_on_line=$(echo "$_r36_line_content" | grep -oE '\$\{?RITE_[A-Z0-9_]+' | sed 's/\$[{]*//' | LC_ALL=C sort -u || true)
     [ -n "$_r36_vars_on_line" ] || continue
 
     while IFS= read -r _r36_var_name; do

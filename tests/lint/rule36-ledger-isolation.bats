@@ -25,7 +25,10 @@ setup() {
 
 @test "ledger is byte-identical after running Rule 36 in isolation" {
   SHARKRITE_LINT_ONLY=36 run bash "$LINT_SCRIPT"
-  # exit status may be 0 or 1 depending on violations — only file identity matters
+  # 0 = no violations, 1 = violations found; anything higher means the linter
+  # failed to run (e.g. exit 127 = script not found) — files would be identical
+  # trivially, so the checksum assertion would pass vacuously.
+  [ "$status" -le 1 ]
   local after
   after=$(md5 -q "$LEDGER" 2>/dev/null || md5sum "$LEDGER" | awk '{print $1}')
   [ "$LEDGER_BEFORE" = "$after" ]
@@ -33,6 +36,7 @@ setup() {
 
 @test "project.conf.example is byte-identical after running Rule 36 in isolation" {
   SHARKRITE_LINT_ONLY=36 run bash "$LINT_SCRIPT"
+  [ "$status" -le 1 ]
   local after
   after=$(md5 -q "$PROJ_CONF" 2>/dev/null || md5sum "$PROJ_CONF" | awk '{print $1}')
   [ "$PROJ_CONF_BEFORE" = "$after" ]
@@ -40,6 +44,7 @@ setup() {
 
 @test "rite.conf.example is byte-identical after running Rule 36 in isolation" {
   SHARKRITE_LINT_ONLY=36 run bash "$LINT_SCRIPT"
+  [ "$status" -le 1 ]
   local after
   after=$(md5 -q "$RITE_CONF" 2>/dev/null || md5sum "$RITE_CONF" | awk '{print $1}')
   [ "$RITE_CONF_BEFORE" = "$after" ]
@@ -65,9 +70,37 @@ consume_timeout() {
 }
 EOF
 
-  RITE_LINT_EXTRA_DIRS="${BATS_TEST_TMPDIR}/r36-isolation/lib/utils" \
+  # Positive control: a deliberately undocumented var that MUST fire a violation.
+  # Without this, the test passes vacuously if RITE_LINT_EXTRA_DIRS injection
+  # or the */lib/*.sh filter regresses — the linter scans nothing, produces no
+  # output, and [ -z "$violations" ] is satisfied without proving anything.
+  cat > "$fixture_dir/undocumented-consumer.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+positive_control_fn() {
+  echo "${RITE_UNDOCUMENTED_TEST_VAR_R36:-}"
+}
+EOF
+
+  # Run with an adversarial locale to prove LC_ALL=C pins inside the linter hold.
+  # If the sort -u calls lose their LC_ALL=C, a non-C collation can collapse
+  # allowlist entries and produce false positives for ledgered vars like
+  # RITE_CLAUDE_TIMEOUT_PROMPT — the original macOS-only CI failure (issue #1605).
+  local _locale
+  _locale=$(locale -a 2>/dev/null | grep -iE '^en_US\.(UTF-?8|utf8)$' | head -1 || true)
+  if [ -z "$_locale" ]; then
+    skip "en_US.UTF-8 locale not available — cannot test locale-pinning on this system"
+  fi
+
+  LC_ALL="$_locale" RITE_LINT_EXTRA_DIRS="${BATS_TEST_TMPDIR}/r36-isolation/lib/utils" \
     SHARKRITE_LINT_ONLY=36 run bash "$LINT_SCRIPT"
 
+  # Positive control must fire (proves injection and filter are working).
+  local positive
+  positive=$(echo "$output" | grep "UNDOCUMENTED_RITE_VAR" | grep "undocumented-consumer" || true)
+  [ -n "$positive" ]
+
+  # Regressed var must NOT fire (it is in the ledger).
   local violations
   violations=$(echo "$output" | grep "UNDOCUMENTED_RITE_VAR" | grep "timeout-consumer" || true)
   [ -z "$violations" ]
