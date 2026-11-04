@@ -311,11 +311,20 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      # Each gets its own worktree
+      # Each worker gets its OWN local branch (stale-merge-N) starting from the
+      # same fix/stale-test-77 tip. git worktree add refuses to check out a branch
+      # already held by another worktree (fatal: '<branch>' is already checked out),
+      # so each worker needs a distinct local branch name. All push to the SAME
+      # remote ref to exercise the concurrent-push race.
       local worktree_path="$RITE_WORKTREE_DIR/stale-process-${i}"
-      git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
-
-      cd "$worktree_path"
+      git worktree add -b "stale-merge-${i}" "$worktree_path" "$branch_name" || {
+        echo "ERROR: worker $i: git worktree add -b stale-merge-${i} failed" >&2
+        exit 1
+      }
+      cd "$worktree_path" || {
+        echo "ERROR: worker $i: cd $worktree_path failed after worktree add" >&2
+        exit 1
+      }
 
       wait_at_barrier "stale_merge_test" "$num_processes" || exit 1
 
@@ -324,8 +333,8 @@ wait_at_barrier() {
       git merge origin/main --no-edit >/dev/null 2>&1
       local merge_exit=$?
 
-      # Try to push
-      git push origin "$branch_name" >/dev/null 2>&1
+      # Push HEAD to the shared remote branch (races with other workers)
+      git push origin "HEAD:$branch_name" >/dev/null 2>&1
       local push_exit=$?
 
       echo "$merge_exit:$push_exit" > "$exit_codes_dir/process_${i}.exit"
@@ -384,10 +393,19 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
+      # Each worker gets its OWN local branch (force-test-worker-N) starting from
+      # the same fix/no-force-push-test tip. git worktree add refuses to check out
+      # a branch already held by another worktree, so each worker needs a distinct
+      # local branch name. All push to the SAME remote ref without --force.
       local worktree_path="$RITE_WORKTREE_DIR/force-test-${i}"
-      git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
-
-      cd "$worktree_path"
+      git worktree add -b "force-test-worker-${i}" "$worktree_path" "$branch_name" || {
+        echo "ERROR: worker $i: git worktree add -b force-test-worker-${i} failed" >&2
+        exit 1
+      }
+      cd "$worktree_path" || {
+        echo "ERROR: worker $i: cd $worktree_path failed after worktree add" >&2
+        exit 1
+      }
 
       wait_at_barrier "force_test" "$num_processes" || exit 1
 
@@ -395,9 +413,9 @@ wait_at_barrier() {
       git add no-force.txt
       git commit -m "Change $i" >/dev/null 2>&1
 
-      # MUST use refspec, NEVER --force
-      # This should reject if not fast-forward (expected behavior)
-      git push origin "$branch_name:$branch_name" >/dev/null 2>&1
+      # MUST use refspec, NEVER --force.
+      # Push HEAD to the shared remote branch; rejection is expected for the loser.
+      git push origin "HEAD:$branch_name" >/dev/null 2>&1
       echo $? > "$exit_codes_dir/process_${i}.exit"
 
       cd "$FIXTURE_REPO"

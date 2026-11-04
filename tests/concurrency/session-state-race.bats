@@ -341,6 +341,13 @@ wait_at_barrier() {
 # per-invocation counters when the file already exists (session-tracker.sh:212-240,
 # justified by the issue #283 zombie-file fix), so parallel init_session calls
 # legitimately clobber increments by design — that is not the contract under test.
+#
+# CLASSIFICATION (issue #1597): issues_completed=4, expected==5 is a GENUINE
+# lock bug, NOT a harness artifact. Root cause: lock.sh used $$ (which in
+# ( ) & subshells equals the PARENT's PID, not the subshell's PID), so the
+# "is this my own lock?" check fired for all workers — each saw the holder's
+# hpid equal to its own $$ and tried to steal the live lock. Fix: lock.sh
+# now uses $BASHPID (the actual subprocess PID, bash 4+) for all PID checks.
 # ---------------------------------------------------------------------------
 @test "parallel increment_completed - no lost increments (issue #26)" {
   # Initialise the session file ONCE up front, as the batch orchestrator does.
