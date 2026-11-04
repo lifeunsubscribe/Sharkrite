@@ -286,7 +286,7 @@ WORKER_EOF
     pids+=($!)
   done
 
-  wait "${pids[@]}"
+  wait "${pids[@]}" || true
 
   for i in $(seq 1 $num_processes); do
     [ -f "$exit_codes_dir/process_${i}.exit" ] || {
