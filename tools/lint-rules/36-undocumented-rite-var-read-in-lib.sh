@@ -54,16 +54,25 @@ fi
 
 # Build the documented set: union of both config examples.
 # Any mention of RITE_VARNAME (including commented-out option lines) counts.
+# LC_ALL=C: pin byte-exact ordering so macOS CI locale never collapses entries.
 _r36_conf_example="$_r36_project_root/config/project.conf.example"
 _r36_rite_conf_example="$_r36_project_root/config/rite.conf.example"
-_r36_documented_set=$(grep -hoE 'RITE_[A-Z0-9_]+' "$_r36_conf_example" "$_r36_rite_conf_example" 2>/dev/null | sort -u || true)
+_r36_documented_set=$(LC_ALL=C grep -hoE 'RITE_[A-Z0-9_]+' "$_r36_conf_example" "$_r36_rite_conf_example" 2>/dev/null | LC_ALL=C sort -u || true)
 
 # Build the exemption set: union of documented set + ledger entries.
 # Ledger lines starting with # are comments; blank lines are skipped.
-_r36_ledger_entries=$(grep -vE '^\s*(#|$)' "$_r36_ledger" 2>/dev/null | sort -u || true)
+_r36_ledger_entries=$(LC_ALL=C grep -vE '^\s*(#|$)' "$_r36_ledger" 2>/dev/null | LC_ALL=C sort -u || true)
 
 # Combine documented + ledger into one sorted allowlist.
-_r36_allowed_set=$(printf '%s\n%s\n' "$_r36_documented_set" "$_r36_ledger_entries" | sort -u | grep -vE '^\s*$' || true)
+_r36_allowed_set=$(printf '%s\n%s\n' "$_r36_documented_set" "$_r36_ledger_entries" | LC_ALL=C sort -u | LC_ALL=C grep -vE '^\s*$' || true)
+
+# Guard: an empty allowlist means the ledger or sort pipeline failed silently.
+# Every ledgered var would fire as a false positive, which is worse than failing.
+if [ -z "$_r36_allowed_set" ]; then
+  echo "ERROR: Rule 36 allowlist is empty after combining config examples and ledger." >&2
+  echo "ERROR: Ledger has content but the pipeline produced nothing — environment issue." >&2
+  exit 1
+fi
 
 # Build the candidate file list from SHELL_FILES filtered to lib/ paths.
 # Matches project tree AND fixture dirs injected via RITE_LINT_EXTRA_DIRS
@@ -97,7 +106,7 @@ for _r36_file in "${_r36_lib_files[@]}"; do
     fi
 
     # Collect all distinct RITE_* var names from this line.
-    _r36_vars_on_line=$(echo "$_r36_line_content" | grep -oE '\$\{?RITE_[A-Z0-9_]+' | sed 's/\$[{]*//' | sort -u || true)
+    _r36_vars_on_line=$(echo "$_r36_line_content" | grep -oE '\$\{?RITE_[A-Z0-9_]+' | sed 's/\$[{]*//' | LC_ALL=C sort -u || true)
     [ -n "$_r36_vars_on_line" ] || continue
 
     while IFS= read -r _r36_var_name; do
