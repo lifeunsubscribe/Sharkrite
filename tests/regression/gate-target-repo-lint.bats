@@ -70,7 +70,7 @@ _write_eslint_stub() {
 # Emit eslint stylish format: file header then problem line
 for f in "$@"; do
   echo "$f"
-  echo "  1:1  error  Unsafe assignment of an `any` value  @typescript-eslint/no-unsafe-assignment"
+  echo "  1:1  error  Unsafe assignment of an \`any\` value  @typescript-eslint/no-unsafe-assignment"
   echo ""
 done
 echo "✖ 1 problem (1 error, 0 warnings)"
