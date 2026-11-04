@@ -110,7 +110,10 @@ wait_at_barrier() {
       # (-b race-push-N) at that commit instead. They all push HEAD to the SAME
       # remote branch, which is what produces the non-fast-forward race.
       local worktree_path="$RITE_WORKTREE_DIR/process-${i}"
-      git worktree add -b "race-push-${i}" "$worktree_path" fix/test-issue-42 >/dev/null 2>&1
+      git worktree add -b "race-push-${i}" "$worktree_path" fix/test-issue-42 || {
+        echo "ERROR: worker $i: git worktree add -b race-push-${i} failed" >&2
+        exit 1
+      }
 
       cd "$worktree_path"
 
@@ -333,9 +336,12 @@ wait_at_barrier() {
       git merge origin/main --no-edit >/dev/null 2>&1
       local merge_exit=$?
 
-      # Push HEAD to the shared remote branch (races with other workers)
-      git push origin "HEAD:$branch_name" >/dev/null 2>&1
-      local push_exit=$?
+      # Push HEAD to the shared remote branch (races with other workers).
+      # Use `&& push_exit=0 || push_exit=$?` to capture the real exit code without
+      # letting bats' inherited errexit kill the subshell on a rejected push before
+      # push_exit is recorded.
+      local push_exit
+      git push origin "HEAD:$branch_name" >/dev/null 2>&1 && push_exit=0 || push_exit=$?
 
       echo "$merge_exit:$push_exit" > "$exit_codes_dir/process_${i}.exit"
 
@@ -415,8 +421,11 @@ wait_at_barrier() {
 
       # MUST use refspec, NEVER --force.
       # Push HEAD to the shared remote branch; rejection is expected for the loser.
-      git push origin "HEAD:$branch_name" >/dev/null 2>&1
-      echo $? > "$exit_codes_dir/process_${i}.exit"
+      # Capture exit code safely: bare `git push; echo $?` under bats' inherited
+      # errexit kills the subshell on rejection before the exit file is written.
+      local push_exit
+      git push origin "HEAD:$branch_name" >/dev/null 2>&1 && push_exit=0 || push_exit=$?
+      echo "$push_exit" > "$exit_codes_dir/process_${i}.exit"
 
       cd "$FIXTURE_REPO"
       git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
@@ -425,16 +434,30 @@ wait_at_barrier() {
 
   wait
 
-  # Verify at least one succeeded without force
+  # Verify exactly one succeeded without force (>1 would mean force push occurred)
   local success_count=0
+  local rejection_count=0
   for i in $(seq 1 $num_processes); do
     if [ -f "$exit_codes_dir/process_${i}.exit" ]; then
       exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
-      [ "$exit_code" -eq 0 ] && success_count=$((success_count + 1))
+      if [ "$exit_code" -eq 0 ]; then
+        success_count=$((success_count + 1))
+      else
+        rejection_count=$((rejection_count + 1))
+      fi
     fi
   done
 
-  [ "$success_count" -ge 1 ]
+  [ "$success_count" -eq 1 ] || {
+    echo "FAIL: $success_count pushes succeeded (expected exactly 1) — force-push regression if >1"
+    return 1
+  }
+
+  # Loser must have been rejected (not silently dropped or force-pushed)
+  [ "$rejection_count" -ge 1 ] || {
+    echo "FAIL: Expected at least one rejection, got $rejection_count — force-push prevention not working"
+    return 1
+  }
 
   # Clean up
   git branch -D "$branch_name" >/dev/null 2>&1 || true

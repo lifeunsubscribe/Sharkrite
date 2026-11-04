@@ -275,11 +275,18 @@ WORKER_EOF
   # for EOF, eventually firing BATS_TEST_TIMEOUT=120.
   # FD 3 is bats' TAP output channel (exec 3<&1 in bats-exec-test) and must be
   # explicitly redirected; /dev/null on FDs 1+2 alone does not prevent the leak.
+  #
+  # Use wait "${pids[@]}" (NOT bare `wait`) so the test only waits for these
+  # specific worker PIDs. Bare `wait` also waits for bats' 120s timeout-killer
+  # background process (started by bats_start_timeout_countdown), causing the
+  # test to hang for BATS_TEST_TIMEOUT seconds even after workers finish.
+  local pids=()
   for i in $(seq 1 $num_processes); do
     bash "$worker_script" "$i" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
+    pids+=($!)
   done
 
-  wait
+  wait "${pids[@]}"
 
   for i in $(seq 1 $num_processes); do
     [ -f "$exit_codes_dir/process_${i}.exit" ] || {
