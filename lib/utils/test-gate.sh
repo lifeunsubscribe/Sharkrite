@@ -1255,6 +1255,98 @@ run_test_gate() {
           _normalize_node_test_output "$_tests_raw_file" "$project_root"
         fi
       fi
+
+      # --- Node: target repo lint (scripts.lint, issue #1545) ---
+      # Run the target repo's own lint script when present. Scoped to changed
+      # JS/TS files when the runner is eslint; full run otherwise (non-eslint
+      # tools do not have a universal file-arg interface). Disabled via
+      # RITE_GATE_REPO_LINT=false in .rite/config.
+      if [ "${RITE_GATE_REPO_LINT:-true}" != "false" ]; then
+        local _node_lint_script=""
+        command -v jq >/dev/null 2>&1 \
+          && _node_lint_script=$(jq -r '.scripts.lint // ""' "$project_root/package.json" 2>/dev/null || true)
+        if [ -n "$_node_lint_script" ]; then
+          local _node_lint_runner _node_lint_pm
+          _node_lint_runner=$(_resolve_node_lint_runner "$project_root")
+          _node_lint_pm=$(_node_pkg_manager "$project_root")
+          local _node_lint_raw_f _node_lint_exit_f
+          _node_lint_raw_f=$(mktemp "/tmp/rite_gate_nlint_raw_${PR_NUMBER:-0}_$$_XXXXXX")
+          _node_lint_exit_f=$(mktemp "/tmp/rite_gate_nlint_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+
+          # Scope to changed source files when eslint is the runner (eslint
+          # accepts file args; passing specific files avoids scanning the whole
+          # repo and honours the no-full-suites-in-workflow doctrine).
+          local _node_lint_scoped=false
+          local _node_lint_src_files=""
+          local _node_lint_eslint_noop=false
+          if [ "$_node_lint_runner" = "eslint" ] \
+             || printf '%s\n' "$_node_lint_script" | grep -q '\beslint\b'; then
+            _node_lint_src_files=$(printf '%s\n' "${_nonsr_changed_files:-}" \
+              | grep -E '\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$' | grep -v '^$' || true)
+            if [ -n "$_node_lint_src_files" ]; then
+              _node_lint_scoped=true
+            else
+              # eslint runner but no changed JS/TS files — nothing to lint; skip
+              # rather than fall through to a full-repo run (scope boundary: DO NOT
+              # add full-repo lint runs where file-scoping is available).
+              _node_lint_eslint_noop=true
+            fi
+          fi
+
+          if [ "$_node_lint_scoped" = "true" ]; then
+            local _nlint_files_arr=() _nlf
+            while IFS= read -r _nlf; do
+              [ -n "$_nlf" ] || continue
+              [ -f "$project_root/$_nlf" ] || continue
+              _nlint_files_arr+=("$project_root/$_nlf")
+            done < <(printf '%s\n' "$_node_lint_src_files")
+            if [ ${#_nlint_files_arr[@]} -gt 0 ]; then
+              echo "[test-gate] Node lint: eslint scoped to ${#_nlint_files_arr[@]} changed file(s)" >> "$_gate_raw_sink"
+              local _eslint_bin="$project_root/node_modules/.bin/eslint"
+              if [ -x "$_eslint_bin" ]; then
+                { (cd "$project_root" && "$_eslint_bin" "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                  | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+              elif [ "$_node_lint_pm" = "pnpm" ]; then
+                # pnpm lint -- <files> passes args to the script but the script's own
+                # positional args (e.g. '.') survive, linting the whole repo.
+                # Use pnpm exec to invoke eslint directly with only the changed files.
+                { (cd "$project_root" && pnpm exec eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                  | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+              else
+                # npm run lint -- <files> has the same '.' problem; use npx to bypass.
+                { (cd "$project_root" && npx --no-install eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                  | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+              fi
+            else
+              # All changed JS/TS files were deleted — nothing to lint
+              echo "[test-gate] Node lint: all changed JS/TS files deleted — skipping" >> "$_gate_raw_sink"
+              echo 0 > "$_node_lint_exit_f"
+            fi
+          elif [ "$_node_lint_eslint_noop" = "true" ]; then
+            echo "[test-gate] Node lint: eslint runner with no changed JS/TS files — skipping" >> "$_gate_raw_sink"
+            echo 0 > "$_node_lint_exit_f"
+          else
+            echo "[test-gate] Node lint: ${_node_lint_pm} lint (runner: ${_node_lint_runner:-unknown})" >> "$_gate_raw_sink"
+            if [ "$_node_lint_pm" = "pnpm" ]; then
+              { (cd "$project_root" && pnpm lint 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+            else
+              { (cd "$project_root" && npm run lint 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+            fi
+          fi
+
+          local _node_lint_exit
+          _node_lint_exit=$(cat "$_node_lint_exit_f" 2>/dev/null || echo 1)
+          _node_lint_exit=${_node_lint_exit:-1}
+          rm -f "$_node_lint_exit_f"
+          if [ "$_node_lint_exit" -ne 0 ]; then
+            _normalize_eslint_output "$_node_lint_raw_f" "$_lint_raw_file" "$project_root"
+            _lint_exit=1
+          fi
+          rm -f "$_node_lint_raw_f"
+        fi
+      fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       # Provision pytest-testmon for per-cycle scoped gating (#1127 / #975).
       # Only when native scoping is enabled; failure degrades to unscoped (#1125).
