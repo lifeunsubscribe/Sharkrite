@@ -111,7 +111,7 @@ teardown() {
     in_block && /^[[:space:]]*fi$/ { exit }
     in_block { print $0 }
   ')
-  if echo "$_lock_block" | grep -qE '^\s*exit 1$'; then
+  if echo "$_lock_block" | grep -qE '^[[:space:]]*exit 1$'; then
     echo "FAIL: bare 'exit 1' found in the lock-failure block of setup_issue_lock_if_needed" >&2
     echo "      Should be 'exit 14' to distinguish lock-held from a real dev failure" >&2
     return 1
@@ -192,7 +192,7 @@ teardown() {
     return 1
   }
 
-  _noncomment_body=$(echo "$_branch_body" | grep -v '^\s*#')
+  _noncomment_body=$(echo "$_branch_body" | grep -v '^[[:space:]]*#')
 
   if echo "$_noncomment_body" | grep -qE 'gh.*pr list'; then
     echo "FAIL: 'gh pr list' (non-comment) found in exit-14 branch" >&2

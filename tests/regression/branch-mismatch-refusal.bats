@@ -108,7 +108,7 @@ setup() {
     return 1
   }
 
-  echo "$_func_body" | grep -qE '^\s*return 19' || {
+  echo "$_func_body" | grep -qE '^[[:space:]]*return 19' || {
     echo "FAIL: handle_branch_mismatch() does not contain 'return 19'" >&2
     echo "      Exit code 19 is the batch sentinel for branch-mismatch refusals" >&2
     return 1
@@ -295,7 +295,7 @@ setup() {
     return 1
   }
 
-  _noncomment_body=$(echo "$_branch_body" | grep -v '^\s*#')
+  _noncomment_body=$(echo "$_branch_body" | grep -v '^[[:space:]]*#')
 
   if echo "$_noncomment_body" | grep -qE 'gh.*pr list'; then
     echo "FAIL: 'gh pr list' (non-comment) found in exit-19 branch" >&2

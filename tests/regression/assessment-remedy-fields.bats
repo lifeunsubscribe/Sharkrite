@@ -239,7 +239,7 @@ teardown() {
 
   # Find the line number of the _f_verification guard and the _f_location guard
   _vline=$(grep -n 'if \[ -n.*_f_verification' "$ASSESS_RESOLVE_SCRIPT" | head -1 | cut -d: -f1)
-  _lline=$(grep -n 'elif \[ -n.*_f_location' "$ASSESS_RESOLVE_SCRIPT" | grep -v '^\s*#' | head -1 | cut -d: -f1)
+  _lline=$(grep -n 'elif \[ -n.*_f_location' "$ASSESS_RESOLVE_SCRIPT" | grep -v '^[[:space:]]*#' | head -1 | cut -d: -f1)
 
   [ -n "$_vline" ] || {
     echo "FAIL: Could not find 'if [ -n.*_f_verification' guard in $ASSESS_RESOLVE_SCRIPT"

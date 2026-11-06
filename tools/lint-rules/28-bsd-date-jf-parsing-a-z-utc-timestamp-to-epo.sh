@@ -31,7 +31,7 @@ echo "Checking for BSD 'date -jf' parsing a Z/UTC timestamp to epoch without -u.
 for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip full-line comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
     # Check for suppression comment on the preceding line

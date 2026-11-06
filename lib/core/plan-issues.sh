@@ -2013,12 +2013,12 @@ _lint_issues_strict() {
           local _rule=""
           local _has_reason=false
           # Match: <!-- sharkrite-plan-lint disable RULE - Reason: ... -->
-          if echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z0-9-]+\s+-\s+Reason:"; then
-            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
+          if echo "$_sline" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+[[:space:]]+-[[:space:]]+Reason:"; then
+            _rule=$(echo "$_sline" | grep -oE 'disable[[:space:]]+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=true
           # Match: <!-- sharkrite-plan-lint disable RULE --> (no Reason)
-          elif echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z0-9-]+"; then
-            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
+          elif echo "$_sline" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+"; then
+            _rule=$(echo "$_sline" | grep -oE 'disable[[:space:]]+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=false
           fi
 
@@ -2045,7 +2045,7 @@ _lint_issues_strict() {
         local _in_deps=false
         while IFS= read -r _dline; do
           # Start at "**Dependencies**:" or "Dependencies:" header
-          if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
+          if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:'; then
             _in_deps=true
             # Fix 1: harvest parallel refs from this line BEFORE stripping
             # parens — scoped to the Dependencies section so prose mentions
@@ -2102,11 +2102,11 @@ _lint_issues_strict() {
         # Also scan the full block for explicit "Blocked by: #N" / "After: #N" lines
         # that may appear anywhere in the body (not just under a Dependencies header)
         local _body_refs
-        _body_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#[0-9]+' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#[0-9]+' || true)
+        _body_refs=$(echo "$_issue_block" | grep -iE '^[[:space:]]*(Blocked by|After)[[:space:]]*:[[:space:]]*#[0-9]+' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#[0-9]+' || true)
         [ -n "$_body_refs" ] && _issue_deps="${_issue_deps}${_body_refs}"$'\n'
         # Also scan for title refs in Blocked by / After lines anywhere in the block
         local _body_title_refs
-        _body_title_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#\[' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+        _body_title_refs=$(echo "$_issue_block" | grep -iE '^[[:space:]]*(Blocked by|After)[[:space:]]*:[[:space:]]*#\[' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
         [ -n "$_body_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_body_title_refs}"$'\n'
         _deps+=("${_issue_deps}")
         _title_deps+=("${_issue_title_deps}")
@@ -2164,7 +2164,7 @@ _lint_issues_strict() {
           fi
           # Also capture backtick commands from acceptance criteria lines
           # Format: - [ ] criterion: `command`
-          if echo "$_vline" | grep -qE '^\s*-\s*\['; then
+          if echo "$_vline" | grep -qE '^[[:space:]]*-[[:space:]]*\['; then
             local _backtick_cmds
             _backtick_cmds=$(echo "$_vline" | grep -oE '`[^`]+`' | sed 's/`//g' || true)
             [ -n "$_backtick_cmds" ] && _issue_verif="${_issue_verif}${_backtick_cmds}"$'\n'
@@ -2532,7 +2532,7 @@ _lint_issues_strict() {
       # A stray deferral-citation marker on one issue must NOT suppress other lines.
       # Format: <!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
       local _deferral_suppressed=false
-      if echo "$_def_line" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+deferral-citation\s+-\s+Reason:"; then
+      if echo "$_def_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+deferral-citation[[:space:]]+-[[:space:]]+Reason:"; then
         _deferral_suppressed=true
         local _def_reason
         _def_reason=$(echo "$_def_line" | sed 's/.*Reason:[[:space:]]*//' | sed 's/[[:space:]]*-->[[:space:]]*//' | sed 's/[[:space:]]*$//' || true)
@@ -2549,7 +2549,7 @@ _lint_issues_strict() {
       #      deferral in the ADR. Without this, "(ADR D7, follow-up #4)" is flagged
       #      as uncited even though it cites a specific ADR decision.
       local _has_citation=false
-      if echo "$_def_text" | grep -qE '>\s+\S'; then
+      if echo "$_def_text" | grep -qE '>[[:space:]]+\S'; then
         _has_citation=true
       elif echo "$_def_text" | grep -qE '[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,6}:[0-9]+'; then
         _has_citation=true
@@ -4088,7 +4088,7 @@ _extract_packages_for_language() {
       # Capture the top-level module name only (before the first '.').
       # Pipe through _normalize_python_import_name to map import names to their
       # PyPI distribution names (e.g. yaml → pyyaml, bs4 → beautifulsoup4).
-      grep -oE '^\s*(import|from)\s+[a-zA-Z_][a-zA-Z0-9_]*' | \
+      grep -oE '^[[:space:]]*(import|from)[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*' | \
         sed 's/^[[:space:]]*//' | \
         sed 's/^import[[:space:]]\{1,\}//; s/^from[[:space:]]\{1,\}//' | \
         grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*' | \
@@ -4252,7 +4252,7 @@ _build_grounded_packages() {
 
   # Go: go.mod — "require" block entries like: github.com/foo/bar v1.2.3
   if [ -f "$project_root/go.mod" ]; then
-    grep -oE '^\s+[a-zA-Z][a-zA-Z0-9./_-]+ v' "$project_root/go.mod" | \
+    grep -oE '^[[:space:]]+[a-zA-Z][a-zA-Z0-9./_-]+ v' "$project_root/go.mod" | \
       sed 's/[[:space:]]//g; s/v$//' | tr '[:upper:]' '[:lower:]' || true
   fi
 

@@ -120,7 +120,7 @@ TWO_ROLE_EOF
 # ---------------------------------------------------------------------------
 
 @test "claude.sh: plan role defined and backed by RITE_PLAN_MODEL" {
-  run grep -E '^\s*plan\)\s+echo\s+"\$\{RITE_PLAN_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
+  run grep -E '^[[:space:]]*plan\)[[:space:]]+echo[[:space:]]+"\$\{RITE_PLAN_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
   [ "$status" -eq 0 ]
 }
 
