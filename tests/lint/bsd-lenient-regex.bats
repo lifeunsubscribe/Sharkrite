@@ -163,10 +163,8 @@ EOF
   cat > "$FIXTURE_DIR/tests/regression/suppressed.bats" <<'EOF'
 #!/usr/bin/env bats
 @test "meta check" {
-  # sharkrite-lint disable BSD_LENIENT_REGEX - Reason: fixture STRING describing the bad form; not executed
-  local bad_pattern='^\s*#'
-  run grep -vE "$bad_pattern" file
-  [ "$status" -eq 0 ]
+  # sharkrite-lint disable BSD_LENIENT_REGEX - Reason: suppression test — grep with \s in command position
+  grep -vE '^\s*#' file
 }
 EOF
   cd "$FIXTURE_DIR"
@@ -178,7 +176,7 @@ EOF
 # Sub-check B — \` in single-quoted grep argument
 # ---------------------------------------------------------------------------
 
-@test "BSD_LENIENT_REGEX B: fires on \\` inside a single-quoted grep pattern" {
+@test "BSD_LENIENT_REGEX B: fires on backslash-backtick inside a single-quoted grep pattern" {
   cat > "$SH_DIR/bad-backtick.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail

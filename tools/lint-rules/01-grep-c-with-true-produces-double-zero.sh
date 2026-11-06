@@ -4,11 +4,11 @@
 # Rule 1: guaranteed-output-counter paired with || echo "0" produces double zero.
 # Producers covered: grep -c, wc -l (as final pipeline stage), awk with END block (as final stage).
 # NOT flagged (output-or-nothing producers): grep -o, grep -oE — these legitimately pair with
-# || true because they produce no output on no match (see CLAUDE.md "grep -c pattern").
+# || echo "0" because they produce no output on no match (see CLAUDE.md "grep -c pattern").
 echo "Checking for guaranteed-output-counter with '|| echo \"0\"' pattern..."
 
 for file in "${SHELL_FILES[@]}"; do
-  # grep -c always outputs a count (even "0") — use || true instead of || true
+  # grep -c always outputs a count (even "0") — use || true instead of || echo "0"
   # [^|]* ensures no pipe between grep -c and ||, i.e. grep -c is the final stage
   while IFS=: read -r line_num line_content; do
     echo "$line_content" | grep -qE '^[[:space:]]*#' && continue  # skip comment-only lines

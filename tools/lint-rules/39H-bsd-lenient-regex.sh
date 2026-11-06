@@ -163,13 +163,15 @@ _r39h_check_backtick_grep() {
       _bs = "\\"
       n = split($0, _parts, "'"'"'")
       for (_i = 2; _i <= n - 1; _i += 2) {
-        if (index(_parts[_i], _bs "`") > 0) { print NR; break }
+        if (index(_parts[_i], _bs "`") > 0) { print NR ":" $0; break }
       }
     }
   ' "$_file" </dev/null 2>/dev/null || true)
   [ -z "$_r39h_bq_hits" ] && return
-  while IFS= read -r _r39h_lnum; do
+  while IFS=: read -r _r39h_lnum _r39h_ltext; do
     [ -z "$_r39h_lnum" ] && continue
+    _r39h_stripped=$(_r39h_strip_quoted "$_r39h_ltext")
+    echo "$_r39h_stripped" | grep -qE '\bgrep\b' || continue
     _r39h_check_suppressed "$_file" "$_r39h_lnum" && continue
     print_violation "$_file" "$_r39h_lnum" "BSD_LENIENT_REGEX" \
       '\` inside a single-quoted grep pattern is BSD-lenient: GNU grep treats \` as a beginning-of-buffer anchor so the pattern cannot match mid-file, while BSD grep reads a plain backtick — remove the backslash'
