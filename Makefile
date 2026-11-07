@@ -61,7 +61,7 @@ fix:
 test:
 	@if command -v bats >/dev/null 2>&1; then \
 		_skip_tmpdir=""; \
-		if grep -q -- '--report-formatter' "$$(command -v bats)" 2>/dev/null; then \
+		if bats --help 2>&1 | grep -q -- '--report-formatter'; then \
 			_skip_tmpdir=$$(mktemp -d "$${TMPDIR:-/tmp}/rite_skip_XXXXXX"); \
 			_bats_fmt="-F pretty --report-formatter tap --output $$_skip_tmpdir"; \
 		else \
@@ -81,7 +81,7 @@ test:
 			bats $$_bats_fmt -r tests/ || _bats_exit=$$?; \
 		fi; \
 		if [ -n "$$_skip_tmpdir" ]; then \
-			_skip_count=$$(grep -rh "^ok .* # SKIP" "$$_skip_tmpdir/" 2>/dev/null | wc -l | tr -d ' ' || true); \
+			_skip_count=$$(grep -rhi "^ok .* # skip" "$$_skip_tmpdir/" 2>/dev/null | wc -l | tr -d ' ' || true); \
 			if [ "$${_skip_count:-0}" -gt 0 ]; then \
 				echo "($$_skip_count test(s) skipped — brew install bash gawk grep flock to un-skip)"; \
 			fi; \
