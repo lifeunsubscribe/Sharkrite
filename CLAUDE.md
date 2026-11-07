@@ -494,6 +494,7 @@ Path-based detectors (infrastructure, migrations, auth, docs, expensive services
 Only content-aware and practical conditions block merges:
 
 - **CRITICAL review findings** — requires fix or approval
+- **CI check failures** — any check in `statusCheckRollup` whose `conclusion` is `FAILURE` or `ERROR` blocks the merge (`MERGE_GATE_CI`). Pending checks (`conclusion == null`) are advisory only — no polling, no sleep, zero added latency. The gate reads conclusions GitHub already computed; it runs no tests itself. Replaces the inert `isRequired` filter (a GitHub paid-plan feature unavailable here). Implemented in `lib/core/merge-pr.sh` Check 4.
 - **Test/build failures** — non-zero exit from test suite
 - **Session limits** — dual-cap model (issue #283):
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
@@ -984,5 +985,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `MAIN_CI_RED` — batch preflight found red CI on the target branch; `branch=<b> conclusion=<c>`; batch aborts unless `--allow-red-main` was passed
 - `CONFLICT_RESOLVE_ATTEMPT` — per-attempt diag from the conflict-resolver retry loop; `n=<attempt_number> remaining=<file_count>`. Emitted by `lib/utils/conflict-resolver.sh` before each provider session. Health reports aggregate these to surface conflict sets that consistently need multiple attempts.
 - `CONFLICT_RESOLVE_GATE` — post-resolution syntax and test-count gate; `outcome=passed|failed syntax=<n> testcount=<n>` (emitted by `conflict-resolver.sh` after Check 2 and before the merge is committed; emitted whenever logging is loaded — always true in orchestrated runs)
+- `MERGE_GATE_CI` — CI check conclusion gate in `merge-pr.sh` Check 4; `outcome=blocked|passed|pending failed=<n> pending=<n> total=<n> pr=<n>`. `blocked` = at least one completed-FAILURE/ERROR; `pending` = no failures but pending checks exist; `passed` = all complete and green (or zero checks). Reads conclusions GitHub already computed — runs nothing itself.
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`
