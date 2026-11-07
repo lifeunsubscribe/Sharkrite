@@ -161,6 +161,21 @@ _claude_stream_filter_plain() {
 # Cap / Auth Classification Helper
 # =============================================================================
 
+# Module-level cap phrase regex — single authoritative source used by
+# _claude_classify_exit and the agentic exit-0 branch.
+#
+# Cap phrases observed in the wild:
+#   "Spending cap reached resets 11:20pm"           (--print, stdout)
+#   "5-hour limit reached"                          (rate-limit variant)
+#   "You've hit your session limit · resets …"      (#1107, 2026-10-10)
+#   "Claude usage limit reached"                    (defensive catch-all)
+#   "You're out of usage credits."                  (observed 2026-10-27)
+#
+# Note: "you.re out of usage credits" is listed before "out of usage credits"
+# so the line-anchored stdout check (^) matches "You're out of usage credits."
+# — a bare "out of usage credits" at ^col0 would not match that leading "You're".
+_CLAUDE_CAP_RE="spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached|you.re out of usage credits|out of usage credits"
+
 # Shared cap and auth phrase classifier used by all provider runner paths.
 #
 # Scans stdout (line-anchored: each cap phrase must appear at column 0) and
@@ -189,21 +204,14 @@ _claude_stream_filter_plain() {
 _claude_classify_exit() {
   local _stdout_file="$1"
   local _stderr_file="$2"
-  local _exit="$3"
+  local _exit_code="$3"
 
-  if [ "$_exit" -eq 0 ]; then
-    echo "$_exit"
+  if [ "$_exit_code" -eq 0 ]; then
+    echo "$_exit_code"
     return 0
   fi
 
-  # Cap phrases observed in the wild (keep this list authoritative — all runner
-  # paths share it via this function):
-  #   "Spending cap reached resets 11:20pm"           (--print, stdout)
-  #   "5-hour limit reached"                          (rate-limit variant)
-  #   "You've hit your session limit · resets …"      (#1107, 2026-10-10)
-  #   "Claude usage limit reached"                    (defensive catch-all)
-  #   "You're out of usage credits."                  (observed 2026-10-27)
-  local _cap_re="spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached|out of usage credits"
+  local _cap_re="$_CLAUDE_CAP_RE"
 
   local _cap_ph="" _cap_ch=""
   _cap_ph=$(grep -oiE "^(${_cap_re})" "$_stdout_file" 2>/dev/null | head -1 || true)
@@ -216,7 +224,8 @@ _claude_classify_exit() {
 
   if [ -n "$_cap_ph" ]; then
     { _diag "CAP_DETECTED channel=${_cap_ch} phrase=${_cap_ph}"; } 2>/dev/null || true
-    if [ -n "${RITE_STATE_DIR:-}" ]; then
+    _exit_code=5
+    if [ "$_exit_code" -eq 5 ] && [ -n "${RITE_STATE_DIR:-}" ]; then
       local _cap_reset_filename
       _cap_reset_filename="cap-reset-line${RITE_BATCH_ID:+-${RITE_BATCH_ID}}.txt"
       rm -f "${RITE_STATE_DIR}/${_cap_reset_filename}" 2>/dev/null || true
@@ -228,7 +237,7 @@ _claude_classify_exit() {
         printf '%s\n' "$_cap_reset_line" > "${RITE_STATE_DIR}/${_cap_reset_filename}"
       fi
     fi
-    echo 5
+    echo "$_exit_code"
     return 0
   fi
 
@@ -238,11 +247,12 @@ _claude_classify_exit() {
   local _auth_re="invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error"
   if grep -qiE "^(${_auth_re})" "$_stdout_file" 2>/dev/null || \
      grep -qiE "$_auth_re" "$_stderr_file" 2>/dev/null; then
-    echo 18
+    _exit_code=18
+    echo "$_exit_code"
     return 0
   fi
 
-  echo "$_exit"
+  echo "$_exit_code"
   return 0
 }
 
@@ -357,16 +367,16 @@ claude_provider_run_agentic_session() {
   # Convert 0 -> 5 ONLY on a line-anchored bare-line match: every legitimate
   # transcript line in stream-json is a JSON object starting with "{", so a
   # cap phrase at column 0 can only be the CLI's own out-of-envelope notice.
-  # Phrases: same set as _claude_classify_exit's _cap_re (keep in sync).
+  # Phrases: authoritative list in module-level $_CLAUDE_CAP_RE (do not inline).
   elif [ "$_exit_code" -eq 0 ] && \
-     grep -qiE "^(spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached|out of usage credits)" \
+     grep -qiE "^(${_CLAUDE_CAP_RE})" \
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
     local _cap_ph0="" _cap_ch0=""
-    _cap_ph0=$(grep -oiE "^(spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached|out of usage credits)" "$_stdout_capture" 2>/dev/null | head -1 || true)
+    _cap_ph0=$(grep -oiE "^(${_CLAUDE_CAP_RE})" "$_stdout_capture" 2>/dev/null | head -1 || true)
     if [ -n "$_cap_ph0" ]; then
       _cap_ch0="stdout"
     else
-      _cap_ph0=$(grep -oiE "^(spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached|out of usage credits)" "$stderr_file" 2>/dev/null | head -1 || true)
+      _cap_ph0=$(grep -oiE "^(${_CLAUDE_CAP_RE})" "$stderr_file" 2>/dev/null | head -1 || true)
       _cap_ch0="stderr"
     fi
     { _diag "CAP_DETECTED channel=${_cap_ch0} phrase=${_cap_ph0}"; } 2>/dev/null || true
@@ -417,15 +427,21 @@ claude_provider_run_prompt() {
   fi
 
   local _exit=0
-  local _stdout_tmp _stderr_tmp
+  local _stdout_tmp _stderr_tmp _exit_file
   _stdout_tmp=$(mktemp)
   _stderr_tmp=$(mktemp)
+  _exit_file=$(mktemp)
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state — tee always exits 0 so || _exit=$? on a tee pipeline
+  # silently drops non-zero when pipefail is off.
   # shellcheck disable=SC2086
-  echo "$prompt" | run_with_timeout "$_timeout" $_cmd $_args \
-    2>"$_stderr_tmp" | tee "$_stdout_tmp" || _exit=$?
+  echo "$prompt" | { run_with_timeout "$_timeout" $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
   if [ "$_exit" -ne 0 ]; then
     _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
   fi
+  cat "$_stderr_tmp" >&2 || true
   rm -f "$_stdout_tmp" "$_stderr_tmp"
   if [ "$_exit" -eq 124 ]; then
     echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
@@ -458,29 +474,32 @@ claude_provider_run_prompt_with_timeout() {
   fi
 
   local _exit=0
-  local _stdout_tmp _stderr_tmp
+  local _stdout_tmp _stderr_tmp _exit_file
   _stdout_tmp=$(mktemp)
   _stderr_tmp=$(mktemp)
+  _exit_file=$(mktemp)
 
-  # Use timeout command if available
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state — tee always exits 0 so || _exit=$? on a tee pipeline
+  # silently drops non-zero when pipefail is off.
   if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
     # shellcheck disable=SC2086
-    echo "$prompt" | $RITE_TIMEOUT_CMD "$timeout" $_cmd $_args \
-      2>"$_stderr_tmp" | tee "$_stdout_tmp" || _exit=$?
+    echo "$prompt" | { $RITE_TIMEOUT_CMD "$timeout" $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
   elif command -v timeout &>/dev/null; then
     # shellcheck disable=SC2086
-    echo "$prompt" | timeout "$timeout" $_cmd $_args \
-      2>"$_stderr_tmp" | tee "$_stdout_tmp" || _exit=$?
+    echo "$prompt" | { timeout "$timeout" $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
   else
     # No timeout available — run without
     # shellcheck disable=SC2086
-    echo "$prompt" | $_cmd $_args \
-      2>"$_stderr_tmp" | tee "$_stdout_tmp" || _exit=$?
+    echo "$prompt" | { $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
   fi
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
 
   if [ "$_exit" -ne 0 ]; then
     _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
   fi
+  cat "$_stderr_tmp" >&2 || true
   rm -f "$_stdout_tmp" "$_stderr_tmp"
   return "$_exit"
 }
@@ -523,6 +542,7 @@ claude_provider_run_streaming_prompt() {
   if [ "$_exit" -ne 0 ]; then
     _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
   fi
+  cat "$_stderr_tmp" >&2 || true
   rm -f "$_stdout_tmp" "$_stderr_tmp"
 
   if [ "$_exit" -eq 124 ]; then
@@ -543,14 +563,17 @@ claude_provider_run_classify() {
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
 
   local _exit=0
-  local _stdout_tmp _stderr_tmp
+  local _stdout_tmp _stderr_tmp _exit_file
   _stdout_tmp=$(mktemp)
   _stderr_tmp=$(mktemp)
-  # Capture stderr (was /dev/null — discarded; now captured for cap/auth
-  # classification) and tee stdout so the classification word still reaches
-  # the caller while we have a copy to scan on failure.
-  echo "$prompt" | run_with_timeout "$_timeout" "$_cmd" --print \
-    2>"$_stderr_tmp" | tee "$_stdout_tmp" || _exit=$?
+  _exit_file=$(mktemp)
+  # Capture stderr for cap/auth classification and tee stdout so the
+  # classification word still reaches the caller while we have a copy to scan.
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state.
+  echo "$prompt" | { run_with_timeout "$_timeout" "$_cmd" --print 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
   if [ "$_exit" -ne 0 ]; then
     _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
   fi
@@ -574,10 +597,14 @@ claude_provider_run_uncached() {
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
 
   local _exit=0
-  local _stdout_tmp
+  local _stdout_tmp _exit_file
   _stdout_tmp=$(mktemp)
-  echo "$prompt" | run_with_timeout "$_timeout" "$_cmd" --no-cache \
-    2>"$stderr_file" | tee "$_stdout_tmp" || _exit=$?
+  _exit_file=$(mktemp)
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state.
+  echo "$prompt" | { run_with_timeout "$_timeout" "$_cmd" --no-cache 2>"$stderr_file"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
   if [ "$_exit" -ne 0 ]; then
     _exit=$(_claude_classify_exit "$_stdout_tmp" "$stderr_file" "$_exit")
   fi
