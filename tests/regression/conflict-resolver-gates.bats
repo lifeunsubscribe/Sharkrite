@@ -261,9 +261,10 @@ tests.bats" 2>/dev/null || exit_code=$?
   # Merge creates modify/delete conflict: stage 3 present (theirs), stage 2 absent (ours)
   git merge --no-edit side >/dev/null 2>&1 || true
 
-  # Resolution: write a resolved version (ours chose to keep the file)
+  # Resolution: write a resolved version (ours chose to keep the file).
+  # Do NOT git add here — the gate runs before commit_resolved_conflicts stages
+  # anything, so it must see stage 3 present / stage 2 absent in the index.
   printf '#!/usr/bin/env bats\n@test "t1" { true; }\n@test "t2" { true; }\n@test "t3-side" { true; }\n' > shared.bats
-  git add shared.bats
 
   local exit_code=0
   _cr_check_resolution_gates "shared.bats" 2>/dev/null || exit_code=$?
