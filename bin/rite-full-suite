@@ -45,11 +45,21 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 RITE_VERBOSE=false
 export RITE_VERBOSE
 
-# Parse flags — only --investigate is recognised; unknown flags are silently
-# ignored so callers can pass additional env vars without breaking the script.
+# Scheduled-run window bounds (local time, 24-hour).
+# NOT RITE_* env vars — operator intent is communicated via --scheduled, not
+# by overriding the window. Edit here to change the allowed firing window.
+readonly _FULL_SUITE_WINDOW_START=2    # 02:00 (inclusive)
+readonly _FULL_SUITE_WINDOW_END=5      # 05:00 (exclusive)
+
+# Parse flags — --investigate and --scheduled are recognised; unknown flags are
+# silently ignored so callers can pass additional env vars without breaking the script.
 _investigate=false
+_scheduled=false
 for _arg in "$@"; do
-  case "$_arg" in --investigate) _investigate=true ;; esac
+  case "$_arg" in
+    --investigate) _investigate=true ;;
+    --scheduled)   _scheduled=true ;;
+  esac
 done
 
 # ---------------------------------------------------------------------------
@@ -83,6 +93,55 @@ _BRANCH=$(git -C "$_PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || ech
 
 # Set RITE_LOG_FILE so _diag() writes structured lines to the run log.
 export RITE_LOG_FILE="$_LOG_FILE"
+
+# ---------------------------------------------------------------------------
+# Scheduled-run guards (--scheduled only; manual invocations skip both)
+# ---------------------------------------------------------------------------
+# Returns 0 if any live rite lock exists (issue or batch), 1 if none.
+# "Live" means the lock dir has a pid file AND kill -0 on that PID succeeds.
+# Backfill dirs (no pid file) and dead-pid dirs do NOT count as busy.
+_has_live_rite_lock() {
+  local _lock_base="${RITE_LOCK_DIR:-}"
+  [ -z "$_lock_base" ] || [ ! -d "$_lock_base" ] && return 1
+  local _lf _pid
+  for _lf in "$_lock_base"/issue-*.lock "$_lock_base"/batch.lock; do
+    [ -d "$_lf" ] || continue
+    [ -f "$_lf/pid" ] || continue
+    _pid=$(cat "$_lf/pid" 2>/dev/null || true)
+    [ -n "$_pid" ] || continue
+    if kill -0 "$_pid" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ "$_scheduled" = "true" ]; then
+  _hour_raw=$(date '+%H')
+  # Force base-10 so "08" and "09" are not misread as invalid octal.
+  _current_hour=$(( 10#${_hour_raw} ))
+
+  if [ "$_current_hour" -lt "$_FULL_SUITE_WINDOW_START" ] || \
+     [ "$_current_hour" -ge "$_FULL_SUITE_WINDOW_END" ]; then
+    # Outside the 02:00–05:00 window — skip the night, do not defer.
+    {
+      echo "=== Scheduled run SKIPPED: outside window (${_FULL_SUITE_WINDOW_START}:00-${_FULL_SUITE_WINDOW_END}:00), hour=${_current_hour} ==="
+    } >> "$_LOG_FILE"
+    _diag "FULL_SUITE_SKIPPED reason=outside_window hour=${_current_hour}"
+    echo "[INFO] Scheduled full-suite skipped: outside window (${_FULL_SUITE_WINDOW_START}:00-${_FULL_SUITE_WINDOW_END}:00), hour=${_current_hour} — see $_LOG_FILE"
+    exit 0
+  fi
+
+  if _has_live_rite_lock; then
+    # A rite workflow is active — running now would corrupt concurrency tests.
+    {
+      echo "=== Scheduled run SKIPPED: live rite lock detected (batch or issue in progress), hour=${_current_hour} ==="
+    } >> "$_LOG_FILE"
+    _diag "FULL_SUITE_SKIPPED reason=batch_active hour=${_current_hour}"
+    echo "[INFO] Scheduled full-suite skipped: live rite lock detected — see $_LOG_FILE"
+    exit 0
+  fi
+fi
 
 # Tee all output (stdout+stderr merged) to the log for a full transcript, using
 # the same pattern as bin/rite (lib/.. → bin/rite:446). strip_ansi strips color
