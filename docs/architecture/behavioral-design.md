@@ -2286,6 +2286,33 @@ looks similar but is accumulate-**in-place**: one entry per convention title,
 with later PR numbers appended to that entry's References line. A naive union
 would duplicate titles. It needs its own design and deliberately has no merger.
 
+## Conflict Resolver: Bounded Retry on Marker Verification Failure (#1602)
+
+**Problem.** The session is a probabilistic producer. At large conflict sets (11 files in the 2026-11-04 live failure, `rite --sync doc-refactor`) it reliably resolves most files but may leave markers in a few. The old all-or-nothing gate discarded all correct work when Check 2 caught any failure — 8 of 11 correct resolutions were thrown away because 2 files still had markers and 1 file was never touched.
+
+**Solution.** `attempt_claude_merge_resolution` runs Steps 4–6 (prompt → session → verify) in a bounded retry loop of up to `_CR_MAX_RESOLVE_ATTEMPTS=3` total attempts, sharing a single `_cr_timeout` budget. On each Check 2 failure the still-failing file list becomes the input to the next attempt's prompt: the retry asks the session to resolve ONLY those files, stating "conflict markers remain in the working tree" as the reason per path. Files resolved on earlier attempts are left untouched — the loop never resets the working tree or re-runs `git merge`.
+
+**When each path fires:**
+
+| Path | Triggers retry? | Note |
+|------|-----------------|------|
+| Check 1 (unexpected unmerged file) | No — abort immediately | A new unmerged path the session introduced is not retryable |
+| Check 2 (markers remain) | Yes, up to max attempts | The common failure mode; targeted re-prompt expected to converge |
+| Provider usage cap (exit 5) | No — propagate 5 | Budget exhausted; operator must handle |
+
+**Timeout accounting.** The budget is shared: each attempt gets `_cr_timeout - elapsed`, not a fresh copy. Worst-case wall-clock stays at one `_cr_timeout` (default 1800s), not three.
+
+**Diag.** Each attempt emits `[diag] CONFLICT_RESOLVE_ATTEMPT n=<N> remaining=<count>` to `RITE_LOG_FILE` for health-report aggregation. Health reports can surface conflict sets that consistently need multiple attempts as a signal that chunking or deterministic handling is warranted.
+
+**Exhaustion.** After all attempts, the existing abort path fires: `git merge --abort`, return 1, manual recipe printed — now with the still-unresolved file names and the attempt count included in the error message.
+
+**DO NOT weaken Check 1 or Check 2.** They are correct; this issue only changes what happens when Check 2 fails. In particular, Check 2's fence-awareness (awk `fence` toggle on \`\`\` lines) and CR-strip (`tr -d '\r'`) are preserved exactly — see #1221/#533.
+
+**In-repo precedents for this shape:**
+- Review loop (`local-review.sh` ~line 637): bounded attempts, stderr fed into retry message, long backoff for 529.
+- Fix loop (`assess-and-resolve.sh`): up to 3 retries on ACTIONABLE_NOW findings.
+- Plan sections lint (`plan-issues.sh`): up to 2 targeted regenerations.
+
 ## Output Sanitization: stripping operator-local commands from generated artifacts
 
 **Root cause.** `claude --print` (the provider call used for issue planning, review generation, assessment follow-ups, and promotion PR bodies) loads the operator's user-global `~/.claude/CLAUDE.md`. That file carries RTK hook instructions, so the model authors `rtk grep`, `rtk proxy git status`, etc. into generated text. Those commands are unrunnable for any human or CI without the operator's personal rtk hook installed — they leak into published GitHub issue bodies and PR comments.
