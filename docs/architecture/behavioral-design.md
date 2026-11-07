@@ -165,37 +165,49 @@ When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
 
 **Parent-PR live-lock path (follow-up issues):** The same live-lock defer logic applies to the `PARENT_IN_QUEUE=false` branch. When a follow-up issue's parent PR is still open and the parent issue is not in this batch, `batch-process-issues.sh` checks whether the parent issue holds a live lock before skipping. If the parent holds a live lock, the follow-up is deferred to end of queue (`deferred_for_parent` status) with the same `RITE_LIVE_LOCK_DEFER_WAIT` background sleep and `RITE_LIVE_LOCK_MAX_DEFERS` cap. The `_PARENT_LIVE_LOCK_WAIT_PID` join runs on re-entry before the parent PR state is re-checked. Without this, concurrent batches where one batch owns the parent issue silently skip the follow-up even though the parent is actively merging.
 
-### Cross-Batch File Overlap: Warn and Reorder
+### Cross-Batch File Overlap: Liveness Gate
 
-Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every other in-flight worktree. On intersection, the issue is re-appended to the end of the queue (warn-and-reorder, never skip).
+Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every **live** in-flight worktree. On intersection the action depends on whether the overlapping worktree belongs to the same batch (intra) or a different batch (cross). An issue is never skipped or blocked.
+
+**Liveness gate — mandatory:** A worktree is counted as "in-flight" only when `RITE_LOCK_DIR` holds a lock entry whose `pid` file exists, `kill -0 <pid>` succeeds (live process), and whose `cwd` file content matches the worktree path. Worktrees with no lock directory, a backfill-only lock (no `pid` file), or a dead pid are silently skipped. This prevents false positives from abandoned worktrees that outlive the run that created them.
+
+**Unreorderable-queue no-op:** When `_UNIQUE_ISSUE_COUNT ≤ 1` (single-issue batch), the check is entirely skipped — no overlap computation, no output. Deferring to the end of a one-element queue is a pointless cycle.
 
 **Invariants (warn-only contract):**
-- An issue is **never skipped** or blocked by this check. Cap exhausted → run in place with the warning only.
-- The check is **local git only** — `git worktree list` + `git -C <wt> diff --name-only <base>...HEAD`. No network calls, no `gh` invocations.
+- An issue is **never skipped** or blocked by this check. Cap exhausted → run in place; cross-batch → proceed.
+- The check is **local git + local lock files only** — `git worktree list` + `git -C <wt> diff --name-only` + `RITE_LOCK_DIR` reads. No network calls, no `gh` invocations.
 - A missing or empty `Files to Modify:` section is a **silent no-op**.
 
 **Overlap detection — `_ftm_file_overlap ISSUE_BODY`:**
-1. Parse the `Files to Modify:` section from the issue body (first backtick-quoted path per list item; falls back to first whitespace-delimited word). Entries without `/` or `.` are filtered as prose.
-2. Enumerate all worktrees via `git worktree list`, skipping the main checkout and current directory.
-3. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
-4. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
-5. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
-6. First intersection wins — records `_OVERLAP_FILES` (comma-joined matches) and `_OVERLAP_WT` (worktree path).
+1. If `_UNIQUE_ISSUE_COUNT ≤ 1`, return immediately (no-op).
+2. Parse the `Files to Modify:` section from the issue body (first backtick-quoted path per list item; falls back to first whitespace-delimited word). Entries without `/` or `.` are filtered as prose.
+3. Enumerate all worktrees via `git worktree list`, skipping the main checkout, current directory, and the current issue's own pre-existing worktree.
+4. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
+5. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
+6. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
+7. On intersection, run the liveness gate: scan `RITE_LOCK_DIR/issue-*.lock` for a lock whose `cwd` matches the worktree and whose `pid` is alive. Skip worktree if no live lock found.
+8. First live intersection wins — records `_OVERLAP_FILES` (comma-joined matches), `_OVERLAP_WT` (worktree path), and `_OVERLAP_ISSUE_NUM` (issue number from the lock dir name).
 
-**Deferral — shared `_DEFER_COUNT` cap:**
-The same `_DEFER_COUNT[ISSUE_NUM]` counter and `_UNIQUE_ISSUE_COUNT` bound used by the dep-defer path also gate the overlap defer. This prevents an issue from cycling forever when the overlapping worktree never clears. Cap exhausted → the issue runs in place after printing the warning; it is NOT skipped or blocked.
+**Decision — `_apply_overlap_defer_or_warn`:**
+
+*Intra-batch* (the lock's issue number is in `ISSUE_LIST`): moving the current issue to the end of the queue can clear the conflict once the overlapping issue finishes. Uses the shared `_DEFER_COUNT[ISSUE_NUM]` / `_UNIQUE_ISSUE_COUNT` cap to prevent infinite cycling. Below cap → `print_warning` + re-append + `[diag] OVERLAP_DEFER`. Cap exhausted → `print_info` stating the consequence ("expect possible rebase churn") + `[diag] OVERLAP_DEFER cap_exhausted=true` + run in place.
+
+*Cross-batch* (the lock's issue number is NOT in `ISSUE_LIST`): deferring cannot wait out a different batch, which clears on its own schedule. Emits one `print_info` line naming the branch and files, `[diag] OVERLAP_CROSS_BATCH`, and proceeds immediately.
 
 **Dep-chain cohesion (free):** A deferred issue's position moves to the end of the queue. Any in-batch children whose dep is this issue will self-defer via `_check_dep_queued_later` — no extra code needed.
 
 **Deliberate batch-only divergence:** Single-issue mode has no queue to defer into, so `_ftm_file_overlap` is only called from the per-slot batch loop.
 
-**Skipped for CLOSED issues:** The guard is not run when `ISSUE_STATE=CLOSED`. Closed-issue processing is cleanup-only (worktree removal, branch deletion) and touches no source files, so it cannot conflict with another worktree's diff. Deferring a closed issue would only delay that cleanup while burning the defer cap. The parity contract (`batch-process-issues.sh` "do NOT short-circuit here" comment, referencing this doc) owns closed-issue handling via `run_workflow()` → `handle_closed_issue()`.
+**Skipped for CLOSED issues:** The guard is not run when `ISSUE_STATE=CLOSED`. Closed-issue processing is cleanup-only (worktree removal, branch deletion) and touches no source files, so it cannot conflict with another worktree's diff. Deferring a closed issue would only delay that cleanup while burning the defer cap.
 
-**Diag line:** `[diag] OVERLAP_DEFER issue=N files=... worktree=...` emitted on each deferral (and on cap-exhausted in-place runs with `cap_exhausted=true`).
+**Diag lines:**
+- `[diag] OVERLAP_DEFER issue=N files=... worktree=...` — intra-batch deferral
+- `[diag] OVERLAP_DEFER issue=N files=... worktree=... cap_exhausted=true` — intra-batch, cap reached
+- `[diag] OVERLAP_CROSS_BATCH issue=N files=... worktree=... other_issue=M` — cross-batch, proceeds
 
-**Motivation (live incident, 2026-10-11):** Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`. The concurrent worktrees caused rebase churn and extra fix rounds on the second batch. This check catches the overlap before Phase 1 starts, deferring until the first batch has cleared its worktrees.
+**Motivation (live incidents):** 2026-10-11: Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`; rebase churn and extra fix rounds. 2026-11-04: single-issue batch for #1443 printed a false overlap warning against a lockless abandoned worktree — `_UNIQUE_ISSUE_COUNT=1` made the defer a pointless self-cycle. The liveness gate and unreorderable-queue no-op together prevent both classes of false positive.
 
-**Verification:** `grep -n "OVERLAP_DEFER" docs/architecture/behavioral-design.md` returns this paragraph.
+**Verification:** `grep -n "live lock" docs/architecture/behavioral-design.md` returns this paragraph.
 
 ### Session Timer
 
