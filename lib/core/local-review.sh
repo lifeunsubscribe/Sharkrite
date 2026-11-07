@@ -667,12 +667,17 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
     # attempts and the 529 root cause had to be inferred from a different
     # issue's explicit error 14 minutes later.
     _review_err_tail=$(echo "$CLAUDE_ERROR" | tail -n 5 || true)
+    # stdout is already in REVIEW_OUTPUT — capture its tail before the retry resets it
+    _review_stdout_tail=$(echo "$REVIEW_OUTPUT" | tail -n 5 || true)
 
     # Overloaded signature: HTTP 529 or the API's overloaded_error type.
     # 529 is anchored as a standalone number so unrelated text like
     # "1529 tokens" cannot match (format-anchor convention).
+    # Scan both channels: claude --print delivers cap/API errors on stdout.
     _review_overloaded=false
     if echo "$CLAUDE_ERROR" | grep -qiE '(^|[^0-9])529([^0-9]|$)|overloaded_error'; then
+      _review_overloaded=true
+    elif echo "$REVIEW_OUTPUT" | grep -qiE '(^|[^0-9])529([^0-9]|$)|overloaded_error'; then
       _review_overloaded=true
     fi
 
@@ -684,10 +689,16 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
         # schedule (60s then 120s) so a retry can land after recovery.
         _review_backoff=$(( ${RITE_REVIEW_OVERLOADED_BACKOFF:-60} * REVIEW_ATTEMPT ))
         print_warning "Review provider overloaded (529/overloaded_error, attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS)${_review_err_tail:+ — stderr tail: $_review_err_tail}"
+        if [ -n "$_review_stdout_tail" ]; then
+          print_warning "Provider stdout (tail): $_review_stdout_tail"
+        fi
         print_warning "Using long overloaded backoff schedule — retrying in ${_review_backoff}s..."
       else
         _review_backoff=$(( ${RITE_REVIEW_RETRY_BACKOFF:-3} * REVIEW_ATTEMPT ))
         print_warning "Review provider failed (exit $REVIEW_EXIT, attempt $REVIEW_ATTEMPT/$MAX_REVIEW_ATTEMPTS)${_review_err_tail:+: $_review_err_tail} — retrying in ${_review_backoff}s..."
+        if [ -n "$_review_stdout_tail" ]; then
+          print_warning "Provider stdout (tail): $_review_stdout_tail"
+        fi
       fi
       REVIEW_OUTPUT=""
       sleep "$_review_backoff"
@@ -700,6 +711,9 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
     fi
     if [ -n "$_review_err_tail" ]; then
       print_error "Provider stderr (tail): $_review_err_tail"
+    fi
+    if [ -n "$_review_stdout_tail" ]; then
+      print_error "Provider stdout (tail): $_review_stdout_tail"
     fi
     exit 1
   fi
