@@ -61,7 +61,7 @@ fix:
 test:
 	@if command -v bats >/dev/null 2>&1; then \
 		_skip_tmpdir=""; \
-		if grep -q -- '--report-formatter' "$$(command -v bats)" 2>/dev/null; then \
+		if bats --help 2>&1 | grep -q -- '--report-formatter'; then \
 			_skip_tmpdir=$$(mktemp -d "$${TMPDIR:-/tmp}/rite_skip_XXXXXX"); \
 			_bats_fmt="-F pretty --report-formatter tap --output $$_skip_tmpdir"; \
 		else \
