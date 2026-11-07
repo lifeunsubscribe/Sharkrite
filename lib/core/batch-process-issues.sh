@@ -1735,10 +1735,15 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
 
   # ---------------------------------------------------------------------------
   # Per-slot file overlap check: liveness gate + intra/cross-batch split.
-  # A worktree is "live" iff RITE_LOCK_DIR holds a lock entry whose issue
-  # number matches the worktree basename (batch_suffix_matches_issue) and
-  # whose pid is alive (kill -0). Worktrees with no lock, a backfill-only
-  # lock, or a dead pid are silently skipped.
+  # A worktree is "live" iff RITE_LOCK_DIR holds a lock entry with a live
+  # pid (kill -0) that owns the worktree via a two-tier check:
+  #   Tier 1: pwd -P of the worktree == pwd -P of the lock's cwd file
+  #           (resolves macOS /private/ vs /var/ symlink layers).
+  #   Tier 2: worktree basename encodes the lock's issue number per
+  #           batch_suffix_matches_issue (covers legacy locks written before
+  #           the cwd-update patch and single-issue-mode worktrees).
+  # Worktrees with no lock, a backfill-only lock (no pid), or a dead pid
+  # are silently skipped.
   # No-op when _UNIQUE_ISSUE_COUNT <= 1 (unreorderable queue).
   # Intra-batch overlap → defer to end of queue (bounded by _DEFER_COUNT cap).
   # Cross-batch overlap → print_info + proceed (cannot wait out another batch).

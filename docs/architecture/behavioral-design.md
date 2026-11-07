@@ -169,7 +169,7 @@ When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
 
 Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every **live** in-flight worktree. On intersection the action depends on whether the overlapping worktree belongs to the same batch (intra) or a different batch (cross). An issue is never skipped or blocked.
 
-**Liveness gate — mandatory:** A worktree is counted as "in-flight" only when `RITE_LOCK_DIR` holds a lock entry whose `pid` file exists, `kill -0 <pid>` succeeds (live process), and whose `cwd` file content matches the worktree path. Worktrees with no lock directory, a backfill-only lock (no `pid` file), or a dead pid are silently skipped. This prevents false positives from abandoned worktrees that outlive the run that created them.
+**Liveness gate — mandatory:** A worktree is counted as "in-flight" only when `RITE_LOCK_DIR` holds a lock entry whose `pid` file exists, `kill -0 <pid>` succeeds (live process), and the lock is confirmed to own that worktree via a two-tier check: **tier 1** compares `pwd -P` of the worktree against `pwd -P` of the lock's `cwd` file (resolves macOS `/private/` vs `/var/` symlink layers); **tier 2** (basename fallback) checks whether the worktree basename encodes the lock's issue number via `batch_suffix_matches_issue` (covers legacy locks written before the cwd-update patch and single-issue-mode worktrees). Worktrees with no lock directory, a backfill-only lock (no `pid` file), or a dead pid are silently skipped. This prevents false positives from abandoned worktrees that outlive the run that created them.
 
 **Unreorderable-queue no-op:** When `_UNIQUE_ISSUE_COUNT ≤ 1` (single-issue batch), the check is entirely skipped — no overlap computation, no output. Deferring to the end of a one-element queue is a pointless cycle.
 
@@ -185,7 +185,7 @@ Before each issue slot runs its workflow, `batch-process-issues.sh` compares the
 4. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
 5. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
 6. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
-7. On intersection, run the liveness gate: scan `RITE_LOCK_DIR/issue-*.lock` for a lock whose `cwd` matches the worktree and whose `pid` is alive. Skip worktree if no live lock found.
+7. On intersection, run the liveness gate: scan `RITE_LOCK_DIR/issue-*.lock` for a lock whose `pid` is alive (`kill -0`) and that owns the worktree via a two-tier check — tier 1: `pwd -P` of the worktree equals `pwd -P` of the lock's `cwd` file; tier 2 (basename fallback): worktree basename encodes the lock's issue number per `batch_suffix_matches_issue`. Skip worktree if neither tier matches for any lock.
 8. First live intersection wins — records `_OVERLAP_FILES` (comma-joined matches), `_OVERLAP_WT` (worktree path), and `_OVERLAP_ISSUE_NUM` (issue number from the lock dir name).
 
 **Decision — `_apply_overlap_defer_or_warn`:**
