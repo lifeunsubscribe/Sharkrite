@@ -864,3 +864,33 @@ IDX_EOF
   # passing assertion documents the intent without re-invoking bats recursively.
   [ 1 -eq 1 ]
 }
+
+@test "#1496: dropped coverage pointer emits a print_warning, not a silent skip" {
+  _seed_catalog_conventions
+  _seed_index_with_existing_tag "some-existing" "missing-pointer-tag"
+
+  # Intentionally omit docs-map.tsv so docs_map_tag_section_by_pointer returns 1
+  # (map absent). The warning must fire and the workflow must not abort.
+  local _warned=0
+  print_warning() { _warned=1; }
+  export -f print_warning
+
+  export COVERAGE_JSON='{"missing_pointers":[{"tag":"missing-pointer-tag","target":"conventions.md#No Such Section"}]}'
+
+  local body
+  body="$(printf '%s\n' \
+    "new-tags:" \
+    "  - missing-pointer-tag: A tag whose pointer target has no map row")"
+
+  # Must not abort under set -e (reconcile returns 0 via || true backstop).
+  reconcile_tag_index "$body" "900"
+
+  # Warning was emitted.
+  [ "$_warned" -eq 1 ]
+
+  # No false audit entry — history log must not record the pointer as added.
+  local log_file="${RITE_TEST_TMPDIR}/.rite/tag-index-history.log"
+  if [ -f "$log_file" ]; then
+    ! grep -q "added missing-pointer-tag" "$log_file"
+  fi
+}

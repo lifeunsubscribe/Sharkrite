@@ -300,3 +300,30 @@ teardown() {
   _cnt="$(head -2 "$BATS_TEST_FILENAME" | grep -c 'sharkrite-test-covers:' || true)"
   [ "$_cnt" -eq 1 ]
 }
+
+# Ported from main's doc-drift-tier1 suite during the doc-refactor sync (#1509).
+# main asserted this against the legacy markdown drift log; the format here is
+# superseded, so the requirement is re-expressed against drift_log_entry_count.
+# The requirement is unchanged: one entry per PR, NOT one per doc, so two
+# branches that each declare the same doc must both be burned down.
+#
+# SKIPPED: this branch currently coalesces both PRs into one entry
+# (pr=201,202) and keeps only the first branch's evidence — see #1618.
+# Remove the skip when #1618 lands; do not delete the test.
+@test "Trigger C: two distinct PRs declaring the same doc produce two entries" {
+  skip "blocked by #1618 — entries coalesce per doc, dropping the second PR's evidence"
+
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-first.txt"
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-second.txt"
+
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "201" "Closes #91" \
+    "lib/other/file.sh" "main" "feat/first" || true
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "202" "Closes #92" \
+    "lib/other/file.sh" "main" "feat/second" || true
+
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 2 ]
+}

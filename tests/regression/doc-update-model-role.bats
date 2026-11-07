@@ -92,6 +92,6 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "claude.sh: doc_update role defined and backed by RITE_DOC_UPDATE_MODEL" {
-  run grep -E '^\s*doc_update\)\s+echo\s+"\$\{RITE_DOC_UPDATE_MODEL:-claude-fable-5\}"' "$CLAUDE_SH"
+  run grep -E '^[[:space:]]*doc_update\)[[:space:]]+echo[[:space:]]+"\$\{RITE_DOC_UPDATE_MODEL:-claude-fable-5\}"' "$CLAUDE_SH"
   [ "$status" -eq 0 ]
 }

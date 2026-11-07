@@ -237,7 +237,7 @@ _seed_entry() {
     return 1
   }
 
-  echo "$_fn_src" | grep -qE '^\s*read\b' && {
+  echo "$_fn_src" | grep -qE '^[[:space:]]*read\b' && {
     echo "FAIL: _batch_print_drift_summary contains a 'read' command — must not prompt" >&2
     return 1
   }
