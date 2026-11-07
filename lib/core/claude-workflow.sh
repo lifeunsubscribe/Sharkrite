@@ -2950,6 +2950,24 @@ If the changes are unrelated work, answer UNRELATED."
     cd "$WORKTREE_PATH"
     print_success "Switched to worktree: $WORKTREE_PATH"
 
+    # Update the per-issue lock's cwd to the worktree's physical path.
+    # acquire_issue_lock records pwd at acquisition time (the project root), so
+    # _ftm_file_overlap's tier-1 cwd comparison would not match without this
+    # update.  Uses pwd -P (no symlinks) so the comparison works on macOS where
+    # git worktree list returns /private/var/... while TMPDIR uses /var/....
+    if [ -n "${RITE_LOCK_DIR:-}" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
+      _lock_wt_dir="${RITE_LOCK_DIR}/issue-${ISSUE_NUMBER}.lock"
+      if [ -d "$_lock_wt_dir" ] && [ -f "$_lock_wt_dir/pid" ]; then
+        _lock_phys_wt=$(pwd -P 2>/dev/null || pwd)
+        _lock_cwd_tmp=$(mktemp "${_lock_wt_dir}/cwd.XXXXXX" 2>/dev/null) || true
+        if [ -n "${_lock_cwd_tmp:-}" ]; then
+          printf '%s\n' "$_lock_phys_wt" > "$_lock_cwd_tmp" && \
+            mv "$_lock_cwd_tmp" "${_lock_wt_dir}/cwd" || \
+            rm -f "$_lock_cwd_tmp" 2>/dev/null || true
+        fi
+      fi
+    fi
+
     # Store worktree path for cleanup later
     export CLAUDE_WORKTREE_PATH="$WORKTREE_PATH"
 
