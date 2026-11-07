@@ -667,7 +667,7 @@ the resolved files after this session ends."
     if [ "$_cr_attempt" -ge "$_CR_MAX_RESOLVE_ATTEMPTS" ]; then
       _cr_error "Conflict markers remain in ${_cr_still_count} file(s) after ${_cr_attempt} attempt(s):"
       printf '%s' "$_cr_still_failing" | sed 's/^/    /' >&2
-      _cr_error "Resolve the files above manually, then run: git add <files> && git merge --continue"
+      _cr_error "Merge was aborted. To resolve manually: re-run the merge, resolve each file listed above, then: git add <files> && git merge --continue"
       git merge --abort 2>/dev/null || true
       return 1
     fi

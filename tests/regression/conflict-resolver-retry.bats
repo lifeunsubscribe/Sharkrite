@@ -32,6 +32,10 @@ setup() {
   DIAG_LOG="$RITE_TEST_TMPDIR/conflict-resolver-retry-diag.log"
   export RITE_LOG_FILE="$DIAG_LOG"
   touch "$DIAG_LOG"
+
+  # Provide _diag so the resolver's declare-f guard fires and diag lines are written.
+  _diag() { printf '[diag] %s\n' "$*" >> "$RITE_LOG_FILE"; }
+
   unset RITE_VERBOSE
 
   cd "$FIXTURE_REPO"
@@ -101,16 +105,21 @@ _assert_diag() {
   _setup_multi_file_conflict
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
 
   # Track how many times provider_run_agentic_session is called.
   PROVIDER_CALL_COUNT=0
 
   # Attempt 1: resolve file1-file3 correctly; leave file4 and file5 with markers.
   # Attempt 2: resolve file4 and file5 (the ONLY files re-submitted on retry).
+  # Parse the file list from the prompt arg — the resolver passes only still-failing
+  # files on retry, so we must NOT use git diff to discover which files to process.
+  # Do NOT call git add: the resolver checks file content (not index state) for markers.
   provider_run_agentic_session() {
     PROVIDER_CALL_COUNT=$(( PROVIDER_CALL_COUNT + 1 ))
+    local _prompt="$1"
     local _conflicted
-    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    _conflicted=$(printf '%s\n' "$_prompt" | awk '/^## Conflicting files to resolve:$/{f=1;next} /^Read each conflicting file/{f=0} f && NF{print}' || true)
     while IFS= read -r _f; do
       [ -z "$_f" ] && continue
       if [ "$PROVIDER_CALL_COUNT" -eq 1 ] && { [ "$_f" = "file4.txt" ] || [ "$_f" = "file5.txt" ]; }; then
@@ -120,7 +129,6 @@ _assert_diag() {
         # Resolve cleanly (also handles the retry for file4/file5)
         printf 'resolved content\n' > "$_f"
       fi
-      git add "$_f"
     done <<< "$_conflicted"
     return 0
   }
@@ -156,13 +164,15 @@ _assert_diag() {
   _setup_multi_file_conflict
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
 
   PROVIDER_CALL_COUNT=0
 
   provider_run_agentic_session() {
     PROVIDER_CALL_COUNT=$(( PROVIDER_CALL_COUNT + 1 ))
+    local _prompt="$1"
     local _conflicted
-    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    _conflicted=$(printf '%s\n' "$_prompt" | awk '/^## Conflicting files to resolve:$/{f=1;next} /^Read each conflicting file/{f=0} f && NF{print}' || true)
     while IFS= read -r _f; do
       [ -z "$_f" ] && continue
       if [ "$PROVIDER_CALL_COUNT" -eq 1 ] && [ "$_f" = "file5.txt" ]; then
@@ -171,7 +181,6 @@ _assert_diag() {
       else
         printf 'resolved\n' > "$_f"
       fi
-      git add "$_f"
     done <<< "$_conflicted"
     return 0
   }
@@ -198,17 +207,21 @@ _assert_diag() {
   _setup_multi_file_conflict
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
 
   PROVIDER_CALL_COUNT=0
   ATTEMPT2_FILES=""
 
   provider_run_agentic_session() {
     PROVIDER_CALL_COUNT=$(( PROVIDER_CALL_COUNT + 1 ))
+    local _prompt="$1"
     local _conflicted
-    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    _conflicted=$(printf '%s\n' "$_prompt" | awk '/^## Conflicting files to resolve:$/{f=1;next} /^Read each conflicting file/{f=0} f && NF{print}' || true)
 
     if [ "$PROVIDER_CALL_COUNT" -eq 2 ]; then
-      # Record which files the second attempt was given (via git state at call time)
+      # Record which files the resolver gave to the second attempt (from the prompt).
+      # Only files still marked as failing are re-submitted; already-resolved files
+      # must NOT appear here.
       ATTEMPT2_FILES="$_conflicted"
     fi
 
@@ -220,7 +233,6 @@ _assert_diag() {
       else
         printf 'resolved\n' > "$_f"
       fi
-      git add "$_f"
     done <<< "$_conflicted"
     return 0
   }
@@ -255,19 +267,22 @@ _assert_diag() {
   _setup_multi_file_conflict
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
 
   PROVIDER_CALL_COUNT=0
 
-  # Stub always leaves markers — simulates a session that cannot converge
+  # Stub always leaves markers — simulates a session that cannot converge.
+  # Uses prompt arg for the file list; does NOT call git add (resolver checks
+  # file content for markers, not index state).
   provider_run_agentic_session() {
     PROVIDER_CALL_COUNT=$(( PROVIDER_CALL_COUNT + 1 ))
+    local _prompt="$1"
     local _conflicted
-    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    _conflicted=$(printf '%s\n' "$_prompt" | awk '/^## Conflicting files to resolve:$/{f=1;next} /^Read each conflicting file/{f=0} f && NF{print}' || true)
     while IFS= read -r _f; do
       [ -z "$_f" ] && continue
       # Always leave conflict markers — never resolves
       printf '<<<<<<< HEAD\nbranch\n=======\nmain\n>>>>>>> origin/main\n' > "$_f"
-      git add "$_f"
     done <<< "$_conflicted"
     return 0
   }
@@ -305,15 +320,16 @@ _assert_diag() {
   _setup_multi_file_conflict
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
 
-  # Provider always leaves one file unresolved
+  # Provider always leaves markers — never resolves.
   provider_run_agentic_session() {
+    local _prompt="$1"
     local _conflicted
-    _conflicted=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    _conflicted=$(printf '%s\n' "$_prompt" | awk '/^## Conflicting files to resolve:$/{f=1;next} /^Read each conflicting file/{f=0} f && NF{print}' || true)
     while IFS= read -r _f; do
       [ -z "$_f" ] && continue
       printf '<<<<<<< HEAD\nbranch\n=======\nmain\n>>>>>>> origin/main\n' > "$_f"
-      git add "$_f"
     done <<< "$_conflicted"
     return 0
   }
@@ -345,6 +361,7 @@ _assert_diag() {
   _setup_multi_file_conflict
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
 
   PROVIDER_CALL_COUNT=0
 
