@@ -20,6 +20,20 @@
   Omit StartCalendarInterval entirely to run at login instead (useful for
   high-drift environments).
 
+  CLOSED-LAPTOP / SKIPPED NIGHTS:
+  macOS StartCalendarInterval does NOT fire while the machine is asleep; launchd
+  defers the missed job and fires it on the next wake. Because the script is
+  invoked with --scheduled, it checks the local clock on startup — a catch-up
+  firing outside 02:00–05:00 exits 0 immediately (logs the skip, runs nothing).
+  A closed lid at 3 AM therefore guarantees a skipped night; that is the
+  intended behavior. Skipping the night IS the right choice — deferring into
+  working hours is the bug being fixed (#1609).
+
+  To never miss a night, schedule a repeating wake before 03:00:
+    sudo pmset repeat wakeorpoweron MTWRFSU 02:55:00
+  This keeps the machine awake long enough for launchd to fire the job on time.
+  Opt-in only — do not add this to the plist; it is a machine-level decision.
+
   OUTPUT: appended to .rite/logs/full-suite-YYYYMMDD.log (managed by bin/rite-full-suite).
   The StandardOutPath/StandardErrorPath here capture launchd startup errors only;
   the run transcript goes to the per-date log file.
@@ -42,7 +56,7 @@
     [Service]
     Type=oneshot
     Environment=RITE_PROJECT_ROOT=/path/to/sharkrite
-    ExecStart=/path/to/sharkrite/bin/rite-full-suite
+    ExecStart=/path/to/sharkrite/bin/rite-full-suite --investigate --scheduled
 
     # /etc/systemd/user/sharkrite-full-suite.timer
     [Unit]
@@ -71,6 +85,7 @@
 	<array>
 		<string>/path/to/PLACEHOLDER/sharkrite/bin/rite-full-suite</string>
 		<string>--investigate</string>
+		<string>--scheduled</string>
 	</array>
 	<key>RunAtLoad</key>
 	<false/>

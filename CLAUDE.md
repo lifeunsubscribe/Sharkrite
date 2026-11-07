@@ -897,6 +897,17 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 - Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
+**`--scheduled` flag (used by the scheduled plist):** Enables two guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour or lock state.
+
+- **Window guard:** A run starting outside 02:00–05:00 local time exits 0 immediately without running anything, appends a skip line to the daily log, and emits `[diag] FULL_SUITE_SKIPPED reason=outside_window hour=<H>`. A catch-up firing at 09:00 (launchd sleep catch-up) is therefore a no-op. Skipping the night IS the desired behavior — deferring into working hours is the bug being fixed.
+- **Busy guard:** A run exits 0 immediately when any live rite lock exists (issue or batch lock with a valid PID that answers `kill -0`). Backfill locks (no pid file) and dead-pid locks do NOT count as busy. Emits `[diag] FULL_SUITE_SKIPPED reason=batch_active hour=<H>`.
+- **Health-report aggregation:** A skipped night emits `FULL_SUITE_SKIPPED`, not `FULL_SUITE_RUN` — health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is treated as neither pass nor failure (no green tick, no WARNING entry).
+
+A skip line in the daily log looks like:
+```
+=== Scheduled run SKIPPED: outside window (2:00-5:00), hour=9 ===
+```
+
 **`--investigate` flag (used by the scheduled plist):** When passed to a failing run, triggers three additional steps after the failure flag is written:
 
 1. **Investigate** — re-runs each failing `.bats` file *serially* (no `--jobs`). A serial run distinguishes genuine failures from parallel-starvation timeouts (the class that false-halted batches 2026-10-12/13). Each originally-failing test is classified as `persistent` (still fails serially) or `cleared-on-serial-rerun` (flake). Lint violations are always `persistent` (deterministic, no parallelism involved).
@@ -905,7 +916,7 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 
 3. **Remediate** — if any persistent failures exist, files ONE issue carrying `<!-- sharkrite-full-suite-remediation:<hash> -->` (hash = `cksum` of sorted persistent test names + lint count, anchored in the dedup search so the guard matches the hash not the bare prefix). A second run with the same failing set detects the existing issue and skips creation. If `gh issue create` fails, an orphan artifact is appended to `.rite/orphaned-followup-items.md` so findings are not silently lost. Purely-cleared (all-flake) runs file no issue.
 
-**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). Manual runs without `--investigate` keep today's behavior (run + flag, no investigation).
+**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). The plist ships `--investigate --scheduled` so the job applies both guards automatically. A closed lid at 3 AM → skipped night; this is correct — do not add buffering or retry logic. To guarantee no missed nights on a laptop, opt in to a repeating wake: `sudo pmset repeat wakeorpoweron MTWRFSU 02:55:00`.
 
 macOS (launchd):
 ```bash
@@ -933,9 +944,10 @@ systemctl --user list-timers | grep sharkrite
 **Health report integration:** `rite --health-report` aggregates `FULL_SUITE_RUN` diag lines from `full-suite-*.log` files. Any `outcome=failed` in the reporting period promotes to a WARNING section. The failure flag is checked at report time and surfaced as an action item.
 
 ```bash
-rite --full-suite                       # Run now (no investigation)
-rite --full-suite --investigate         # Run + investigate + report + remediation issue
-cat .rite/state/full-suite-failure.flag # See current failure details if any
+rite --full-suite                                    # Run now (manual — always runs, no guards)
+bin/rite-full-suite --investigate                    # Run + investigate + report + remediation issue
+bin/rite-full-suite --investigate --scheduled        # Scheduled mode: skip outside 02:00-05:00 or when busy
+cat .rite/state/full-suite-failure.flag     # See current failure details if any
 cat .rite/reports/full-suite-$(date +%Y%m%d).md  # See today's investigation report
 ```
 
@@ -981,6 +993,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
+- `FULL_SUITE_SKIPPED` — scheduled run skipped without running the suite; `reason=outside_window` (clock outside 02:00–05:00) or `reason=batch_active` (live rite lock detected); `hour=<H>`. Health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is neither a pass nor a failure — a missing nightly report is explainable, not an alarm.
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 - `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
 - `MAIN_CI_RED` — batch preflight found red CI on the target branch; `branch=<b> conclusion=<c>`; batch aborts unless `--allow-red-main` was passed
