@@ -158,6 +158,105 @@ _claude_stream_filter_plain() {
 }
 
 # =============================================================================
+# Cap / Auth Classification Helper
+# =============================================================================
+
+# Module-level cap phrase regex — single authoritative source used by
+# _claude_classify_exit and the agentic exit-0 branch.
+#
+# Cap phrases observed in the wild:
+#   "Spending cap reached resets 11:20pm"           (--print, stdout)
+#   "5-hour limit reached"                          (rate-limit variant)
+#   "You've hit your session limit · resets …"      (#1107, 2026-10-10)
+#   "Claude usage limit reached"                    (defensive catch-all)
+#   "You're out of usage credits."                  (observed 2026-10-27)
+#
+# Note: "you.re out of usage credits" is listed before "out of usage credits"
+# so the line-anchored stdout check (^) matches "You're out of usage credits."
+# — a bare "out of usage credits" at ^col0 would not match that leading "You're".
+_CLAUDE_CAP_RE="spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached|you.re out of usage credits|out of usage credits"
+
+# Shared cap and auth phrase classifier used by all provider runner paths.
+#
+# Scans stdout (line-anchored: each cap phrase must appear at column 0) and
+# stderr (unanchored: stderr is always the CLI's own output, never transcript
+# content) for known usage-cap and auth-failure phrasings observed in the wild.
+#
+# Line-anchoring on stdout is the false-abort guard from issue #1169: every
+# legitimate stream-json transcript line starts with '{', so a cap phrase at
+# column 0 can ONLY be the CLI's own out-of-envelope notice.  A substring match
+# would fire on any session whose transcript merely *quotes* a cap phrase (e.g.
+# a code-review session reviewing this very detection logic, which embeds the
+# literal strings as examples inside JSON).
+#
+# ONLY fires when exit_code is non-zero — a successful call that quotes a cap
+# phrase in its output is never misclassified (false-abort guard for the
+# non-agentic paths; the agentic exit-0 path is handled separately inline in
+# claude_provider_run_agentic_session, issue #1121).
+#
+# Returns the new exit code via stdout (echo):
+#   5  — usage/token cap detected
+#  18  — provider auth failure detected
+#   N  — original exit code (no classification match)
+#
+# Also persists the "resets H:MMpm (Zone)" line to RITE_STATE_DIR when a cap
+# is detected, so batch-process-issues.sh can parse the reset epoch for resume.
+_claude_classify_exit() {
+  local _stdout_file="$1"
+  local _stderr_file="$2"
+  local _exit_code="$3"
+
+  if [ "$_exit_code" -eq 0 ]; then
+    echo "$_exit_code"
+    return 0
+  fi
+
+  local _cap_re="$_CLAUDE_CAP_RE"
+
+  local _cap_ph="" _cap_ch=""
+  _cap_ph=$(grep -oiE "^(${_cap_re})" "$_stdout_file" 2>/dev/null | head -1 || true)
+  if [ -n "$_cap_ph" ]; then
+    _cap_ch="stdout"
+  else
+    _cap_ph=$(grep -oiE "$_cap_re" "$_stderr_file" 2>/dev/null | head -1 || true)
+    [ -n "$_cap_ph" ] && _cap_ch="stderr"
+  fi
+
+  if [ -n "$_cap_ph" ]; then
+    { _diag "CAP_DETECTED channel=${_cap_ch} phrase=${_cap_ph}"; } 2>/dev/null || true
+    _exit_code=5
+    if [ "$_exit_code" -eq 5 ] && [ -n "${RITE_STATE_DIR:-}" ]; then
+      local _cap_reset_filename
+      _cap_reset_filename="cap-reset-line${RITE_BATCH_ID:+-${RITE_BATCH_ID}}.txt"
+      rm -f "${RITE_STATE_DIR}/${_cap_reset_filename}" 2>/dev/null || true
+      local _cap_reset_line
+      _cap_reset_line=$(grep -hiE "resets [0-9]+:[0-9]+[ap]m" \
+        "$_stdout_file" "$_stderr_file" 2>/dev/null | head -1 || true)
+      if [ -n "$_cap_reset_line" ]; then
+        mkdir -p "$RITE_STATE_DIR"
+        printf '%s\n' "$_cap_reset_line" > "${RITE_STATE_DIR}/${_cap_reset_filename}"
+      fi
+    fi
+    echo "$_exit_code"
+    return 0
+  fi
+
+  # Auth phrases: stdout line-anchored, stderr unanchored — same rationale as
+  # cap phrases above (stdout: only CLI's own out-of-envelope notice at col 0;
+  # stderr: always CLI output).
+  local _auth_re="invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error"
+  if grep -qiE "^(${_auth_re})" "$_stdout_file" 2>/dev/null || \
+     grep -qiE "$_auth_re" "$_stderr_file" 2>/dev/null; then
+    _exit_code=18
+    echo "$_exit_code"
+    return 0
+  fi
+
+  echo "$_exit_code"
+  return 0
+}
+
+# =============================================================================
 # Agentic Session
 # =============================================================================
 
@@ -255,40 +354,12 @@ claude_provider_run_agentic_session() {
     rm -f "$_prompt_file"
   fi
 
-  # Detect usage-cap exhaustion in stdout or stderr. Live phrasings observed:
-  #   - "Spending cap reached resets 11:20pm"      (claude --print on stdout)
-  #   - "5-hour limit reached"                     (rate-limit variant)
-  #   - "You've hit your session limit · resets 9:20pm (America/Denver)"
-  #     (phrasing drift, live 2026-10-10 batch rite-1045-...-171345 — issue #1107)
-  #   - "Claude usage limit reached"               (defensive — any future phrasing)
-  # Emit exit 5 so the batch processor's existing usage-cap path aborts the
-  # rest of the batch instead of cascading the cap across the remaining
-  # issues at ~40s wasted per issue. See: lib/core/batch-process-issues.sh
-  # exit-5 handler.
-  #
-  # stdout: line-anchored — every legitimate stream-json line starts with '{',
-  # so a cap phrase at column 0 can only be the CLI's own out-of-envelope
-  # notice. A substring match would false-abort any session that merely
-  # CONTAINS the phrase (e.g. a session editing this detection, which embeds
-  # the literal string inside a JSON transcript line — live: issue #1169).
-  # stderr: unanchored for non-zero exit — stderr from the CLI is always the
-  # CLI's own output, never the streamed transcript.
-  local _cap_stdout_phrase="" _cap_stderr_phrase=""
+  # Non-zero exit: delegate to shared classifier (_claude_classify_exit) which
+  # holds the authoritative phrase lists for cap (exit 5) and auth (exit 18).
+  # See _claude_classify_exit() above for the false-abort guard rationale and
+  # the full list of observed phrasings.
   if [ "$_exit_code" -ne 0 ]; then
-    _cap_stdout_phrase=$(grep -oiE "^(spending cap reached|(claude )?usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached)" "$_stdout_capture" 2>/dev/null | head -1 || true)
-    if [ -z "$_cap_stdout_phrase" ]; then
-      _cap_stderr_phrase=$(grep -oiE "spending cap reached|usage limit reached|rate limit reached|[0-9]+-hour limit reached|you.ve hit your (session|usage|weekly) limit|hit your (session|usage|weekly) limit|session limit reached" "$stderr_file" 2>/dev/null | head -1 || true)
-    fi
-  fi
-  if [ "$_exit_code" -ne 0 ] && { [ -n "$_cap_stdout_phrase" ] || [ -n "$_cap_stderr_phrase" ]; }; then
-    local _cap_ch="" _cap_ph=""
-    if [ -n "$_cap_stdout_phrase" ]; then
-      _cap_ch="stdout"; _cap_ph="$_cap_stdout_phrase"
-    else
-      _cap_ch="stderr"; _cap_ph="$_cap_stderr_phrase"
-    fi
-    { _diag "CAP_DETECTED channel=${_cap_ch} phrase=${_cap_ph}"; } 2>/dev/null || true
-    _exit_code=5
+    _exit_code=$(_claude_classify_exit "$_stdout_capture" "$stderr_file" "$_exit_code")
   # Exit-0 cap (issue #1121, live 2026-10-11): in --print --output-format
   # stream-json mode the CLI prints the session-limit notice and exits 0, so
   # the nonzero guard above never fires and the cap cascades across the batch
@@ -296,60 +367,31 @@ claude_provider_run_agentic_session() {
   # Convert 0 -> 5 ONLY on a line-anchored bare-line match: every legitimate
   # transcript line in stream-json is a JSON object starting with "{", so a
   # cap phrase at column 0 can only be the CLI's own out-of-envelope notice.
-  # A substring match here would false-abort any dev session whose transcript
-  # merely CONTAINS the phrase (e.g. sessions editing this detection or its
-  # tests, which embed the literal string).
+  # Phrases: authoritative list in module-level $_CLAUDE_CAP_RE (do not inline).
   elif [ "$_exit_code" -eq 0 ] && \
-     grep -qiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" \
+     grep -qiE "^(${_CLAUDE_CAP_RE})" \
        "$_stdout_capture" "$stderr_file" 2>/dev/null; then
     local _cap_ph0="" _cap_ch0=""
-    _cap_ph0=$(grep -oiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" "$_stdout_capture" 2>/dev/null | head -1 || true)
+    _cap_ph0=$(grep -oiE "^(${_CLAUDE_CAP_RE})" "$_stdout_capture" 2>/dev/null | head -1 || true)
     if [ -n "$_cap_ph0" ]; then
       _cap_ch0="stdout"
     else
-      _cap_ph0=$(grep -oiE "^(you.ve hit your (session|usage|weekly) limit|spending cap reached|claude usage limit reached|session limit reached)" "$stderr_file" 2>/dev/null | head -1 || true)
+      _cap_ph0=$(grep -oiE "^(${_CLAUDE_CAP_RE})" "$stderr_file" 2>/dev/null | head -1 || true)
       _cap_ch0="stderr"
     fi
     { _diag "CAP_DETECTED channel=${_cap_ch0} phrase=${_cap_ph0}"; } 2>/dev/null || true
     _exit_code=5
-  # Detect provider auth failure in stdout or stderr. Live phrasings observed
-  # (Pilot 2026-07-05/06, rite-855-871-872 batch):
-  #   - "Invalid API key · Please run /login"
-  #   - "API Error: 401 ... Invalid authentication credentials ... Please run /login"
-  # A logged-out/401-class error is batch-fatal: every subsequent issue's dev
-  # session will fail identically. Emit exit 18 so the batch processor halts
-  # immediately with a remediation message instead of burning ~2min per issue
-  # on guaranteed-futile retries. See: lib/core/batch-process-issues.sh exit-18
-  # handler and docs/architecture/exit-codes.md.
-  #
-  # stdout: line-anchored — every legitimate stream-json line starts with '{',
-  # so an auth phrase at column 0 can only be the CLI's own out-of-envelope
-  # notice. A substring match would false-abort any session whose transcript
-  # merely CONTAINS the phrase (same root cause as the cap scan false-abort in
-  # issue #1169; sibling fixed here per issue #1409).
-  # stderr: unanchored — stderr is always the CLI's own output, never the
-  # streamed transcript.
-  elif [ "$_exit_code" -ne 0 ] && \
-     { grep -qiE "^(invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error)" "$_stdout_capture" 2>/dev/null || \
-       grep -qiE "invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error" \
-         "$stderr_file" 2>/dev/null; }; then
-    _exit_code=18
-  fi
-  # When a cap was detected, persist the raw "resets H:MMpm (Zone)" line so
-  # batch-process-issues.sh can parse the reset epoch and write a resume manifest.
-  if [ "$_exit_code" -eq 5 ] && [ -n "${RITE_STATE_DIR:-}" ]; then
-    # Per-batch suffix isolates parallel groups from clobbering each other's reset
-    # line.  When RITE_BATCH_ID is exported (batch mode) the file is unique per
-    # invocation; when absent (single-issue mode) the name is the legacy fallback.
-    local _cap_reset_filename
-    _cap_reset_filename="cap-reset-line${RITE_BATCH_ID:+-${RITE_BATCH_ID}}.txt"
-    rm -f "${RITE_STATE_DIR}/${_cap_reset_filename}" 2>/dev/null || true
-    local _cap_reset_line
-    _cap_reset_line=$(grep -hiE "resets [0-9]+:[0-9]+[ap]m" \
-      "$_stdout_capture" "$stderr_file" 2>/dev/null | head -1 || true)
-    if [ -n "$_cap_reset_line" ]; then
-      mkdir -p "$RITE_STATE_DIR"
-      printf '%s\n' "$_cap_reset_line" > "${RITE_STATE_DIR}/${_cap_reset_filename}"
+    if [ -n "${RITE_STATE_DIR:-}" ]; then
+      local _cap_reset_filename0
+      _cap_reset_filename0="cap-reset-line${RITE_BATCH_ID:+-${RITE_BATCH_ID}}.txt"
+      rm -f "${RITE_STATE_DIR}/${_cap_reset_filename0}" 2>/dev/null || true
+      local _cap_reset_line0
+      _cap_reset_line0=$(grep -hiE "resets [0-9]+:[0-9]+[ap]m" \
+        "$_stdout_capture" "$stderr_file" 2>/dev/null | head -1 || true)
+      if [ -n "$_cap_reset_line0" ]; then
+        mkdir -p "$RITE_STATE_DIR"
+        printf '%s\n' "$_cap_reset_line0" > "${RITE_STATE_DIR}/${_cap_reset_filename0}"
+      fi
     fi
   fi
   rm -f "$_stdout_capture"
@@ -385,8 +427,22 @@ claude_provider_run_prompt() {
   fi
 
   local _exit=0
+  local _stdout_tmp _stderr_tmp _exit_file
+  _stdout_tmp=$(mktemp)
+  _stderr_tmp=$(mktemp)
+  _exit_file=$(mktemp)
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state — tee always exits 0 so || _exit=$? on a tee pipeline
+  # silently drops non-zero when pipefail is off.
   # shellcheck disable=SC2086
-  echo "$prompt" | run_with_timeout "$_timeout" $_cmd $_args || _exit=$?
+  echo "$prompt" | { run_with_timeout "$_timeout" $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
+  if [ "$_exit" -ne 0 ]; then
+    _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
+  fi
+  cat "$_stderr_tmp" >&2 || true
+  rm -f "$_stdout_tmp" "$_stderr_tmp"
   if [ "$_exit" -eq 124 ]; then
     echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
   fi
@@ -417,18 +473,35 @@ claude_provider_run_prompt_with_timeout() {
     _args="$_args --dangerously-skip-permissions"
   fi
 
-  # Use timeout command if available
+  local _exit=0
+  local _stdout_tmp _stderr_tmp _exit_file
+  _stdout_tmp=$(mktemp)
+  _stderr_tmp=$(mktemp)
+  _exit_file=$(mktemp)
+
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state — tee always exits 0 so || _exit=$? on a tee pipeline
+  # silently drops non-zero when pipefail is off.
   if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
     # shellcheck disable=SC2086
-    echo "$prompt" | $RITE_TIMEOUT_CMD "$timeout" $_cmd $_args
+    echo "$prompt" | { $RITE_TIMEOUT_CMD "$timeout" $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
   elif command -v timeout &>/dev/null; then
     # shellcheck disable=SC2086
-    echo "$prompt" | timeout "$timeout" $_cmd $_args
+    echo "$prompt" | { timeout "$timeout" $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
   else
     # No timeout available — run without
     # shellcheck disable=SC2086
-    echo "$prompt" | $_cmd $_args
+    echo "$prompt" | { $_cmd $_args 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
   fi
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
+
+  if [ "$_exit" -ne 0 ]; then
+    _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
+  fi
+  cat "$_stderr_tmp" >&2 || true
+  rm -f "$_stdout_tmp" "$_stderr_tmp"
+  return "$_exit"
 }
 
 # =============================================================================
@@ -451,15 +524,26 @@ claude_provider_run_streaming_prompt() {
   # Capture Claude's exit code separately from the filter.
   # Use a temp file because PIPESTATUS is lost across subshell boundaries.
   # _claude_stream_filter_plain may exit non-zero on empty JSON — that's normal.
-  local _exit_file
+  # Also tee stdout and capture stderr for cap/auth classification.
+  local _exit_file _stdout_tmp _stderr_tmp
   _exit_file=$(mktemp)
+  _stdout_tmp=$(mktemp)
+  _stderr_tmp=$(mktemp)
   echo "$prompt" | { run_with_timeout "$_timeout" "$_cmd" --print --verbose \
     --dangerously-skip-permissions \
-    --model "$model" --output-format stream-json; echo $? > "$_exit_file"; } | \
+    --model "$model" --output-format stream-json \
+    2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | \
+    tee "$_stdout_tmp" | \
     _claude_stream_filter_plain || true
   local _exit
   _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
   rm -f "$_exit_file"
+
+  if [ "$_exit" -ne 0 ]; then
+    _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
+  fi
+  cat "$_stderr_tmp" >&2 || true
+  rm -f "$_stdout_tmp" "$_stderr_tmp"
 
   if [ "$_exit" -eq 124 ]; then
     echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
@@ -479,7 +563,21 @@ claude_provider_run_classify() {
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
 
   local _exit=0
-  echo "$prompt" | run_with_timeout "$_timeout" "$_cmd" --print 2>/dev/null || _exit=$?
+  local _stdout_tmp _stderr_tmp _exit_file
+  _stdout_tmp=$(mktemp)
+  _stderr_tmp=$(mktemp)
+  _exit_file=$(mktemp)
+  # Capture stderr for cap/auth classification and tee stdout so the
+  # classification word still reaches the caller while we have a copy to scan.
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state.
+  echo "$prompt" | { run_with_timeout "$_timeout" "$_cmd" --print 2>"$_stderr_tmp"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
+  if [ "$_exit" -ne 0 ]; then
+    _exit=$(_claude_classify_exit "$_stdout_tmp" "$_stderr_tmp" "$_exit")
+  fi
+  rm -f "$_stdout_tmp" "$_stderr_tmp"
   if [ "$_exit" -eq 124 ]; then
     echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
   fi
@@ -499,7 +597,18 @@ claude_provider_run_uncached() {
   local _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
 
   local _exit=0
-  echo "$prompt" | run_with_timeout "$_timeout" "$_cmd" --no-cache 2>"$stderr_file" || _exit=$?
+  local _stdout_tmp _exit_file
+  _stdout_tmp=$(mktemp)
+  _exit_file=$(mktemp)
+  # Use exit-file pattern so the timeout exit code (124) is captured regardless
+  # of pipefail state.
+  echo "$prompt" | { run_with_timeout "$_timeout" "$_cmd" --no-cache 2>"$stderr_file"; echo $? > "$_exit_file"; } | tee "$_stdout_tmp" || true
+  _exit=$(cat "$_exit_file" 2>/dev/null || echo 0)
+  rm -f "$_exit_file"
+  if [ "$_exit" -ne 0 ]; then
+    _exit=$(_claude_classify_exit "$_stdout_tmp" "$stderr_file" "$_exit")
+  fi
+  rm -f "$_stdout_tmp"
   if [ "$_exit" -eq 124 ]; then
     echo "Claude call timed out after ${_timeout}s — retrying or aborting" >&2
   fi

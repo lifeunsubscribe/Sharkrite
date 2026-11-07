@@ -804,6 +804,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
 - **Exit codes**: Canonical table lives in `docs/architecture/exit-codes.md`. Key codes:
+  - `lib/providers/claude.sh`: exit 5 for "usage cap detected on any provider runner path (all six: run_agentic_session, run_prompt, run_prompt_with_timeout, run_streaming_prompt, run_classify, run_uncached)"; exit 18 for "provider auth failure on any provider runner path"
   - `assess-and-resolve.sh`: exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2", exit 5 for "usage cap during fix session or review regeneration (composite phase_assess_and_resolve only — standalone script does not emit 5)", exit 18 for "provider auth failure during fix session (composite phase_assess_and_resolve only — standalone script does not emit 18)"
   - `merge-pr.sh`: exit 0 for "merge and cleanup succeeded", exit 1 for "merge failed", exit 6 for "merge succeeded but cleanup failed"
   - `stale-branch.sh` → `workflow-runner.sh`: exit 11 for "stale branch restarted fresh" (caller resets resume state). **Not 10** — exit 10 is reserved for `batch-process-issues.sh` "blocker detected — defer issue"
