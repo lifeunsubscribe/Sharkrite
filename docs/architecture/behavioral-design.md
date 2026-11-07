@@ -2216,11 +2216,14 @@ tests, both discarded with "Unresolved files remain after Claude session".
 |---|---|---|
 | 1 | Is every unmerged path one the session was given? | index vs `_cr_conflict_files` |
 | 2 | Is every given path marker-free? | working-tree content |
+| 3 | Does every resolved `*.sh` / `bin/` file parse? | `bash -n` on the working-tree file |
+| 4 | Did the resolution preserve `@test` coverage? | `^@test ` count merged ≥ min(ours, theirs) |
 
-Together those are the real contract. Check 1 still catches a conflict that
-appeared after the path list was captured, or one the session introduced; Check
-2 catches a resolution that left markers behind. Neither tests staging, because
-staging is a later step's job.
+Together those are the full acceptance contract. Checks 1 and 2 were the original pair. Checks 3 and 4 were added after PR #1328 (2026-10-25): the resolver accepted a resolution of `review-instructions-untracked-warn.bats` whose `sharkrite-extract` marker names did not exist in `local-review.sh` (which uses `template-tier1-{start,end}`). Zero conflict markers, no unmerged paths — Checks 1 and 2 passed. Four tests silently stopped asserting anything. Main stayed red for a week until #1593 caught it.
+
+Checks 3 and 4 are **deliberately not semantic**. The syntax gate (`bash -n`) catches unparseable bash. The test-count gate (`^@test ` count) catches "coverage vanished" — the signal that the resolver dropped tests entirely rather than merging them. It fires only when the merged count is strictly lower than **both** parents: a legitimate merge may drop tests that one side deleted (count falls below the higher parent only), but a count below both sides means the resolver invented a deletion. When only one parent has the bats file (modify/delete or add/add scenario where only one side creates the file), the comparison is skipped — missing side treated as absent, not 0.
+
+Checks 3 and 4 share the same insertion point and abort path as Checks 1 and 2: failure calls `git merge --abort` and returns 1, feeding the caller's retry loop or surfacing as a failed resolution. No new exit code. A `CONFLICT_RESOLVE_GATE` diag is emitted on every invocation (pass or fail) — see CLAUDE.md diagnostic logging.
 
 **Rule:** a verification step asserts only what the steps before it were
 responsible for establishing. Asserting a postcondition that a *later* step
@@ -2228,6 +2231,7 @@ owns means the check is reading the wrong stage of the pipeline, and a check
 that can only pass by accident is worse than no check — it fails closed on
 correct work. The prompt text and Check 1's premise are coupled, so
 `tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.
+`tests/regression/conflict-resolver-gates.bats` pins Checks 3 and 4.
 
 ## Deterministic Conflict Mergers Read Stage Blobs, Not the Conflicted File (#1319)
 

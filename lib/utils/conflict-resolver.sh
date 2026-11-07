@@ -64,6 +64,127 @@ _cr_error()   { echo "❌ $1" >&2; }
 _cr_status()  { echo "$1" >&2; }
 
 # ===================================================================
+# POST-RESOLUTION VIABILITY GATES (issue #1603)
+# ===================================================================
+
+# _cr_check_resolution_gates FILES
+#
+# Check 3 (syntax) and Check 4 (test-count) on the resolved working-tree files.
+# Called by attempt_claude_merge_resolution after Check 2 (marker scan), before
+# commit_resolved_conflicts.  Both gates are deliberately narrow and
+# deterministic — they catch "unparseable" and "coverage vanished", not
+# "merged wrong".  Full lint/test suites belong in the post-commit gate, not here.
+#
+# Check 3: bash -n on every resolved *.sh file and every file under bin/.
+# Check 4: for every resolved *.bats file, count ^@test lines in the merged
+#          file and in both index parents (stage 2 = ours/HEAD, stage 3 =
+#          theirs/MERGE_HEAD or rebased commit).  Fail when the merged count is
+#          strictly lower than BOTH parents — a count below both sides means the
+#          resolution invented a deletion, which is the #1328 signature.  When
+#          only one parent has the file (e.g. modify/delete conflict), the
+#          comparison is skipped: the missing side is treated as absent, not 0.
+#
+# Returns:
+#   0 — all files passed both gates
+#   1 — at least one file failed; per-file reason reported to stderr
+#
+# A CONFLICT_RESOLVE_GATE diag line is emitted on every call (pass or fail)
+# when _diag is loaded (logging.sh is sourced by callers, not by this file).
+_cr_check_resolution_gates() {
+  local _crg_files="$1"
+  local _crg_failed=false
+  local _crg_n_syntax=0
+  local _crg_n_testcount=0
+  local _crg_f
+  local _crg_syntax_out
+  local _crg_merged_count
+  local _crg_has_ours
+  local _crg_has_theirs
+  local _crg_ours_count
+  local _crg_theirs_count
+  local _crg_fail_testcount
+
+  while IFS= read -r _crg_f; do
+    [ -z "$_crg_f" ] && continue
+
+    # Check 3: Syntax gate — *.sh files and files under bin/ (skip if deleted)
+    case "$_crg_f" in
+      *.sh|bin/*)
+        if [ -f "$_crg_f" ]; then
+          _crg_syntax_out=""
+          if ! _crg_syntax_out=$(bash -n "$_crg_f" 2>&1); then
+            _cr_error "Syntax error in resolved file: $_crg_f"
+            printf '%s\n' "$_crg_syntax_out" >&2
+            _crg_failed=true
+            _crg_n_syntax=$((_crg_n_syntax + 1))
+          fi
+        fi
+        ;;
+    esac
+
+    # Check 4: Test-count gate — *.bats files
+    # A deleted .bats file (not present in working tree) has a merged count of 0,
+    # which is the strongest instance of the coverage-vanished class: if both
+    # parents had tests, a deletion passes the strictly-below-both check.
+    # Strictly-lower-than-both is the signal: a legitimate merge may drop tests
+    # that one side deleted (count falls below the higher parent only), but a
+    # count below BOTH sides means the resolution invented a deletion — the
+    # #1328 signature (four tests silently stopped asserting anything, main red
+    # for a week before #1593 caught it).
+    case "$_crg_f" in
+      *.bats)
+        if [ -f "$_crg_f" ]; then
+          _crg_merged_count=$(grep -c '^@test ' "$_crg_f" || true)
+        else
+          _crg_merged_count=0
+        fi
+        _crg_has_ours=false
+        _crg_has_theirs=false
+        _crg_ours_count=""
+        _crg_theirs_count=""
+
+        # git cat-file -e exits 0 when the object exists in the index at that
+        # stage, non-zero otherwise.  Stage 2 = ours (HEAD), stage 3 = theirs
+        # (MERGE_HEAD or the rebased commit).
+        git cat-file -e ":2:${_crg_f}" 2>/dev/null && _crg_has_ours=true || true
+        git cat-file -e ":3:${_crg_f}" 2>/dev/null && _crg_has_theirs=true || true
+
+        if [ "$_crg_has_ours" = true ]; then
+          _crg_ours_count=$(git show ":2:${_crg_f}" 2>/dev/null | grep -c '^@test ' || true)
+        fi
+        if [ "$_crg_has_theirs" = true ]; then
+          _crg_theirs_count=$(git show ":3:${_crg_f}" 2>/dev/null | grep -c '^@test ' || true)
+        fi
+
+        # Skip when only one parent has the file — it is a new file on that
+        # side, not a deletion, so there is no coverage floor to enforce.
+        _crg_fail_testcount=false
+        if [ "$_crg_has_ours" = true ] && [ "$_crg_has_theirs" = true ]; then
+          if [ "$_crg_merged_count" -lt "$_crg_ours_count" ] \
+             && [ "$_crg_merged_count" -lt "$_crg_theirs_count" ]; then
+            _crg_fail_testcount=true
+          fi
+        fi
+
+        if [ "$_crg_fail_testcount" = true ]; then
+          _cr_error "Test count dropped in resolved file: $_crg_f (merged=${_crg_merged_count} ours=${_crg_ours_count} theirs=${_crg_theirs_count})"
+          _crg_failed=true
+          _crg_n_testcount=$((_crg_n_testcount + 1))
+        fi
+        ;;
+    esac
+  done <<< "$_crg_files"
+
+  if declare -f _diag >/dev/null 2>&1; then
+    local _crg_outcome="passed"
+    [ "$_crg_failed" = true ] && _crg_outcome="failed"
+    _diag "CONFLICT_RESOLVE_GATE outcome=${_crg_outcome} syntax=${_crg_n_syntax} testcount=${_crg_n_testcount}"
+  fi
+
+  [ "$_crg_failed" = false ]
+}
+
+# ===================================================================
 # ADD/ADD OVERWRITE-COLLISION DETECTION (issue #783)
 # ===================================================================
 #
@@ -782,6 +903,12 @@ the resolved files after this session ends."
 
   if [ "$_cr_marker_found" = true ]; then
     _cr_error "Conflict markers remain in the working tree after the session"
+    git merge --abort 2>/dev/null || true
+    return 1
+  fi
+
+  # Check 3 (syntax) and Check 4 (test-count): viability gates
+  if ! _cr_check_resolution_gates "$_cr_conflict_files"; then
     git merge --abort 2>/dev/null || true
     return 1
   fi
