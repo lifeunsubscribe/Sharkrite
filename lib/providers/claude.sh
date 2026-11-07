@@ -62,6 +62,71 @@ claude_provider_validate_cli() {
   return 0
 }
 
+# Workspace trust preflight check for Claude CLI >=2.1.284.
+#
+# CLI 2.1.284 introduced a workspace trust requirement: non-interactive sessions
+# in an untrusted workspace print "has not been trusted" to stderr and ignore
+# every permissions.allow entry — causing every subsequent session to fail.
+# This preflight detects that condition cheaply (trivial --print invocation)
+# so the batch can abort in one line instead of burning time on per-issue failures.
+#
+# Returns 0 (trusted / no trust error detected) or 1 (untrusted workspace).
+# On failure: emits PROVIDER_PREFLIGHT diag, prints the exact fix command to stderr.
+# On success: emits PROVIDER_PREFLIGHT diag only.
+#
+# Called once per batch (via provider_healthcheck alias) or once per single-issue run.
+claude_provider_healthcheck() {
+  local _cmd="${CLAUDE_PROVIDER_CMD:-}"
+  if [ -z "$_cmd" ]; then
+    claude_provider_detect_cli 2>/dev/null || true
+    _cmd="${CLAUDE_PROVIDER_CMD:-claude}"
+  fi
+
+  local _stderr_file
+  _stderr_file=$(mktemp)
+
+  # Trivial --print invocation; only stderr is inspected for the trust signal.
+  # --dangerously-skip-permissions keeps it non-interactive across all setups.
+  # Bounded at 120s so a hung CLI cannot stall an entire batch run.
+  run_with_timeout 120 "$_cmd" --print "ok" --dangerously-skip-permissions \
+    >/dev/null 2>"$_stderr_file" || true
+
+  local _stderr_content
+  _stderr_content=$(cat "$_stderr_file" || true)
+  rm -f "$_stderr_file"
+
+  if printf '%s' "$_stderr_content" | grep -q "has not been trusted"; then
+    # Extract the repo path from the CLI's own error message; fall back to
+    # RITE_PROJECT_ROOT so the fix command is always copy-pasteable.
+    local _repo_path
+    _repo_path=$(printf '%s' "$_stderr_content" \
+      | grep -oE 'projects\["[^"]+"\]' | head -1 \
+      | sed 's/^projects\["\(.*\)"\]$/\1/' \
+      || true)
+    [ -z "$_repo_path" ] && _repo_path="${RITE_PROJECT_ROOT:-$(pwd)}"
+
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "PROVIDER_PREFLIGHT outcome=untrusted_workspace repo=${_repo_path}"
+    fi
+
+    echo "" >&2
+    echo "Provider preflight failed: workspace not trusted (Claude CLI >=2.1.284)" >&2
+    echo "" >&2
+    echo "  Repo: ${_repo_path}" >&2
+    echo "" >&2
+    echo "  Fix — run once, then retry:" >&2
+    printf "    claude config set --global 'projects[\"%s\"].hasTrustDialogAccepted' true\n" \
+      "${_repo_path}" >&2
+    echo "" >&2
+    return 1
+  fi
+
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "PROVIDER_PREFLIGHT outcome=ok"
+  fi
+  return 0
+}
+
 # =============================================================================
 # Streaming Filters (internal helpers)
 # =============================================================================
@@ -256,9 +321,18 @@ claude_provider_run_agentic_session() {
   # immediately with a remediation message instead of burning ~2min per issue
   # on guaranteed-futile retries. See: lib/core/batch-process-issues.sh exit-18
   # handler and docs/architecture/exit-codes.md.
+  #
+  # stdout: line-anchored — every legitimate stream-json line starts with '{',
+  # so an auth phrase at column 0 can only be the CLI's own out-of-envelope
+  # notice. A substring match would false-abort any session whose transcript
+  # merely CONTAINS the phrase (same root cause as the cap scan false-abort in
+  # issue #1169; sibling fixed here per issue #1409).
+  # stderr: unanchored — stderr is always the CLI's own output, never the
+  # streamed transcript.
   elif [ "$_exit_code" -ne 0 ] && \
-     grep -qiE "invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error" \
-       "$_stdout_capture" "$stderr_file" 2>/dev/null; then
+     { grep -qiE "^(invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error)" "$_stdout_capture" 2>/dev/null || \
+       grep -qiE "invalid api key|please run /login|not logged in|invalid authentication credentials|authentication_error" \
+         "$stderr_file" 2>/dev/null; }; then
     _exit_code=18
   fi
   # When a cap was detected, persist the raw "resets H:MMpm (Zone)" line so
@@ -669,6 +743,13 @@ claude_provider_resolve_model() {
     # haiku's job. Decoupled from every other var. See: "Triage Gate" in
     # docs/architecture/behavioral-design.md.
     triage)         echo "${RITE_TRIAGE_MODEL:-claude-haiku-4-5}" ;;
+    # full_suite_report interprets overnight run failure data (counts, persistent/cleared
+    # classification, assertion lines) and produces a short markdown diagnosis.
+    # Mostly templating pre-computed facts with a thin interpretive tail — sonnet's job.
+    # Decoupled from RITE_REVIEW_MODEL so moving review off opus never silently touches
+    # the overnight report path. See: "Model Selection Per Task" in
+    # docs/architecture/behavioral-design.md.
+    full_suite_report) echo "${RITE_FULL_SUITE_REPORT_MODEL:-claude-sonnet-4-6}" ;;
     *)              echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
 }

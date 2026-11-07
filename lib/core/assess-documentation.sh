@@ -207,6 +207,11 @@ _record_tier1_drift_entries() {
       if [ -n "$_tc_doc" ]; then
         local _tc_first
         _tc_first="$(echo "$changed_files" | head -1 || true)"
+        # Design decision (issue #1509): one drift entry per PR, not one per doc.
+        # pr_head_branch in the suspected_inaccuracy preserves per-PR branch and
+        # changed-file evidence even when multiple PRs declare the same doc path.
+        # Multiple entries for the same doc path are expected and correct when
+        # distinct branches each declare it — they must each be burned down.
         drift_log_append "$_tc_doc" "$_t1_branch" \
           "$pr_number" "$_t1_issue" \
           "" "addition" \
@@ -218,6 +223,19 @@ _record_tier1_drift_entries() {
 
   if [ "$_t1_any" = "true" ]; then
     print_info "  drift-log: recorded tier-1 drift entry/entries for PR #${pr_number}"
+    # Commit + push the drift log. Mirrors the Layer-2 commit block pattern.
+    local _t1_log_path
+    _t1_log_path="$(drift_log_path)" || { print_warning "drift-log: could not resolve path for commit"; return 0; }
+    git add "$_t1_log_path" 2>/dev/null || { print_warning "drift-log: git add failed — entry written but not committed"; return 0; }
+    if git commit -m "docs: record tier-1 drift entry/entries for PR #${pr_number}" 2>/dev/null; then
+      if git push origin "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" 2>/dev/null; then
+        print_info "  drift-log: committed and pushed"
+      else
+        print_info "  drift-log: committed (push failed — local only)"
+      fi
+    else
+      verbose_info "  drift-log: nothing to commit (entry may already exist)"
+    fi
   else
     verbose_info "  drift-log: PR #${pr_number} — no tier-1 trigger fired; skipping"
   fi
@@ -1085,10 +1103,12 @@ COVERAGE_EOF
             # tag-index.md from the map after all coverage writes complete.
             # Only log history when the pointer was actually written; return 1
             # means nothing was written (map absent, mktemp failure, malformed
-            # target, or no matching row) — pointer silently skipped, no false
-            # audit entry.
+            # target, or no matching row) — pointer dropped with a warning so
+            # the operator can detect adoption failures, no false audit entry.
             if docs_map_tag_section_by_pointer "$_cov_target" "$_cov_tag"; then
               tag_index_log_history added "$pr_number" "$_cov_tag" "$_cov_file" "$_cov_heading"
+            else
+              print_warning "  tag-index: coverage pointer '${_cov_target}' for tag '${_cov_tag}' was not written (map absent, no matching row, or mktemp failure)" >&2
             fi
           done <<< "$_pointers"
         fi

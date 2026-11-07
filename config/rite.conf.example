@@ -102,6 +102,13 @@
 # RITE_REVIEW_MODEL (upgrading review must not upgrade assessment with it).
 # RITE_ASSESSMENT_MODEL="claude-sonnet-4-6"
 
+# Full-suite report model: interprets overnight run failure data (persistent/cleared
+# classification, assertion lines, lint violations) and produces a short markdown
+# diagnosis. Mostly templating pre-computed facts with a thin interpretive tail —
+# sonnet's job. Decoupled from RITE_REVIEW_MODEL so moving review off opus never
+# silently downgrades or upgrades the overnight report path.
+# RITE_FULL_SUITE_REPORT_MODEL="claude-sonnet-4-6"
+
 # =============================================================================
 # Test Gate
 # =============================================================================

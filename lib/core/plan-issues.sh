@@ -648,6 +648,11 @@ plan_issues() {
   # Check provider CLI
   provider_detect_cli || exit 1
 
+  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+  if ! provider_healthcheck; then
+    exit 1
+  fi
+
   # Load context files
   local doc_content=""
   # +idiom: an instructions-only invocation (`rite plan "<text>"`) reaches here
@@ -921,6 +926,65 @@ _build_available_tags_context() {
 }
 
 # =============================================================================
+# _plan_streaming_awk: streaming awk processor for generate_issues output
+#
+# Reads from stdin; arg 1 is the unique end token for the current run.
+# Each ---ISSUE--- block is buffered, deduplicated by title (first wins), and
+# the unique token is normalised to canonical ---END--- before printing.
+# Interior ---END--- and ---ISSUE--- strings in block bodies are escaped to
+# <!--rite-end-esc--> / <!--rite-issue-esc--> so downstream parsers only see
+# structural markers at the block boundary.
+#
+# Extracted from generate_issues so tests can source plan-issues.sh and call
+# this function directly, exercising the production awk rather than a copy.
+#
+# Usage: <stream> | _plan_streaming_awk <end_tok>
+# =============================================================================
+
+_plan_streaming_awk() {
+  local _end_tok="$1"
+  # dedup mode: "exit" (default) stops awk on a duplicate title (generate/regen
+  # paths — the model is looping); "skip" discards the duplicate block and
+  # continues (completion path — a dup title + a real missing block after it
+  # must not silently drop the real block).
+  local _dedup="${2:-exit}"
+  awk -v end_tok="$_end_tok" -v dedup="$_dedup" '
+      # !in_issue guard: body content that is ---ISSUE--- does not reset the current block.
+      !in_issue && /^---ISSUE---$/ { in_issue = 1; skip_blk = 0; buf = $0 "\n"; title = ""; next }
+      in_issue {
+        buf = buf $0 "\n"
+        if ($0 ~ /^TITLE: /) {
+          title = substr($0, 8)
+          if (title in seen) {
+            if (dedup == "skip") { skip_blk = 1 } else { exit }
+          } else {
+            seen[title] = 1
+          }
+        }
+        if ($0 == end_tok) {
+          if (!skip_blk) {
+            # Escape canonical markers ONLY in the body: carve off the structural
+            # frame (opening ---ISSUE--- line, terminal end_tok line) first, then
+            # rebuild it with a literal canonical terminator. gsub over the whole
+            # buf destroyed the opening marker (#1483); the all-occurrences token
+            # gsub rewrote body echoes of the token into unescaped ---END--- (#1485).
+            head_len = length("---ISSUE---\n")
+            tail_len = length($0) + 1
+            body = substr(buf, head_len + 1, length(buf) - head_len - tail_len)
+            gsub("---END---",   "<!--rite-end-esc-->",   body)
+            gsub("---ISSUE---", "<!--rite-issue-esc-->", body)
+            buf = "---ISSUE---\n" body "---END---\n"
+            printf "%s", buf
+          }
+          in_issue = 0; skip_blk = 0; buf = ""
+        }
+        next
+      }
+      { print }
+    '
+}
+
+# =============================================================================
 # Generate issues using Claude
 # =============================================================================
 
@@ -950,12 +1014,20 @@ generate_issues() {
   local available_tags=""
   available_tags=$(_build_available_tags_context || true)
 
+  # Per-generation unique end token prevents content containing ---END--- from
+  # being mistaken for the issue block delimiter (same fix as docs-command.sh, issue #1233).
+  local _plan_end_token="---END-${RANDOM}${RANDOM}---"
+  # Expose token via global so all downstream parsers (lint, display, create) can
+  # use it as the block terminator instead of the literal ---END--- string.
+  # Fallback "---END---" ensures callers outside a plan session still work.
+  _RITE_PLAN_END_TOKEN="$_plan_end_token"
+
   local prompt
   # sharkrite-lint disable UNQUOTED_HEREDOC - Intentional: variables must be expanded
   prompt=$(cat <<PROMPT_EOF
 You are generating GitHub issues for a software project, following the Sharkrite issue runbook.
 
-**OUTPUT CONSTRAINT:** You will output the coverage checklist exactly once, then each issue exactly once. After the final ---END--- marker, you MUST stop generating. Do not review, summarize, or regenerate any issues. Any issue title that appears more than once is a waste of tokens. This constraint is non-negotiable.
+**OUTPUT CONSTRAINT:** You will output the coverage checklist exactly once, then each issue exactly once. After the final ${_plan_end_token} marker, you MUST stop generating. Do not review, summarize, or regenerate any issues. Any issue title that appears more than once is a waste of tokens. This constraint is non-negotiable.
 
 **Project Context (from CLAUDE.md):**
 ${project_context:-No project CLAUDE.md found — infer conventions from the architectural doc.}
@@ -1246,11 +1318,11 @@ echo "<!-- ${RITE_MARKER_ISSUE_TAGS} -->"
 echo "tags: <comma-separated tags selected from the Available tags list — see rule Q>"
 echo "<!-- /${RITE_MARKER_ISSUE_TAGS} -->"
 fi)
----END---
+${_plan_end_token}
 
-Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ---END---.
+Generate the coverage checklist and all issues now. Remember: each issue exactly once, then STOP after the final ${_plan_end_token}.
 
-**The issue blocks are the required deliverable.** The COVERAGE checklist and any WARNING flags are an audit preface, NOT the output. A response that contains the checklist (or a closing summary) but no ---ISSUE--- blocks is incomplete and will be rejected. After the checklist, immediately emit one complete ---ISSUE--- ... ---END--- block for every ✅ entry.
+**The issue blocks are the required deliverable.** The COVERAGE checklist and any WARNING flags are an audit preface, NOT the output. A response that contains the checklist (or a closing summary) but no ---ISSUE--- blocks is incomplete and will be rejected. After the checklist, immediately emit one complete ---ISSUE--- ... ${_plan_end_token} block for every ✅ entry.
 PROMPT_EOF
 )
 
@@ -1298,22 +1370,7 @@ PROMPT_EOF
     # Use streaming prompt for real-time output visibility.
     # Explicit "plan" role (opus) — never "" (which falls through to the review model).
     provider_run_streaming_prompt "$_active_prompt" "$(provider_resolve_model plan)" 2>"$claude_stderr" \
-      | awk '
-          # Truncate output on first duplicate issue (Claude sometimes regenerates the full set).
-          # Buffer each ---ISSUE--- block; only emit on ---END--- if title is new.
-          /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; title = ""; next }
-          in_issue {
-            buf = buf $0 "\n"
-            if ($0 ~ /^TITLE: /) {
-              title = substr($0, 8)
-              if (title in seen) { exit }
-              seen[title] = 1
-            }
-            if ($0 == "---END---") { in_issue = 0; printf "%s", buf; buf = "" }
-            next
-          }
-          { print }
-        ' \
+      | _plan_streaming_awk "$_plan_end_token" \
       | tee "$temp_file" >&2
 
     local exit_code=${PIPESTATUS[0]:-$?}
@@ -1338,7 +1395,7 @@ PROMPT_EOF
 
       # Normalize markers now so the checklist-vs-emitted comparison below is
       # reliable (jq join mode can concatenate markers with surrounding text).
-      _normalize_issue_markers "$temp_file"
+      _normalize_issue_markers "$temp_file" "---END---"
 
       # Completeness guard: the COVERAGE checklist lists N issues; compare against
       # the ---ISSUE--- blocks actually emitted. Any ✅ entry with no matching block
@@ -1383,7 +1440,7 @@ PROMPT_EOF
 **RETRY — YOUR PREVIOUS RESPONSE WAS INCOMPLETE.** Your COVERAGE checklist listed issues for which you never emitted an ---ISSUE--- block. These planned issues are MISSING their block:
 ${_missing_list}
 
-You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one complete ---ISSUE--- ... ---END--- block for EVERY ✅ entry — including the missing ones listed above. Do not stop after the checklist or any summary. Emit every issue block, then STOP after the final ---END---."
+You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one complete ---ISSUE--- ... ${_plan_end_token} block for EVERY ✅ entry — including the missing ones listed above. Do not stop after the checklist or any summary. Emit every issue block, then STOP after the final ${_plan_end_token}."
           sleep 3
           continue
         fi
@@ -1425,7 +1482,7 @@ You MUST now re-output the COMPLETE response: the COVERAGE checklist, then one c
   # mode that reproducibly drops the final block of a full-slate generation.
   # No-op when the checklist is fully covered or when 0 blocks were emitted
   # (the zero-emission guard in _validate_coverage owns that case).
-  _request_missing_blocks "$temp_file" "$prompt"
+  _request_missing_blocks "$temp_file" "$prompt" "$_plan_end_token"
 
   # Structural markers were already forced onto their own lines in-loop via
   # _normalize_issue_markers (needed there for the completeness comparison), so
@@ -1912,10 +1969,15 @@ _strip_par_ref() {
     after_kw = substr(line, kid + length(kw))
 
     cp = index(after_kw, ")")
-    if (cp == 0) { print; next }
-
-    ref_list = substr(after_kw, 1, cp - 1)
-    tail     = substr(after_kw, cp)
+    if (cp == 0) {
+      # Unbalanced paren: no closing paren found. Treat entire after_kw as
+      # the ref list so the ref is still stripped; tail is empty.
+      ref_list = after_kw
+      tail     = ""
+    } else {
+      ref_list = substr(after_kw, 1, cp - 1)
+      tail     = substr(after_kw, cp)
+    }
 
     n     = split(ref_list, toks, /[[:space:]]*,[[:space:]]*/)
     found    = 0
@@ -1996,7 +2058,9 @@ _transform_dep_line() {
   # presence check.  Genuine dep edges (After #N, bare #N) always appear outside
   # parens.  Suffix ([^0-9]|$) prevents #8 matching #80.
   local _tdl_check
-  _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*[Pp]arallel[^)]*)//g' || true)
+  # \{0,1\} makes the closing ')' optional so unbalanced groups like
+  # "(parallel with #8" (no ')') are also stripped before the presence check.
+  _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*[Pp]arallel[^)]*)\{0,1\}//g' || true)
   if ! echo "$_tdl_check" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
@@ -2195,7 +2259,7 @@ _lint_issues_strict() {
 
   # First pass: parse blocks
   while IFS= read -r _line; do
-    if [ "$_line" = "---ISSUE---" ]; then
+    if [ "$_in_issue" = false ] && [ "$_line" = "---ISSUE---" ]; then
       _in_issue=true
       _issue_block=""
       continue
@@ -2250,12 +2314,12 @@ _lint_issues_strict() {
           local _rule=""
           local _has_reason=false
           # Match: <!-- sharkrite-plan-lint disable RULE - Reason: ... -->
-          if echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z0-9-]+\s+-\s+Reason:"; then
-            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
+          if echo "$_sline" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+[[:space:]]+-[[:space:]]+Reason:"; then
+            _rule=$(echo "$_sline" | grep -oE 'disable[[:space:]]+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=true
           # Match: <!-- sharkrite-plan-lint disable RULE --> (no Reason)
-          elif echo "$_sline" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+[a-z0-9-]+"; then
-            _rule=$(echo "$_sline" | grep -oE 'disable\s+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
+          elif echo "$_sline" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+"; then
+            _rule=$(echo "$_sline" | grep -oE 'disable[[:space:]]+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=false
           fi
 
@@ -2282,7 +2346,7 @@ _lint_issues_strict() {
         local _in_deps=false
         while IFS= read -r _dline; do
           # Start at "**Dependencies**:" or "Dependencies:" header
-          if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
+          if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:'; then
             _in_deps=true
             # Fix 1: harvest parallel refs from this line BEFORE stripping
             # parens — scoped to the Dependencies section so prose mentions
@@ -2339,11 +2403,11 @@ _lint_issues_strict() {
         # Also scan the full block for explicit "Blocked by: #N" / "After: #N" lines
         # that may appear anywhere in the body (not just under a Dependencies header)
         local _body_refs
-        _body_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#[0-9]+' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#[0-9]+' || true)
+        _body_refs=$(echo "$_issue_block" | grep -iE '^[[:space:]]*(Blocked by|After)[[:space:]]*:[[:space:]]*#[0-9]+' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#[0-9]+' || true)
         [ -n "$_body_refs" ] && _issue_deps="${_issue_deps}${_body_refs}"$'\n'
         # Also scan for title refs in Blocked by / After lines anywhere in the block
         local _body_title_refs
-        _body_title_refs=$(echo "$_issue_block" | grep -iE '^\s*(Blocked by|After)\s*:\s*#\[' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
+        _body_title_refs=$(echo "$_issue_block" | grep -iE '^[[:space:]]*(Blocked by|After)[[:space:]]*:[[:space:]]*#\[' | sed -E 's/\([^)]*[Pp]arallel[^)]*\)//g' | grep -oE '#\[[^]]+\]' | sed 's/^#\[//; s/\]$//' || true)
         [ -n "$_body_title_refs" ] && _issue_title_deps="${_issue_title_deps}${_body_title_refs}"$'\n'
         _deps+=("${_issue_deps}")
         _title_deps+=("${_issue_title_deps}")
@@ -2401,7 +2465,7 @@ _lint_issues_strict() {
           fi
           # Also capture backtick commands from acceptance criteria lines
           # Format: - [ ] criterion: `command`
-          if echo "$_vline" | grep -qE '^\s*-\s*\['; then
+          if echo "$_vline" | grep -qE '^[[:space:]]*-[[:space:]]*\['; then
             local _backtick_cmds
             _backtick_cmds=$(echo "$_vline" | grep -oE '`[^`]+`' | sed 's/`//g' || true)
             [ -n "$_backtick_cmds" ] && _issue_verif="${_issue_verif}${_backtick_cmds}"$'\n'
@@ -2769,7 +2833,7 @@ _lint_issues_strict() {
       # A stray deferral-citation marker on one issue must NOT suppress other lines.
       # Format: <!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
       local _deferral_suppressed=false
-      if echo "$_def_line" | grep -qE "<!--\s*${RITE_MARKER_PLAN_LINT}\s+disable\s+deferral-citation\s+-\s+Reason:"; then
+      if echo "$_def_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+deferral-citation[[:space:]]+-[[:space:]]+Reason:"; then
         _deferral_suppressed=true
         local _def_reason
         _def_reason=$(echo "$_def_line" | sed 's/.*Reason:[[:space:]]*//' | sed 's/[[:space:]]*-->[[:space:]]*//' | sed 's/[[:space:]]*$//' || true)
@@ -2786,7 +2850,7 @@ _lint_issues_strict() {
       #      deferral in the ADR. Without this, "(ADR D7, follow-up #4)" is flagged
       #      as uncited even though it cites a specific ADR decision.
       local _has_citation=false
-      if echo "$_def_text" | grep -qE '>\s+\S'; then
+      if echo "$_def_text" | grep -qE '>[[:space:]]+\S'; then
         _has_citation=true
       elif echo "$_def_text" | grep -qE '[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,6}:[0-9]+'; then
         _has_citation=true
@@ -3572,6 +3636,20 @@ _check_block_sections() {
   printf '%s' "$_missing"
 }
 
+# Extract the first ---ISSUE---...---END--- block from a file path (arg) or
+# stdin (no arg). Called by _regen_block_sections after _plan_streaming_awk
+# normalisation so tests can exercise production extraction logic directly.
+_regen_extract_block() {
+  awk '
+    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+    in_issue {
+      buf = buf $0 "\n"
+      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf=""; exit }
+      next
+    }
+  ' "${1:--}" || true
+}
+
 # Request a targeted regeneration of one incomplete issue block.
 # Calls the plan-model provider asking for the same issue with all required
 # sections present. Returns the repaired ---ISSUE---...---END--- block via
@@ -3581,14 +3659,25 @@ _regen_block_sections() {
   local _regen_existing_block="$2"
   local _regen_base_prompt="$3"
 
+  # Per-regen unique end token prevents a block body that contains ---END--- on
+  # its own line from being mistaken for the block terminator (same fix as the
+  # main stream path in generate_issues / _request_missing_blocks, issue #1493).
+  local _regen_end_token="---END-${RANDOM}${RANDOM}---"
+
+  # Replace the canonical ---END--- terminator in the embedded existing block with
+  # the unique token so the example in the prompt is consistent with the instruction
+  # below that tells the model to use the same unique token as its terminator.
+  local _regen_existing_block_display
+  _regen_existing_block_display=$(printf '%s' "$_regen_existing_block" | sed "s/^---END---$/$_regen_end_token/" || true)
+
   local _regen_prompt
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (title, block)
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must be expanded (title, block, token)
   _regen_prompt=$(cat <<REGEN_PROMPT_EOF
 ${_regen_base_prompt}
 
 **SECTION-REPAIR PASS — REGENERATE ONE ISSUE BLOCK.** The following issue block is incomplete (missing required runbook sections):
 
-${_regen_existing_block}
+${_regen_existing_block_display}
 
 Regenerate the above block for issue title: "${_regen_title}"
 
@@ -3607,7 +3696,7 @@ If the LABELS line includes the word "bug", also include:
 - **Bug Class Analysis**: (sibling instances, reuse check)
 
 Preserve the issue's original intent and existing valid fields from the block above.
-Output ONLY the single ---ISSUE--- ... ---END--- block. Start with ---ISSUE--- and end with ---END---. No commentary before or after.
+Output ONLY the single ---ISSUE--- ... ${_regen_end_token} block. Start with ---ISSUE--- and end with ${_regen_end_token}. No commentary before or after.
 REGEN_PROMPT_EOF
 )
 
@@ -3616,8 +3705,10 @@ REGEN_PROMPT_EOF
   _regen_err=$(mktemp)
 
   # Explicit "plan" role — same reasoning stage as the primary generation call.
+  # Pipe through _plan_streaming_awk so interior ---END--- in the body is escaped
+  # to <!--rite-end-esc--> and the unique token is normalised to canonical ---END---.
   if ! provider_run_streaming_prompt "$_regen_prompt" "$(provider_resolve_model plan)" \
-       2>"$_regen_err" | tee "$_regen_out" >&2; then
+       2>"$_regen_err" | _plan_streaming_awk "$_regen_end_token" | tee "$_regen_out" >&2; then
     print_warning "sections-lint: section-repair provider call failed for '${_regen_title}'" >&2
   fi
 
@@ -3634,18 +3725,11 @@ REGEN_PROMPT_EOF
     return 0
   fi
 
-  _normalize_issue_markers "$_regen_out"
+  _normalize_issue_markers "$_regen_out" "---END---"
 
   # Extract the first well-formed ---ISSUE---...---END--- block; discard prose.
   local _extracted_block
-  _extracted_block=$(awk '
-    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf=""; exit }
-      next
-    }
-  ' "$_regen_out" || true)
+  _extracted_block=$(_regen_extract_block "$_regen_out")
   rm -f "$_regen_out"
 
   if [ -z "$_extracted_block" ]; then
@@ -3792,31 +3876,52 @@ _lint_issues_sections() {
 # format errors.
 _normalize_issue_markers() {
   local _f="$1"
+  # Accept end token as arg 2; fall back to the session-global set by generate_issues.
+  # When neither is set (caller outside a plan session), default to ---END---.
+  local _end_tok="${2:-"---END---"}"
   local _norm
   _norm=$(mktemp)
 
-  # Pass 1: Force ---ISSUE--- / ---END--- markers onto their own lines.
-  sed \
-    -e 's/---ISSUE---/\
+  # Pass 1: Force ---ISSUE--- and end-token markers onto their own lines.
+  # This repairs jq -rj-concatenated output where the marker runs together with
+  # surrounding content (e.g. "body text---END-12345---" → separate lines).
+  if [ "$_end_tok" = "---END---" ]; then
+    sed \
+      -e 's/---ISSUE---/\
 ---ISSUE---\
 /g' \
-    -e 's/---END---/\
+      -e 's/---END---/\
 ---END---\
 /g' \
-    "$_f" > "$_norm"
+      "$_f" > "$_norm"
+  else
+    # Unique end token active: force both ---ISSUE--- and the unique token onto
+    # their own lines. Use a two-step approach to avoid BSD sed dynamic-pattern
+    # portability issues (sed -e with a shell variable inside the pattern).
+    local _esc_tok
+    _esc_tok=$(printf '%s' "$_end_tok" | sed 's/[]\[\\.*^$]/\\&/g' || true)
+    sed \
+      -e 's/---ISSUE---/\
+---ISSUE---\
+/g' \
+      "$_f" | sed \
+      -e "s/${_esc_tok}/\\
+${_end_tok}\\
+/g" > "$_norm"
+  fi
 
   # Pass 2: Relocate a Split rationale: line from header position (before BODY:)
   # to immediately after BODY:. Idempotent: a rationale already after BODY: is
   # passed through unchanged because body_seen=1 when it is encountered.
   local _norm2
   _norm2=$(mktemp)
-  awk '
+  awk -v end_tok="$_end_tok" '
     BEGIN { in_block=0; body_seen=0; saved_rat="" }
     /^---ISSUE---$/ {
       in_block=1; body_seen=0; saved_rat=""
       print; next
     }
-    /^---END---$/ {
+    $0 == end_tok {
       if (saved_rat != "") { print saved_rat; saved_rat="" }
       in_block=0; body_seen=0
       print; next
@@ -3846,7 +3951,7 @@ _normalize_issue_markers() {
 # writes to stdout.
 # =============================================================================
 _canon_title() {
-  sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
+  sed 's/<!--rite-end-esc-->/---END---/g; s/<!--rite-issue-esc-->/---ISSUE---/g; s/^[[:space:]]*//;s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
 }
 
 # =============================================================================
@@ -3903,6 +4008,7 @@ _coverage_missing_titles() {
 _request_missing_blocks() {
   local issues_file="$1"
   local base_prompt="$2"
+  local _end_token="${3:-"---END---"}"
 
   local _missing
   _missing=$(_coverage_missing_titles "$issues_file" || true)
@@ -3924,7 +4030,7 @@ _request_missing_blocks() {
   # file-path and naming conventions the primary generation established.
   local _emitted_blocks
   _emitted_blocks=$(awk '
-    /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
+    !in_issue && /^---ISSUE---$/ { in_issue=1; buf=$0"\n"; next }
     in_issue {
       buf = buf $0 "\n"
       if ($0 == "---END---") { in_issue=0; printf "%s", buf; buf="" }
@@ -3946,7 +4052,7 @@ $([ -n "$_emitted_blocks" ] && printf 'The full content of the already-emitted b
 The following planned issue(s) from that response's COVERAGE checklist are MISSING their block:
 ${_missing_list}
 
-Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue listed above, in the established format. Use the EXACT title text listed above in the TITLE: field. Ordinal dependency references (After #N) refer to the already-emitted issues numbered above. Do NOT re-emit the coverage checklist, any commentary, or any already-emitted issue. Start with ---ISSUE--- and stop after the final ---END---."
+Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing issue listed above, in the established format. Use the EXACT title text listed above in the TITLE: field. Ordinal dependency references (After #N) refer to the already-emitted issues numbered above. Do NOT re-emit the coverage checklist, any commentary, or any already-emitted issue. Start with ---ISSUE--- and stop after the final ${_end_token}."
 
   local _completion_file _completion_stderr
   _completion_file=$(mktemp)
@@ -3968,19 +4074,19 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
     return 0
   fi
 
-  _normalize_issue_markers "$_completion_file"
+  _normalize_issue_markers "$_completion_file" "$_end_token"
 
-  # Append ONLY well-formed ---ISSUE---...---END--- blocks — any surrounding
+  # Append ONLY well-formed ---ISSUE---...end_tok blocks — any surrounding
   # prose or a re-emitted checklist must not leak into the slate.
+  # Route through _plan_streaming_awk so the frame-rebuild + escape logic has
+  # one implementation; a fix there applies to both the primary generation path
+  # and this targeted completion path automatically. Use "skip" dedup mode so
+  # that a completion response echoing a known title followed by a real missing
+  # block doesn't exit awk early and silently drop the real block. Non-issue
+  # pass-through lines are harmless (the title-guard shell loop below ignores
+  # anything that is not an ---ISSUE--- block).
   local _blocks
-  _blocks=$(awk '
-    /^---ISSUE---$/ { in_issue = 1; buf = $0 "\n"; next }
-    in_issue {
-      buf = buf $0 "\n"
-      if ($0 == "---END---") { in_issue = 0; printf "%s", buf; buf = "" }
-      next
-    }
-  ' "$_completion_file" || true)
+  _blocks=$(_plan_streaming_awk "$_end_token" "skip" < "$_completion_file" || true)
   rm -f "$_completion_file"
 
   if [ -z "$_blocks" ]; then
@@ -4030,7 +4136,11 @@ Output ONLY one complete ---ISSUE--- ... ---END--- block for EACH missing issue 
   done < <(printf '%s\n' "$_blocks")
 
   if [ -z "$_filtered_blocks" ]; then
-    print_warning "Targeted completion: all ${_rejected_count} block(s) rejected by title-guard — keeping the partial slate" >&2
+    if [ "${_rejected_count}" -eq 0 ]; then
+      print_warning "Targeted completion emitted no well-formed issue block — keeping the partial slate" >&2
+    else
+      print_warning "Targeted completion: all ${_rejected_count} block(s) rejected by title-guard — keeping the partial slate" >&2
+    fi
     return 0
   fi
   [ "${_rejected_count}" -gt 0 ] && \
@@ -4279,7 +4389,7 @@ _extract_packages_for_language() {
       # Capture the top-level module name only (before the first '.').
       # Pipe through _normalize_python_import_name to map import names to their
       # PyPI distribution names (e.g. yaml → pyyaml, bs4 → beautifulsoup4).
-      grep -oE '^\s*(import|from)\s+[a-zA-Z_][a-zA-Z0-9_]*' | \
+      grep -oE '^[[:space:]]*(import|from)[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*' | \
         sed 's/^[[:space:]]*//' | \
         sed 's/^import[[:space:]]\{1,\}//; s/^from[[:space:]]\{1,\}//' | \
         grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*' | \
@@ -4443,7 +4553,7 @@ _build_grounded_packages() {
 
   # Go: go.mod — "require" block entries like: github.com/foo/bar v1.2.3
   if [ -f "$project_root/go.mod" ]; then
-    grep -oE '^\s+[a-zA-Z][a-zA-Z0-9./_-]+ v' "$project_root/go.mod" | \
+    grep -oE '^[[:space:]]+[a-zA-Z][a-zA-Z0-9./_-]+ v' "$project_root/go.mod" | \
       sed 's/[[:space:]]//g; s/v$//' | tr '[:upper:]' '[:lower:]' || true
   fi
 
@@ -4895,7 +5005,7 @@ No documentation updates required — the fixture artifact is this spike's deliv
   local _current_block=""
 
   while IFS= read -r line; do
-    if [[ "$line" == "---ISSUE---" ]]; then
+    if [ "$_in_issue" = false ] && [[ "$line" == "---ISSUE---" ]]; then
       _in_issue=true
       _current_block="$line"$'\n'
       continue
@@ -4994,7 +5104,7 @@ _dedup_issues() {
   local preamble_done=false
 
   while IFS= read -r line; do
-    if [[ "$line" == "---ISSUE---" ]]; then
+    if [ "$in_issue" = false ] && [[ "$line" == "---ISSUE---" ]]; then
       in_issue=true
       preamble_done=true
       current_block="$line"$'\n'
@@ -5372,7 +5482,14 @@ _resolve_ordinal_refs_in_body() {
       printf '%s\n%s\n' "$_body" "$_body_sentinel" >> "$_p2_combined_file"
 
       _body=$(awk '
-        BEGIN { loading_map = 1 }
+        # pat_count tracks the map size instead of length(pat_arr): length() on an
+        # array is a gawk extension, and evaluating it on the first map line types
+        # the still-untyped variable as a scalar, so the subscript assignment that
+        # follows dies with "attempt to use scalar as an array" on GNU awk while
+        # BSD awk tolerates it (live: CI red on ubuntu only, 2026-10-27 — all 12
+        # tests in plan-ordinal-ref-resolution.bats, and rite plan silently
+        # rewriting no ordinal refs at all on Linux).
+        BEGIN { loading_map = 1; pat_count = 0 }
         loading_map {
           if ($0 == "---MAP-END---") { loading_map = 0; next }
           eq = index($0, "=")
@@ -5380,9 +5497,10 @@ _resolve_ordinal_refs_in_body() {
             ord  = substr($0, 1, eq - 1)
             rnum = substr($0, eq + 1)
             if (ord != "" && rnum != "") {
-              pat_arr[length(pat_arr)+1]  = "#" ord
-              rnum_arr[length(rnum_arr)+1] = rnum
-              plen_arr[length(plen_arr)+1] = 1 + length(ord)
+              pat_count++
+              pat_arr[pat_count]  = "#" ord
+              rnum_arr[pat_count] = rnum
+              plen_arr[pat_count] = 1 + length(ord)
             }
           }
           next
@@ -5404,7 +5522,7 @@ _resolve_ordinal_refs_in_body() {
           i = 1
           while (i <= slen) {
             matched = 0
-            for (k = 1; k <= length(pat_arr); k++) {
+            for (k = 1; k <= pat_count; k++) {
               pat    = pat_arr[k]
               patlen = plen_arr[k]
               if (substr(s, i, patlen) == pat) {
@@ -5625,6 +5743,12 @@ create_issues() {
           done
           gh_args+=(--label "$current_labels")
         fi
+
+        # Unescape interior markers escaped at the stream boundary (findings 1 & 2).
+        current_body="${current_body//<!--rite-end-esc-->/---END---}"
+        current_body="${current_body//<!--rite-issue-esc-->/---ISSUE---}"
+        current_title="${current_title//<!--rite-end-esc-->/---END---}"
+        current_title="${current_title//<!--rite-issue-esc-->/---ISSUE---}"
 
         # Strip operator-local rtk wrapper commands before publishing to GitHub.
         if declare -f sanitize_generated_commands >/dev/null 2>&1; then

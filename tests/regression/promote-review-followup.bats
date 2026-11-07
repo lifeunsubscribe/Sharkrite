@@ -100,6 +100,9 @@ set -euo pipefail
 if declare -f provider_resolve_model >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
 provider_resolve_model()           { echo "claude-sonnet-4-6"; }
 provider_run_prompt_with_timeout() { echo "stub"; return 0; }
+load_provider()                    { return 0; }
+provider_detect_cli()              { return 0; }
+provider_healthcheck()             { return 0; }
 STUB
 
   cat > "$_lib/utils/promotion-composer.sh" << 'STUB'
@@ -1143,7 +1146,7 @@ RUNEOF
   # Exit code captured, not propagated.
   echo "$_region" | grep -q '|| _promo_assess_exit=\$?'
   # No bare exit anywhere in the assessment region.
-  ! echo "$_region" | grep -qE '^\s*exit [0-9]'
+  ! echo "$_region" | grep -qE '^[[:space:]]*exit [0-9]'
 }
 
 # ===========================================================================

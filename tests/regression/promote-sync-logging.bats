@@ -22,6 +22,19 @@ setup() {
   setup_test_tmpdir
   # Pre-create the logs directory so the log file can be written there.
   mkdir -p "$RITE_TEST_TMPDIR/.rite/logs"
+
+  # Healthy `claude` stub on PATH.  promote-branch.sh gained
+  # `provider_detect_cli || exit 1` + provider_healthcheck in #1534, and these
+  # tests invoke the real bin/rite as a subprocess, so function stubs cannot
+  # reach it.  Without a stub the preflight exits before the header is written
+  # and the post-tee assertions fail wherever no authenticated claude exists —
+  # i.e. on both CI platforms, while passing on a dev box that has one (live:
+  # main red 2026-10-27).  Same stub-bin idiom as provider-trust-preflight.bats.
+  export STUB_BIN="$RITE_TEST_TMPDIR/stub-bin"
+  mkdir -p "$STUB_BIN"
+  printf '#!/bin/bash\necho "ok"\nexit 0\n' > "$STUB_BIN/claude"
+  chmod +x "$STUB_BIN/claude"
+  export PATH="$STUB_BIN:$PATH"
 }
 
 teardown() {

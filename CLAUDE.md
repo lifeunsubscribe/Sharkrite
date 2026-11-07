@@ -61,12 +61,12 @@ lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthes
 1. **Development** — Claude implements the fix in a worktree
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
-   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit
+   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit; for node repos the targeted selection also includes the target repo's `scripts.lint` (eslint scoped to changed files, other runners full — opt-out: `RITE_GATE_REPO_LINT=false`)
    - **The INITIAL pass parallelizes too (#531):** `run_workflow`'s Phase 2 fires the gate in the background concurrent with the first review (bounded wait via the #654 backstop), so the first assessment also sees `[GATE]` findings. Previously the gate ran only inside the fix loop.
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - **Block-on-any:** the gate blocks/feeds the fix loop on **any** test failure in the targeted selection. `outcome=passed ⟺ zero failures`. This is sound because `main` is kept green (the green-main work, #707) — so any failure in the selection is this change's to fix. Phase 3 deleted the old baseline-diff machinery (re-run failing files at the diff base, suppress pre-existing reds) once it had nothing to tolerate. See `behavioral-design.md` → "Gate Block-on-Any".
    - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s)
-   - **No full suites inside a workflow (CRITICAL).** Gate runs are always the targeted selection. A full unfiltered `bats -r tests/` belongs ONLY in the overnight `rite --full-suite` pipeline — never in a batch preflight, a phase gate, or any interactive path. Besides costing 10–25 min per invocation, a full run puts the `tests/concurrency/` suites (which spawn competing processes by design) into the `--jobs 8` parallel group where they starve past `BATS_TEST_TIMEOUT` and report a healthy main as red. This retired the green-main preflight (#916, removed 2026-10-13 after it false-halted two batches). If main-greenness needs checking, do it lazily: re-run only the already-failing tests against main and subtract matches.
+   - **No full suites inside a workflow (CRITICAL).** Gate runs are always the targeted selection. A full unfiltered `bats -r tests/` belongs ONLY in the overnight `rite --full-suite` pipeline — never in a batch preflight, a phase gate, or any interactive path. Besides costing 10–25 min per invocation, a full run puts the `tests/concurrency/` suites (which spawn competing processes by design) into the `--jobs 8` parallel group where they starve past `BATS_TEST_TIMEOUT` and report a healthy main as red. This retired the green-main preflight (#916, removed 2026-10-13 after it false-halted two batches). If main-greenness needs checking, do it lazily: re-run only the already-failing tests against main and subtract matches. Note: the `Barrier timeout waiting for N processes (got 1)` message can indicate two distinct failure modes — resource starvation from full-suite parallel execution (the reason above), OR a dead worker that never reached the barrier due to a broken setup step (issue #1597: `git worktree add` on a shared branch silently kills workers 2..N before they touch the barrier). The two look identical at the barrier but have different root causes; a barrier timeout in a CI-only run on a lightly-loaded runner is more likely a dead-worker bug than starvation.
    - Fix session uses `bash -n` syntax-check only — no `make check`/`bats`/`pytest` inside the LLM session
 4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
 5. **Completion** — Notifications, cleanup
@@ -115,6 +115,7 @@ Each task uses the model that fits its nature. Every role has its own independen
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
 | Triage / classify | `RITE_TRIAGE_MODEL` | `claude-haiku-4-5` | Narrow binary/bucket classification (trivial-vs-substantive diff; doc categorization) — haiku's job |
 | Health report | `RITE_HEALTH_MODEL` | `claude-sonnet-4-6` | Mostly templating pre-computed stats + fixed-threshold checks; thin interpretive tail. Decoupled from review so the report stops riding opus. A/B (2026-06-15) showed sonnet at coverage parity with opus; opus's only edge was calibration on ambiguous signals (it correctly hedged a phantom-CRITICAL that sonnet over-escalated). If the future chunk-split lands, put the Insights/prioritization tail on opus. |
+| Full-suite report | `RITE_FULL_SUITE_REPORT_MODEL` | `claude-sonnet-4-6` | Interprets overnight run failure data (persistent/cleared classification, assertion lines, lint violations) and produces a short markdown diagnosis. Mostly templating pre-computed facts with a thin interpretive tail — sonnet's job. Own var: moving review off opus must never silently touch the overnight report path. |
 | Promotion PR body | `RITE_PROMOTE_MODEL` | `claude-opus-4-8` | Narrative synthesis across many issues for a production-code-review audience — the promotion PR is the management-facing review artifact for an entire integration branch. Opus because output quality directly affects the human review gate. Own var: moving review off opus must never silently downgrade promotion narratives with it. |
 
 **Never pass `""` as the model arg** to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on defaults — an empty model silently falls through to `resolve_model "review"` (opus). Pass an explicit role via the provider-agnostic **`provider_resolve_model <role>`** (not the claude-prefixed `claude_provider_resolve_model` — `lib/core`/`lib/utils` must stay provider-agnostic). Both invariants are enforced by lint: `PROVIDER_MODEL_FALLTHROUGH` (Rule 31) rejects the bare `""`, `DIRECT_PROVIDER_CALL` (Rule 32) rejects direct `claude_provider_*` calls. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
@@ -577,8 +578,10 @@ rite docs --resume <branch> # Resume a saved doc proposal from a terminal-less p
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
+rite 42 43 --allow-red-main  # Bypass red-main CI preflight (batch only; not recommended — use when
+                           # fixing main is blocked but work must proceed)
 rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
-rite --sync <N> [<N>...]  # Rebase issue feature branches onto their resolver-determined base (rebase goes stale-review by design)
+rite --sync <N> [<N>...]  # Sync issue feature branches: skips rebase when branch merges cleanly with its base (no stale-review on clean paths); on genuine conflict invokes the resolver before the manual fallback
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
 rite --promote <branch>    # Promote integration branch to main (PR + review + targeted gate +
                            # CRITICAL hard gate + NOW/LATER/DISMISSED assessment + squash-merge
@@ -695,6 +698,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — a `RITE_*` variable is read in `lib/` but is absent from both `config/project.conf.example` and `config/rite.conf.example`. Pre-existing undocumented vars are exempted via `tools/lint-rules/36-undocumented-rite-var.ledger` (frozen count as of 2026-07-14 — DO NOT add new ledger entries). New vars must be documented with a commented-out option entry in one of the config examples. Genuinely internal (non-config) new variables should use the `_RITE_` prefix, which falls outside this rule's pattern by construction. Suppress with `# sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: ...` on the preceding line for the rare internal var that must keep a bare `RITE_` name.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — a literal `origin/main` (slash form) or `origin main` (two-word form) appears on a non-comment line in one of the ten §5.2 BECOMES-TARGET files (`lib/core/claude-workflow.sh`, `workflow-runner.sh`, `create-pr.sh`, `merge-pr.sh`, `lib/utils/trivial-fix-fastpath.sh`, `mid-run-rebase.sh`, `conflict-resolver.sh`, `scope-checker.sh`, `test-gate.sh`, `stale-branch.sh`). These files are target-branch-aware: they should resolve the target via `resolve_target_branch` (#1033). A hardcoded `origin/main` silently mixes trunk code into integration-branch worktrees. Suppress with `# sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: ...` on the preceding line for sites that are genuinely trunk-relative (§5.1 STAYS-MAIN survivors: local-main housekeeping, cold-start function defaults, gate-selection hints where over-selecting vs main errs safe). See: `docs/architecture/branch-flag-design.md` §5/§6.4.
 - `UNSCOPED_LINTER_IN_BATS` (Rule 40) — a `.bats` file invokes `sharkrite-lint.sh` (or a `$*LINT_SCRIPT` variable) via `bash` without `SHARKRITE_LINT_ONLY` scoping on the same line or any of the 3 preceding lines. An unscoped full-scan per `@test` under `bats --jobs 8` starves the CPU, blows the 120s `BATS_TEST_TIMEOUT`, and drags the gate to its 1800s watchdog (live: batch 155134 2026-07-18, slot #1021 2026-10-11). Fix: add `SHARKRITE_LINT_ONLY=NN run bash "$LINT_SCRIPT"` (inline prefix) to scope to the rule(s) under test. Genuine all-rules sweeps must carry a suppression and be serial-marked. Suppress with `# sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: ...` on the preceding line; state why scoping would defeat the test purpose and confirm the file is serial-marked.
+- `BSD_LENIENT_REGEX` (Rule 39H) — a BSD-lenient regex idiom that silently misbehaves on GNU/Linux. Two sub-checks: **(A)** `\s` inside a `grep`/`awk`/`sed` regex argument: BSD reads `\s` as a literal `s` (no POSIX definition), GNU reads it as whitespace shorthand. A test using `\s` to strip comment lines leaves all indented comments in the data on BSD, making assertions pass against the wrong (comment-contaminated) content. Fix: use `[[:space:]]` (POSIX character class). **(B)** `\`` inside a single-quoted `grep` pattern: GNU grep treats `\`` as a beginning-of-buffer anchor so the pattern cannot match mid-file, while BSD grep reads a plain backtick. Fix: remove the backslash. Scope: `lib/`, `bin/`, `tools/` `*.sh` files AND `tests/**/*.bats`. Not flagged: full-line comments, non-command positions (e.g. `echo` strings), `tests/fixtures/`. Suppress with `# sharkrite-lint disable BSD_LENIENT_REGEX - Reason: ...` on the preceding line. Live regressions in four test files fixed in #1593; this rule prevents recurrence. Use `SHARKRITE_LINT_ONLY=39H` for fast-path testing. See `tests/lint/bsd-lenient-regex.bats`.
 - `BARE_BSD_SED_I_IN_BATS` (Rule 41) — a `.bats` file uses bare `sed -i ''` (the BSD form). Rule 10 forbids this in `bin/`, `lib/` and `tools/`, but its file list only covers `*.sh` there, so `.bats` files were unscanned. On GNU sed (Linux CI) the empty string is read as the *script* and the expression as a *filename*, so the call dies with `sed: can't read s/a/b/: No such file or directory` — passing on the macOS dev box and failing the Linux half of the matrix. Live: `gate-function-scoped-selection.bats` used it in a fixture helper, 14/14 green on macOS and 14/14 red on ubuntu-latest, with main's CI red for days and the cause buried in a ~40-failure log (2026-10-14). Fix: source `lib/utils/portable-cmds.sh` and call `portable_sed_i`. Exempt: `@test` title lines, single-quoted heredoc bodies (that content belongs to the fixture file being written), comments, and `tests/fixtures/`. Suppress with `# sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: ...` on the preceding line for a fixture STRING or grep pattern that is never executed as sed.
 
 **Suppressing false positives:**
@@ -719,6 +723,7 @@ Supported suppression rules:
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — for the rare internal `RITE_*` variable that must keep a bare `RITE_` name despite not being a user-facing config var. State why the `_RITE_` prefix cannot be used and why the var does not belong in either config example.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — for sites in the ten BECOMES-TARGET files where `origin/main` is genuinely trunk-relative: local-main housekeeping in `merge-pr.sh`, already-fixed trunk-health verification in `workflow-runner.sh`, cold-start function defaults in `conflict-resolver.sh`/`scope-checker.sh`/`test-gate.sh`, gate-selection hints in `stale-branch.sh`, and cross-worktree protection fallbacks in `claude-workflow.sh`. State the specific §5.1 reason (trunk housekeeping / cold-start default / gate-selection hint / etc.).
 - `UNSCOPED_LINTER_IN_BATS` (Rule 40) — for genuine all-rules sweeps in `.bats` files where `SHARKRITE_LINT_ONLY` would defeat the test purpose (e.g. stdin-safety tests, structural grep tests). State why scoping is inappropriate and confirm the file carries a `# sharkrite-gate-serial` marker. Note: Rule 40's static analysis cannot see `SHARKRITE_LINT_ONLY` exported in `setup()` — a helper function's invocation may also need suppression even when setup exports the var; document which setup function provides the scoping.
+- `BSD_LENIENT_REGEX` (Rule 39H) — for a grep/awk/sed invocation that intentionally uses `\s` or `\`` and is guaranteed to run only on a platform where the idiom is safe (e.g. a third-party tool wrapper that cannot be changed, or a fixture STRING that is never executed). State the specific platform guarantee or the inert-string reason.
 - `BARE_BSD_SED_I_IN_BATS` (Rule 41) — for a fixture STRING or a grep pattern in a `.bats` file that contains the BSD form but is never executed as sed (rule meta-tests do this to assert Rule 05/10 fire). State that the occurrence is inert.
 
 **Pre-push hook** (optional):
@@ -874,6 +879,8 @@ A launchd job (`com.sharkrite.health-report`) runs every Monday at 9:07 AM and g
 
 **launchd PATH requirement (CRITICAL — live failure 2026-06-15):** the plist runs `bin/rite-health-report` with a minimal PATH and does NOT source your shell profile. `claude` is `#!/usr/bin/env node`, and `node` lives under nvm (`~/.nvm/versions/node/<ver>/bin`), which is not on launchd's PATH — so the job dies at exit 127 (`env node` not found) *after* passing the `command -v claude` precheck. Fix: symlink `node` into a stable dir already on the plist PATH — `ln -sf "$(command -v node)" ~/.local/bin/node` (the plist PATH already includes `~/.local/bin`, which is also where `claude` is symlinked). Re-point the symlink if you nvm-uninstall that node version. Verify with: `env -i HOME="$HOME" PATH="<plist PATH>" claude --version`.
 
+**Workspace trust requirement (Claude CLI >=2.1.284 — live failures 2026-10-25):** CLI 2.1.284 requires each project directory to be explicitly trusted before non-interactive sessions (`--print`) can run with `permissions.allow` entries. An untrusted workspace emits "has not been trusted" to stderr and ignores all allow-list entries — every subsequent provider session (dev, review, assessment) fails. The batch preflight (`provider_healthcheck` in `lib/providers/claude.sh`) detects this at batch start and prints the exact fix command. To trust the workspace manually: `claude config set --global 'projects["/path/to/repo"].hasTrustDialogAccepted' true`. Unlike the launchd PATH issue, the CLI's own error message contains the correct path and fix command.
+
 The report uses **absolute thresholds** (not before/after comparison):
 - Fix iterations avg > 2.0 → WARNING
 - Any phase failing > 30% → WARNING
@@ -899,7 +906,15 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 - Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
-**Scheduling (recommended: weekly Sunday 3 AM):**
+**`--investigate` flag (used by the scheduled plist):** When passed to a failing run, triggers three additional steps after the failure flag is written:
+
+1. **Investigate** — re-runs each failing `.bats` file *serially* (no `--jobs`). A serial run distinguishes genuine failures from parallel-starvation timeouts (the class that false-halted batches 2026-10-12/13). Each originally-failing test is classified as `persistent` (still fails serially) or `cleared-on-serial-rerun` (flake). Lint violations are always `persistent` (deterministic, no parallelism involved).
+
+2. **Report** — writes `.rite/reports/full-suite-YYYYMMDD.md` with counts, the persistent/cleared split, per-test file and assertion lines, and a short interpretation generated via `provider_run_prompt` on the `full_suite_report` role (`RITE_FULL_SUITE_REPORT_MODEL`, default sonnet). The report is written even if the provider call fails (the interpretation section is omitted).
+
+3. **Remediate** — if any persistent failures exist, files ONE issue carrying `<!-- sharkrite-full-suite-remediation:<hash> -->` (hash = `cksum` of sorted persistent test names + lint count, anchored in the dedup search so the guard matches the hash not the bare prefix). A second run with the same failing set detects the existing issue and skips creation. If `gh issue create` fails, an orphan artifact is appended to `.rite/orphaned-followup-items.md` so findings are not silently lost. Purely-cleared (all-flake) runs file no issue.
+
+**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). Manual runs without `--investigate` keep today's behavior (run + flag, no investigation).
 
 macOS (launchd):
 ```bash
@@ -921,13 +936,16 @@ systemctl --user list-timers | grep sharkrite
 
 **Configuration:**
 - `RITE_BATS_JOBS=N` — parallelism override (auto-detects via GNU parallel by default)
+- `RITE_FULL_SUITE_REPORT_MODEL` — model for the investigation report interpretation (default: `claude-sonnet-4-6`)
 - Parallelism: auto-detected (uses `nproc`/`sysctl hw.ncpu` when GNU parallel is installed)
 
 **Health report integration:** `rite --health-report` aggregates `FULL_SUITE_RUN` diag lines from `full-suite-*.log` files. Any `outcome=failed` in the reporting period promotes to a WARNING section. The failure flag is checked at report time and surfaced as an action item.
 
 ```bash
-rite --full-suite                 # Run now (manual or cron invocation)
-cat .rite/state/full-suite-failure.flag   # See current failure details if any
+rite --full-suite                       # Run now (no investigation)
+rite --full-suite --investigate         # Run + investigate + report + remediation issue
+cat .rite/state/full-suite-failure.flag # See current failure details if any
+cat .rite/reports/full-suite-$(date +%Y%m%d).md  # See today's investigation report
 ```
 
 ### Log files
@@ -974,5 +992,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 - `DOC_PASS` — every doc model pass: `kind=promote|docs|align doc=<path|-> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`; when `duration_s > RITE_DOC_PASS_WARN_SECONDS` (default 120) an info-level suggestion to run `rite align-docs` is also printed (per-doc passes only; aggregate passes with `doc=-` never print the suggestion)
+- `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
+- `MAIN_CI_RED` — batch preflight found red CI on the target branch; `branch=<b> conclusion=<c>`; batch aborts unless `--allow-red-main` was passed
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

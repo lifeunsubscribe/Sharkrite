@@ -71,8 +71,14 @@ classify_branch_health() {
   has_only_init=$?
 
   # Check if branch is behind base (uses get_commits_behind_main from stale-branch.sh)
-  get_commits_behind_main "$worktree_path" "$base_branch"
-  local behind="${COMMITS_BEHIND_MAIN:-0}"
+  local behind
+  if ! get_commits_behind_main "$worktree_path" "$base_branch"; then
+    # Cannot measure — treat as stale so the stale-branch handler does a definitive check.
+    print_warning "Could not measure commits behind $base_branch — treating as stale (will re-verify)"
+    behind=1
+  else
+    behind="$COMMITS_BEHIND_MAIN"
+  fi
 
   # Classification logic (decision tree):
   # 1. Only init commit + behind base → DIVERGENT_NO_WORK (4)
@@ -135,8 +141,9 @@ _preflight_has_only_init_commit() {
     return 1
   fi
 
-  # Exactly one commit — check if it's the init commit
-  if echo "$commits_ahead" | grep -qE "chore: initialize work on #${issue_number}"; then
+  # Exactly one commit — check if it's the init commit.
+  # Trailing ([^0-9]|$) prevents #141 from matching a #1419 commit subject.
+  if echo "$commits_ahead" | grep -qE "chore: initialize work on #${issue_number}([^0-9]|$)"; then
     return 0
   fi
 

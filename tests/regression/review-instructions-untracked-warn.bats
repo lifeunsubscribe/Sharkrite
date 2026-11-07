@@ -15,7 +15,7 @@
 #
 # The script body of local-review.sh cannot be sourced in tests — it requires
 # gh, config, a real PR number, and network access. Instead, behavioral tests
-# extract the template-selection block via sharkrite-extract markers and run it
+# extract the template-tier1 block via sharkrite-extract markers and run it
 # in a minimal bash -c subprocess with stubbed helpers and a shim PATH for git.
 
 load '../helpers/setup.bash'
@@ -39,7 +39,7 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: extract the template-selection block from local-review.sh using
+# Helper: extract the template-tier1 block from local-review.sh using
 # sharkrite-extract markers and run it in an isolated bash -c subprocess.
 #
 # Outputs: bats $status and $output from `run`.
@@ -47,7 +47,7 @@ teardown() {
 # ---------------------------------------------------------------------------
 _run_template_selection() {
   local block
-  block=$(sed -n '/# sharkrite-extract: template-selection-start/,/# sharkrite-extract: template-selection-end/p' "$SCRIPT")
+  block=$(sed -n '/# sharkrite-extract: template-tier1-start/,/# sharkrite-extract: template-tier1-end/p' "$SCRIPT")
   [ -n "$block" ] || { echo "FAIL: sharkrite-extract markers missing from $SCRIPT" >&2; return 1; }
 
   run bash -c "
@@ -173,16 +173,16 @@ EOF
 # Test 5: static check — sharkrite-extract markers are present exactly once
 # ---------------------------------------------------------------------------
 
-@test "local-review.sh template-selection sharkrite-extract markers appear exactly once" {
-  START_COUNT=$(grep -c "sharkrite-extract: template-selection-start" "$SCRIPT" || true)
-  END_COUNT=$(grep -c "sharkrite-extract: template-selection-end" "$SCRIPT" || true)
+@test "local-review.sh template-tier1 sharkrite-extract markers appear exactly once" {
+  START_COUNT=$(grep -c "sharkrite-extract: template-tier1-start" "$SCRIPT" || true)
+  END_COUNT=$(grep -c "sharkrite-extract: template-tier1-end" "$SCRIPT" || true)
 
   [ "$START_COUNT" -eq 1 ] || {
-    echo "Expected exactly 1 template-selection-start marker, found $START_COUNT" >&2
+    echo "Expected exactly 1 template-tier1-start marker, found $START_COUNT" >&2
     false
   }
   [ "$END_COUNT" -eq 1 ] || {
-    echo "Expected exactly 1 template-selection-end marker, found $END_COUNT" >&2
+    echo "Expected exactly 1 template-tier1-end marker, found $END_COUNT" >&2
     false
   }
 }

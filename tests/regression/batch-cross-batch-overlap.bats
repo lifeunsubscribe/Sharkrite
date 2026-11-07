@@ -85,6 +85,17 @@ _build_overlap_script() {
   local _unique_count="${4:-3}"
   local _script="$BATS_TEST_TMPDIR/test-overlap-$$.sh"
 
+  local _fn0_tmp="$BATS_TEST_TMPDIR/fn0-body-$$.sh"
+  awk '
+    /^batch_suffix_matches_issue[(][)]/ { in_fn=1 }
+    in_fn { print }
+    in_fn && /^}$/ { exit }
+  ' "$BATCH_PROCESSOR" > "$_fn0_tmp" 2>/dev/null
+  if ! grep -q "batch_suffix_matches_issue" "$_fn0_tmp" 2>/dev/null; then
+    echo "ERROR: could not extract batch_suffix_matches_issue from $BATCH_PROCESSOR" >&2
+    return 1
+  fi
+
   local _fn_tmp="$BATS_TEST_TMPDIR/fn-body-$$.sh"
   awk '
     /_ftm_file_overlap[(][)]/ { in_fn=1 }
@@ -107,6 +118,8 @@ _build_overlap_script() {
     return 1
   fi
 
+  local _fn0_body
+  _fn0_body=$(cat "$_fn0_tmp" || true)
   local _fn_body
   _fn_body=$(cat "$_fn_tmp" || true)
   local _fn2_body
@@ -120,6 +133,8 @@ set -euo pipefail
 print_warning() { printf 'WARNING: %s\n' "\$*" >&2; }
 
 # Inline production functions extracted from batch-process-issues.sh
+${_fn0_body}
+
 ${_fn_body}
 
 ${_fn2_body}

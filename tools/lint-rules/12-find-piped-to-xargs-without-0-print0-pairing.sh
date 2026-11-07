@@ -6,16 +6,16 @@ echo "Checking for 'find ... | xargs' without -0 / -print0..."
 for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
     # Match: xargs without -0 flag (lone xargs or xargs with flags but no -0)
     if echo "$line_content" | grep -qE '\bxargs\b' && \
-       ! echo "$line_content" | grep -qE 'xargs\s+(-[a-zA-Z]*0|-0)'; then
+       ! echo "$line_content" | grep -qE 'xargs[[:space:]]+(-[a-zA-Z]*0|-0)'; then
       # Only flag if this is in a find pipeline context (same line has 'find' or
       # this looks like a continuation of a find pipe)
       if echo "$line_content" | grep -qE '\bfind\b.*\|.*\bxargs\b' || \
-         echo "$line_content" | grep -qE '^\s*\|.*\bxargs\b'; then
+         echo "$line_content" | grep -qE '^[[:space:]]*\|.*\bxargs\b'; then
         print_violation "$file" "$line_num" "XARGS_WITHOUT_NULL" \
           "Use 'find ... -print0 | xargs -0' to handle filenames with spaces"
       fi

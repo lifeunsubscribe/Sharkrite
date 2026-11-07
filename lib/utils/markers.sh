@@ -57,6 +57,22 @@ RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
 # Format in issue body: <!-- sharkrite-source-issue:N -->
 RITE_MARKER_SOURCE_ISSUE="sharkrite-source-issue"
 
+# Finding location marker — embedded in follow-up issue body to record the code location
+# reported by the assessor for this specific finding.
+# Format in issue body: <!-- sharkrite-finding-location:VALUE -->
+# Value is raw assessor text, may contain spaces/colons — extract up to the closing -->.
+# Omitted entirely when the assessment did not include a Location field (bare-prefix guard
+# contract: never emit this marker with an empty value).
+RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
+
+# Finding SHA marker — embedded in follow-up issue body to record the HEAD SHA of the
+# feature branch at the time the follow-up issue was created.
+# Format in issue body: <!-- sharkrite-finding-sha:XXXXXXX -->
+# Value is a short SHA (≥7 chars) from `git rev-parse --short HEAD` at assessment time;
+# length may exceed 7 chars when git extends it to resolve an abbreviation collision.
+# Used by a reconciliation pass to detect whether the relevant code changed after filing.
+RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
+
 # Issue tags marker (tag-index read-path, #403) — wraps the tags: block in an
 # issue body so the read-path can extract candidate tags for context loading.
 # Format in issue body: <!-- sharkrite-issue-tags --> tags: ... <!-- /sharkrite-issue-tags -->
@@ -160,6 +176,13 @@ RITE_MARKER_ENFORCED_BY="sharkrite-enforced-by"
 # (BARE_MARKER_GREP rule). See lib/utils/drift-log.sh for the format library.
 RITE_MARKER_DOC_DRIFT="sharkrite-doc-drift"
 
+# Enforced-by marker — inline in documentation files to declare which bats
+# test file(s) enforce the behaviour described in the surrounding section.
+# Format: <!-- sharkrite-enforced-by: tests/regression/foo.bats, tests/regression/bar.bats -->
+# Used by docs_map_enforcing_tests() in lib/utils/docs-map.sh to implement
+# tier-1 drift detection (Trigger A/B in assess-documentation.sh).
+RITE_MARKER_ENFORCED_BY="sharkrite-enforced-by"
+
 # ---------------------------------------------------------------------------
 # Planning markers
 # ---------------------------------------------------------------------------
@@ -169,3 +192,15 @@ RITE_MARKER_DOC_DRIFT="sharkrite-doc-drift"
 #   <!-- sharkrite-plan-lint disable <rule> - Reason: ... -->
 # Used by lib/core/plan-issues.sh provenance lint gate.
 RITE_MARKER_PLAN_LINT="sharkrite-plan-lint"
+
+# ---------------------------------------------------------------------------
+# Full-suite safety net markers (issue #1228)
+# ---------------------------------------------------------------------------
+
+# Full-suite remediation dedup marker — embedded in the body of an open issue
+# filed by `rite --full-suite --investigate` to record the failure-set hash.
+# Guards against filing a duplicate issue on subsequent runs with the same
+# persistent failures. The search query anchors on the hash so bare-prefix
+# collision with documentation examples is impossible.
+# Format in issue body: <!-- sharkrite-full-suite-remediation:<cksum-hash> -->
+RITE_MARKER_FULL_SUITE_REMEDIATION="sharkrite-full-suite-remediation"

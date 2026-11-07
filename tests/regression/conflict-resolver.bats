@@ -116,7 +116,9 @@ _setup_conflict_scenario() {
 
   # Also stub load_provider (called by resolver Step 5) so it doesn't
   # try to source the real claude.sh which requires PROVIDER_CMD etc.
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   # Run the resolver from the clean tree
   local result=0
@@ -173,7 +175,9 @@ _setup_conflict_scenario() {
     done <<< "$_conflicts"
     return 0
   }
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   attempt_claude_merge_resolution \
     --branch-name "$BRANCH_NAME" \
@@ -197,7 +201,9 @@ _setup_conflict_scenario() {
 
   # Provider stub: fails without resolving anything
   provider_run_agentic_session() { return 1; }
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   local result=0
   attempt_claude_merge_resolution \
@@ -226,7 +232,9 @@ _setup_conflict_scenario() {
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
 
   provider_run_agentic_session() { return 5; }
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   local result=0
   attempt_claude_merge_resolution \
@@ -291,7 +299,9 @@ _setup_conflict_scenario() {
     done <<< "$_conflicted"
     return 0
   }
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   local result=0
   attempt_claude_merge_resolution \
@@ -376,7 +386,9 @@ _setup_addadd_collision_scenario() {
     done <<< "$c"
     return 0
   }
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
 
   local result=0
   local stderr_out
@@ -406,7 +418,9 @@ _setup_addadd_collision_scenario() {
   _setup_addadd_collision_scenario
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
   provider_run_agentic_session() { return 0; }
 
   # Force materialization to fail so the resolver takes the surface-both-versions
@@ -444,7 +458,9 @@ _setup_addadd_collision_scenario() {
   git merge --abort 2>/dev/null || true
 
   source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
-  load_provider() { return 0; }
+  load_provider()         { return 0; }
+  provider_detect_cli()   { return 0; }
+  provider_healthcheck()  { return 0; }
   provider_run_agentic_session() { return 0; }
 
   # Force a "merge failed, zero unmerged entries" state with NO colliding stash:

@@ -565,7 +565,7 @@ EOF
 
   # Rule 31: no bare "" model arg to provider_run_prompt*
   local bare_empty
-  bare_empty=$(grep -E 'provider_run_prompt[^(]*\s+""' "$composer" || true)
+  bare_empty=$(grep -E 'provider_run_prompt[^(]*[[:space:]]+""' "$composer" || true)
   [ -z "$bare_empty" ]
 
   # Must use provider_resolve_model promote

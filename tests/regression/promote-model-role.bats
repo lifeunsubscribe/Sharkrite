@@ -109,6 +109,6 @@ TWO_ROLE_EOF
 # ---------------------------------------------------------------------------
 
 @test "claude.sh: promote role defined and backed by RITE_PROMOTE_MODEL" {
-  run grep -E '^\s*promote\)\s+echo\s+"\$\{RITE_PROMOTE_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
+  run grep -E '^[[:space:]]*promote\)[[:space:]]+echo[[:space:]]+"\$\{RITE_PROMOTE_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
   [ "$status" -eq 0 ]
 }

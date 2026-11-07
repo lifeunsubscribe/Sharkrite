@@ -27,7 +27,7 @@ echo "Checking for unanchored sharkrite marker grep patterns (bare-prefix guard)
 for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
 
@@ -36,7 +36,7 @@ for file in "${SHELL_FILES[@]}"; do
     # does NOT match here (colon is followed by [0-9]+ not a closing quote).
     # Belt-and-suspenders: the inner check also verifies no [0-9] anchor is present,
     # guarding against edge cases where the outer regex might still match.
-    if echo "$line_content" | grep -qE 'grep\s+-q[E]?\s+"sharkrite-[a-z-]+:"'; then
+    if echo "$line_content" | grep -qE 'grep[[:space:]]+-q[E]?[[:space:]]+"sharkrite-[a-z-]+:"'; then
       # Extra guard: if the line somehow includes a format anchor despite the outer match,
       # skip it — the dev wrote something unusual but intentional.
       if ! echo "$line_content" | grep -qE '\[0-9\]|\[a-zA-Z0-9'; then

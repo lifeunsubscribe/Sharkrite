@@ -146,6 +146,21 @@ provider_resolve_model() {
 }
 PROVIDER_EOF
 
+  # Stub review-helper.sh — sourced at load time (line 61) to define
+  # build_prior_decisions_ledger (and sibling helpers). Without this stub
+  # the script dies at `source` before reaching the provider call, masking
+  # all three supervised-mode exit-code assertions.
+  cat > "$RITE_LIB_DIR/utils/review-helper.sh" <<'REVIEWHELPER_EOF'
+#!/bin/bash
+build_prior_decisions_ledger() { echo ""; return 0; }
+get_review_for_pr() { return 0; }
+trigger_local_review() { return 0; }
+handle_stale_review() { return 0; }
+extract_review_sha() { echo ""; return 0; }
+extract_assessment_sha() { echo ""; return 0; }
+resolve_pr_head_sha() { echo ""; return 0; }
+REVIEWHELPER_EOF
+
   # Stub assess-and-resolve.sh — the script functions-only-sources it since
   # #795 to reuse _resolve_done_def (guarded by `declare -f`, loaded with
   # RITE_SOURCE_FUNCTIONS_ONLY=1). Only called on the ACTIONABLE_LATER

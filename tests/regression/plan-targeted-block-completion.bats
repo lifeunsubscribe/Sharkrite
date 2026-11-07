@@ -40,7 +40,7 @@ setup() {
   # Extract the functions under test from plan-issues.sh (same awk brace-depth
   # technique as plan-validator-strict.bats — no top-level code runs).
   local fn
-  for fn in _canon_title _request_missing_blocks _coverage_missing_titles _normalize_issue_markers; do
+  for fn in _canon_title _plan_streaming_awk _request_missing_blocks _coverage_missing_titles _normalize_issue_markers; do
     eval "$(awk -v target="^${fn}\\\\(\\\\)" '
       $0 ~ target { in_fn=1; depth=0 }
       in_fn {

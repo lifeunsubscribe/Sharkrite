@@ -197,3 +197,45 @@ teardown() {
   # Should return 5 (UNCOMMITTED_PRESERVED)
   [ "$exit_code" -eq 5 ]
 }
+
+# =============================================================================
+# STRUCTURAL: verify _preflight_has_only_init_commit carries trailing anchor
+# =============================================================================
+
+@test "structural: _preflight_has_only_init_commit grep has ([^0-9]|dollar) trailing anchor" {
+  local _src="${RITE_LIB_DIR}/utils/branch-preflight.sh"
+  grep -qF 'chore: initialize work on #${issue_number}([^0-9]|$)' "$_src"
+}
+
+# =============================================================================
+# BEHAVIORAL: init-commit check must not match a longer issue-number suffix
+# =============================================================================
+
+@test "classify: EMPTY_INIT must NOT fire when init commit belongs to a longer issue number (substring collision)" {
+  # Regression: without the trailing anchor, issue 141's init-commit grep
+  # matched a #1419 commit subject, incorrectly triggering EMPTY_INIT (3)
+  # and feeding the destructive preflight_auto_recover_empty path.
+
+  # Create a branch for issue 1419, then check it as if it were issue 141.
+  local issue_number_real=1419
+  local issue_number_check=141
+  local branch_name="fix/test-issue-${issue_number_real}"
+
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  git commit --allow-empty -m "chore: initialize work on #${issue_number_real}" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  git checkout main >/dev/null 2>&1
+  local worktree_path="$RITE_WORKTREE_DIR/issue-${issue_number_real}"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Classify as if this were issue 141 — must NOT return 3 (EMPTY_INIT)
+  set +e
+  classify_branch_health "$issue_number_check" "$branch_name" "$worktree_path"
+  local exit_code=$?
+  set -e
+
+  # One commit exists but it's not the init commit for issue 141;
+  # classify_branch_health should return 0 (HEALTHY — one real commit).
+  [ "$exit_code" -eq 0 ]
+}

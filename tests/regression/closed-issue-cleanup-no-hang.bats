@@ -273,7 +273,7 @@ BATCH_PROCESSOR="$SCRIPT_DIR/lib/core/batch-process-issues.sh"
       # that could silently kill the test under set -euo pipefail if sed exits non-zero.
       _content="${line#*: }"
       # Skip comment lines — they may mention git ls-remote as documentation
-      if echo "$_content" | grep -qE '^\s*#'; then
+      if echo "$_content" | grep -qE '^[[:space:]]*#'; then
         continue
       fi
       # Non-comment line with git ls-remote: must be wrapped with run_with_timeout

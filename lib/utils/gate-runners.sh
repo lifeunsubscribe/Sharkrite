@@ -350,6 +350,136 @@ _resolve_node_test_runner() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_node_lint_runner — extract the lint runner binary name (issue #1545)
+# Args: $1=project_root
+# Echoes the first executable token of package.json's .scripts.lint, resolving
+# one level of `npm run <X>` delegation. Echoes "" when no runner name can be
+# extracted or when .scripts.lint is absent.
+#
+# Examples:
+#   "eslint . --ext .ts,.tsx"    -> eslint
+#   "biome check ."              -> biome
+#   "npm run lint:check"         -> (resolves .scripts."lint:check"'s first token)
+# ---------------------------------------------------------------------------
+_resolve_node_lint_runner() {
+  local _pr="$1"
+  local _pkg="$_pr/package.json"
+  [ -f "$_pkg" ] || { echo ""; return 0; }
+  command -v jq >/dev/null 2>&1 || { echo ""; return 0; }
+
+  local _script
+  _script=$(jq -r '.scripts.lint // ""' "$_pkg" 2>/dev/null || echo "")
+  [ -n "$_script" ] || { echo ""; return 0; }
+
+  local _first
+  _first=$(printf '%s\n' "$_script" | awk '{print $1}' || echo "")
+  [ -n "$_first" ] || { echo ""; return 0; }
+
+  if [ "$_first" = "npm" ]; then
+    local _second _target _delegated _dtok
+    _second=$(printf '%s\n' "$_script" | awk '{print $2}' || echo "")
+    # `npm lint` self-referential loop guard
+    if [ "$_second" = "lint" ]; then
+      echo ""; return 0
+    fi
+    if [ "$_second" = "run" ] || [ "$_second" = "run-script" ]; then
+      _target=$(printf '%s\n' "$_script" | awk '{print $3}' || echo "")
+    else
+      _target="$_second"
+    fi
+    if [ -n "$_target" ]; then
+      _delegated=$(jq -r --arg k "$_target" '.scripts[$k] // ""' "$_pkg" 2>/dev/null || echo "")
+      _dtok=$(printf '%s\n' "$_delegated" | awk '{print $1}' || echo "")
+      if [ -n "$_dtok" ] && [ "$_dtok" != "npm" ]; then
+        echo "$_dtok"; return 0
+      fi
+    fi
+    echo ""; return 0
+  fi
+
+  echo "$_first"
+}
+
+# ---------------------------------------------------------------------------
+# _normalize_eslint_output — convert eslint output to _parse_lint_line format
+# Args: $1 = raw eslint output file (read)
+#       $2 = lint findings file (APPEND normalized lines)
+#       $3 = project_root (optional; strips root prefix from absolute paths)
+#
+# Handles eslint stylish (default) and compact reporter output:
+#   Stylish: file header line then "  LINE:COL  error|warning  msg  rule" lines
+#   Compact: "path: line LINE, col COL, Error|Warning - msg (rule)"
+#
+# Output format: file:line: [rule] message — matches _parse_lint_line's custom
+# lint rule (`^[^:]+:[0-9]+:.*\[[a-zA-Z0-9@_/.-]+\]`). Rule names are always
+# lowercase with hyphens (e.g. prefer-const) and may be scoped with /
+# (e.g. react/no-unescaped-entities) or prefixed with @ (e.g.
+# @typescript-eslint/no-unsafe-assignment); all are preserved intact.
+# Returns 0 always; leaves target file untouched when no findings parse.
+# ---------------------------------------------------------------------------
+_normalize_eslint_output() {
+  local _eo_raw="$1"
+  local _eo_lint="$2"
+  local _eo_root="${3:-}"
+  [ -s "$_eo_raw" ] || return 0
+
+  local _eo_stripped
+  _eo_stripped=$(mktemp "/tmp/rite_gate_eslint_strip_$$_XXXXXX")
+  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' "$_eo_raw" > "$_eo_stripped" || true
+
+  awk -v root="$_eo_root" '
+    function rel(p,   r) {
+      if (root != "" && index(p, root "/") == 1)
+        r = substr(p, length(root) + 2)
+      else
+        r = p
+      return r
+    }
+    # eslint compact: "path: line N, col N, Error|Warning - msg (rule)"
+    # Must be checked BEFORE the stylish-header rule because compact lines are
+    # also non-indented and contain ".", which the header rule would consume first.
+    /: line [0-9]+, col [0-9]+, (Error|Warning) - / {
+      idx = index($0, ": line ")
+      path = rel(substr($0, 1, idx - 1))
+      rest = substr($0, idx + 7)
+      split(rest, a, /[[:space:]]*,/); lineno = a[1] + 0
+      rule = "lint"
+      if (match($0, /\([^()]+\)$/))
+        rule = substr($0, RSTART + 1, RLENGTH - 2)
+      msg = $0
+      msgstart = index(msg, " - ")
+      if (msgstart > 0) {
+        msg = substr(msg, msgstart + 3)
+        sub(/ \([^()]+\)$/, "", msg)
+      }
+      if (path != "")
+        print path ":" lineno ": [" rule "] " msg
+      next
+    }
+    # eslint stylish file header: no leading whitespace, contains "/" or ".", is
+    # not a summary/stats line (those start with digits, special chars, or spaces)
+    /^[^[:space:]]/ && /[\/.]/ && !/^[0-9]/ && !/^[✖✓✗x]/ {
+      f = $0; sub(/[[:space:]]+$/, "", f); cur = rel(f); next
+    }
+    # eslint stylish problem line: leading space, LINE:COL, error|warning, msg, rule
+    /^[[:space:]]+[0-9]+:[0-9]+[[:space:]]+(error|warning)/ {
+      line = $0; sub(/^[[:space:]]+/, "", line)
+      n = split(line, tok, /[[:space:]]+/)
+      if (n < 3) next
+      split(tok[1], lc, ":"); lineno = lc[1]
+      rule = tok[n]
+      msg = ""; for (i=3; i<=n-1; i++) { if (msg != "") msg = msg " "; msg = msg tok[i] }
+      if (cur != "" && rule != "" && msg != "")
+        print cur ":" lineno ": [" rule "] " msg
+      next
+    }
+  ' "$_eo_stripped" >> "$_eo_lint" || true
+
+  rm -f "${_eo_stripped:-}"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # _node_runner_resolvable — is the node test runner present? (issue #807)
 # Args: $1=project_root $2=runner_name (may be empty)
 # Returns 0 (resolvable) / 1 (not resolvable).

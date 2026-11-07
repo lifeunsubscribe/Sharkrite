@@ -67,7 +67,8 @@ setup() {
   # breaking concurrent runs. All templates must end with XXXXXX.
   run grep -nE 'mktemp .*XXXXXX[^"]+"' "${RITE_REPO_ROOT}/bin/rite-full-suite"
   [ "$status" -ne 0 ] || { echo "non-terminal X's: $output"; false; }
-  # And the fixed templates still exist (3 call sites).
+  # And the fixed templates still exist (6 call sites: lint, lint_stripped, tests,
+  # serial, prompt, issue — added by the --investigate feature in issue #1228).
   count=$(grep -cE 'mktemp "\$\{TMPDIR:-/tmp\}/rite_fs_[a-z_]+_\$\$_XXXXXX"' "${RITE_REPO_ROOT}/bin/rite-full-suite")
-  [ "$count" -eq 3 ] || { echo "expected 3 fixed templates, got $count"; false; }
+  [ "$count" -eq 6 ] || { echo "expected 6 fixed templates, got $count"; false; }
 }

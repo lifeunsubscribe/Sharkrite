@@ -1907,6 +1907,57 @@ ${issue_body}"
 }
 
 # ---------------------------------------------------------------------------
+# _supervised_commit_push — supervised-mode commit+push prompt (issue #1368)
+#
+# Displays the suggested commit message and asks "Commit and push N file(s)?
+# [y/n/e]". Loops until y/n/e is entered. 'e' opens a one-line edit then
+# re-displays and re-asks. 'n' exits the whole workflow cleanly (exit 0).
+# 'y' returns normally so the caller proceeds to git commit.
+#
+# Extracted from the main-body inline block so behavioral y/n/e tests can
+# call the function directly (main-body code is not callable from bats).
+#
+# Globals read:   COMMIT_MSG, CHANGES_COUNT
+# Globals written: COMMIT_MSG (modified on e-path when user enters new text)
+# ---------------------------------------------------------------------------
+_supervised_commit_push() {
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "Suggested commit message:"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "$COMMIT_MSG"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+  _commit_choice=""
+  while true; do
+    if ! read -p "Commit and push $CHANGES_COUNT file(s)? [y/n/e] " -r _commit_choice; then _commit_choice=n; fi
+    case "$_commit_choice" in
+      y|Y) break ;;
+      n|N)
+        print_info "Skipped commit. Run rite --continue to resume."
+        exit 0
+        ;;
+      e|E)
+        echo "Enter custom commit message (empty to keep current):"
+        CUSTOM_MSG=""
+        if ! read -re CUSTOM_MSG; then CUSTOM_MSG=""; fi
+        if [ -n "$CUSTOM_MSG" ]; then
+          COMMIT_MSG="$CUSTOM_MSG"
+        fi
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "$COMMIT_MSG"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo ""
+        ;;
+      *)
+        echo "Please enter y, n, or e"
+        ;;
+    esac
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above without executing the script body
 # (which calls gh/git, detects the provider CLI, navigates worktrees, and
@@ -3785,41 +3836,7 @@ fi
 COMMIT_MSG="${COMMIT_SUBJECT}${COMMIT_BODY}"
 
 if [ "$AUTO_MODE" = false ]; then
-  # One prompt: show message then ask commit+push together (y=proceed, n=abort, e=edit message).
-  echo ""
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "Suggested commit message:"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo "$COMMIT_MSG"
-  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  echo ""
-  _commit_choice=""
-  while true; do
-    if ! read -p "Commit and push $CHANGES_COUNT file(s)? [y/n/e] " -r _commit_choice; then _commit_choice=n; fi
-    case "$_commit_choice" in
-      y|Y) break ;;
-      n|N)
-        print_info "Skipped commit. Run rite --continue to resume."
-        exit 0
-        ;;
-      e|E)
-        echo "Enter custom commit message (empty to keep current):"
-        CUSTOM_MSG=""
-        if ! read -re CUSTOM_MSG; then CUSTOM_MSG=""; fi
-        if [ -n "$CUSTOM_MSG" ]; then
-          COMMIT_MSG="$CUSTOM_MSG"
-        fi
-        echo ""
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "$COMMIT_MSG"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo ""
-        ;;
-      *)
-        echo "Please enter y, n, or e"
-        ;;
-    esac
-  done
+  _supervised_commit_push
 else
   verbose_info "Using auto-generated commit message: $COMMIT_MSG"
 fi

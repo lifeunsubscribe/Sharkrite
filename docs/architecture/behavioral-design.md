@@ -189,6 +189,8 @@ The same `_DEFER_COUNT[ISSUE_NUM]` counter and `_UNIQUE_ISSUE_COUNT` bound used 
 
 **Deliberate batch-only divergence:** Single-issue mode has no queue to defer into, so `_ftm_file_overlap` is only called from the per-slot batch loop.
 
+**Skipped for CLOSED issues:** The guard is not run when `ISSUE_STATE=CLOSED`. Closed-issue processing is cleanup-only (worktree removal, branch deletion) and touches no source files, so it cannot conflict with another worktree's diff. Deferring a closed issue would only delay that cleanup while burning the defer cap. The parity contract (`batch-process-issues.sh` "do NOT short-circuit here" comment, referencing this doc) owns closed-issue handling via `run_workflow()` → `handle_closed_issue()`.
+
 **Diag line:** `[diag] OVERLAP_DEFER issue=N files=... worktree=...` emitted on each deferral (and on cap-exhausted in-place runs with `cap_exhausted=true`).
 
 **Motivation (live incident, 2026-10-11):** Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`. The concurrent worktrees caused rebase churn and extra fix rounds on the second batch. This check catches the overlap before Phase 1 starts, deferring until the first batch has cleared its worktrees.
@@ -264,6 +266,28 @@ When no PR can be found via the API (manual close with no matching PR body, or t
 
 **Bug history:**
 - Issue #319 (2026-06-04) — `--limit 50` dropped PR #206 off the window for issue #201 (78 closed PRs in 3 days). Issue #201 had no `closedByPullRequestsReferences` (manually closed). The orphan worktree `ft-rebase-pr-172-onto-main-and-resolve-conflicts` persisted across multiple cleanup runs. Fixed: Tier 2 bumped to `--limit 1000`, Tier 3 local-state fallback added.
+
+---
+
+### Orchestrator/Dev-Session Worktree Alignment
+
+**Principle:** The orchestrator (`workflow-runner.sh`) must measure post-dev work against the worktree the dev session actually used. When the two derivations disagree, the run fails loudly naming both paths — it never guesses which is right.
+
+**Why this matters:** After `claude-workflow.sh` completes, the orchestrator re-derives the worktree path via three steps: (1) `detect_worktree_for_pr` — finds the local worktree matching the PR's branch, (2) a path-grep fallback matching the issue number in the worktree directory name, (3) the handoff file written by `claude-workflow.sh`. If step (1) finds a different worktree (e.g. a stale PR from a previous batch whose worktree still exists), step (3) is never reached, and `count_changed_files` runs against the wrong worktree — a worktree that may have 0 changes, causing the orchestrator to report "No work was produced" even though the dev session succeeded.
+
+**Handoff file is authoritative.** `claude-workflow.sh` writes `${RITE_STATE_DIR}/worktree-handoff-${ISSUE_NUMBER}.txt` unconditionally at the point it switches into the worktree. This file is the ground truth for the dev session's actual path. `workflow-runner.sh` reads this file after all discovery steps — not only when `WORKTREE_PATH` is empty — and compares it to the orchestrator's discovery. When they disagree, the orchestrator refuses with a clear error:
+
+```
+ERROR: Worktree path mismatch: dev session and orchestrator found different worktrees
+ERROR:   Dev session used:   /path/to/real/worktree
+ERROR:   Orchestrator found: /path/to/stale/worktree
+```
+
+**Refusal over guessing.** Automatically choosing the worktree with more changes would work most of the time but masks discovery bugs. The refusal surfaces the mismatch immediately so the underlying discovery issue can be fixed (e.g. stale PR cleanup, matcher regex gap, handoff file write failure).
+
+**Live failure (2026-10-25):** Batch run for issues #1342/#1368. Dev session completed with 4 files changed (`AUTO_COMMIT issue=1342 files=4`) and wrote the handoff file pointing to `fx-make-plan-issuessh-end_b1342-1368`. `detect_pr_for_issue` returned the stale PR #1452 (Oct 24 batch) whose content-empty worktree existed locally. `count_changed_files` on that worktree returned 0, triggering "No work was produced" — a 24-minute silent failure that left the real work pushed nowhere.
+
+**Regression test:** `tests/regression/orchestrator-worktree-alignment.bats`.
 
 ---
 
@@ -598,7 +622,7 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — `_run_dev_test_gate` runs the gate unconditionally for all non-orchestrated runs (auto and supervised standalone alike); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
 
-**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. Behavioral main-flow tests require extracting the inline commit+push body into a callable function — tracked by issue #1368, which also covers the `RITE_GATE_FINDINGS` builder extraction deferred in `tests/regression/test-gate-parallel.bats`; structural verification is the current coverage.
+**Enforcement:** `tests/regression/supervised-commit-push-prompt.bats` — structural: old prompts absent, new prompt present, y/n/e case structure verified, `read -re` on e-path (backslash-clean); behavioral y/n/e contracts for the main flow via `_supervised_commit_push` (extracted issue #1368). Behavioral y/n/e for salvage path: `tests/regression/interrupt-trap-wip-safety.bats`. The `RITE_GATE_FINDINGS` builder (`_build_gate_prepend_items`) behavioral tests: `tests/regression/test-gate-parallel.bats`.
 
 ### Supervised standalone full-suite carve-out (2026-10-20, issue #1273)
 
@@ -882,6 +906,10 @@ Tests: `tests/regression/mid-run-rebase.bats` (clean drift → no-op, including 
 **Resume path — same ruling extended (#1137):** The original `check_stale_branch` (stale-branch.sh) used `RITE_STALE_BRANCH_THRESHOLD` (default: 10) to decide in auto mode whether to attempt a rebase or close-and-restart: branches at/above the threshold were closed immediately without a rebase attempt. Issue #1045 (2026-10-11, batch 135719 slot): a finished, cleanly-rebasable PR sat at exactly 10 commits behind after an evening of unrelated merges — auto-closed, and the entire feature was re-implemented from scratch (~19 min dev + full review cycle) — then that rerun died for separate reasons. The distance-as-proxy flaw is identical: a 10-behind clean branch rebases in sub-second git; a 2-behind conflicted branch is what actually needs the resolver. The ruling is extended: **auto mode always attempts rebase first, regardless of distance. Close-and-restart fires only when the rebase conflicts AND the resolver fails** (or post-rebase verification fails). `RITE_STALE_BRANCH_THRESHOLD` is retained for supervised mode's 5-option prompt threshold. An absurd-divergence guard (`RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD`, default: 100) caps the rebase-first path for truly enormous histories that signal an abandoned branch rather than normal drift.
 
 Tests: `tests/regression/stale-branch-rebase.bats` (clean branch at 2× threshold → rebased, no restart; conflict → resolver → fallback path preserved; hard-restart threshold → exit 11 without rebase attempt).
+
+**`--sync <N>` path — same ruling extended (#1462):** The per-issue sync path (`sync_issue_branch` in `integration-sync.sh`) previously rebased unconditionally whenever a branch was behind its base, re-litigating conflicts already resolved in merge commits on the branch. The `merge-tree`-clean-means-no-rebase rule now governs this path too: `git merge-tree --write-tree --no-messages "origin/<base>" HEAD` runs before any rebase attempt; exit-0 means the PR will merge as-is and the branch is left completely untouched (outcome `current`, no stale-review triggered). A genuine conflict (exit 1) proceeds to the rebase; if the rebase also conflicts, `attempt_claude_merge_resolution` is invoked with the same `declare -f` guard as the `--sync <branch>` conflict path. **Unlike the `--sync <branch>` path (lines 198-211), the resolver is called in the parent shell rather than a subshell** — this is intentional: `_RITE_RESOLVER_CONFLICT_PATHS` must survive the call to reach `commit_resolved_conflicts`; a subshell would discard the exported variable. The manual-resolution hint is the fallback when the resolver is unavailable or fails.
+
+Tests: `tests/regression/sync-merge-tree-precheck.bats` (behind-but-clean branch → outcome=current, HEAD unchanged; structural greps for the precheck call, resolver guard, and manual fallback).
 
 ---
 
@@ -2000,11 +2028,13 @@ Rebases the feature branch for an issue onto its resolver-determined base and fo
 3. **Staleness threshold** (Rail 3) — `get_commits_behind_main` ≥ `RITE_STALE_BRANCH_THRESHOLD` (default: 10). A branch this far behind is likely to produce conflicts on rebase, and the resulting stale-review rewrite would be expensive. The correct path is the workflow's own stale-branch handler, which is conflict-based (post-#1137): it attempts a rebase first and falls back to close-and-restart only if conflicts are unresolvable. Deferring here avoids a shallow sync attempt on what the workflow's resolver is better equipped to handle. → `skipped-threshold`, exit 0.
 4. **Already current** (Rail 4) — `COMMITS_BEHIND_MAIN == 0`. No rebase needed. → `current`, exit 0.
 
-If all rails pass, the function rebases onto `origin/<base>`. On rebase conflict: abort, exit 0 (informational skip). On push rejection after a successful rebase: exit 1 (operational failure).
+If all rails pass, the function rebases onto `origin/<base>`. On rebase conflict: abort then attempt Claude-assisted resolution (guarded with `declare -f`, same as the branch form). On successful resolution: `commit_resolved_conflicts` → `verify_post_merge "origin/<base>"` → force-push. On push rejection after a successful rebase or resolution: exit 1 (operational failure). On `verify_post_merge` failure or unresolvable conflict: exit 0 (informational skip, per the composability contract).
 
-`sync_issue_branch` does not invoke Claude conflict resolution or `verify_post_merge`. These workflow-level tools belong to the issue lifecycle, not the lightweight sync path. The issue form is intentionally shallower than the branch form.
+The conflict path mirrors the branch form. `attempt_claude_merge_resolution` is called in the parent shell (not a subshell) so `_RITE_RESOLVER_CONFLICT_PATHS` propagates to `commit_resolved_conflicts` for scoped staging. `verify_post_merge` is called with `origin/<base>` as the diff base (rebase path — per #854, this runs branch-only coverage against the post-rebase tree rather than the expensive pre-rebase-HEAD union).
 
-**Diagnostic:** `SYNC_ISSUE issue=<N> outcome=skipped-lock|skipped-dirty|skipped-threshold|current|not-found|conflict|synced|push_failed|fetch_failed`
+**Diagnostic:** `SYNC_ISSUE issue=<N> outcome=skipped-lock|skipped-dirty|skipped-threshold|current|not-found|conflict|synced|resolved|push_failed|fetch_failed`
+
+`outcome=resolved` is emitted when the resolver successfully handled the rebase conflict; `outcome=synced` is emitted when the plain rebase succeeded with no conflicts. Both leave `_SYNC_ISSUE_OUTCOME="synced"` — `resolved` appears only in the diag stream, where the health report can aggregate it.
 
 ### Exit-Code Composability Contract
 
@@ -2606,3 +2636,24 @@ by fingerprint; tags regenerate only for changed sections),
 `docs-map-rebuild-on-doc-change.bats`, and `plan-reads-docs-map.bats` (`rite
 plan` consults the map before loading any content; a section past the byte cap
 is still discoverable).
+
+## Provider Preflight Parity Contract
+
+`provider_healthcheck` runs once before any real provider work to detect
+workspace trust failures (Claude CLI >=2.1.284 — see CLAUDE.md "Workspace trust
+requirement"). The contract:
+
+- **Batch mode:** `batch-process-issues.sh` calls it once before the first issue
+  (after the dry-run refusal at line ~190, before the issue loop at line ~638).
+  `BATCH_MODE=true` is exported, so the per-issue path in `workflow-runner.sh`
+  skips the check to avoid a redundant call per issue.
+- **Single-issue mode:** `workflow-runner.sh::main` calls it once when
+  `BATCH_MODE` is unset or false, and only when `RITE_DRY_RUN` is false.
+  Dry-run never fires a real provider call.
+- **Fail-open on timeout:** the call is bounded at 120s via `run_with_timeout`;
+  a hung CLI returns 0 (trusted) so a network stall does not abort a batch.
+- **Non-claude providers:** providers without a `*_provider_healthcheck`
+  implementation (e.g. gemini-mock) expose a stub that returns 0 unconditionally;
+  `load_provider` aliases it as `provider_healthcheck` via the standard dispatch.
+
+**Enforcement:** `tests/regression/provider-trust-preflight.bats`.

@@ -60,6 +60,7 @@ source "$RITE_LIB_DIR/utils/cap-resume.sh"
 source "$RITE_LIB_DIR/utils/drift-log.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
+source "$RITE_LIB_DIR/providers/provider-interface.sh"
 
 # Summary computation + stats-output functions (sourceable by regression tests)
 source "$_SCRIPT_DIR/batch-reporter.sh"
@@ -196,6 +197,83 @@ _batch_print_drift_summary() {
   print_info "${_total} drift entries pending across ${_docs} docs — run 'rite docs'"
 }
 
+# ---------------------------------------------------------------------------
+# _ci_preflight: one-API-read CI check — halts when the target branch's latest
+# completed workflow run (per workflow) has a red conclusion.
+#
+# Soundness guard for block-on-any: any gate failure in the targeted selection
+# is this change's to fix — only valid when the base branch is green. This
+# addresses the LeadFlow 2026-07-01 class and the orrery 2026-10-27 red-main
+# lint state where every intersecting slot's fix-loop retries burned on
+# failures that were not theirs.
+#
+# Fetches per_page=30 completed runs, groups by workflow_id to find the latest
+# run per workflow, then checks if any latest-per-workflow run is red. This
+# prevents a green deploy/scheduled run from masking a red CI run in
+# multi-workflow repos.
+#
+# One gh api call; never runs tests or lint. See CLAUDE.md →
+# "No full suites inside a workflow (CRITICAL)" for why the retired #916
+# full-suite preflight is NOT resurrected here.
+#
+# Args:
+#   $1 — "true" to bypass with a warning (set by --allow-red-main flag only)
+#
+# Reads: RITE_TARGET_BRANCH (defaults to main)
+#
+# Returns:
+#   0 — green, absent CI, API unreachable, or $1==true (--allow-red-main)
+#   1 — red CI and $1 != true (caller must exit)
+# ---------------------------------------------------------------------------
+_ci_preflight() {
+  local _target_branch="${RITE_TARGET_BRANCH:-main}"
+  local _allow="${1:-false}"
+
+  local _run_json
+  _run_json=$(gh_safe api \
+    "repos/{owner}/{repo}/actions/runs?branch=${_target_branch}&status=completed&per_page=30" \
+    2>/dev/null || true)
+
+  [ -z "$_run_json" ] && return 0
+
+  # Get the latest completed run per workflow; find the first red one.
+  local _red_run
+  _red_run=$(printf '%s' "$_run_json" | jq -r '
+    [.workflow_runs | group_by(.workflow_id)[] | .[0] |
+     select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")] |
+    .[0] | select(.) |
+    [.conclusion, (.name // "unknown"), (.html_url // "")] | join("\t")
+  ' 2>/dev/null || true)
+
+  [ -z "${_red_run:-}" ] && return 0
+
+  local _conclusion _name _url
+  _conclusion=$(printf '%s' "$_red_run" | cut -f1 || true)
+  _name=$(printf '%s' "$_red_run" | cut -f2 || true)
+  _url=$(printf '%s' "$_red_run" | cut -f3 || true)
+
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "MAIN_CI_RED branch=${_target_branch} conclusion=${_conclusion}"
+  fi
+
+  if [ "$_allow" = "true" ]; then
+    print_warning "${_target_branch} CI is red (${_name:-unknown} → ${_conclusion}) — proceeding via --allow-red-main"
+    return 0
+  fi
+
+  echo "" >&2
+  echo "Batch preflight failed: ${_target_branch} CI is red" >&2
+  echo "" >&2
+  echo "  Failing workflow: ${_name:-unknown}" >&2
+  echo "  URL: ${_url:-unavailable}" >&2
+  echo "" >&2
+  echo "  Next steps:" >&2
+  printf "    1. Fix the breakage on %s first, then retry the batch\n" "${_target_branch}" >&2
+  printf "    2. Or bypass with: rite <issues> --allow-red-main  (not recommended)\n" >&2
+  echo "" >&2
+  return 1
+}
+
 # Batch processing requires associative arrays (bash 4+)
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -234,6 +312,7 @@ ISSUE_LIST=()
 FILTER_TYPE=""
 FILTER_VALUE=""
 SMART_WAIT=false
+_allow_red_main=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -255,6 +334,10 @@ while [[ $# -gt 0 ]]; do
       FILTER_TYPE="state"
       FILTER_VALUE="$2"
       shift 2
+      ;;
+    --allow-red-main)
+      _allow_red_main=true
+      shift
       ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -366,7 +449,7 @@ _extract_dep_issues_from_body() {
 
     # Detect the canonical Dependencies: header (with or without ** markdown bold).
     # This is the form produced by the generator (PR #964) and the authoring standard.
-    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
+    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:'; then
       _in_deps=true
       # Strip parallel-with annotations before harvesting inline refs
       local _clean
@@ -385,7 +468,7 @@ _extract_dep_issues_from_body() {
     # Issues authored before PR #964 used this style; deps appear on following
     # lines as "After: #N" / "Blocked by: #N". The header line itself carries
     # no inline refs, so just enter dep-collection mode and continue.
-    if echo "$_bline" | grep -qiE '^##+ Dependencies\s*$'; then
+    if echo "$_bline" | grep -qiE '^##+ Dependencies[[:space:]]*$'; then
       _in_deps=true
       continue
     fi
@@ -480,6 +563,23 @@ _check_dep_queued_later() {
 # Deliberate batch-only behavior: single-issue mode has no queue to defer
 # into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
 # ---------------------------------------------------------------------------
+
+# batch_suffix_matches_issue <path> <issue_num>
+# Returns 0 when the path (or basename) encodes the given issue number.
+# Covers the _b<N> batch-suffix form (e.g. slug_b1419-1420-1421) AND the
+# plain [-_]<N>[-_] separator form. Whole-token matching prevents substring
+# collisions (_b99 must not fire for issue 9).
+batch_suffix_matches_issue() {
+  local _bsm_path="$1" _bsm_n="$2"
+  case "$_bsm_path" in
+    *[-_]"${_bsm_n}"[-_]*|\
+    *[-_]"${_bsm_n}"|\
+    *"_b${_bsm_n}"[-_]*|\
+    *"_b${_bsm_n}") return 0;;
+  esac
+  return 1
+}
+
 _ftm_file_overlap() {
   local _issue_body="${1:-}"
   _OVERLAP_FILES=""
@@ -530,13 +630,11 @@ _ftm_file_overlap() {
     [ "$_wt_dir" = "$_ftm_main_wt" ] && continue
     [ "$_wt_dir" = "$_ftm_self_wt" ] && continue
     # Skip the current issue's own pre-existing worktree (resume path) to
-    # prevent self-deferral. Whole-token match prevents substring collisions
+    # prevent self-deferral. batch_suffix_matches_issue covers both [-_]<N> and
+    # _b<N> forms; whole-token matching prevents substring collisions
     # (e.g. issue 9 must not skip a worktree for issue 99).
-    if [ -n "${ISSUE_NUM:-}" ]; then
-      _wt_basename=$(basename "$_wt_dir")
-      case "$_wt_basename" in
-        *[-_]${ISSUE_NUM}[-_]*|*[-_]${ISSUE_NUM}) continue;;
-      esac
+    if [ -n "${ISSUE_NUM:-}" ] && batch_suffix_matches_issue "$(basename "$_wt_dir")" "$ISSUE_NUM"; then
+      continue
     fi
 
     # Resolve the diff base for this worktree (see resolution order above)
@@ -633,6 +731,35 @@ _apply_overlap_defer_or_warn() {
     return 0
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+#
+# Claude CLI 2.1.284 ignores every permissions.allow entry in untrusted
+# workspaces and emits "has not been trusted" to stderr. Every provider
+# session (dev, review, assessment) then fails individually — the batch
+# burns time per issue discovering the same environment problem.
+#
+# Run one cheap provider session before any issue is processed. If the
+# trust signal is detected, abort with the exact fix command and exit 1.
+# Emits [diag] PROVIDER_PREFLIGHT for health-report aggregation.
+# ---------------------------------------------------------------------------
+load_provider "${RITE_DEV_PROVIDER:-claude}"
+provider_detect_cli || true
+if ! provider_healthcheck; then
+  print_error "Batch aborted at pre-flight. Fix workspace trust and retry."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# CI preflight: read-only check that the target branch is green before any
+# slot starts. One gh api call — never runs tests or lint. Halts with
+# remediation instructions when the latest completed run is red.
+# Pass --allow-red-main to bypass with a warning.
+# ---------------------------------------------------------------------------
+if ! _ci_preflight "$_allow_red_main"; then
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Preflight dependency closure check (label/milestone/state filter mode only)
@@ -1261,6 +1388,15 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   # Bug history: #274 — batch silently bypassed closed-issue cleanup for 8 orphan
   # worktrees that accumulated from issues processed via batch (#34, #201-#203).
 
+  # Parent-PR and dependency guards only apply to OPEN issues. For CLOSED issues
+  # both guards are skipped so run_workflow() → handle_closed_issue() handles all
+  # cleanup. Without this gate the waiting_for_parent path can bypass
+  # handle_closed_issue() (reproducing the #274 orphan-worktree bug class) and
+  # the dep guard burns gh issue view per-dep-per-pass on already-closed issues.
+  # See: docs/architecture/behavioral-design.md — "Batch ↔ Single-Issue Parity Contract"
+  ISSUE_BODY=""
+  if [ "$ISSUE_STATE" != "CLOSED" ]; then
+
   # Check if this is a follow-up issue with parent PR dependency
   ISSUE_BODY=$(gh_safe issue view "$ISSUE_NUM" --json body --jq '.body')
   ISSUE_BODY="${ISSUE_BODY:-}"
@@ -1510,6 +1646,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
       continue
     fi
   fi
+  fi  # [ "$ISSUE_STATE" != "CLOSED" ] — parent-PR + dep guards
 
   # ---------------------------------------------------------------------------
   # Per-slot cross-batch file overlap check: warn and reorder when this
@@ -1519,15 +1656,23 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   # cap (_UNIQUE_ISSUE_COUNT); cap exhausted → warning + run in place.
   # Deliberate batch-only divergence: single-issue mode has no queue to defer
   # into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
+  #
+  # Skipped for CLOSED issues: cleanup-only work touches no source files and
+  # therefore cannot conflict with another worktree's diff. The parity contract
+  # ("do NOT short-circuit here", above) owns closed-issue handling via
+  # run_workflow() → handle_closed_issue(). Deferring a closed issue only
+  # delays cleanup while burning the defer cap.
   # ---------------------------------------------------------------------------
-  _OVERLAP_FILES=""
-  _OVERLAP_WT=""
-  _ftm_file_overlap "$ISSUE_BODY"
-  _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=$?
-  if [ "$_overlap_action_rc" -ne 0 ]; then
-    echo ""
-    _gate_consec_count=0; _gate_consec_sig=""
-    continue
+  if [ "$ISSUE_STATE" != "CLOSED" ]; then
+    _OVERLAP_FILES=""
+    _OVERLAP_WT=""
+    _ftm_file_overlap "$ISSUE_BODY"
+    _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=$?
+    if [ "$_overlap_action_rc" -ne 0 ]; then
+      echo ""
+      _gate_consec_count=0; _gate_consec_sig=""
+      continue
+    fi
   fi
 
   # Check if issue is actively being worked on (worktree exists with a running rite/claude process)
@@ -1539,7 +1684,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   if [ -z "$_active_wt" ]; then
     _main_wt=$(git rev-parse --show-toplevel)
     _active_wt=$(git worktree list | awk '{print $1}' | grep -v "^${_main_wt}$" | \
-      grep -E "(issue.?${ISSUE_NUM}|#${ISSUE_NUM}|[-_]${ISSUE_NUM}[-_]|[-_]${ISSUE_NUM}$)" | head -1 || true)
+      grep -E "(issue[^0-9]?${ISSUE_NUM}([^0-9]|$)|#${ISSUE_NUM}([^0-9]|$)|[-_]${ISSUE_NUM}[-_]|[-_]${ISSUE_NUM}$|_b${ISSUE_NUM}[-_]|_b${ISSUE_NUM}$)" | head -1 || true)
   fi
   if [ -n "$_active_wt" ]; then
     # Check if a rite or claude process is running for this issue

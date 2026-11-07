@@ -659,6 +659,8 @@ For each item, use EXACTLY this format (no deviations):
 {FOR ACTIONABLE_LATER: **Location:** {specific file(s), module, or domain this finding applies to — must be concrete enough that someone unfamiliar with the PR can find the right code}}
 {FOR ACTIONABLE_LATER: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget|Architectural refactor needed|Needs separate focused PR}}
+{FOR ACTIONABLE_LATER: **Suggested Fix:** {1-2 sentences describing the concrete remedy the reviewer identified}}
+{FOR ACTIONABLE_LATER: **Verification:** {a single runnable command that confirms the fix is applied}}
 
 DO NOT add any summary section, recommendations, or extra text after the items.
 
@@ -1025,6 +1027,9 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
     SCOPE_DO_BULLETS="- DO: Address the specific review finding described above"
   fi
 
+  # Capture HEAD SHA once for all finding provenance markers in this assessment pass.
+  _assessment_head_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+
   # Parse each ACTIONABLE_LATER item and create/update issues
   CREATED_ISSUES=""
   UPDATED_ISSUES=""
@@ -1066,6 +1071,8 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_FIX_EFFORT=""
         # Reset Location so a finding without one can't inherit the prior finding's.
         ITEM_LOCATION=""
+        ITEM_SUGGESTED_FIX=""
+        ITEM_VERIFICATION=""
         ;;
       \*\*Severity:\*\**)
         ITEM_SEVERITY="${line#\*\*Severity:\*\* }"
@@ -1087,6 +1094,12 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ;;
       \*\*Fix\ Effort:\*\**)
         ITEM_FIX_EFFORT="${line#\*\*Fix Effort:\*\* }"
+        ;;
+      \*\*Suggested\ Fix:\*\**)
+        ITEM_SUGGESTED_FIX="${line#\*\*Suggested Fix:\*\* }"
+        ;;
+      \*\*Verification:\*\**)
+        ITEM_VERIFICATION="${line#\*\*Verification:\*\* }"
         ;;
       ---END---)
         # Severity gate: LOW findings are logged but do not justify issue overhead.
@@ -1240,22 +1253,26 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           SOURCE_ISSUE_MARKER=""
           [ -n "${RITE_ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER} -->"
 
-          # Priority label fix (defect #4): derive priority from the item's severity
-          # so HIGH findings are distinguishable from cosmetic items in triage.
-          _priority_label="priority-medium"
-          case "${ITEM_SEVERITY:-MEDIUM}" in
-            CRITICAL|HIGH) _priority_label="priority-high" ;;
-            MEDIUM)        _priority_label="priority-medium" ;;
-            LOW)           _priority_label="priority-low" ;;
-            *)             _priority_label="priority-medium" ;;
-          esac
+          # Derive label set: severity + category (Security floor forces priority-high + security label).
+          # _resolve_issue_labels is provided by assess-and-resolve.sh, sourced above (line 81-83).
+          _item_labels=$(_resolve_issue_labels "tech-debt,from-review" "${ITEM_SEVERITY:-MEDIUM}" "${ITEM_CATEGORY:-}")
 
           # --- Synthesize runbook-compliant body fields (mirrors assess-and-resolve.sh:1829-1865) ---
           # The surviving ACTIONABLE_LATER follow-up uses the SAME rich body shape
           # as the per-finding loop: acceptance criterion + concrete verification
           # command derived from Location + severity-appropriate done definition.
           _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}"
-          if [ -n "${ITEM_LOCATION:-}" ]; then
+          if [ -n "${ITEM_VERIFICATION:-}" ]; then
+            # Allowlist validation: ITEM_VERIFICATION is LLM-derived; block shell
+            # injection metacharacters before embedding in generated issue bodies.
+            # Degrade to prose on failure so the finding is never silently lost.
+            # Aligns with _loc_path sanitization below and assess-and-resolve.sh.
+            if printf '%s' "${ITEM_VERIFICATION}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
+              _verification_cmd="${ITEM_VERIFICATION}"
+            else
+              _verification_cmd="# TODO: verify manually — assessor suggested: ${ITEM_VERIFICATION}"
+            fi
+          elif [ -n "${ITEM_LOCATION:-}" ]; then
             # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
             # Strip any trailing description after whitespace; then split on the last colon
             # that is followed only by digits so we handle paths like lib/core/foo.sh:142
@@ -1306,7 +1323,19 @@ Files to Modify:
 - _Determine from the finding above_"
 
           # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh per-finding loop) ---
-          ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+          # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+          # Location value is LLM-derived; allowlist-check before embedding in an HTML comment
+          # so that a value containing --> cannot terminate the comment early and corrupt the
+          # parent-pr marker on the same line (same contract as ITEM_VERIFICATION, above).
+          _finding_location_marker=""
+          if [ -n "${ITEM_LOCATION:-}" ] && printf '%s' "${ITEM_LOCATION}" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+            # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+            _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${ITEM_LOCATION} -->"
+          fi
+          _finding_sha_marker=""
+          # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+          [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
+          ISSUE_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
 
 ${ITEM_REASONING:-$ITEM_TITLE}
@@ -1321,6 +1350,8 @@ $([ -n "${ITEM_DEFER:-}" ] && echo "
 **Defer Reason:** ${ITEM_DEFER:-}" || echo "")
 $([ -n "${ITEM_CONTEXT:-}" ] && echo "
 **Context:** ${ITEM_CONTEXT:-}" || echo "")
+$([ -n "${ITEM_SUGGESTED_FIX:-}" ] && echo "
+**Suggested Fix:** ${ITEM_SUGGESTED_FIX:-}" || echo "")
 
 ## Time Estimate
 ${_time_estimate:-30min}
@@ -1352,13 +1383,11 @@ _Parent PR: #${PR_NUMBER}_"
           ISSUE_BODY=$(sanitize_generated_commands "$ISSUE_BODY")
           CREATE_BODY_FILE=$(mktemp)
           printf '%s' "$ISSUE_BODY" > "$CREATE_BODY_FILE"
-          ensure_labels_exist "tech-debt,from-review,${_priority_label}"
+          ensure_labels_exist "$_item_labels"
           ISSUE_URL=$(gh_safe issue create \
             --title "$ITEM_TITLE" \
             --body-file "$CREATE_BODY_FILE" \
-            --label "tech-debt" \
-            --label "from-review" \
-            --label "$_priority_label" || true)
+            --label "$_item_labels" || true)
           ISSUE_URL="${ISSUE_URL:-}"
           rm -f "$CREATE_BODY_FILE"
 
