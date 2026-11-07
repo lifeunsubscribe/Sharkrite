@@ -665,9 +665,9 @@ _ftm_file_overlap() {
 
     if [ -n "$_overlap_list" ]; then
       # Liveness gate: only count this worktree as "in-flight" if a live lock
-      # holds it. Scan RITE_LOCK_DIR for a lock entry whose cwd matches and
-      # whose pid is alive (kill -0). Worktrees with no lock, a backfill-only
-      # lock (no pid file), or a dead pid are silently skipped.
+      # holds it. Scan RITE_LOCK_DIR for a lock entry whose issue number matches
+      # the worktree basename and whose pid is alive (kill -0). Worktrees with
+      # no lock, a backfill-only lock (no pid file), or a dead pid are skipped.
       local _wt_live_issue=""
       local _wt_lock_base="${RITE_LOCK_DIR:-}"
       if [ -d "$_wt_lock_base" ]; then
@@ -679,13 +679,19 @@ _ftm_file_overlap() {
           _lk_pid=$(cat "$_lk/pid" 2>/dev/null || true)
           [ -n "$_lk_pid" ] || continue
           kill -0 "$_lk_pid" 2>/dev/null || continue
-          # Live lock — confirm it owns this worktree via the cwd record.
-          local _lk_cwd
-          _lk_cwd=$(cat "$_lk/cwd" 2>/dev/null || true)
-          if [ "$_lk_cwd" = "$_wt_dir" ]; then
-            local _lk_bname="${_lk##*/}"         # issue-N.lock
-            _wt_live_issue="${_lk_bname#issue-}" # N.lock
-            _wt_live_issue="${_wt_live_issue%.lock}" # N
+          # Live lock — confirm it owns this worktree by matching the lock's
+          # issue number against the worktree basename via
+          # batch_suffix_matches_issue.  cwd comparison is unreliable:
+          # acquire_issue_lock records pwd before the worktree is created, so
+          # live locks hold the project root (already skipped above via
+          # _ftm_main_wt).  cwd also mismatches on macOS where git worktree
+          # list returns the physical path (/private/var/...) while the lock
+          # file holds the logical path (/var/...).
+          local _lk_bname="${_lk##*/}"
+          local _lk_num="${_lk_bname#issue-}"
+          _lk_num="${_lk_num%.lock}"
+          if batch_suffix_matches_issue "$(basename "$_wt_dir")" "$_lk_num"; then
+            _wt_live_issue="$_lk_num"
             break
           fi
         done
@@ -739,6 +745,20 @@ _apply_overlap_defer_or_warn() {
   local _wt_issue="${_OVERLAP_ISSUE_NUM:-}"
   local _wt_basename
   _wt_basename=$(basename "$_OVERLAP_WT")
+
+  # When the liveness gate didn't record an issue number (e.g. test fixtures
+  # that pre-populate _OVERLAP_FILES without running _ftm_file_overlap), try
+  # to infer the owning issue from the worktree basename via
+  # batch_suffix_matches_issue against each entry in ISSUE_LIST.
+  if [ -z "$_wt_issue" ] && [ -n "$_wt_basename" ]; then
+    local _il0
+    for _il0 in "${ISSUE_LIST[@]+"${ISSUE_LIST[@]}"}"; do
+      if batch_suffix_matches_issue "$_wt_basename" "$_il0"; then
+        _wt_issue="$_il0"
+        break
+      fi
+    done
+  fi
 
   # Determine intra-batch vs cross-batch by scanning ISSUE_LIST for the
   # owning issue number. The +idiom prevents unbound-variable under set -u
@@ -1705,9 +1725,10 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
 
   # ---------------------------------------------------------------------------
   # Per-slot file overlap check: liveness gate + intra/cross-batch split.
-  # A worktree is "live" iff RITE_LOCK_DIR holds a lock entry with a live
-  # pid (kill -0) and a cwd file matching the worktree path. Worktrees with
-  # no lock, a backfill-only lock, or a dead pid are silently skipped.
+  # A worktree is "live" iff RITE_LOCK_DIR holds a lock entry whose issue
+  # number matches the worktree basename (batch_suffix_matches_issue) and
+  # whose pid is alive (kill -0). Worktrees with no lock, a backfill-only
+  # lock, or a dead pid are silently skipped.
   # No-op when _UNIQUE_ISSUE_COUNT <= 1 (unreorderable queue).
   # Intra-batch overlap → defer to end of queue (bounded by _DEFER_COUNT cap).
   # Cross-batch overlap → print_info + proceed (cannot wait out another batch).

@@ -32,7 +32,9 @@ BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 _setup_overlap_repo() {
   local _overlap_file="${1:-lib/core/batch-process-issues.sh}"
   local _repo="$BATS_TEST_TMPDIR/repo-$$"
-  local _wt="$BATS_TEST_TMPDIR/wt-$$"
+  # Use an issue-number-encoded basename so batch_suffix_matches_issue("ft-other-issue_b77", "77")
+  # matches the lock file issue-77.lock — cwd comparison is unreliable (project-root lock).
+  local _wt="$BATS_TEST_TMPDIR/ft-other-issue_b77"
 
   mkdir -p "$_repo"
   git -C "$_repo" init -q

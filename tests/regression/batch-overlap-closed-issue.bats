@@ -241,7 +241,8 @@ _build_guard_script() {
     '# We are testing the ISSUE_STATE guard, not overlap detection (that is' \
     '# tested in batch-cross-batch-overlap.bats).' \
     '_OVERLAP_FILES="lib/utils/docs-map.sh"' \
-    '_OVERLAP_WT="/worktrees/other-issue_b1000-1001"' \
+    '# _OVERLAP_WT basename encodes issue 42 so batch_suffix_matches_issue("ft-overlap-work_b42","42") infers intra-batch.' \
+    '_OVERLAP_WT="/worktrees/ft-overlap-work_b42"' \
     '' \
     '_list_len_before="${#ISSUE_LIST[@]}"' \
     '' \
