@@ -880,40 +880,47 @@ else
   verbose_success "PR is mergeable"
 fi
 
-# Check 4: Status checks
+# Check 4: CI status checks (sharkrite-side gate — isRequired is a GitHub paid-plan
+# feature unavailable here, so we evaluate ALL checks' already-known conclusions.
+# Completed FAILURE/ERROR blocks the merge. Pending checks are advisory only — no
+# polling, no sleep, zero added latency. See behavioral-design.md § "Gate Block-on-Any".)
 echo ""
 echo -e "${BLUE}📋 Status Checks${NC}"
 STATUS_CHECKS=$(echo "$PR_DETAILS" | jq -r '.statusCheckRollup // []')
-REQUIRED_CHECKS=$(echo "$STATUS_CHECKS" | jq -r '[.[] | select(.isRequired == true)]')
-REQUIRED_CHECKS_COUNT=$(echo "$REQUIRED_CHECKS" | jq 'length')
+ALL_CI_CHECKS=$(echo "$STATUS_CHECKS" | jq -r '[.[] ]')
+ALL_CI_CHECKS_COUNT=$(echo "$ALL_CI_CHECKS" | jq 'length')
 
-if [ "$REQUIRED_CHECKS_COUNT" -gt 0 ]; then
-  echo "  Required: $REQUIRED_CHECKS_COUNT"
+if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
+  echo "  Total: $ALL_CI_CHECKS_COUNT"
 
-  echo "$REQUIRED_CHECKS" | jq -r '.[] | "  - \(.name): \(.conclusion // .status)"' | while read line; do
+  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name): \(.conclusion // .status // "PENDING")"' | while read -r line; do
     if echo "$line" | grep -q "SUCCESS"; then
-      echo -e "  ${GREEN}✓${NC} $(echo $line | sed 's/: SUCCESS//')"
+      echo -e "  ${GREEN}✓${NC} $(echo "$line" | sed 's/: SUCCESS//')"
     elif echo "$line" | grep -q "FAILURE\|ERROR"; then
-      echo -e "  ${RED}✗${NC} $(echo $line | sed 's/: FAILURE//' | sed 's/: ERROR//')"
+      echo -e "  ${RED}✗${NC} $(echo "$line" | sed 's/: FAILURE//' | sed 's/: ERROR//')"
     else
       echo -e "  ${YELLOW}⏳${NC} $line"
     fi
   done
 
-  # Check for failures
-  FAILED_CHECKS=$(echo "$REQUIRED_CHECKS" | jq -r '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
-  PENDING_CHECKS=$(echo "$REQUIRED_CHECKS" | jq -r '[.[] | select(.conclusion == null or .conclusion == "PENDING")] | length')
+  # Only completed-FAILURE/ERROR checks block; pending is advisory.
+  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
+  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == null or .conclusion == "PENDING")] | length')
 
   if [ "$FAILED_CHECKS" -gt 0 ]; then
-    print_error "$FAILED_CHECKS required check(s) failed"
+    print_error "$FAILED_CHECKS CI check(s) completed with failure"
     VALIDATION_FAILED=true
+    _diag "MERGE_GATE_CI outcome=blocked failed=$FAILED_CHECKS pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   elif [ "$PENDING_CHECKS" -gt 0 ]; then
-    print_warning "$PENDING_CHECKS required check(s) still pending"
+    print_warning "$PENDING_CHECKS CI check(s) still pending (not blocking)"
+    _diag "MERGE_GATE_CI outcome=pending failed=0 pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   else
-    print_success "All required checks passed"
+    print_success "All CI checks passed"
+    _diag "MERGE_GATE_CI outcome=passed failed=0 pending=0 total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   fi
 else
   echo "  None configured"
+  _diag "MERGE_GATE_CI outcome=passed failed=0 pending=0 total=0 pr=$PR_NUMBER"
 fi
 
 # Check 5: Sharkrite code review (via PR comments or formal reviews)
