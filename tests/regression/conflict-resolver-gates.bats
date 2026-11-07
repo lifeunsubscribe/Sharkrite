@@ -42,7 +42,6 @@ _make_conflict_repo() {
   REPO="$RITE_TEST_TMPDIR/gaterepo"
   CONFLICT_SH="helper.sh"
   CONFLICT_BATS="tests.bats"
-  EXTRA_MD="readme.md"
 
   mkdir -p "$REPO"
   cd "$REPO" || return 1
@@ -56,6 +55,7 @@ _make_conflict_repo() {
   printf 'initial\n' > readme.md
   git add helper.sh tests.bats readme.md
   git commit -qm base
+  git branch -M main
 
   # Side branch: add a function to helper.sh, one more @test to tests.bats
   git checkout -qb side
@@ -74,7 +74,7 @@ _make_conflict_repo() {
   git commit -qm "main changes"
 
   # Merge side into main — creates conflicts in helper.sh and tests.bats.
-  # readme.md is a 3-way clean merge (no conflict).
+  # readme.md conflicts too (all three ancestors rewrite the same line).
   git merge --no-edit side >/dev/null 2>&1 || true
   # Stage 2 = ours (main): 4 @test blocks  Stage 3 = theirs (side): 4 @test blocks
 }
@@ -207,6 +207,7 @@ tests.bats" 2>/dev/null || exit_code=$?
   # Base: 3 tests
   printf '#!/usr/bin/env bats\n@test "t1" { true; }\n@test "t2" { true; }\n@test "t3" { true; }\n' > suite.bats
   git add suite.bats && git commit -qm base
+  git branch -M main
 
   # Side (theirs): removes one test → 2, adds a different one → stays 3
   git checkout -qb side
@@ -230,8 +231,10 @@ tests.bats" 2>/dev/null || exit_code=$?
 }
 
 @test "test-count gate: bats file on only one parent — no false failure" {
-  # Scenario: a .bats file exists in stage 3 (theirs) but not stage 2 (ours).
-  # The gate must skip the comparison — a one-sided file is not a deletion.
+  # Scenario: a modify/delete conflict — side (theirs) modifies the bats file,
+  # ours deletes it.  This produces stage 3 present and stage 2 absent, which
+  # exercises the has_theirs=true, has_ours=false path.  The gate must skip the
+  # comparison and pass — a one-sided file is not an invented deletion.
   REPO="$RITE_TEST_TMPDIR/oneparentrepo"
   mkdir -p "$REPO"
   cd "$REPO"
@@ -239,35 +242,51 @@ tests.bats" 2>/dev/null || exit_code=$?
   git config user.email t@t
   git config user.name t
 
-  # Base: only a placeholder file (no bats file on base)
+  # Base: bats file exists on both sides initially
+  printf '#!/usr/bin/env bats\n@test "t1" { true; }\n@test "t2" { true; }\n' > shared.bats
   printf 'placeholder\n' > readme.md
-  git add readme.md && git commit -qm base
+  git add shared.bats readme.md && git commit -qm base
+  git branch -M main
 
-  # Side (theirs): creates the bats file with 4 tests
+  # Side (theirs): modifies the bats file (adds a test)
   git checkout -qb side
-  printf '#!/usr/bin/env bats\n@test "t1" { true; }\n@test "t2" { true; }\n@test "t3" { true; }\n@test "t4" { true; }\n' > newfile.bats
-  printf 'side readme\n' > readme.md
-  git add newfile.bats readme.md && git commit -qm "side creates bats"
+  printf '#!/usr/bin/env bats\n@test "t1" { true; }\n@test "t2" { true; }\n@test "t3-side" { true; }\n' > shared.bats
+  git add shared.bats && git commit -qm "side modifies bats"
 
-  # Main (ours): modifies only readme.md (no bats file on our side either)
+  # Main (ours): deletes the bats file — produces modify/delete conflict on merge
   git checkout -q main
-  printf 'main readme\n' > readme.md
-  git add readme.md && git commit -qm "main modifies readme"
+  git rm -q shared.bats
+  git commit -qm "main deletes bats"
 
-  # readme.md conflict
+  # Merge creates modify/delete conflict: stage 3 present (theirs), stage 2 absent (ours)
   git merge --no-edit side >/dev/null 2>&1 || true
 
-  # Write a minimal resolution for readme.md
-  printf 'merged readme\n' > readme.md
-
-  # newfile.bats is not conflicted (only on theirs side) so it shouldn't be in
-  # _cr_conflict_files at all.  But if someone passes it in with only stage 3,
-  # the gate must skip safely.  Simulate by writing a reduced version:
-  printf '#!/usr/bin/env bats\n@test "t1" { true; }\n' > newfile.bats
+  # Resolution: write a resolved version (ours chose to keep the file)
+  printf '#!/usr/bin/env bats\n@test "t1" { true; }\n@test "t2" { true; }\n@test "t3-side" { true; }\n' > shared.bats
+  git add shared.bats
 
   local exit_code=0
-  _cr_check_resolution_gates "newfile.bats" 2>/dev/null || exit_code=$?
+  _cr_check_resolution_gates "shared.bats" 2>/dev/null || exit_code=$?
   [ "$exit_code" -eq 0 ]
+}
+
+@test "test-count gate: deleted .bats file (count=0) is rejected when both parents had tests" {
+  _make_conflict_repo
+  cd "$REPO"
+
+  # Write a valid .sh resolution so it doesn't trigger the syntax gate
+  printf '#!/bin/bash\nbase_fn() { echo base; }\nside_fn() { echo side; }\nmain_fn() { echo main; }\n' > helper.sh
+
+  # Delete the .bats file — count=0, strictly below both parents (each had 4)
+  rm -f tests.bats
+
+  local exit_code=0
+  local combined
+  combined=$(_cr_check_resolution_gates "helper.sh
+tests.bats" 2>&1) || exit_code=$?
+
+  [ "$exit_code" -ne 0 ]
+  echo "$combined" | grep -q "tests.bats"
 }
 
 # ---------------------------------------------------------------------------

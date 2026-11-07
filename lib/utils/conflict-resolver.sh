@@ -106,22 +106,26 @@ _cr_check_resolution_gates() {
 
   while IFS= read -r _crg_f; do
     [ -z "$_crg_f" ] && continue
-    [ -f "$_crg_f" ] || continue
 
-    # Check 3: Syntax gate — *.sh files and files under bin/
+    # Check 3: Syntax gate — *.sh files and files under bin/ (skip if deleted)
     case "$_crg_f" in
       *.sh|bin/*)
-        _crg_syntax_out=""
-        if ! _crg_syntax_out=$(bash -n "$_crg_f" 2>&1); then
-          _cr_error "Syntax error in resolved file: $_crg_f"
-          printf '%s\n' "$_crg_syntax_out" >&2
-          _crg_failed=true
-          _crg_n_syntax=$((_crg_n_syntax + 1))
+        if [ -f "$_crg_f" ]; then
+          _crg_syntax_out=""
+          if ! _crg_syntax_out=$(bash -n "$_crg_f" 2>&1); then
+            _cr_error "Syntax error in resolved file: $_crg_f"
+            printf '%s\n' "$_crg_syntax_out" >&2
+            _crg_failed=true
+            _crg_n_syntax=$((_crg_n_syntax + 1))
+          fi
         fi
         ;;
     esac
 
     # Check 4: Test-count gate — *.bats files
+    # A deleted .bats file (not present in working tree) has a merged count of 0,
+    # which is the strongest instance of the coverage-vanished class: if both
+    # parents had tests, a deletion passes the strictly-below-both check.
     # Strictly-lower-than-both is the signal: a legitimate merge may drop tests
     # that one side deleted (count falls below the higher parent only), but a
     # count below BOTH sides means the resolution invented a deletion — the
@@ -129,7 +133,11 @@ _cr_check_resolution_gates() {
     # for a week before #1593 caught it).
     case "$_crg_f" in
       *.bats)
-        _crg_merged_count=$(grep -c '^@test ' "$_crg_f" || true)
+        if [ -f "$_crg_f" ]; then
+          _crg_merged_count=$(grep -c '^@test ' "$_crg_f" || true)
+        else
+          _crg_merged_count=0
+        fi
         _crg_has_ours=false
         _crg_has_theirs=false
         _crg_ours_count=""
