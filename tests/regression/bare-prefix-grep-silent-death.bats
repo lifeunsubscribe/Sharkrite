@@ -247,7 +247,7 @@ EOF
   run bash -c '
     grep -rnE '"'"'grep -q[E]? "sharkrite-[a-z-]+:"'"'"' lib/ bin/ 2>/dev/null \
       | grep -v '"'"'[0-9]+\|[a-zA-Z0-9_-]+\|[0-9]\]'"'"' \
-      | grep -v '"'"'^\s*#'"'"' \
+      | grep -v '"'"'^[[:space:]]*#'"'"' \
       || true
   '
 

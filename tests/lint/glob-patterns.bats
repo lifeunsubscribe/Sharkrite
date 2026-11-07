@@ -42,12 +42,12 @@ setup() {
   # Loose wildcards like */bin/rite* can match unintended sub-paths.
   # After #128 the SHELL_FILES discovery block must not use wildcard-prefix -path patterns.
   # We grep only non-comment lines to avoid matching explanatory comments.
-  run bash -c "grep -v '^\s*#' \"$LINT_SCRIPT\" | grep -c '\*/bin/rite\*' || true"
+  run bash -c "grep -v '^[[:space:]]*#' \"$LINT_SCRIPT\" | grep -c '\*/bin/rite\*' || true"
   [ "$output" -eq 0 ]
 }
 
 @test "lint script does NOT use loose wildcard */tools/git-hooks/* pattern in code (non-comment lines)" {
-  run bash -c "grep -v '^\s*#' \"$LINT_SCRIPT\" | grep -c '\*/tools/git-hooks/\*' || true"
+  run bash -c "grep -v '^[[:space:]]*#' \"$LINT_SCRIPT\" | grep -c '\*/tools/git-hooks/\*' || true"
   [ "$output" -eq 0 ]
 }
 

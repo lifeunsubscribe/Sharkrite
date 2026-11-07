@@ -161,7 +161,7 @@ EOF
 @test "EXIT trap cleans up the new raw-individual temp files" {
   # If the gate crashes mid-run, the trap must remove the per-job raw files
   # too — otherwise we leak /tmp/rite_gate_*_raw_*.txt across runs.
-  _trap_line=$(grep -E '^\s+rm -f .*_lint_raw_file.*_sc_raw_individual' "$PROJECT_ROOT/lib/utils/test-gate.sh" || true)
+  _trap_line=$(grep -E '^[[:space:]]+rm -f .*_lint_raw_file.*_sc_raw_individual' "$PROJECT_ROOT/lib/utils/test-gate.sh" || true)
   [ -n "$_trap_line" ] || {
     echo "EXIT trap does not include _sc_raw_individual/_lint_raw_individual" >&2
     grep -n "rm -f.*_lint_raw_file" "$PROJECT_ROOT/lib/utils/test-gate.sh" >&2

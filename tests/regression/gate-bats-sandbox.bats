@@ -70,7 +70,7 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
   grep -qE '_bats_watchdog=\(timeout -k 30' "${RITE_LIB_DIR}/utils/test-gate.sh"
   # No ensure_timeout_cmd CALLS (comment lines excluded — the rationale comment
   # names it deliberately).
-  ! grep -vE '^\s*#' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -q 'ensure_timeout_cmd'
+  ! grep -vE '^[[:space:]]*#' "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -q 'ensure_timeout_cmd'
   _watchdog_uses=$(grep -c '_bats_watchdog\[@\]' "${RITE_LIB_DIR}/utils/test-gate.sh")
   # Definition sites + 6 invocation sites
   [ "$_watchdog_uses" -ge 6 ]

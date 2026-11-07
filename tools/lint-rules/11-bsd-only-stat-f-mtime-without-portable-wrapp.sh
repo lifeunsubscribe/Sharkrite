@@ -10,10 +10,10 @@ for file in "${SHELL_FILES[@]}"; do
   fi
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
-    if echo "$line_content" | grep -qE 'stat\s+-f'; then
+    if echo "$line_content" | grep -qE 'stat[[:space:]]+-f'; then
       print_violation "$file" "$line_num" "BARE_BSD_STAT_F" \
         "Use portable_stat_mtime() or portable_find_max_mtime() from lib/utils/portable-cmds.sh instead of bare 'stat -f'"
     fi

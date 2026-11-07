@@ -61,10 +61,10 @@ _r36_documented_set=$(LC_ALL=C grep -hoE 'RITE_[A-Z0-9_]+' "$_r36_conf_example" 
 
 # Build the exemption set: union of documented set + ledger entries.
 # Ledger lines starting with # are comments; blank lines are skipped.
-_r36_ledger_entries=$(LC_ALL=C grep -vE '^\s*(#|$)' "$_r36_ledger" 2>/dev/null | LC_ALL=C sort -u || true)
+_r36_ledger_entries=$(LC_ALL=C grep -vE '^[[:space:]]*(#|$)' "$_r36_ledger" 2>/dev/null | LC_ALL=C sort -u || true)
 
 # Combine documented + ledger into one sorted allowlist.
-_r36_allowed_set=$(printf '%s\n%s\n' "$_r36_documented_set" "$_r36_ledger_entries" | LC_ALL=C sort -u | LC_ALL=C grep -vE '^\s*$' || true)
+_r36_allowed_set=$(printf '%s\n%s\n' "$_r36_documented_set" "$_r36_ledger_entries" | LC_ALL=C sort -u | LC_ALL=C grep -vE '^[[:space:]]*$' || true)
 
 # Guard: an empty allowlist means the ledger or sort pipeline failed silently.
 # Every ledgered var would fire as a false positive, which is worse than failing.
@@ -87,7 +87,7 @@ done
 for _r36_file in "${_r36_lib_files[@]}"; do
   while IFS=: read -r _r36_line_num _r36_line_content; do
     # Skip full-line comments (first non-whitespace char is #).
-    if echo "$_r36_line_content" | grep -qE '^\s*#'; then
+    if echo "$_r36_line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
 

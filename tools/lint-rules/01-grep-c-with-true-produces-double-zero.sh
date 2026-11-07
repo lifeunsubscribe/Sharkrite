@@ -11,10 +11,10 @@ for file in "${SHELL_FILES[@]}"; do
   # grep -c always outputs a count (even "0") — use || true instead of || echo "0"
   # [^|]* ensures no pipe between grep -c and ||, i.e. grep -c is the final stage
   while IFS=: read -r line_num line_content; do
-    echo "$line_content" | grep -qE '^\s*#' && continue  # skip comment-only lines
-    if echo "$line_content" | grep -qE 'grep\s+[^|]*-c[^|]*\|\|\s*echo\s+"0"' ||
-       echo "$line_content" | grep -qE $'grep\s+[^|]*-c[^|]*\|\|\s*echo\s+\'0\'' ||
-       echo "$line_content" | grep -qE 'grep\s+[^|]*-c[^|]*\|\|\s*echo\s+0([^0-9]|$)'; then
+    echo "$line_content" | grep -qE '^[[:space:]]*#' && continue  # skip comment-only lines
+    if echo "$line_content" | grep -qE 'grep[[:space:]]+[^|]*-c[^|]*\|\|[[:space:]]*echo[[:space:]]+"0"' ||
+       echo "$line_content" | grep -qE $'grep[[:space:]]+[^|]*-c[^|]*\|\|[[:space:]]*echo[[:space:]]+\'0\'' ||
+       echo "$line_content" | grep -qE 'grep[[:space:]]+[^|]*-c[^|]*\|\|[[:space:]]*echo[[:space:]]+0([^0-9]|$)'; then
       print_violation "$file" "$line_num" "GREP_C_ECHO_ZERO" \
         "grep -c already outputs '0'; use || true instead of || echo \"0\""
     fi
@@ -24,10 +24,10 @@ for file in "${SHELL_FILES[@]}"; do
   # Under pipefail, an upstream failure propagates non-zero through tr, making || echo "0"
   # fire even when wc -l already printed "0", producing double zero.
   while IFS=: read -r line_num line_content; do
-    echo "$line_content" | grep -qE '^\s*#' && continue  # skip comment-only lines
-    if echo "$line_content" | grep -qE 'wc[^)]*-l[^)]*\|\|\s*echo\s+"0"' ||
-       echo "$line_content" | grep -qE $'wc[^)]*-l[^)]*\|\|\s*echo\s+\'0\'' ||
-       echo "$line_content" | grep -qE 'wc[^)]*-l[^)]*\|\|\s*echo\s+0([^0-9]|$)'; then
+    echo "$line_content" | grep -qE '^[[:space:]]*#' && continue  # skip comment-only lines
+    if echo "$line_content" | grep -qE 'wc[^)]*-l[^)]*\|\|[[:space:]]*echo[[:space:]]+"0"' ||
+       echo "$line_content" | grep -qE $'wc[^)]*-l[^)]*\|\|[[:space:]]*echo[[:space:]]+\'0\'' ||
+       echo "$line_content" | grep -qE 'wc[^)]*-l[^)]*\|\|[[:space:]]*echo[[:space:]]+0([^0-9]|$)'; then
       print_violation "$file" "$line_num" "GREP_C_ECHO_ZERO" \
         "wc -l always outputs a count; use || true instead of || echo \"0\""
     fi
@@ -37,10 +37,10 @@ for file in "${SHELL_FILES[@]}"; do
   # [^|]* after awk...END ensures no pipe between awk and ||, i.e. awk is the final stage
   # Conservative: requires literal END token in the awk program on the same line
   while IFS=: read -r line_num line_content; do
-    echo "$line_content" | grep -qE '^\s*#' && continue  # skip comment-only lines
-    if echo "$line_content" | grep -qE 'awk\s+[^|]*END[^|]*\|\|\s*echo\s+"0"' ||
-       echo "$line_content" | grep -qE $'awk\s+[^|]*END[^|]*\|\|\s*echo\s+\'0\'' ||
-       echo "$line_content" | grep -qE 'awk\s+[^|]*END[^|]*\|\|\s*echo\s+0([^0-9]|$)'; then
+    echo "$line_content" | grep -qE '^[[:space:]]*#' && continue  # skip comment-only lines
+    if echo "$line_content" | grep -qE 'awk[[:space:]]+[^|]*END[^|]*\|\|[[:space:]]*echo[[:space:]]+"0"' ||
+       echo "$line_content" | grep -qE $'awk[[:space:]]+[^|]*END[^|]*\|\|[[:space:]]*echo[[:space:]]+\'0\'' ||
+       echo "$line_content" | grep -qE 'awk[[:space:]]+[^|]*END[^|]*\|\|[[:space:]]*echo[[:space:]]+0([^0-9]|$)'; then
       print_violation "$file" "$line_num" "GREP_C_ECHO_ZERO" \
         "awk END block always runs and prints; use || true instead of || echo \"0\""
     fi
