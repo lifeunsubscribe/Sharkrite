@@ -43,7 +43,9 @@ BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 _setup_wt_repo() {
   local _overlap_file="${1:-lib/core/batch-process-issues.sh}"
   local _repo="$BATS_TEST_TMPDIR/repo-$$"
-  local _wt="$BATS_TEST_TMPDIR/wt-$$"
+  # Encode issue 99 in the basename so batch_suffix_matches_issue("ft-cross-overlap_b99","99")
+  # matches the auto-created issue-99.lock in _build_overlap_script.
+  local _wt="$BATS_TEST_TMPDIR/ft-cross-overlap_b99"
 
   mkdir -p "$_repo"
   git -C "$_repo" init -q

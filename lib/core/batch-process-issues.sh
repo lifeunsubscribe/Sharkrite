@@ -679,17 +679,27 @@ _ftm_file_overlap() {
           _lk_pid=$(cat "$_lk/pid" 2>/dev/null || true)
           [ -n "$_lk_pid" ] || continue
           kill -0 "$_lk_pid" 2>/dev/null || continue
-          # Live lock — confirm it owns this worktree by matching the lock's
-          # issue number against the worktree basename via
-          # batch_suffix_matches_issue.  cwd comparison is unreliable:
-          # acquire_issue_lock records pwd before the worktree is created, so
-          # live locks hold the project root (already skipped above via
-          # _ftm_main_wt).  cwd also mismatches on macOS where git worktree
-          # list returns the physical path (/private/var/...) while the lock
-          # file holds the logical path (/var/...).
+          # Live lock — confirm it owns this worktree.
           local _lk_bname="${_lk##*/}"
           local _lk_num="${_lk_bname#issue-}"
           _lk_num="${_lk_num%.lock}"
+          # Tier 1: physical-cwd compare.  claude-workflow.sh rewrites the lock's
+          # cwd to pwd -P after cd-ing into the worktree, so both sides resolve to
+          # the same inode even when git worktree list returns /private/... while
+          # the lock file holds /var/... (macOS symlink layers).
+          local _lk_cwd _phys_wt_lk _phys_cwd_lk
+          _lk_cwd=$(cat "$_lk/cwd" 2>/dev/null || true)
+          if [ -n "$_lk_cwd" ]; then
+            _phys_wt_lk=$(cd "$_wt_dir" && pwd -P 2>/dev/null || true)
+            _phys_cwd_lk=$(cd "$_lk_cwd" && pwd -P 2>/dev/null || true)
+            if [ -n "$_phys_wt_lk" ] && [ -n "$_phys_cwd_lk" ] && [ "$_phys_wt_lk" = "$_phys_cwd_lk" ]; then
+              _wt_live_issue="$_lk_num"
+              break
+            fi
+          fi
+          # Tier 2: basename match (covers basename-encoded suffixes, legacy locks
+          # written before the cwd-update patch, and single-issue-mode worktrees
+          # whose names encode the issue number).
           if batch_suffix_matches_issue "$(basename "$_wt_dir")" "$_lk_num"; then
             _wt_live_issue="$_lk_num"
             break
