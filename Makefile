@@ -54,25 +54,40 @@ fix:
 # When FILTER is set, restrict to tests/$(FILTER)/; otherwise run tests/.
 # Uses --formatter pretty when the installed bats supports --report-formatter
 # (bats-core >= 1.5); falls back to plain TAP on older versions.
+# After the run, prints a one-line count of skipped tests when any were skipped,
+# so "0 failures" is not mistaken for "all tests ran" (the flock-skip failure
+# mode from #1593). Requires bats >= 1.5 for --report-formatter; older bats
+# shows no skip summary but behaviour is otherwise identical.
 test:
 	@if command -v bats >/dev/null 2>&1; then \
+		_skip_tmpdir=""; \
 		if grep -q -- '--report-formatter' "$$(command -v bats)" 2>/dev/null; then \
-			_bats_fmt="-F pretty"; \
+			_skip_tmpdir=$$(mktemp -d "$${TMPDIR:-/tmp}/rite_skip_XXXXXX"); \
+			_bats_fmt="-F pretty --report-formatter tap --output $$_skip_tmpdir"; \
 		else \
 			_bats_fmt=""; \
 		fi; \
+		_bats_exit=0; \
 		if [ -n "$(FILTER)" ]; then \
 			if [ -d "tests/$(FILTER)" ]; then \
 				echo "Running bats tests (filter: $(FILTER))..."; \
-				bats $$_bats_fmt -r "tests/$(FILTER)/"; \
+				bats $$_bats_fmt -r "tests/$(FILTER)/" || _bats_exit=$$?; \
 			else \
 				echo "ERROR: tests/$(FILTER)/ not found"; \
 				exit 1; \
 			fi; \
 		else \
 			echo "Running bats tests..."; \
-			bats $$_bats_fmt -r tests/; \
+			bats $$_bats_fmt -r tests/ || _bats_exit=$$?; \
 		fi; \
+		if [ -n "$$_skip_tmpdir" ]; then \
+			_skip_count=$$(grep -rh "^ok .* # SKIP" "$$_skip_tmpdir/" 2>/dev/null | wc -l | tr -d ' ' || true); \
+			if [ "$${_skip_count:-0}" -gt 0 ]; then \
+				echo "($$_skip_count test(s) skipped — brew install bash gawk grep flock to un-skip)"; \
+			fi; \
+			rm -rf "$$_skip_tmpdir"; \
+		fi; \
+		exit $$_bats_exit; \
 	else \
 		echo "WARN: bats not installed. Skipping tests. Install with: brew install bats-core"; \
 	fi
