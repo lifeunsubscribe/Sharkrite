@@ -944,9 +944,9 @@ systemctl --user list-timers | grep sharkrite
 **Health report integration:** `rite --health-report` aggregates `FULL_SUITE_RUN` diag lines from `full-suite-*.log` files. Any `outcome=failed` in the reporting period promotes to a WARNING section. The failure flag is checked at report time and surfaced as an action item.
 
 ```bash
-rite --full-suite                           # Run now (manual — always runs, no guards)
-rite --full-suite --investigate             # Run + investigate + report + remediation issue
-rite --full-suite --investigate --scheduled # Scheduled mode: skip outside 02:00-05:00 or when busy
+rite --full-suite                                    # Run now (manual — always runs, no guards)
+bin/rite-full-suite --investigate                    # Run + investigate + report + remediation issue
+bin/rite-full-suite --investigate --scheduled        # Scheduled mode: skip outside 02:00-05:00 or when busy
 cat .rite/state/full-suite-failure.flag     # See current failure details if any
 cat .rite/reports/full-suite-$(date +%Y%m%d).md  # See today's investigation report
 ```

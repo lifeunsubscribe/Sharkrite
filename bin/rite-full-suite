@@ -102,7 +102,9 @@ export RITE_LOG_FILE="$_LOG_FILE"
 # Backfill dirs (no pid file) and dead-pid dirs do NOT count as busy.
 _has_live_rite_lock() {
   local _lock_base="${RITE_LOCK_DIR:-}"
-  [ -z "$_lock_base" ] || [ ! -d "$_lock_base" ] && return 1
+  if [ -z "$_lock_base" ] || [ ! -d "$_lock_base" ]; then
+    return 1
+  fi
   local _lf _pid
   for _lf in "$_lock_base"/issue-*.lock "$_lock_base"/batch.lock; do
     [ -d "$_lf" ] || continue

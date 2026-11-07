@@ -56,7 +56,7 @@
     [Service]
     Type=oneshot
     Environment=RITE_PROJECT_ROOT=/path/to/sharkrite
-    ExecStart=/path/to/sharkrite/bin/rite-full-suite
+    ExecStart=/path/to/sharkrite/bin/rite-full-suite --investigate --scheduled
 
     # /etc/systemd/user/sharkrite-full-suite.timer
     [Unit]
