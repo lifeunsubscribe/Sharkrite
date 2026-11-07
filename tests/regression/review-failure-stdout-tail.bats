@@ -46,7 +46,6 @@ _run_review_loop() {
     CLAUDE_ERROR=''
     REVIEW_EXIT=0
     REVIEW_PROMPT='x'; EFFECTIVE_MODEL='m'; AUTO_MODE='true'
-    CLAUDE_STDERR=\$(mktemp)
     ${loop_code}
     # Reached only if the loop did NOT exit (i.e. a review was captured).
     [ -n \"\$REVIEW_OUTPUT\" ] && echo 'REVIEW_CAPTURED'
