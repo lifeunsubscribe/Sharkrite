@@ -1006,7 +1006,7 @@ fi
 
 print_header "✅ All Validations Passed"
 echo "  • PR state: open, not draft, mergeable"
-echo "  • Status checks: ${REQUIRED_CHECKS_COUNT:-0} required (all passed)"
+echo "  • Status checks: ${ALL_CI_CHECKS_COUNT:-0} evaluated (no completed failures)"
 echo "  • Sharkrite review: $([ "$CLAUDE_REVIEW_FOUND" = true ] && echo "passed" || echo "not required")"
 echo ""
 

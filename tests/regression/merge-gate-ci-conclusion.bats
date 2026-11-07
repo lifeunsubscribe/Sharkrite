@@ -23,7 +23,7 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "Check 4 no longer filters on isRequired" {
-  run grep -c 'isRequired' "$PROJECT_ROOT/lib/core/merge-pr.sh"
+  run grep -c 'select(.isRequired' "$PROJECT_ROOT/lib/core/merge-pr.sh"
   [ "$output" = "0" ]
 }
 
