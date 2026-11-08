@@ -350,17 +350,8 @@ STUB
   local _state_dir="$RITE_TEST_TMPDIR/state"
   mkdir -p "$_state_dir"
 
-  # Build a fixture entry file in the real doc-drift store layout.
-  # Branch: my-integration-branch
-  # Doc:    docs/architecture/behavioral-design.md
-  # Slug:   docs--architecture--behavioral-design.md  (/ replaced with --)
   local _branch="my-integration-branch"
   local _doc="docs/architecture/behavioral-design.md"
-  local _doc_slug="docs--architecture--behavioral-design.md"
-  local _entry_dir="$_state_dir/doc-drift/$_branch"
-  mkdir -p "$_entry_dir"
-  printf 'doc=%s\tbranch=%s\tpr=99\tissue=42\tassertion=Gate Block-on-Any\tkind=addition\tevidence=lib/utils/test-gate.sh\trecorded=2026-11-08T00:00:00Z\n' \
-    "$_doc" "$_branch" > "$_entry_dir/${_doc_slug}.log"
 
   local _runner
   _runner=$(_write_promote_runner << RUNEOF
@@ -372,6 +363,10 @@ export RITE_STATE_DIR="$_state_dir"
 # Source real drift-log.sh before docs-command.sh so its re-source guard keeps
 # the real implementation in place when docs-command.sh later sources the stub.
 source "$RITE_REPO_ROOT/lib/utils/drift-log.sh"
+# Write the fixture entry through the real drift_log_append so the writer/reader
+# contract is pinned: a serialization change in drift-log.sh must cause this test
+# to fail.
+drift_log_append "$_doc" "$_branch" 99 42 "Gate Block-on-Any" "addition" "lib/utils/test-gate.sh"
 source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
 docs_run_promote_doc_pass "$_branch" 2>&1
 RUNEOF
