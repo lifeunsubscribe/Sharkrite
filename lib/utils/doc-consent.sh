@@ -108,6 +108,8 @@ ensure_doc_mode() {
 # Behaviour:
 #   --disable   Record off; print confirmation. The next plain `rite align-docs`
 #               will ask again (off maps to never-run in _docs_resolve_state).
+#               Extra args after --disable are rejected with exit 1 (no per-doc
+#               disable; pass doc names to 'rite align-docs [doc ...]' instead).
 #   (no args)   If already enabled (sync/changelog): report state, no prompt.
 #               If non-TTY: print a message, never enable, exit 0.
 #               If TTY + never enabled: ask y/n; prompt text states the audit
@@ -120,6 +122,11 @@ run_align_docs_switch() {
   local _disable_flag="${1:-}"
 
   if [ "$_disable_flag" = "--disable" ]; then
+    if [ $# -gt 1 ]; then
+      echo "Error: 'rite align-docs --disable' does not accept doc names." >&2
+      echo "  Usage: rite align-docs --disable" >&2
+      return 1
+    fi
     record_doc_mode "off"
     if declare -f print_info >/dev/null 2>&1; then
       print_info "Doc drift tracking disabled. Run 'rite align-docs' to re-enable."
