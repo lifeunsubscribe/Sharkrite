@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/promote-branch.sh, lib/core/docs-command.sh
+# sharkrite-test-covers: lib/core/promote-branch.sh, lib/core/docs-command.sh, lib/utils/drift-log.sh
 # tests/regression/promote-docs-after-merge.bats
 #
 # Regression tests for #1435: post-merge Tier 2 doc pass in rite --promote.
@@ -303,6 +303,91 @@ RUNEOF
 
   # Verify no doc path leaked into stdin reads
   [[ "$output" != *"STDIN_SAMPLE:docs/"* ]]
+}
+
+# ===========================================================================
+# Group 4: Real drift-log.sh store integration
+# ===========================================================================
+
+# Helper: extend the fake lib with a lock stub (needed by real drift-log.sh at
+# load time) and replace the drift-log stub with a no-op re-source guard only
+# (so the real drift-log.sh sourced before docs-command.sh is not overwritten).
+_write_docs_command_stubs_real_driftlog() {
+  local _lib="$1"
+  _write_docs_command_stubs "$_lib"
+
+  # lock.sh stub — only lock_acquire and lock_release are needed by drift-log.sh
+  cat > "$_lib/utils/lock.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f lock_acquire >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+lock_acquire()  { return 0; }
+lock_release()  { return 0; }
+lock_held_pid() { echo ""; }
+STUB
+
+  # Replace the drift-log stub with a guard-only file so the real drift-log.sh
+  # (sourced before docs-command.sh in the runner) is preserved by its own
+  # re-source sentinel (declare -f drift_log_append).
+  cat > "$_lib/utils/drift-log.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f drift_log_append >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+# Real drift-log.sh was not pre-loaded; fall back to no-ops so docs-command.sh
+# does not crash — this path means the test forgot to pre-source the real file.
+drift_log_entry_count() { echo 0; }
+_drift_entry_path()     { echo ""; }
+drift_log_append()      { return 0; }
+drift_log_path()        { echo ""; }
+STUB
+}
+
+@test "docs_run_promote_doc_pass: non-TTY proposal lists doc from real drift-log.sh store" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  _write_docs_command_stubs_real_driftlog "$_lib"
+
+  local _state_dir="$RITE_TEST_TMPDIR/state"
+  mkdir -p "$_state_dir"
+
+  # Build a fixture entry file in the real doc-drift store layout.
+  # Branch: my-integration-branch
+  # Doc:    docs/architecture/behavioral-design.md
+  # Slug:   docs--architecture--behavioral-design.md  (/ replaced with --)
+  local _branch="my-integration-branch"
+  local _doc="docs/architecture/behavioral-design.md"
+  local _doc_slug="docs--architecture--behavioral-design.md"
+  local _entry_dir="$_state_dir/doc-drift/$_branch"
+  mkdir -p "$_entry_dir"
+  printf 'doc=%s\tbranch=%s\tpr=99\tissue=42\tassertion=Gate Block-on-Any\tkind=addition\tevidence=lib/utils/test-gate.sh\trecorded=2026-11-08T00:00:00Z\n' \
+    "$_doc" "$_branch" > "$_entry_dir/${_doc_slug}.log"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_STATE_DIR="$_state_dir"
+# Source real drift-log.sh before docs-command.sh so its re-source guard keeps
+# the real implementation in place when docs-command.sh later sources the stub.
+source "$RITE_REPO_ROOT/lib/utils/drift-log.sh"
+source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
+docs_run_promote_doc_pass "$_branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" < /dev/null
+  [ "$status" -eq 0 ]
+
+  # Proposal file must exist and list the fixture doc
+  local _safe_branch="${_branch//\//-}"
+  local _proposal="$_state_dir/doc-proposal-${_safe_branch}.md"
+  [ -f "$_proposal" ] || { echo "FAIL: proposal file not found at $_proposal"; return 1; }
+  grep -q "behavioral-design.md" "$_proposal"
+
+  # Resume command must name the branch
+  echo "$output" | grep -q "rite docs --resume $_branch"
 }
 
 @test "docs_run_promote_doc_pass: best-effort — returns 0 even when doc pass stub errors" {
