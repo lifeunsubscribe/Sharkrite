@@ -120,6 +120,8 @@ Each task uses the model that fits its nature. Every role has its own independen
 
 **Never pass `""` as the model arg** to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on defaults — an empty model silently falls through to `resolve_model "review"` (opus). Pass an explicit role via the provider-agnostic **`provider_resolve_model <role>`** (not the claude-prefixed `claude_provider_resolve_model` — `lib/core`/`lib/utils` must stay provider-agnostic). Both invariants are enforced by lint: `PROVIDER_MODEL_FALLTHROUGH` (Rule 31) rejects the bare `""`, `DIRECT_PROVIDER_CALL` (Rule 32) rejects direct `claude_provider_*` calls. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
 
+**Opt-in fallback when a pinned model is out of credits**: set `RITE_MODEL_FALLBACK=<working-model>` in `.rite/config`. Healthcheck probes each distinct configured model for roles that go through `provider_resolve_model` (dev, review, assessment, doc_assessment, plan, promote, triage, full_suite_report) and substitutes the fallback for any that are capped — per-role independence is preserved (each role's var still controls its default; only an actually-capped model is replaced). Note: `RITE_HEALTH_MODEL` is used directly in `bin/rite-health-report` without routing through `provider_resolve_model`, so it is not probed and not subject to substitution. Emits one `MODEL_FALLBACK` diag and one operator warning per affected role. When the fallback itself is also unavailable, the existing exit-5/cap-resume path fires normally. When unset (default), no probes run and behavior is byte-identical to before.
+
 ## Shell Conventions
 
 ### CWD after worktree removal (CRITICAL)
@@ -495,6 +497,7 @@ Path-based detectors (infrastructure, migrations, auth, docs, expensive services
 Only content-aware and practical conditions block merges:
 
 - **CRITICAL review findings** — requires fix or approval
+- **CI check failures** — any check in `statusCheckRollup` whose `conclusion` is `FAILURE` or `ERROR` blocks the merge (`MERGE_GATE_CI`). Pending checks (`conclusion == null`) are advisory only — no polling, no sleep, zero added latency. The gate reads conclusions GitHub already computed; it runs no tests itself. Replaces the inert `isRequired` filter (a GitHub paid-plan feature unavailable here). Implemented in `lib/core/merge-pr.sh` Check 4.
 - **Test/build failures** — non-zero exit from test suite
 - **Session limits** — dual-cap model (issue #283):
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
@@ -814,6 +817,7 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
 - **Exit codes**: Canonical table lives in `docs/architecture/exit-codes.md`. Key codes:
+  - `lib/providers/claude.sh`: exit 5 for "usage cap detected on any provider runner path (all six: run_agentic_session, run_prompt, run_prompt_with_timeout, run_streaming_prompt, run_classify, run_uncached)"; exit 18 for "provider auth failure on any provider runner path"
   - `assess-and-resolve.sh`: exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2", exit 5 for "usage cap during fix session or review regeneration (composite phase_assess_and_resolve only — standalone script does not emit 5)", exit 18 for "provider auth failure during fix session (composite phase_assess_and_resolve only — standalone script does not emit 18)"
   - `merge-pr.sh`: exit 0 for "merge and cleanup succeeded", exit 1 for "merge failed", exit 6 for "merge succeeded but cleanup failed"
   - `stale-branch.sh` → `workflow-runner.sh`: exit 11 for "stale branch restarted fresh" (caller resets resume state). **Not 10** — exit 10 is reserved for `batch-process-issues.sh` "blocker detected — defer issue"
@@ -906,6 +910,17 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 - Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
+**`--scheduled` flag (used by the scheduled plist):** Enables two guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour or lock state.
+
+- **Window guard:** A run starting outside 02:00–05:00 local time exits 0 immediately without running anything, appends a skip line to the daily log, and emits `[diag] FULL_SUITE_SKIPPED reason=outside_window hour=<H>`. A catch-up firing at 09:00 (launchd sleep catch-up) is therefore a no-op. Skipping the night IS the desired behavior — deferring into working hours is the bug being fixed.
+- **Busy guard:** A run exits 0 immediately when any live rite lock exists (issue or batch lock with a valid PID that answers `kill -0`). Backfill locks (no pid file) and dead-pid locks do NOT count as busy. Emits `[diag] FULL_SUITE_SKIPPED reason=batch_active hour=<H>`.
+- **Health-report aggregation:** A skipped night emits `FULL_SUITE_SKIPPED`, not `FULL_SUITE_RUN` — health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is treated as neither pass nor failure (no green tick, no WARNING entry).
+
+A skip line in the daily log looks like:
+```
+=== Scheduled run SKIPPED: outside window (2:00-5:00), hour=9 ===
+```
+
 **`--investigate` flag (used by the scheduled plist):** When passed to a failing run, triggers three additional steps after the failure flag is written:
 
 1. **Investigate** — re-runs each failing `.bats` file *serially* (no `--jobs`). A serial run distinguishes genuine failures from parallel-starvation timeouts (the class that false-halted batches 2026-10-12/13). Each originally-failing test is classified as `persistent` (still fails serially) or `cleared-on-serial-rerun` (flake). Lint violations are always `persistent` (deterministic, no parallelism involved).
@@ -914,7 +929,7 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 
 3. **Remediate** — if any persistent failures exist, files ONE issue carrying `<!-- sharkrite-full-suite-remediation:<hash> -->` (hash = `cksum` of sorted persistent test names + lint count, anchored in the dedup search so the guard matches the hash not the bare prefix). A second run with the same failing set detects the existing issue and skips creation. If `gh issue create` fails, an orphan artifact is appended to `.rite/orphaned-followup-items.md` so findings are not silently lost. Purely-cleared (all-flake) runs file no issue.
 
-**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). Manual runs without `--investigate` keep today's behavior (run + flag, no investigation).
+**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). The plist ships `--investigate --scheduled` so the job applies both guards automatically. A closed lid at 3 AM → skipped night; this is correct — do not add buffering or retry logic. To guarantee no missed nights on a laptop, opt in to a repeating wake: `sudo pmset repeat wakeorpoweron MTWRFSU 02:55:00`.
 
 macOS (launchd):
 ```bash
@@ -942,9 +957,10 @@ systemctl --user list-timers | grep sharkrite
 **Health report integration:** `rite --health-report` aggregates `FULL_SUITE_RUN` diag lines from `full-suite-*.log` files. Any `outcome=failed` in the reporting period promotes to a WARNING section. The failure flag is checked at report time and surfaced as an action item.
 
 ```bash
-rite --full-suite                       # Run now (no investigation)
-rite --full-suite --investigate         # Run + investigate + report + remediation issue
-cat .rite/state/full-suite-failure.flag # See current failure details if any
+rite --full-suite                                    # Run now (manual — always runs, no guards)
+bin/rite-full-suite --investigate                    # Run + investigate + report + remediation issue
+bin/rite-full-suite --investigate --scheduled        # Scheduled mode: skip outside 02:00-05:00 or when busy
+cat .rite/state/full-suite-failure.flag     # See current failure details if any
 cat .rite/reports/full-suite-$(date +%Y%m%d).md  # See today's investigation report
 ```
 
@@ -990,9 +1006,15 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
+- `FULL_SUITE_SKIPPED` — scheduled run skipped without running the suite; `reason=outside_window` (clock outside 02:00–05:00) or `reason=batch_active` (live rite lock detected); `hour=<H>`. Health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is neither a pass nor a failure — a missing nightly report is explainable, not an alarm.
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 - `DOC_PASS` — every doc model pass: `kind=promote|docs|align doc=<path|-> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`; when `duration_s > RITE_DOC_PASS_WARN_SECONDS` (default 120) an info-level suggestion to run `rite align-docs` is also printed (per-doc passes only; aggregate passes with `doc=-` never print the suggestion)
 - `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
 - `MAIN_CI_RED` — batch preflight found red CI on the target branch; `branch=<b> conclusion=<c>`; batch aborts unless `--allow-red-main` was passed
+- `CONFLICT_RESOLVE_ATTEMPT` — per-attempt diag from the conflict-resolver retry loop; `n=<attempt_number> remaining=<file_count>`. Emitted by `lib/utils/conflict-resolver.sh` before each provider session. Health reports aggregate these to surface conflict sets that consistently need multiple attempts.
+- `CONFLICT_RESOLVE_GATE` — post-resolution syntax and test-count gate; `outcome=passed|failed syntax=<n> testcount=<n>` (emitted by `conflict-resolver.sh` after Check 2 and before the merge is committed; emitted whenever logging is loaded — always true in orchestrated runs)
+- `MERGE_GATE_CI` — CI check conclusion gate in `merge-pr.sh` Check 4; `outcome=blocked|passed|pending failed=<n> pending=<n> total=<n> pr=<n>`. `blocked` = at least one completed-FAILURE/ERROR; `pending` = no failures but pending checks exist; `passed` = all complete and green (or zero checks). Reads conclusions GitHub already computed — runs nothing itself.
+- `GATE_FINDING_RESOLVED` — a prior `[GATE] ACTIONABLE_NOW` item was dropped from the LLM assessment output by `_resolve_prior_gate_findings` (issue #1613); `issue=<N> finding=<first 120 chars of header>`. Emitted once per dropped item. See `behavioral-design.md` → "Gate-Origin Re-raise Policy".
+- `MODEL_FALLBACK` — a role's configured model was detected as unavailable at preflight and substituted with `RITE_MODEL_FALLBACK`; `role=<r> from=<original_model> to=<fallback_model>`. Emitted once per affected role during healthcheck. Only fires when `RITE_MODEL_FALLBACK` is set.
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

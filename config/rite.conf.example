@@ -97,6 +97,16 @@
 # RITE_REVIEW_MODEL="claude-opus-4-8"
 # RITE_PROMOTE_MODEL="claude-opus-4-8"
 
+# Opt-in model fallback: when a role's pinned model is out of credits (the whole
+# model family is exhausted, not just a per-hour rate limit), every call for that
+# role fails for the life of the cap. Set RITE_MODEL_FALLBACK to a working model
+# and rite probes each distinct configured model once at preflight — any that
+# report a cap phrase are substituted with this fallback for the run.
+# Leave unset (the default) for byte-identical behavior with no added latency.
+# When set, preflight adds ~2s × (number of distinct models) at batch start.
+# If the fallback itself is also unavailable, the existing cap path fires normally.
+# RITE_MODEL_FALLBACK="claude-sonnet-4-6"
+
 # Assessment model: classifies review findings into NOW/LATER/DISMISSED.
 # Structured three-state classification — sonnet's job. Independent of
 # RITE_REVIEW_MODEL (upgrading review must not upgrade assessment with it).

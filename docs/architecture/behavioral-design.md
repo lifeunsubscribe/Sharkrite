@@ -165,37 +165,49 @@ When a dep issue is OPEN, `batch-process-issues.sh` tries each option in order:
 
 **Parent-PR live-lock path (follow-up issues):** The same live-lock defer logic applies to the `PARENT_IN_QUEUE=false` branch. When a follow-up issue's parent PR is still open and the parent issue is not in this batch, `batch-process-issues.sh` checks whether the parent issue holds a live lock before skipping. If the parent holds a live lock, the follow-up is deferred to end of queue (`deferred_for_parent` status) with the same `RITE_LIVE_LOCK_DEFER_WAIT` background sleep and `RITE_LIVE_LOCK_MAX_DEFERS` cap. The `_PARENT_LIVE_LOCK_WAIT_PID` join runs on re-entry before the parent PR state is re-checked. Without this, concurrent batches where one batch owns the parent issue silently skip the follow-up even though the parent is actively merging.
 
-### Cross-Batch File Overlap: Warn and Reorder
+### Cross-Batch File Overlap: Liveness Gate
 
-Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every other in-flight worktree. On intersection, the issue is re-appended to the end of the queue (warn-and-reorder, never skip).
+Before each issue slot runs its workflow, `batch-process-issues.sh` compares the issue's declared `Files to Modify:` paths against the changed files of every **live** in-flight worktree. On intersection the action depends on whether the overlapping worktree belongs to the same batch (intra) or a different batch (cross). An issue is never skipped or blocked.
+
+**Liveness gate — mandatory:** A worktree is counted as "in-flight" only when `RITE_LOCK_DIR` holds a lock entry whose `pid` file exists, `kill -0 <pid>` succeeds (live process), and the lock is confirmed to own that worktree via a two-tier check: **tier 1** compares `pwd -P` of the worktree against `pwd -P` of the lock's `cwd` file (resolves macOS `/private/` vs `/var/` symlink layers); **tier 2** (basename fallback) checks whether the worktree basename encodes the lock's issue number via `batch_suffix_matches_issue` (covers legacy locks written before the cwd-update patch and single-issue-mode worktrees). Worktrees with no lock directory, a backfill-only lock (no `pid` file), or a dead pid are silently skipped. This prevents false positives from abandoned worktrees that outlive the run that created them.
+
+**Unreorderable-queue no-op:** When `_UNIQUE_ISSUE_COUNT ≤ 1` (single-issue batch), the check is entirely skipped — no overlap computation, no output. Deferring to the end of a one-element queue is a pointless cycle.
 
 **Invariants (warn-only contract):**
-- An issue is **never skipped** or blocked by this check. Cap exhausted → run in place with the warning only.
-- The check is **local git only** — `git worktree list` + `git -C <wt> diff --name-only <base>...HEAD`. No network calls, no `gh` invocations.
+- An issue is **never skipped** or blocked by this check. Cap exhausted → run in place; cross-batch → proceed.
+- The check is **local git + local lock files only** — `git worktree list` + `git -C <wt> diff --name-only` + `RITE_LOCK_DIR` reads. No network calls, no `gh` invocations.
 - A missing or empty `Files to Modify:` section is a **silent no-op**.
 
 **Overlap detection — `_ftm_file_overlap ISSUE_BODY`:**
-1. Parse the `Files to Modify:` section from the issue body (first backtick-quoted path per list item; falls back to first whitespace-delimited word). Entries without `/` or `.` are filtered as prose.
-2. Enumerate all worktrees via `git worktree list`, skipping the main checkout and current directory.
-3. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
-4. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
-5. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
-6. First intersection wins — records `_OVERLAP_FILES` (comma-joined matches) and `_OVERLAP_WT` (worktree path).
+1. If `_UNIQUE_ISSUE_COUNT ≤ 1`, return immediately (no-op).
+2. Parse the `Files to Modify:` section from the issue body (first backtick-quoted path per list item; falls back to first whitespace-delimited word). Entries without `/` or `.` are filtered as prose.
+3. Enumerate all worktrees via `git worktree list`, skipping the main checkout, current directory, and the current issue's own pre-existing worktree.
+4. For each other worktree, resolve a diff base (`merge-base HEAD origin/main` → `merge-base HEAD main` → `rev-list --max-parents=0`). Skip silently if none resolves.
+5. Run `git -C <wt> diff --name-only <base>...HEAD` to get the worktree's changed files.
+6. Match each declared path against changed files: exact match, directory-prefix match (`declared/` prefix), or glob match (`*`/`?` in declared path).
+7. On intersection, run the liveness gate: scan `RITE_LOCK_DIR/issue-*.lock` for a lock whose `pid` is alive (`kill -0`) and that owns the worktree via a two-tier check — tier 1: `pwd -P` of the worktree equals `pwd -P` of the lock's `cwd` file; tier 2 (basename fallback): worktree basename encodes the lock's issue number per `batch_suffix_matches_issue`. Skip worktree if neither tier matches for any lock.
+8. First live intersection wins — records `_OVERLAP_FILES` (comma-joined matches), `_OVERLAP_WT` (worktree path), and `_OVERLAP_ISSUE_NUM` (issue number from the lock dir name).
 
-**Deferral — shared `_DEFER_COUNT` cap:**
-The same `_DEFER_COUNT[ISSUE_NUM]` counter and `_UNIQUE_ISSUE_COUNT` bound used by the dep-defer path also gate the overlap defer. This prevents an issue from cycling forever when the overlapping worktree never clears. Cap exhausted → the issue runs in place after printing the warning; it is NOT skipped or blocked.
+**Decision — `_apply_overlap_defer_or_warn`:**
+
+*Intra-batch* (the lock's issue number is in `ISSUE_LIST`): moving the current issue to the end of the queue can clear the conflict once the overlapping issue finishes. Uses the shared `_DEFER_COUNT[ISSUE_NUM]` / `_UNIQUE_ISSUE_COUNT` cap to prevent infinite cycling. Below cap → `print_warning` + re-append + `[diag] OVERLAP_DEFER`. Cap exhausted → `print_info` stating the consequence ("expect possible rebase churn") + `[diag] OVERLAP_DEFER cap_exhausted=true` + run in place.
+
+*Cross-batch* (the lock's issue number is NOT in `ISSUE_LIST`): deferring cannot wait out a different batch, which clears on its own schedule. Emits one `print_info` line naming the branch and files, `[diag] OVERLAP_CROSS_BATCH`, and proceeds immediately.
 
 **Dep-chain cohesion (free):** A deferred issue's position moves to the end of the queue. Any in-batch children whose dep is this issue will self-defer via `_check_dep_queued_later` — no extra code needed.
 
 **Deliberate batch-only divergence:** Single-issue mode has no queue to defer into, so `_ftm_file_overlap` is only called from the per-slot batch loop.
 
-**Skipped for CLOSED issues:** The guard is not run when `ISSUE_STATE=CLOSED`. Closed-issue processing is cleanup-only (worktree removal, branch deletion) and touches no source files, so it cannot conflict with another worktree's diff. Deferring a closed issue would only delay that cleanup while burning the defer cap. The parity contract (`batch-process-issues.sh` "do NOT short-circuit here" comment, referencing this doc) owns closed-issue handling via `run_workflow()` → `handle_closed_issue()`.
+**Skipped for CLOSED issues:** The guard is not run when `ISSUE_STATE=CLOSED`. Closed-issue processing is cleanup-only (worktree removal, branch deletion) and touches no source files, so it cannot conflict with another worktree's diff. Deferring a closed issue would only delay that cleanup while burning the defer cap.
 
-**Diag line:** `[diag] OVERLAP_DEFER issue=N files=... worktree=...` emitted on each deferral (and on cap-exhausted in-place runs with `cap_exhausted=true`).
+**Diag lines:**
+- `[diag] OVERLAP_DEFER issue=N files=... worktree=...` — intra-batch deferral
+- `[diag] OVERLAP_DEFER issue=N files=... worktree=... cap_exhausted=true` — intra-batch, cap reached
+- `[diag] OVERLAP_CROSS_BATCH issue=N files=... worktree=... other_issue=M` — cross-batch, proceeds
 
-**Motivation (live incident, 2026-10-11):** Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`. The concurrent worktrees caused rebase churn and extra fix rounds on the second batch. This check catches the overlap before Phase 1 starts, deferring until the first batch has cleared its worktrees.
+**Motivation (live incidents):** 2026-10-11: Batches for issues #916/#975 and #1125/#1130 both touched `test-gate.sh`; rebase churn and extra fix rounds. 2026-11-04: single-issue batch for #1443 printed a false overlap warning against a lockless abandoned worktree — `_UNIQUE_ISSUE_COUNT=1` made the defer a pointless self-cycle. The liveness gate and unreorderable-queue no-op together prevent both classes of false positive.
 
-**Verification:** `grep -n "OVERLAP_DEFER" docs/architecture/behavioral-design.md` returns this paragraph.
+**Verification:** `grep -n "live lock" docs/architecture/behavioral-design.md` returns this paragraph.
 
 ### Session Timer
 
@@ -473,6 +485,16 @@ The old section argued that having Claude run tests INSIDE the session is defens
 **Enforcement:** `tests/regression/gate-block-on-any.bats` — a failing test in the targeted selection fails the gate (exit 1, reported in `tests[]`, not suppressed) + the `_tap_failure_name` canonicalizer. The selection logic (FORCE_FULL opt-in, targeted-by-changed-paths) is pinned separately by `gate-force-full-optin.bats` and `test-gate-targeted-selection.bats`.
 
 **Merge boundary (#718).** Block-on-any now extends to the **merge boundary** as well as the fix loop. Gate findings are injected into the assessment as `### [GATE] … - ACTIONABLE_NOW` items (structured header prefix). At the 3/3 retry cap, `assess-and-resolve.sh` distinguishes `[GATE]`-tagged items (objective test/lint failures) from LLM-severity HIGH review findings: gate-origin items that survive all retries are treated as non-deferrable — they block the merge (`exit 1`, same path as CRITICAL) rather than being filed as tech-debt and merged. Non-gate HIGH review findings continue to follow the existing retry-cap defer+tech-debt path. Live regression: issue #649 — 2 gate failures, loop hit 3/3, HIGH `[GATE]` deferred to #714, PR #712 merged red.
+
+**Gate-Origin Re-raise Policy (#1613).** On retry passes, `assess-review-issues.sh` RULE 1 injects prior `ACTIONABLE_NOW` items into the LLM prompt to prevent silent resolution — LLM silence is taken as evidence of non-resolution. This is correct for review-origin findings (no objective check available) but wrong for gate-origin findings: the gate verdict itself is the oracle, not the LLM's review text.
+
+The fix (`_resolve_prior_gate_findings` in `assess-and-resolve.sh`): after `assess-review-issues.sh` returns its result and before `GATE_PREPEND_ITEMS` is prepended, any `### [GATE] … - ACTIONABLE_NOW` item in the LLM's output is resolved by evidence:
+
+- **`_GATE_HAD_VALID_VERDICT=true`** (gate ran for the current HEAD without stale SHA or timeout/crash): all `[GATE] ACTIONABLE_NOW` items are dropped from the LLM output. Items still failing appear in `GATE_PREPEND_ITEMS` and are prepended by the caller — dropping from the LLM result prevents double-counting. Items that passed are silently dropped.
+
+- **`_GATE_HAD_VALID_VERDICT=false`** (standalone `--assess-and-fix` without a preceding gate run): a targeted bats rerun is attempted for each `[GATE] bats failure:` item whose location is extractable from the prior assessment comment. A passing run resolves the item; failure or unrunnable state keeps it. Lint `[GATE]` items are always kept (conservative — running `make check` would violate the no-full-suite contract).
+
+A `[diag] GATE_FINDING_RESOLVED` line is emitted for each dropped item. Live deadlock that motivated this fix: issue #1595 batch rite-1605-1597-1596-1607-1595 — `blocker-rules subshell gate` test passed on retry 3 but the LLM re-raised it with a paraphrased title; `FOLLOWUP_SKIPPED_GATE_ORIGIN` fired; exit 1 halted the batch despite the review being approved.
 
 **RETIRED 2026-10-13 — layer 1 removed.** The batch preflight below ran the full unfiltered suite before every batch (10–25 min of fixed cost) and halted the batch on any failure. Because it ran the suite through the gate's `bats --jobs 8` parallel group, the `tests/concurrency/` files — which spawn competing processes by design — starved past the 120s `BATS_TEST_TIMEOUT` and reported a healthy main as red, halting two batches (2026-10-12, 2026-10-13; 26 of 29 "failures" carried `# timeout after 120 s`). Standing rule: **a full suite never runs inside a sharkrite workflow — only in the overnight `rite --full-suite` pipeline.** Layer 2 (attribution subtraction) remains in the code but is dormant: nothing writes the baseline file now. If the red-main problem needs solving again, do it lazily — on an actual gate failure, re-run only the failing tests against main and subtract the ones that fail there too — never with an upfront full suite.
 
@@ -2218,11 +2240,14 @@ tests, both discarded with "Unresolved files remain after Claude session".
 |---|---|---|
 | 1 | Is every unmerged path one the session was given? | index vs `_cr_conflict_files` |
 | 2 | Is every given path marker-free? | working-tree content |
+| 3 | Does every resolved `*.sh` / `bin/` file parse? | `bash -n` on the working-tree file |
+| 4 | Did the resolution preserve `@test` coverage? | `^@test ` count merged ≥ min(ours, theirs) |
 
-Together those are the real contract. Check 1 still catches a conflict that
-appeared after the path list was captured, or one the session introduced; Check
-2 catches a resolution that left markers behind. Neither tests staging, because
-staging is a later step's job.
+Together those are the full acceptance contract. Checks 1 and 2 were the original pair. Checks 3 and 4 were added after PR #1328 (2026-10-25): the resolver accepted a resolution of `review-instructions-untracked-warn.bats` whose `sharkrite-extract` marker names did not exist in `local-review.sh` (which uses `template-tier1-{start,end}`). Zero conflict markers, no unmerged paths — Checks 1 and 2 passed. Four tests silently stopped asserting anything. Main stayed red for a week until #1593 caught it.
+
+Checks 3 and 4 are **deliberately not semantic**. The syntax gate (`bash -n`) catches unparseable bash. The test-count gate (`^@test ` count) catches "coverage vanished" — the signal that the resolver dropped tests entirely rather than merging them. It fires only when the merged count is strictly lower than **both** parents: a legitimate merge may drop tests that one side deleted (count falls below the higher parent only), but a count below both sides means the resolver invented a deletion. When only one parent has the bats file (modify/delete or add/add scenario where only one side creates the file), the comparison is skipped — missing side treated as absent, not 0.
+
+Checks 3 and 4 share the same insertion point and abort path as Checks 1 and 2: failure calls `git merge --abort` and returns 1, feeding the caller's retry loop or surfacing as a failed resolution. No new exit code. A `CONFLICT_RESOLVE_GATE` diag is emitted on every invocation (pass or fail) — see CLAUDE.md diagnostic logging.
 
 **Rule:** a verification step asserts only what the steps before it were
 responsible for establishing. Asserting a postcondition that a *later* step
@@ -2230,6 +2255,7 @@ owns means the check is reading the wrong stage of the pipeline, and a check
 that can only pass by accident is worse than no check — it fails closed on
 correct work. The prompt text and Check 1's premise are coupled, so
 `tests/regression/conflict-resolver-unstaged-resolution.bats` pins both.
+`tests/regression/conflict-resolver-gates.bats` pins Checks 3 and 4.
 
 ## Deterministic Conflict Mergers Read Stage Blobs, Not the Conflicted File (#1319)
 
@@ -2283,6 +2309,33 @@ make.
 looks similar but is accumulate-**in-place**: one entry per convention title,
 with later PR numbers appended to that entry's References line. A naive union
 would duplicate titles. It needs its own design and deliberately has no merger.
+
+## Conflict Resolver: Bounded Retry on Marker Verification Failure (#1602)
+
+**Problem.** The session is a probabilistic producer. At large conflict sets (11 files in the 2026-11-04 live failure, `rite --sync doc-refactor`) it reliably resolves most files but may leave markers in a few. The old all-or-nothing gate discarded all correct work when Check 2 caught any failure — 8 of 11 correct resolutions were thrown away because 2 files still had markers and 1 file was never touched.
+
+**Solution.** `attempt_claude_merge_resolution` runs Steps 4–6 (prompt → session → verify) in a bounded retry loop of up to `_CR_MAX_RESOLVE_ATTEMPTS=3` total attempts, sharing a single `_cr_timeout` budget. On each Check 2 failure the still-failing file list becomes the input to the next attempt's prompt: the retry asks the session to resolve ONLY those files, stating "conflict markers remain in the working tree" as the reason per path. Files resolved on earlier attempts are left untouched — the loop never resets the working tree or re-runs `git merge`.
+
+**When each path fires:**
+
+| Path | Triggers retry? | Note |
+|------|-----------------|------|
+| Check 1 (unexpected unmerged file) | No — abort immediately | A new unmerged path the session introduced is not retryable |
+| Check 2 (markers remain) | Yes, up to max attempts | The common failure mode; targeted re-prompt expected to converge |
+| Provider usage cap (exit 5) | No — propagate 5 | Budget exhausted; operator must handle |
+
+**Timeout accounting.** The budget is shared: each attempt gets `_cr_timeout - elapsed`, not a fresh copy. Worst-case wall-clock stays at one `_cr_timeout` (default 1800s), not three.
+
+**Diag.** Each attempt emits `[diag] CONFLICT_RESOLVE_ATTEMPT n=<N> remaining=<count>` to `RITE_LOG_FILE` for health-report aggregation. Health reports can surface conflict sets that consistently need multiple attempts as a signal that chunking or deterministic handling is warranted.
+
+**Exhaustion.** After all attempts, the existing abort path fires: `git merge --abort`, return 1, manual recipe printed — now with the still-unresolved file names and the attempt count included in the error message.
+
+**DO NOT weaken Check 1 or Check 2.** They are correct; this issue only changes what happens when Check 2 fails. In particular, Check 2's fence-awareness (awk `fence` toggle on \`\`\` lines) and CR-strip (`tr -d '\r'`) are preserved exactly — see #1221/#533.
+
+**In-repo precedents for this shape:**
+- Review loop (`local-review.sh` ~line 637): bounded attempts, stderr fed into retry message, long backoff for 529.
+- Fix loop (`assess-and-resolve.sh`): up to 3 retries on ACTIONABLE_NOW findings.
+- Plan sections lint (`plan-issues.sh`): up to 2 targeted regenerations.
 
 ## Output Sanitization: stripping operator-local commands from generated artifacts
 
