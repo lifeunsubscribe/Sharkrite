@@ -263,6 +263,9 @@ run_test_gate() {
   # Census entry: populated inside the sharkrite path just before _compute_bats_jobs;
   # initialised empty here so the trap's rm -f is a no-op for non-sharkrite paths.
   local _gate_census_file=""
+  # CI-equivalent env shim dir: created inside the sharkrite path; initialised
+  # empty here so the trap's rm -rf guard is always safe regardless of path taken.
+  local _cienv_shim_dir=""
   # Register cleanup for this invocation's specific files (never a glob).
   # Also write a valid-JSON crash sentinel if the function exits non-zero before
   # _gate_write_json runs — an empty/absent output_file causes jq to silently
@@ -274,6 +277,7 @@ run_test_gate() {
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}" "${_bats_pretty_capture:-}"
         rm -f "${_gate_census_file:-}"
         [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
+        [ -n "${_cienv_shim_dir:-}" ] && rm -rf "${_cienv_shim_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
             printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
@@ -285,6 +289,9 @@ run_test_gate() {
   local _tests_exit=0
   local _lint_count=0
   local _tests_count=0
+  # CI-equivalent env diag fields (#1607): initialised to safe defaults so the
+  # GATE_ENV diag is always well-formed even when the sharkrite path is skipped.
+  local _has_gnu="no" _has_flock="no" _bats_skip_count=0
   # Reason for a non-skipped gate failure that produces no parseable items
   # (e.g. runner_unavailable when the test runner binary is missing).
   # Propagated to the gate JSON so assess-and-resolve.sh can name the cause
@@ -580,6 +587,37 @@ run_test_gate() {
       -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
       -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
       -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)
+
+    # --- CI-equivalent environment assembly (#1607) ---
+    # Three hostile-environment factors are present in CI but absent locally:
+    #   1. claude binary absent/untrusted — masked with a stub that exits 1.
+    #      Any selected test that silently depends on a real CLI now fails
+    #      locally — which is the #1534 class (10 of the 2026-10-27 episode's
+    #      38 failures). "Un-masking" to fix a failure is the bug, not the fix.
+    #   2. GNU tools preferred (gawk/ggrep gnubin from #1596) — prepended when
+    #      installed so selected tests exercise GNU regex semantics. The BSD/GNU
+    #      divergence produced 18 of the episode's failures.
+    #   3. flock(1) availability — surfaced in GATE_ENV diag so the skip count
+    #      is visible ("0 failures" != "everything ran").
+    # All three are ADDITIVE: absent tools → gate behaves exactly as today.
+    _cienv_shim_dir=$(mktemp -d "/tmp/rite_gate_cienv_${PR_NUMBER:-0}_$$_XXXXXX" 2>/dev/null || true)
+    if [ -d "${_cienv_shim_dir:-}" ]; then
+      printf '#!/bin/sh\necho "[gate-cienv] claude is masked in CI-equivalent gate environment" >&2\nexit 1\n' \
+        > "$_cienv_shim_dir/claude"
+      chmod +x "$_cienv_shim_dir/claude" 2>/dev/null || true
+    fi
+    local _gnu_prefix
+    _gnu_prefix=$(_cienv_gnu_prefix)
+    [ -n "${_gnu_prefix:-}" ] && _has_gnu="yes"
+    command -v flock >/dev/null 2>&1 && _has_flock="yes"
+    local _cienv_path
+    if [ -d "${_cienv_shim_dir:-}" ]; then
+      _cienv_path="${_cienv_shim_dir}:${_gnu_prefix:-}${PATH}"
+    else
+      _cienv_path="${_gnu_prefix:-}${PATH}"
+    fi
+    _bats_sandbox+=(PATH="$_cienv_path")
+
     local _bats_watchdog=()
     local _gate_bats_timeout="${RITE_GATE_BATS_TIMEOUT:-1800}"
     if [ "$_gate_bats_timeout" != "0" ]; then
@@ -1478,6 +1516,12 @@ run_test_gate() {
   if [ "$_is_sharkrite" = "true" ]; then
     _bats_pass=$(grep -c "^ok " "$_tests_raw_file" 2>/dev/null || true)
     _bats_fail_total=$(grep -c "^not ok " "$_tests_raw_file" 2>/dev/null || true)
+    # Count TAP skip directives (^ok ... # SKIP) so "0 failures" is not
+    # confusable with "everything ran" (#1607).  bats-core emits uppercase SKIP.
+    _bats_skip_count=$(grep -c "# SKIP" "$_tests_raw_file" 2>/dev/null || true)
+    # _bats_pass currently includes skip lines (^ok matches both) — subtract
+    # skips so the terminal digest reports genuine passes only.
+    _bats_pass=$(( _bats_pass - _bats_skip_count ))
     if [ "$_bats_fail_total" -gt 0 ]; then
       _summary_names=$(_extract_tap_failure_names "$_tests_raw_file")
     fi
@@ -1583,6 +1627,7 @@ run_test_gate() {
   # live terminal). Surface the high-signal result here so concurrent phases
   # aren't drowned. Named failures appear once; full transcript is in the log.
   if [ "$_is_sharkrite" = "true" ]; then
+    _diag "GATE_ENV gnu=${_has_gnu} claude=masked flock=${_has_flock} skipped=${_bats_skip_count} pr=${PR_NUMBER:-?}"
     if [ "$_lint_count" -gt 0 ]; then
       echo "[test-gate] lint: ${_lint_count} finding(s) blocking — full output in run log"
     fi
@@ -1597,9 +1642,13 @@ run_test_gate() {
         done
         [ -n "${RITE_LOG_FILE:-}" ] && echo "   Full bats output: ${RITE_LOG_FILE}"
       fi
-    elif [ "$_bats_pass" -gt 0 ]; then
+    elif [ "$_bats_pass" -gt 0 ] || [ "${_bats_skip_count:-0}" -gt 0 ]; then
       if [ "$_gate_verbose" = "false" ]; then
-        echo "[test-gate] bats: ${_bats_pass} passed, 0 failed ✅"
+        if [ "${_bats_skip_count:-0}" -gt 0 ]; then
+          echo "[test-gate] bats: ${_bats_pass} passed, ${_bats_skip_count} skipped, 0 failed ✅"
+        else
+          echo "[test-gate] bats: ${_bats_pass} passed, 0 failed ✅"
+        fi
       fi
     fi
     # In summary mode, hint where the raw output can be found (only when we
