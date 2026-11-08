@@ -61,7 +61,7 @@ lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthes
 1. **Development** — Claude implements the fix in a worktree
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
-   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit; for node repos the targeted selection also includes the target repo's `scripts.lint` (eslint scoped to changed files, other runners full — opt-out: `RITE_GATE_REPO_LINT=false`)
+   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit; for node repos the targeted selection also includes the target repo's `scripts.lint` (eslint scoped to changed files, other runners full — opt-out: `RITE_GATE_REPO_LINT=false`). **CI-equivalent environment (#1607):** the targeted bats selection runs with `claude` masked (shim that exits 1) and GNU tools (gawk/ggrep gnubin) prepended when installed (via #1596), so a local gate pass predicts a CI pass. The `make check`/lint runner still executes under the normal PATH. Skipped tests are counted and surfaced in the `GATE_ENV` diag.
    - **The INITIAL pass parallelizes too (#531):** `run_workflow`'s Phase 2 fires the gate in the background concurrent with the first review (bounded wait via the #654 backstop), so the first assessment also sees `[GATE]` findings. Previously the gate ran only inside the fix loop.
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - **Block-on-any:** the gate blocks/feeds the fix loop on **any** test failure in the targeted selection. `outcome=passed ⟺ zero failures`. This is sound because `main` is kept green (the green-main work, #707) — so any failure in the selection is this change's to fix. Phase 3 deleted the old baseline-diff machinery (re-run failing files at the diff base, suppress pre-existing reds) once it had nothing to tolerate. See `behavioral-design.md` → "Gate Block-on-Any".
@@ -761,6 +761,27 @@ rite 42 --assess-and-fix   # Assess + fix loop
 rite 42 --supervised
 ```
 
+### Optional: GNU toolchain for local Linux parity
+
+macOS ships BSD `awk`, BSD `grep`, and no `flock(1)`. An entire class of Linux-only failure is invisible locally without the GNU equivalents:
+
+- **`gawk` and GNU `grep`** (`ggrep`): let you reproduce Linux-only regex behaviour on the dev box by putting the gnubin dirs on `PATH` for a single run. Without them, a BSD-only regression passes locally and only surfaces on the Linux CI runner. This is what the `BSD_LENIENT_REGEX` lint rule (Rule 39H) catches statically, but the runtime path still needs manual verification for borderline cases.
+- **`flock`**: un-skips the two concurrency tests in `tests/concurrency/scratchpad-lock.bats` that otherwise never run on macOS — they guard with `command -v flock >/dev/null || skip "flock(1) not available on this system"`. Two of the six #1593 root causes lived in those tests.
+
+Install (all optional — `make test` and `make check` behave identically without them):
+
+```bash
+brew install gawk grep flock
+```
+
+To reproduce a Linux-only regex failure locally, prepend the gnubin dirs before running bats:
+
+```bash
+PATH="/opt/homebrew/opt/grep/libexec/gnubin:/opt/homebrew/opt/gawk/libexec/gnubin:$PATH" bats tests/lint/bsd-lenient-regex.bats
+```
+
+**Do not add the gnubin dirs to your shell profile.** Shadowing `awk`/`grep` globally changes sharkrite's own runtime behaviour on the dev box, which is the opposite of the portability goal. Scope the override to the single bats invocation that needs it.
+
 ### Test Coverage Headers (issue #462)
 
 Bats files in `tests/regression/` and `tests/lint/` can declare which source paths they cover via a single-line header:
@@ -1016,5 +1037,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `MERGE_GATE_CI` — CI check conclusion gate in `merge-pr.sh` Check 4; `outcome=blocked|passed|pending failed=<n> pending=<n> total=<n> pr=<n>`. `blocked` = at least one completed-FAILURE/ERROR; `pending` = no failures but pending checks exist; `passed` = all complete and green (or zero checks). Reads conclusions GitHub already computed — runs nothing itself.
 - `GATE_FINDING_RESOLVED` — a prior `[GATE] ACTIONABLE_NOW` item was dropped from the LLM assessment output by `_resolve_prior_gate_findings` (issue #1613); `issue=<N> finding=<first 120 chars of header>`. Emitted once per dropped item. See `behavioral-design.md` → "Gate-Origin Re-raise Policy".
 - `MODEL_FALLBACK` — a role's configured model was detected as unavailable at preflight and substituted with `RITE_MODEL_FALLBACK`; `role=<r> from=<original_model> to=<fallback_model>`. Emitted once per affected role during healthcheck. Only fires when `RITE_MODEL_FALLBACK` is set.
+- `GATE_ENV` — CI-equivalent environment status for a sharkrite gate run; `gnu=yes|no` (GNU tools prepended to PATH), `claude=masked` (always — shim dir prepended), `flock=yes|no` (flock(1) available, determines whether concurrency tests run), `skipped=N` (bats skip-directive count from TAP), `pr=N`. Emitted once per targeted gate run, sharkrite repos only.
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`
