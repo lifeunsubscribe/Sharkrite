@@ -1518,7 +1518,7 @@ run_test_gate() {
     _bats_fail_total=$(grep -c "^not ok " "$_tests_raw_file" 2>/dev/null || true)
     # Count TAP skip directives (^ok ... # skip) so "0 failures" is not
     # confusable with "everything ran" (#1607).  bats-core emits lowercase skip.
-    _bats_skip_count=$(grep -c "# skip" "$_tests_raw_file" 2>/dev/null || true)
+    _bats_skip_count=$(grep -ciE "^ok .*# skip" "$_tests_raw_file" 2>/dev/null || true)
     # _bats_pass currently includes skip lines (^ok matches both) — subtract
     # skips so the terminal digest reports genuine passes only.
     _bats_pass=$(( _bats_pass - _bats_skip_count ))

@@ -95,6 +95,7 @@ setup() {
   # behaviour but defeats the "empty when absent" assertion.  Test 7 covers the
   # installed case.
   command -v ggrep >/dev/null 2>&1 && skip "ggrep (GNU grep via Homebrew) is installed — _cienv_gnu_prefix will return non-empty on this machine"
+  command -v gawk >/dev/null 2>&1 && skip "gawk (GNU awk via Homebrew) is installed — _cienv_gnu_prefix will return non-empty on this machine"
   _tmpdir=$(mktemp -d)
   cat > "$_tmpdir/probe.sh" <<'EOF'
 #!/bin/bash
