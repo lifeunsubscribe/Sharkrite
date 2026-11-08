@@ -173,22 +173,22 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "behavioral: _bats_skip_count is positive when TAP contains skip lines" {
-  # Verify that the grep pattern '# skip' (lowercase) matches bats-core output.
-  # bats-core emits: "ok N test name # skip reason" (lowercase skip).
+  # Verify that the case-insensitive grep pattern '^ok .*# skip' matches bats-core output.
+  # bats-core emits lowercase: "ok N test name # skip reason".
   _tap=$(printf 'ok 1 runs fine\nok 2 skipped test # skip flock not available\nok 3 another skip # skip no tool\nnot ok 4 failure\n')
-  _count=$(printf '%s\n' "$_tap" | grep -c "# skip" || true)
+  _count=$(printf '%s\n' "$_tap" | grep -ciE "^ok .*# skip" || true)
   [ "$_count" -eq 2 ] || {
     echo "FAIL: expected 2 skip lines, got $_count" >&2
     return 1
   }
 }
 
-@test "behavioral: _bats_skip_count grep pattern does not match uppercase SKIP" {
-  # The gate uses lowercase 'skip' — ensure uppercase SKIP does not match.
-  _tap=$(printf 'ok 1 test # SKIP uppercase should not match\n')
-  _count=$(printf '%s\n' "$_tap" | grep -c "# skip" || true)
-  [ "$_count" -eq 0 ] || {
-    echo "FAIL: uppercase '# SKIP' must not be counted as a skip directive" >&2
+@test "behavioral: _bats_skip_count grep pattern matches uppercase SKIP (case-insensitive)" {
+  # The gate uses grep -ciE (case-insensitive) — uppercase SKIP must also count.
+  _tap=$(printf 'ok 1 test # SKIP uppercase should also match\n')
+  _count=$(printf '%s\n' "$_tap" | grep -ciE "^ok .*# skip" || true)
+  [ "$_count" -eq 1 ] || {
+    echo "FAIL: uppercase '# SKIP' must be counted (gate uses -i flag)" >&2
     return 1
   }
 }
