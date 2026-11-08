@@ -105,3 +105,75 @@ EOF
   violations=$(echo "$output" | grep "UNDOCUMENTED_RITE_VAR" | grep "timeout-consumer" || true)
   [ -z "$violations" ]
 }
+
+# ---------------------------------------------------------------------------
+# Diagnostics on first violation (issue #1633)
+#
+# The macOS-only false positive (#1605, then PR #1625, then main run
+# 42502587335 — a different allowlisted var each time) has never been caught
+# with evidence of what the allowlist contained. Rule 36 now prints a
+# `# rule36-diag:` block to stderr on the FIRST violation of a run: environment,
+# per-source allowlist counts, the flagged var's presence in each source, and
+# the full combined list. These pin that contract.
+# ---------------------------------------------------------------------------
+
+@test "rule36-diag block is printed exactly once on violation, with per-source membership for the flagged var" {
+  local fixture_dir="${BATS_TEST_TMPDIR}/r36-diag/lib/utils"
+  mkdir -p "$fixture_dir"
+  # Two undocumented vars in two files: proves the block is single-shot, not per-violation.
+  cat > "$fixture_dir/probe-a.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+probe_a() { echo "${RITE_R36_DIAG_PROBE_ALPHA:-}"; }
+EOF
+  cat > "$fixture_dir/probe-b.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+probe_b() { echo "${RITE_R36_DIAG_PROBE_BETA:-}"; }
+EOF
+
+  RITE_LINT_EXTRA_DIRS="${BATS_TEST_TMPDIR}/r36-diag/lib/utils" \
+    SHARKRITE_LINT_ONLY=36 run bash "$LINT_SCRIPT"
+
+  # Both probes fire (positive control), and the run reports violations.
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "UNDOCUMENTED_RITE_VAR.*RITE_R36_DIAG_PROBE_ALPHA"
+  echo "$output" | grep -q "UNDOCUMENTED_RITE_VAR.*RITE_R36_DIAG_PROBE_BETA"
+
+  # Exactly one block, despite two violations.
+  local begins ends
+  begins=$(echo "$output" | grep -c '^# rule36-diag: begin' || true)
+  ends=$(echo "$output" | grep -c '^# rule36-diag: end$' || true)
+  [ "$begins" -eq 1 ]
+  [ "$ends" -eq 1 ]
+
+  # Environment fields present.
+  echo "$output" | grep -q '^# rule36-diag: bash='
+  echo "$output" | grep -q '^# rule36-diag: LANG='
+  echo "$output" | grep -q '^# rule36-diag: PATH='
+  echo "$output" | grep -q '^# rule36-diag: tool grep='
+  echo "$output" | grep -q '^# rule36-diag: tool sort='
+
+  # Allowlist shape: non-zero counts for all three sets.
+  local counts
+  counts=$(echo "$output" | grep '^# rule36-diag: documented_set entries=' || true)
+  [ -n "$counts" ]
+  echo "$counts" | grep -qE 'documented_set entries=[1-9][0-9]*'
+  echo "$counts" | grep -qE 'ledger_entries entries=[1-9][0-9]*'
+  echo "$counts" | grep -qE 'allowed_set entries=[1-9][0-9]* bytes=[1-9][0-9]* cksum=[0-9]+'
+
+  # The flagged var (whichever probe fired first) is absent from every source — that
+  # is the honest reading for a genuinely undocumented var, and it is the line that
+  # will tell us, on a real macOS false positive, WHICH source lost the entry.
+  echo "$output" | grep -qE '^# rule36-diag: var RITE_R36_DIAG_PROBE_(ALPHA|BETA) in documented_set=0 ledger_entries=0 allowed_set=0$'
+
+  # The dump is there and contains a known ledgered var.
+  echo "$output" | grep -q '^# rule36-diag: allowed_set dump follows$'
+  echo "$output" | grep -qx 'RITE_CLAUDE_TIMEOUT_PROMPT'
+}
+
+@test "rule36-diag prints nothing on a clean run (zero behavior change)" {
+  SHARKRITE_LINT_ONLY=36 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -q 'rule36-diag'
+}

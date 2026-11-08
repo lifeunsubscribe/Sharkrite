@@ -74,6 +74,47 @@ if [ -z "$_r36_allowed_set" ]; then
   exit 1
 fi
 
+# Diagnostics on the FIRST violation only (issue #1633). This rule fires on
+# macOS CI for vars that ARE in the allowlist (three different vars so far —
+# #1605, PR #1625, main run 42502587335), passes on ubuntu for the same commit,
+# and does not reproduce on a macOS dev box. Four hypotheses have been ruled
+# out without a repro; the one thing every failing run lacked was evidence of
+# what the allowlist actually contained at the moment of the miss. So: record
+# the environment, the size of each allowlist input, whether the flagged var is
+# present in each, and the full combined list. Stderr only, nothing on a clean
+# run, verdicts untouched.
+#
+# Membership here uses `grep -cxF ... <<<` — a here-string and a COUNT, so grep
+# reads all of its input and there is no producer|grep -q early-exit pipe. The
+# diagnostic must not be able to miss in the same way the rule might.
+_r36_diag_printed=false
+_r36_print_diag() {
+  local _v="$1" _t _tv
+  {
+    printf '# rule36-diag: begin (first violation: %s)\n' "$_v"
+    printf '# rule36-diag: bash=%s  uname=%s\n' "${BASH_VERSION:-unknown}" "$(uname -srm 2>/dev/null || true)"
+    printf '# rule36-diag: LANG=%s LC_ALL=%s LC_CTYPE=%s\n' "${LANG:-unset}" "${LC_ALL:-unset}" "${LC_CTYPE:-unset}"
+    printf '# rule36-diag: PATH=%s\n' "${PATH:-unset}"
+    for _t in grep sed sort awk; do
+      _tv=$("$_t" --version 2>/dev/null | head -1 || true)
+      printf '# rule36-diag: tool %s=%s version=%s\n' "$_t" "$(command -v "$_t" || true)" "${_tv:-(none: BSD prints no --version)}"
+    done
+    printf '# rule36-diag: documented_set entries=%s  ledger_entries entries=%s  allowed_set entries=%s bytes=%s cksum=%s\n' \
+      "$(grep -c . <<< "$_r36_documented_set" || true)" \
+      "$(grep -c . <<< "$_r36_ledger_entries" || true)" \
+      "$(grep -c . <<< "$_r36_allowed_set" || true)" \
+      "$(printf '%s\n' "$_r36_allowed_set" | wc -c | tr -d ' ' || true)" \
+      "$(printf '%s\n' "$_r36_allowed_set" | cksum | cut -d' ' -f1 || true)"
+    printf '# rule36-diag: var %s in documented_set=%s ledger_entries=%s allowed_set=%s\n' "$_v" \
+      "$(grep -cxF "$_v" <<< "$_r36_documented_set" || true)" \
+      "$(grep -cxF "$_v" <<< "$_r36_ledger_entries" || true)" \
+      "$(grep -cxF "$_v" <<< "$_r36_allowed_set" || true)"
+    printf '# rule36-diag: allowed_set dump follows\n'
+    printf '%s\n' "$_r36_allowed_set"
+    printf '# rule36-diag: end\n'
+  } >&2
+}
+
 # Build the candidate file list from SHELL_FILES filtered to lib/ paths.
 # Matches project tree AND fixture dirs injected via RITE_LINT_EXTRA_DIRS
 # when the fixture path contains /lib/ (same technique as Rule 24).
@@ -120,6 +161,12 @@ for _r36_file in "${_r36_lib_files[@]}"; do
       # Check for suppression comment on preceding line.
       if [ "$_r36_suppressed" = "true" ]; then
         continue
+      fi
+
+      # First violation in this run: capture the evidence before reporting it.
+      if [ "$_r36_diag_printed" = false ]; then
+        _r36_print_diag "$_r36_var_name"
+        _r36_diag_printed=true
       fi
 
       print_violation "$_r36_file" "$_r36_line_num" "UNDOCUMENTED_RITE_VAR" \
