@@ -1,14 +1,16 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/docs-command.sh::docs_resolve_doc_scope
+# sharkrite-test-covers: lib/core/docs-command.sh::docs_resolve_doc_scope, lib/utils/doc-consent.sh::run_align_docs_switch
 # tests/regression/align-docs-scope-by-name.bats
 #
 # Regression tests for #1437: rite align-docs [doc ...] scoping.
+# Regression tests for #1539: rite align-docs --disable dropping doc names.
 #
 # Covers:
 #   - With-extension and without-extension forms resolve to the same map entry.
 #   - Unknown name exits 1 and lists candidates.
 #   - No args returns every doc in the map.
 #   - Multiple names are accepted and deduped.
+#   - --disable with doc names exits 1 (no silent drop).
 
 load '../helpers/setup'
 
@@ -222,4 +224,61 @@ teardown() {
   run bash "$helper" "behavioral design" < /dev/null 2>&1
   [ "$status" -eq 1 ]
   [[ "$output" == *"whitespace"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# AC7: --disable with doc names is rejected (regression for #1539).
+#
+# Before the fix, run_align_docs_switch only read $1; passing
+# "--disable behavioral-design" silently recorded off and dropped the doc name.
+# After the fix, extra args after --disable exit 1 with an error message.
+# ---------------------------------------------------------------------------
+
+# Helper: one-shot subshell that sources doc-consent.sh, then calls
+# run_align_docs_switch with the arguments passed to this function.
+_switch_helper() {
+  local helper="${BATS_TEST_TMPDIR}/switch_helper.sh"
+  cat > "$helper" << 'HELPER_EOF'
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="${RITE_LIB_DIR}"
+export RITE_PROJECT_ROOT="${RITE_PROJECT_ROOT}"
+source "${RITE_LIB_DIR}/utils/doc-consent.sh"
+run_align_docs_switch "$@"
+HELPER_EOF
+  chmod +x "$helper"
+  echo "$helper"
+}
+
+@test "--disable with one doc name exits 1" {
+  local helper
+  helper="$(_switch_helper)"
+  run bash "$helper" --disable behavioral-design < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+}
+
+@test "--disable with one doc name prints an error" {
+  local helper
+  helper="$(_switch_helper)"
+  run bash "$helper" --disable behavioral-design < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"does not accept doc names"* ]]
+}
+
+@test "--disable with multiple doc names exits 1" {
+  local helper
+  helper="$(_switch_helper)"
+  run bash "$helper" --disable behavioral-design conventions < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+}
+
+@test "--disable alone still exits 0 (no regression)" {
+  # Set up a minimal .rite/config so record_doc_mode has a file to write.
+  mkdir -p "${RITE_PROJECT_ROOT}/.rite"
+  touch "${RITE_PROJECT_ROOT}/.rite/config"
+  export RITE_DATA_DIR=".rite"
+  local helper
+  helper="$(_switch_helper)"
+  run bash "$helper" --disable < /dev/null 2>&1
+  [ "$status" -eq 0 ]
 }
