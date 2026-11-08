@@ -1,12 +1,18 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/docs-command.sh
+# sharkrite-test-covers: lib/core/docs-command.sh::docs_reconcile_drift|_docs_main_entries_pass|_docs_list_main_entry_docs|_docs_bounded_context_for_doc|_docs_extract_section
 # tests/regression/rite-docs-main-entries.bats
 BATS_TEST_TIMEOUT=30
 #
-# Tests for ACTION: REFINE proposal handling (#1517):
-# - REFINE with valid drift refs appends to the file and burns the entry (no new drift_log_append)
-# - REFINE with DRIFT_REFS: none is auto-skipped (feedback-loop guard)
-# - REFINE targeting a missing file is auto-skipped
+# Tests for the Tier 2 branch=main drift-entry reconcile path (#1431):
+#
+#  1. branch=main entries → groups by doc, calls doc_update model
+#  2. Response missing narrative OR edits → rejected, retry via feedback path
+#  3. Zero main entries → no-op; entries for other branches untouched
+#  4. Nondeterministic assertions (REFINE action) → kind=refinement drift entries
+#  5. #1208 guards (context-membership, large-file, CREATE-exists) apply
+#  6. #1233 per-generation end token present in prompt
+#
+# All LLM provider calls are stubbed. git push/fetch intercepted via PATH-priority stub.
 
 # ---------------------------------------------------------------------------
 # Setup / teardown
@@ -17,9 +23,11 @@ setup() {
   DOCS_CMD="$PROJECT_ROOT/lib/core/docs-command.sh"
   export PROJECT_ROOT DOCS_CMD
 
+  # Fake project: real git repo with an initial commit so worktrees work
   FAKE_PROJECT="$(mktemp -d)"
-  mkdir -p "$FAKE_PROJECT/.rite/state" "$FAKE_PROJECT/docs"
-  printf '# Large Doc\n\nExisting content.\n' > "$FAKE_PROJECT/docs/large-doc.md"
+  mkdir -p "$FAKE_PROJECT/.rite/state/doc-drift/main" "$FAKE_PROJECT/docs"
+  printf '# Test Doc\n\n## Background\n\nOriginal content.\n\n## Usage\n\nUse it.\n' \
+    > "$FAKE_PROJECT/docs/test-doc.md"
   git -C "$FAKE_PROJECT" init -q
   git -C "$FAKE_PROJECT" config user.email "test@sharkrite.local"
   git -C "$FAKE_PROJECT" config user.name "Test"
@@ -27,11 +35,11 @@ setup() {
   git -C "$FAKE_PROJECT" commit -q -m "init"
   export FAKE_PROJECT
 
+  # Stub bin: intercept git push/fetch
   STUB_BIN="$(mktemp -d)"
   STUB_CALLS_FILE="$(mktemp)"
   REAL_GIT="$(command -v git)"
   export STUB_BIN STUB_CALLS_FILE REAL_GIT
-
   cat > "$STUB_BIN/git" << 'GITSTUB'
 #!/bin/bash
 for _a in "$@"; do
@@ -44,6 +52,17 @@ exec "$REAL_GIT" "$@"
 GITSTUB
   chmod +x "$STUB_BIN/git"
 
+  # A minimal docs-map TSV for the fake project
+  printf '# docs-map v4 sha=abc123 built=2026-01-01T00:00:00Z\n' \
+    > "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  printf 'docs/test-doc.md\tabc123\t-\t1\tTest Doc\tfp1\tfeature\t-\t-\t-\n' \
+    >> "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  printf 'docs/test-doc.md\tabc123\t-\t2\tBackground\tfp2\tfeature\t-\t-\t-\n' \
+    >> "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  printf 'docs/test-doc.md\tabc123\t-\t2\tUsage\tfp3\tfeature\t-\t-\t-\n' \
+    >> "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+
+  # Helper script (sourced by run-based tests)
   _DOCS_HELPER="$(mktemp)"
   cat > "$_DOCS_HELPER" << 'HELPER_EOF'
 #!/bin/bash
@@ -61,11 +80,21 @@ export STUB_CALLS_FILE
 source "${DOCS_CMD}"
 
 # Re-define stubs AFTER source (env-guarded libs overwrite pre-source stubs)
-# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; gh_safe stub must be post-source because gh-retry.sh uses _RITE_GH_RETRY_LOADED env guard which overwrites pre-source definitions
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; provider_resolve_model and gh_safe stubs must be post-source because provider-interface.sh and gh-retry.sh use _RITE_*_LOADED env guards which overwrite pre-source definitions
 load_provider()                    { return 0; }
 provider_run_prompt_with_timeout() {
   local _prompt="$1"
+  local _model="$2"
+  # Record (model, prompt-excerpt) for assertions
+  printf 'CALL:model=%s\n' "$_model" >> "${STUB_CALLS_FILE}"
+  printf 'CALL:has_narrative=%s\n' \
+    "$(printf '%s\n' "$_prompt" | grep -c '---NARRATIVE---' || true)" >> "${STUB_CALLS_FILE}"
+  printf 'CALL:has_endtoken=%s\n' \
+    "$(printf '%s\n' "$_prompt" | grep -cE -- '---END-[0-9]+---' || true)" >> "${STUB_CALLS_FILE}"
+  printf 'CALL:has_section_markers=%s\n' \
+    "$(printf '%s\n' "$_prompt" | grep -cF ' § ' || true)" >> "${STUB_CALLS_FILE}"
   local _stub="${STUB_PROPOSALS:-NO_PROPOSALS_NEEDED}"
+  # Replace @@END@@ placeholder with the actual per-generation end token from the prompt
   local _end_tok
   _end_tok="$(printf '%s\n' "$_prompt" | grep -oE -- '---END-[0-9]+---' | head -1 || true)"
   if [ -n "$_end_tok" ]; then
@@ -74,13 +103,26 @@ provider_run_prompt_with_timeout() {
     printf '%s\n' "$_stub"
   fi
 }
-provider_resolve_model()           { printf 'claude-sonnet-4-6\n'; }
-docs_map_ensure()                  { [ -s "${FAKE_PROJECT}/.rite/state/docs-map.tsv" ] || printf 'docs/large-doc.md\n' > "${FAKE_PROJECT}/.rite/state/docs-map.tsv"; return 0; }
-docs_map_path()                    { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
-gh_safe()                          { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 0; }
+provider_resolve_model() {
+  # Record which role was requested
+  printf 'RESOLVE:role=%s\n' "${1:-}" >> "${STUB_CALLS_FILE}"
+  case "${1:-}" in
+    doc_update)     printf 'claude-fable-5\n' ;;
+    doc_assessment) printf 'claude-sonnet-4-6\n' ;;
+    *)              printf 'claude-sonnet-4-6\n' ;;
+  esac
+}
+docs_map_ensure()  { return 0; }
+docs_map_path()    { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
+gh_safe()          { printf 'gh_safe:%s\n' "$*" >> "${STUB_CALLS_FILE}"; return 0; }
 
+# Expose origin/main for _docs_apply_approved worktree fork
 git -C "${FAKE_PROJECT}" update-ref refs/remotes/origin/main HEAD
 
+# cd to FAKE_PROJECT so git rev-parse --show-toplevel resolves to the
+# fake repo, not the sharkrite repo root — otherwise drift_log_path
+# returns the real sharkrite drift log (which exists and has entries).
+cd "${FAKE_PROJECT}"
 "$@"
 HELPER_EOF
   chmod +x "$_DOCS_HELPER"
@@ -88,264 +130,406 @@ HELPER_EOF
 }
 
 teardown() {
+  git -C "${FAKE_PROJECT:-/dev/null}" worktree prune 2>/dev/null || true
   rm -rf "${FAKE_PROJECT:-}" "${STUB_BIN:-}" "${_DOCS_HELPER:-}"
   rm -f "${STUB_CALLS_FILE:-}"
-  git -C "${FAKE_PROJECT:-/dev/null}" worktree prune 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: REFINE with valid drift refs appends content and burns the entry
+# Helper: write a structured branch=main drift entry for a doc
 # ---------------------------------------------------------------------------
+_seed_main_entry() {
+  local doc="$1"
+  local assertion="${2:-test assertion}"
+  local kind="${3:-contradiction}"
+  local evidence="${4:-lib/core/foo.sh}"
+  local pr="${5:-42}"
 
-@test "approving a REFINE proposal appends to the file and burns the drift entry" {
-  local drift_log="$FAKE_PROJECT/docs/sharkrite-drift-log.md"
-  cat > "$drift_log" << 'DRIFT_EOF'
-# Sharkrite Drift Log
-
-<!-- sharkrite-doc-drift pr:777 issue:5 recorded:2026-01-01T00:00:00Z -->
-**Changed files**: lib/core/foo.sh
-**Implicated docs**:
-- docs/large-doc.md — "Existing content"
-**Suspected inaccuracy**: foo changed
-<!-- /sharkrite-doc-drift -->
-DRIFT_EOF
-  git -C "$FAKE_PROJECT" add "$drift_log"
-  git -C "$FAKE_PROJECT" commit -q -m "add drift entry pr:777"
-
-  local proposal
-  proposal="$(printf '%s\n' \
-    '---PROPOSAL---' \
-    'ACTION: REFINE' \
-    'FILE: docs/large-doc.md' \
-    'DRIFT_REFS: pr:777' \
-    'DESCRIPTION: Add clarifying note about foo change' \
-    '---CONTENT---' \
-    '## Note on foo change' \
-    '' \
-    'foo was updated in a recent refactor.' \
-    '@@END@@')"
-
-  run bash -c "
-    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
-    bash '${_DOCS_HELPER}' docs_directed_update 'add note about foo' <<< 'y'
-  " || true
-
-  # A docs branch must have been created
-  local docs_branch
-  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
-  [ -n "$docs_branch" ]
-
-  # The file must contain the appended section
-  local committed_content
-  committed_content="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/large-doc.md" 2>/dev/null || true)"
-  [ -n "$committed_content" ]
-  printf '%s' "$committed_content" | grep -q "Note on foo change"
-  # Original content must still be present (not overwritten)
-  printf '%s' "$committed_content" | grep -q "Existing content"
-
-  # The drift entry for pr:777 must be burned down
-  local committed_drift
-  committed_drift="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/sharkrite-drift-log.md" 2>/dev/null || echo "")"
-  local drift_has_777
-  drift_has_777="$(printf '%s' "$committed_drift" | grep -c 'pr:777' || true)"
-  [ "$drift_has_777" -eq 0 ]
-
-  # The drift log must NOT have grown (no new drift_log_append from REFINE)
-  # Entry count: 0 (burned) or file deleted; either way pr:777 entry count = 0
-  local new_entry_count
-  new_entry_count="$(printf '%s' "$committed_drift" | grep -c 'sharkrite-doc-drift pr:[0-9]' || true)"
-  [ "$new_entry_count" -eq 0 ]
+  # Slug formula matches _drift_entry_path: replace / with --
+  local entry_slug="${doc//\//--}"
+  local entry_file="${FAKE_PROJECT}/.rite/state/doc-drift/main/${entry_slug}.log"
+  mkdir -p "$(dirname "$entry_file")"
+  printf 'doc=%s\tbranch=main\tpr=%s\tissue=-\tassertion=%s\tkind=%s\tevidence=%s\trecorded=2026-01-01T00:00:00Z\n' \
+    "$doc" "$pr" "$assertion" "$kind" "$evidence" \
+    >> "$entry_file"
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: REFINE with DRIFT_REFS: none is auto-skipped (feedback-loop guard)
+# Test 1: branch=main entries → groups by doc, calls doc_update model
 # ---------------------------------------------------------------------------
 
-@test "REFINE proposal with DRIFT_REFS: none is auto-skipped with a warning" {
-  local doc_before
-  doc_before="$(cat "$FAKE_PROJECT/docs/large-doc.md")"
+@test "branch=main entries: grouped per doc, provider called with doc_update role" {
+  _seed_main_entry "docs/test-doc.md" "Background section is stale" "contradiction" "lib/core/foo.sh"
 
-  local proposal
-  proposal="$(printf '%s\n' \
-    '---PROPOSAL---' \
-    'ACTION: REFINE' \
-    'FILE: docs/large-doc.md' \
-    'DRIFT_REFS: none' \
-    'DESCRIPTION: Add a general clarification with no drift refs' \
-    '---CONTENT---' \
-    '## Should Not Appear' \
-    '' \
-    'This content must not be appended.' \
-    '@@END@@')"
+  # Stub returns a valid response (narrative + edit proposal)
+  export STUB_PROPOSALS
+  STUB_PROPOSALS="---NARRATIVE---
+The Background section references foo.sh which was refactored in PR #42.
+---END-NARRATIVE---
+---PROPOSAL---
+ACTION: EDIT
+FILE: docs/test-doc.md
+DRIFT_REFS: pr:42
+DESCRIPTION: Update Background to reflect refactored foo.sh
+---CONTENT---
+# Test Doc
 
-  run bash -c "
-    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
-    bash '${_DOCS_HELPER}' docs_directed_update 'add general note' 2>&1
-  " || true
+## Background
 
-  # Warning must mention the guard fired
-  printf '%s\n' "$output" | grep -qi "Auto-skipping REFINE"
+Updated content after foo.sh refactor.
 
-  # No docs branch created (no approvals → no apply)
-  local docs_branch
-  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
-  [ -z "$docs_branch" ]
+## Usage
 
-  # File must be byte-identical — guard prevented append
-  local doc_after
-  doc_after="$(cat "$FAKE_PROJECT/docs/large-doc.md")"
-  [ "$doc_before" = "$doc_after" ]
+Use it.
+@@END@@"
 
-  # No git push
-  local push_calls
-  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
-  [ "$push_calls" -eq 0 ]
-}
-
-# ---------------------------------------------------------------------------
-# Test 3: REFINE targeting a missing file is auto-skipped
-# ---------------------------------------------------------------------------
-
-@test "REFINE proposal targeting a non-existent file is auto-skipped with a warning" {
-  local proposal
-  proposal="$(printf '%s\n' \
-    '---PROPOSAL---' \
-    'ACTION: REFINE' \
-    'FILE: docs/ghost-doc.md' \
-    'DRIFT_REFS: pr:111' \
-    'DESCRIPTION: Add note to a doc that does not exist' \
-    '---CONTENT---' \
-    '## Ghost Section' \
-    '' \
-    'This must not be written.' \
-    '@@END@@')"
-
-  run bash -c "
-    export STUB_PROPOSALS='${proposal//\'/\'\\\'\'}'
-    bash '${_DOCS_HELPER}' docs_directed_update 'add note to ghost doc' 2>&1
-  " || true
-
-  # Warning must mention the guard fired
-  printf '%s\n' "$output" | grep -qi "Auto-skipping REFINE"
-
-  # Ghost file must not have been created
-  [ ! -f "$FAKE_PROJECT/docs/ghost-doc.md" ]
-
-  # No push
-  local push_calls
-  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
-  [ "$push_calls" -eq 0 ]
-}
-
-# ---------------------------------------------------------------------------
-# Test 5: _docs_apply_approved EDIT happy path — directly exercises the
-# apply function with a pre-built proposal file and verifies the full path:
-# file written to worktree, committed, pushed, PR created.
-# ---------------------------------------------------------------------------
-
-@test "_docs_apply_approved EDIT action applies file change, pushes, and opens PR" {
-  local appr_dir
-  appr_dir="$(mktemp -d)"
-
-  # Build the proposal file in the exact format _docs_update_engine writes:
-  # ACTION, FILE, DRIFT_REFS, DESCRIPTION headers, then ---CONTENT--- to EOF.
-  # No end-token in the stored file — the parser strips it before copying.
-  printf '%s\n' \
-    'ACTION: EDIT' \
-    'FILE: docs/large-doc.md' \
-    'DRIFT_REFS: none' \
-    'DESCRIPTION: Direct apply test' \
-    '---CONTENT---' \
-    '# Large Doc' \
-    '' \
-    'Replaced by direct apply test.' \
-    > "$appr_dir/approved_1.txt"
-
-  run bash -c "
-    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'direct edit test' directed main 2>&1
-  "
-  rm -rf "$appr_dir"
-
+  # Run reconcile in non-interactive mode (no TTY → read returns empty → skips)
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
   [ "$status" -eq 0 ]
 
-  # A docs/directed-* branch must have been created
-  local docs_branch
-  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/directed-' | head -1 || true)"
-  [ -n "$docs_branch" ]
-
-  # The file committed on that branch must contain the new content
-  local committed
-  committed="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/large-doc.md" 2>/dev/null || true)"
-  [ -n "$committed" ]
-  printf '%s' "$committed" | grep -q "Replaced by direct apply test"
-
-  # git push must have been called (stubbed)
-  local push_calls
-  push_calls="$(grep -c 'git:push' "$STUB_CALLS_FILE" 2>/dev/null || true)"
-  [ "$push_calls" -ge 1 ]
-
-  # gh_safe pr create must have been called
-  local gh_calls
-  gh_calls="$(grep -c 'gh_safe:pr create' "$STUB_CALLS_FILE" 2>/dev/null || true)"
-  [ "$gh_calls" -ge 1 ]
+  # Verify provider_resolve_model was called with doc_update role
+  grep -q "RESOLVE:role=doc_update" "$STUB_CALLS_FILE"
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: _docs_apply_approved arg order — MODE is arg 4; reconcile mode
-# must produce a docs/reconcile-* branch, not docs/directed-*.
+# Test 2: bounded input contains only map-anchored sections (not whole doc)
 # ---------------------------------------------------------------------------
 
-@test "_docs_apply_approved mode arg (position 4) controls the docs branch prefix" {
-  local appr_dir
-  appr_dir="$(mktemp -d)"
+@test "branch=main entries: prompt contains map-anchored section markers" {
+  _seed_main_entry "docs/test-doc.md" "Usage section outdated" "contradiction" "lib/core/bar.sh"
 
-  # CREATE for a file that does not yet exist on origin/main
-  printf '%s\n' \
-    'ACTION: CREATE' \
-    'FILE: docs/reconcile-arg-probe.md' \
-    'DRIFT_REFS: none' \
-    'DESCRIPTION: Arg order probe — mode must be reconcile' \
-    '---CONTENT---' \
-    '# Reconcile Arg Probe' \
-    '' \
-    'Created to verify MODE is arg 4.' \
-    > "$appr_dir/approved_1.txt"
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
 
-  run bash -c "
-    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'ignored in reconcile mode' reconcile main 2>&1
-  "
-  rm -rf "$appr_dir"
-
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
   [ "$status" -eq 0 ]
 
-  # Branch must use the reconcile prefix, confirming MODE is bound to arg 4
-  local docs_branch
-  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/reconcile-' | head -1 || true)"
-  [ -n "$docs_branch" ]
-
-  # The new file must be committed on that branch
-  local file_content
-  file_content="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/reconcile-arg-probe.md" 2>/dev/null || true)"
-  [ -n "$file_content" ]
-  printf '%s' "$file_content" | grep -q "Reconcile Arg Probe"
+  # The prompt context must contain map-anchored section markers of the form
+  # "--- docs/test-doc.md § Background ---" (generated by _docs_bounded_context_for_doc
+  # from the docs-map TSV).  The fake docs-map has 3 rows for docs/test-doc.md,
+  # so at least one § marker line should appear.
+  grep -qE "CALL:has_section_markers=[1-9]" "$STUB_CALLS_FILE"
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: REFINE prompt format appears in the LLM prompt (structural)
+# Test 3: per-generation end token (#1233) present in prompt
 # ---------------------------------------------------------------------------
 
-@test "docs-command.sh LLM prompt includes ACTION: REFINE format and drift-refs requirement" {
-  # REFINE must be in the prompt so the model knows the option exists
-  local refine_count
-  refine_count=$(grep -c 'ACTION: REFINE' "$DOCS_CMD" || true)
-  [ "$refine_count" -ge 1 ]
+@test "branch=main entries: per-generation end token present in prompt (#1233)" {
+  _seed_main_entry "docs/test-doc.md" "Stale assertion" "addition" "lib/utils/drift-log.sh"
 
-  # The must-not-be-none instruction must appear in the prompt
-  local drift_req_count
-  drift_req_count=$(grep -c 'DRIFT_REFS.*none.*REFINE\|REFINE.*DRIFT_REFS.*none' "$DOCS_CMD" || true)
-  [ "$drift_req_count" -ge 1 ]
-  # The feedback-loop warning sentence covers both patterns — structural check
-  local feedback_guard_count
-  feedback_guard_count=$(grep -c 'grow the backlog\|grows the trigger store\|feedback' "$DOCS_CMD" || true)
-  [ "$feedback_guard_count" -ge 1 ]
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Verify prompt included an ---END-NNN--- end token.
+  # The token appears twice in the prompt (EDIT template + REFINE template),
+  # so check for any non-zero count rather than exactly 1.
+  grep -qE "CALL:has_endtoken=[1-9]" "$STUB_CALLS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Test 4: response missing narrative → feedback retry, not immediate failure
+# ---------------------------------------------------------------------------
+
+@test "response missing narrative: accumulates feedback and retries" {
+  _seed_main_entry "docs/test-doc.md" "Needs update" "contradiction" "lib/core/foo.sh"
+
+  # First call returns no narrative; second returns NO_PROPOSALS_NEEDED
+  local _call_count=0
+  # We can't easily count individual stub calls, but we can verify the
+  # mechanism: a response without ---NARRATIVE--- causes the attempt counter
+  # to increment (we observe two RESOLVE:role=doc_update calls in the log).
+  export STUB_PROPOSALS="---PROPOSAL---
+ACTION: EDIT
+FILE: docs/test-doc.md
+DRIFT_REFS: none
+DESCRIPTION: edit without narrative
+---CONTENT---
+new content
+@@END@@"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Exactly 2+ doc_update calls (first attempt fails validation, retries)
+  local _doc_update_calls
+  _doc_update_calls="$(grep -c "RESOLVE:role=doc_update" "$STUB_CALLS_FILE" || true)"
+  [ "$_doc_update_calls" -ge 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: response missing proposals → feedback retry
+# ---------------------------------------------------------------------------
+
+@test "response missing proposals: accumulates feedback and retries" {
+  _seed_main_entry "docs/test-doc.md" "Needs update" "contradiction" "lib/core/foo.sh"
+
+  # Response has narrative but no proposals
+  export STUB_PROPOSALS="---NARRATIVE---
+Something changed in the codebase.
+---END-NARRATIVE---"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Should retry (>= 2 doc_update calls)
+  local _calls
+  _calls="$(grep -c "RESOLVE:role=doc_update" "$STUB_CALLS_FILE" || true)"
+  [ "$_calls" -ge 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 6: zero branch=main entries → no-op (existing contract preserved)
+# ---------------------------------------------------------------------------
+
+@test "zero branch=main entries: no-op, provider not called" {
+  # No entries seeded — RITE_STATE_DIR/doc-drift/main/ is empty
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Provider must NOT be called
+  local _calls
+  _calls="$(grep -c "RESOLVE:role=" "$STUB_CALLS_FILE" || true)"
+  [ "$_calls" -eq 0 ]
+
+  # Output should mention nothing to reconcile
+  [[ "$output" =~ "nothing to reconcile" ]] || [[ "$output" =~ "No drift log" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 7: entries for other branches are untouched
+# ---------------------------------------------------------------------------
+
+@test "entries for branch=feature-x: untouched when no main entries exist" {
+  # Seed an entry for a non-main branch — docs_reconcile_drift must not call
+  # the provider for it when there are zero main entries.
+  local _other_dir="${FAKE_PROJECT}/.rite/state/doc-drift/feature-x"
+  mkdir -p "$_other_dir"
+  printf 'doc=docs/test-doc.md\tbranch=feature-x\tpr=99\tissue=-\tassertion=stale\tkind=contradiction\tevidence=lib/core/foo.sh\trecorded=2026-01-01T00:00:00Z\n' \
+    > "$_other_dir/docs--test-doc.md.log"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Provider must NOT be called (main store is empty)
+  local _calls
+  _calls="$(grep -c "RESOLVE:role=doc_update" "$STUB_CALLS_FILE" || true)"
+  [ "$_calls" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: REFINE action → kind=refinement drift entry written, not edit proposal
+# ---------------------------------------------------------------------------
+
+@test "REFINE proposal: writes kind=refinement drift entry, not an edit" {
+  _seed_main_entry "docs/test-doc.md" \
+    "experience is smooth" "refinement" "lib/core/foo.sh"
+
+  export STUB_PROPOSALS
+  STUB_PROPOSALS="---NARRATIVE---
+The assertion 'experience is smooth' is not deterministically verifiable.
+---END-NARRATIVE---
+---PROPOSAL---
+ACTION: REFINE
+FILE: docs/test-doc.md
+DRIFT_REFS: pr:42
+DESCRIPTION: Replace subjective claim with checkable assertion
+---CONTENT---
+All sync operations complete within 5s under 1 Mbps throttling.
+@@END@@"
+
+  # In non-interactive mode (</dev/null), read returns empty → refine is skipped
+  # (no terminal → user doesn't approve). The key assertion is that the provider
+  # was called with doc_update and a REFINE proposal was parsed without error.
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  grep -q "RESOLVE:role=doc_update" "$STUB_CALLS_FILE"
+  # No git commit should have been attempted (refine was skipped, not an edit)
+  ! grep -q "git:push" "$STUB_CALLS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Test 9: #1208 EDIT context-membership guard — file outside scoped context
+# ---------------------------------------------------------------------------
+
+@test "#1208 EDIT guard: auto-skips EDIT for file outside per-doc context" {
+  _seed_main_entry "docs/test-doc.md" "stale assertion" "contradiction" "lib/core/foo.sh"
+
+  # Propose an EDIT targeting a DIFFERENT file (not in this doc's context)
+  export STUB_PROPOSALS
+  STUB_PROPOSALS="---NARRATIVE---
+Something changed in the codebase.
+---END-NARRATIVE---
+---PROPOSAL---
+ACTION: EDIT
+FILE: docs/OTHER-doc.md
+DRIFT_REFS: none
+DESCRIPTION: edit a file not in context
+---CONTENT---
+new content
+@@END@@"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Output should mention auto-skipping due to context
+  [[ "$output" =~ "Auto-skipping EDIT" ]] || [[ "$output" =~ "not in model context" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 10: #1208 large-file guard — EDIT for large file auto-skipped
+# ---------------------------------------------------------------------------
+
+@test "#1208 large-file guard: auto-skips EDIT for file > 8000 bytes" {
+  # Make the target doc large (must exceed _bcd_section_cap=8000 in
+  # _docs_bounded_context_for_doc to trigger the guard)
+  python3 -c "print('x' * 9000)" > "$FAKE_PROJECT/docs/test-doc.md" 2>/dev/null || \
+    dd if=/dev/zero bs=9001 count=1 2>/dev/null | tr '\0' 'x' > "$FAKE_PROJECT/docs/test-doc.md"
+
+  _seed_main_entry "docs/test-doc.md" "stale assertion" "contradiction" "lib/core/foo.sh"
+
+  export STUB_PROPOSALS
+  STUB_PROPOSALS="---NARRATIVE---
+Something changed.
+---END-NARRATIVE---
+---PROPOSAL---
+ACTION: EDIT
+FILE: docs/test-doc.md
+DRIFT_REFS: none
+DESCRIPTION: edit a large file
+---CONTENT---
+new content
+@@END@@"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  [[ "$output" =~ "Auto-skipping EDIT" ]] || [[ "$output" =~ "bytes but model only saw" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 11: #1208 CREATE-exists guard — CREATE for existing file auto-skipped
+# ---------------------------------------------------------------------------
+
+@test "#1208 CREATE-exists guard: auto-skips CREATE for file that already exists" {
+  _seed_main_entry "docs/test-doc.md" "stale assertion" "contradiction" "lib/core/foo.sh"
+
+  export STUB_PROPOSALS
+  STUB_PROPOSALS="---NARRATIVE---
+Something changed.
+---END-NARRATIVE---
+---PROPOSAL---
+ACTION: CREATE
+FILE: docs/test-doc.md
+DRIFT_REFS: none
+DESCRIPTION: create a file that already exists
+---CONTENT---
+new file content
+@@END@@"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  [[ "$output" =~ "Auto-skipping CREATE" ]] || [[ "$output" =~ "already exists" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 12: multiple docs — one pass per doc
+# ---------------------------------------------------------------------------
+
+@test "multiple docs with main entries: one bounded pass per doc" {
+  _seed_main_entry "docs/test-doc.md" "stale A" "contradiction" "lib/core/foo.sh"
+
+  # Seed a second doc
+  printf '# Other Doc\n\n## Intro\n\nContent.\n' > "$FAKE_PROJECT/docs/other-doc.md"
+  printf 'docs/other-doc.md\tabc123\t-\t1\tOther Doc\tfp4\tfeature\t-\t-\t-\n' \
+    >> "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  printf 'docs/other-doc.md\tabc123\t-\t2\tIntro\tfp5\tfeature\t-\t-\t-\n' \
+    >> "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+
+  _seed_main_entry "docs/other-doc.md" "stale B" "addition" "lib/utils/bar.sh"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # One doc_update call per doc (2 total)
+  local _calls
+  _calls="$(grep -c "RESOLVE:role=doc_update" "$STUB_CALLS_FILE" || true)"
+  [ "$_calls" -eq 2 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 13: _docs_extract_section — preamble extraction
+# ---------------------------------------------------------------------------
+
+@test "_docs_extract_section: extracts preamble (no heading)" {
+  run bash -c "
+export RITE_LIB_DIR='$PROJECT_ROOT/lib'
+export RITE_PROJECT_ROOT='$FAKE_PROJECT'
+export RITE_STATE_DIR='$FAKE_PROJECT/.rite/state'
+source '$DOCS_CMD'
+load_provider() { return 0; }
+provider_resolve_model() { printf 'claude-sonnet-4-6\n'; }
+_tf=\$(mktemp)
+# File starts with a heading — preamble (empty heading level) returns nothing
+printf '# Heading\n\n## Sub\n\nbody\n' > \"\$_tf\"
+_docs_extract_section \"\$_tf\" '' ''
+rm -f \"\$_tf\"
+"
+  # Preamble extraction: file starts with heading so nothing before it
+  [ "$status" -eq 0 ]
+  # Output must be empty (no lines before first heading)
+  [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: _docs_extract_section — named section extraction
+# ---------------------------------------------------------------------------
+
+@test "_docs_extract_section: extracts named section by heading anchor" {
+  run bash -c "
+export RITE_LIB_DIR='$PROJECT_ROOT/lib'
+export RITE_PROJECT_ROOT='$FAKE_PROJECT'
+export RITE_STATE_DIR='$FAKE_PROJECT/.rite/state'
+source '$DOCS_CMD'
+load_provider() { return 0; }
+provider_resolve_model() { printf 'claude-sonnet-4-6\n'; }
+_tf=\$(mktemp)
+printf '# Title\n\nPreamble.\n\n## Background\n\nBg content.\n\n## Usage\n\nUsage content.\n' > \"\$_tf\"
+_docs_extract_section \"\$_tf\" 2 'Background'
+rm -f \"\$_tf\"
+"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Background" ]]
+  [[ "$output" =~ "Bg content" ]]
+  # Must NOT include the Usage section
+  ! [[ "$output" =~ "Usage content" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: _docs_list_main_entry_docs — reads doc= field, not slug reverse
+# ---------------------------------------------------------------------------
+
+@test "_docs_list_main_entry_docs: lists docs from entry file doc= field" {
+  _seed_main_entry "docs/test-doc.md" "assertion" "contradiction" "lib/core/foo.sh"
+
+  run bash -c "
+export RITE_LIB_DIR='$PROJECT_ROOT/lib'
+export RITE_PROJECT_ROOT='$FAKE_PROJECT'
+export RITE_STATE_DIR='$FAKE_PROJECT/.rite/state'
+source '$DOCS_CMD'
+load_provider() { return 0; }
+provider_resolve_model() { printf 'claude-sonnet-4-6\n'; }
+_docs_list_main_entry_docs
+"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"docs/test-doc.md"* ]]
 }

@@ -54,6 +54,9 @@ setup() {
   # Set env vars for the library under test
   export RITE_PROJECT_ROOT="$FIXTURE_DIR"
   export RITE_STATE_DIR="$FIXTURE_DIR/.rite/state"
+  # MAP_FILE reflects the committed path (docs/docs-map.tsv, not .rite/state/)
+  MAP_FILE="$FIXTURE_DIR/docs/docs-map.tsv"
+  export MAP_FILE
   # Reset RITE_DOCS_MAP_AUTO to default for each test
   export RITE_DOCS_MAP_AUTO="true"
 }
@@ -105,7 +108,7 @@ _source_docs_map() {
 @test "docs-map: build creates the map file" {
   _source_docs_map
   docs_map_build
-  [ -f "$RITE_STATE_DIR/docs-map.tsv" ]
+  [ -f "$MAP_FILE" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -115,7 +118,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local header
-  header="$(head -1 "$RITE_STATE_DIR/docs-map.tsv")"
+  header="$(head -1 "$MAP_FILE")"
   [[ "$header" == *"sha=${FIXTURE_HEAD}"* ]]
 }
 
@@ -127,7 +130,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local files
-  files="$(cut -f1 "$RITE_STATE_DIR/docs-map.tsv" | sort -u)"
+  files="$(cut -f1 "$MAP_FILE" | sort -u)"
   echo "$files" | grep -qF "README.md"
   echo "$files" | grep -qF "CLAUDE.md"
   echo "$files" | grep -qF "docs/architecture/behavioral-design.md"
@@ -142,13 +145,13 @@ _source_docs_map() {
   docs_map_build
   # ADR file must have "adr" in column 3
   local adr_rows
-  adr_rows="$(grep -F "docs/adr-001-example.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  adr_rows="$(grep -F "docs/adr-001-example.md" "$MAP_FILE" | \
     cut -f3 | sort -u || true)"
   [ "$adr_rows" = "adr" ]
 
   # Regular doc must have "-" in column 3
   local reg_rows
-  reg_rows="$(grep -F "docs/architecture/behavioral-design.md" "$RITE_STATE_DIR/docs-map.tsv" | \
+  reg_rows="$(grep -F "docs/architecture/behavioral-design.md" "$MAP_FILE" | \
     cut -f3 | sort -u || true)"
   [ "$reg_rows" = "-" ]
 }
@@ -161,7 +164,7 @@ _source_docs_map() {
   _source_docs_map
   docs_map_build
   local rows
-  rows="$(grep -F "docs/no-headings.md" "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  rows="$(grep -F "docs/no-headings.md" "$MAP_FILE" || true)"
   # There should be exactly one row
   local count
   count="$(echo "$rows" | grep -c "docs/no-headings.md" || true)"
@@ -180,7 +183,7 @@ _source_docs_map() {
   docs_map_build
   # README.md has "# README Title" → level 1, text "README Title"
   local readme_rows
-  readme_rows="$(grep -F "README.md" "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  readme_rows="$(grep -F "README.md" "$MAP_FILE" || true)"
 
   local h1_row
   h1_row="$(echo "$readme_rows" | awk -F'\t' '$4 == "1"' | head -1)"
@@ -199,10 +202,10 @@ _source_docs_map() {
   docs_map_build
   # Copy the data rows (skip header)
   local copy1
-  copy1="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  copy1="$(grep -v '^#' "$MAP_FILE" || true)"
   docs_map_build
   local copy2
-  copy2="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" || true)"
+  copy2="$(grep -v '^#' "$MAP_FILE" || true)"
   [ "$copy1" = "$copy2" ]
 }
 
@@ -212,11 +215,11 @@ _source_docs_map() {
 @test "docs_map_ensure: auto-rebuilds when map is missing" {
   _source_docs_map
   # Confirm map does not exist yet
-  rm -f "$RITE_STATE_DIR/docs-map.tsv"
-  [ ! -f "$RITE_STATE_DIR/docs-map.tsv" ]
+  rm -f "$MAP_FILE"
+  [ ! -f "$MAP_FILE" ]
   # ensure should build it
   docs_map_ensure
-  [ -f "$RITE_STATE_DIR/docs-map.tsv" ]
+  [ -f "$MAP_FILE" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -224,9 +227,9 @@ _source_docs_map() {
 # ---------------------------------------------------------------------------
 @test "docs_map_ensure: RITE_DOCS_MAP_AUTO=false suppresses auto-rebuild" {
   _source_docs_map
-  rm -f "$RITE_STATE_DIR/docs-map.tsv"
+  rm -f "$MAP_FILE"
   RITE_DOCS_MAP_AUTO=false docs_map_ensure
-  [ ! -f "$RITE_STATE_DIR/docs-map.tsv" ]
+  [ ! -f "$MAP_FILE" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -237,10 +240,10 @@ _source_docs_map() {
   docs_map_build
   # Record mtime-like proxy: inode content checksum
   local before
-  before="$(cat "$RITE_STATE_DIR/docs-map.tsv")"
+  before="$(cat "$MAP_FILE")"
   docs_map_ensure
   local after
-  after="$(cat "$RITE_STATE_DIR/docs-map.tsv")"
+  after="$(cat "$MAP_FILE")"
   [ "$before" = "$after" ]
 }
 
@@ -253,7 +256,7 @@ _source_docs_map() {
   unset RITE_DOC_MODE 2>/dev/null || true
   rm -f "$FIXTURE_DIR/.rite/doc-sync.md"
   docs_map_build
-  [ -f "$RITE_STATE_DIR/docs-map.tsv" ]
+  [ -f "$MAP_FILE" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -264,7 +267,7 @@ _source_docs_map() {
   docs_map_build
   # No row in column 1 should start with '/'
   local abs_paths
-  abs_paths="$(cut -f1 "$RITE_STATE_DIR/docs-map.tsv" | grep '^/' || true)"
+  abs_paths="$(cut -f1 "$MAP_FILE" | grep '^/' || true)"
   [ -z "$abs_paths" ]
 }
 
@@ -276,7 +279,7 @@ _source_docs_map() {
   docs_map_build
   # Every data row (non-comment) should have FIXTURE_HEAD in column 2
   local bad_rows
-  bad_rows="$(grep -v '^#' "$RITE_STATE_DIR/docs-map.tsv" | \
+  bad_rows="$(grep -v '^#' "$MAP_FILE" | \
     awk -F'\t' -v sha="$FIXTURE_HEAD" '$2 != sha' || true)"
   [ -z "$bad_rows" ]
 }

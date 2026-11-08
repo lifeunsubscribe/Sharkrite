@@ -34,7 +34,7 @@ lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
-lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + targeted gate + assessment + merge + cleanup)
+lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + targeted gate + assessment + merge + cleanup + post-merge doc pass)
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
@@ -43,8 +43,8 @@ lib/utils/config.sh               # Config loading, path setup, provider variabl
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/integration-ledger.sh   # Integration branch ledger (issue↔SHA record, append/entries/mark_promoted)
 lib/utils/doc-consent.sh          # Doc-drift opt-in (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; unset = never asked, records nothing)
-lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → .rite/state/docs-map.tsv)
-lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — written per merge only with recorded consent)
+lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → docs/docs-map.tsv)
+lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — per-doc/per-branch entry files under RITE_STATE_DIR/doc-drift/, accumulate-in-place by (doc,assertion), locked via lock.sh)
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
@@ -111,6 +111,7 @@ Each task uses the model that fits its nature. Every role has its own independen
 | Finding assessment | `RITE_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Classifies review findings NOW/LATER/DISMISSED — three-state classification of structured findings, sonnet's job. Own var (#1187): it previously inherited the review model from the review marker, so pinning review to fable silently ran the loop's highest-count LLM call on fable too. |
 | Issue planning | `RITE_PLAN_MODEL` | `claude-opus-4-8` | Generates issues from ADRs — highest-stakes reasoning (must honor ADRs, never hallucinate fixtures). Its own var, decoupled from review so moving review off opus can't silently downgrade planning. Before this role existed, `plan-issues.sh` passed `""` and rode `RITE_REVIEW_MODEL` invisibly. |
 | Doc assessment | `RITE_DOC_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Structured pattern matching and comparison — sonnet's sweet spot |
+| Doc update (`doc_update`) | `RITE_DOC_UPDATE_MODEL` | `claude-fable-5` | LLM-authored doc edits read by humans as the product's description — quality justifies fable. Independent of `doc_assessment` (tag dedup, diff comparison). Role added; wiring to `docs-command.sh` Tier-2 editing pass is pending (forthcoming in Tier 2 issues). |
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
 | Triage / classify | `RITE_TRIAGE_MODEL` | `claude-haiku-4-5` | Narrow binary/bucket classification (trivial-vs-substantive diff; doc categorization) — haiku's job |
 | Health report | `RITE_HEALTH_MODEL` | `claude-sonnet-4-6` | Mostly templating pre-computed stats + fixed-threshold checks; thin interpretive tail. Decoupled from review so the report stops riding opus. A/B (2026-06-15) showed sonnet at coverage parity with opus; opus's only edge was calibration on ambiguous signals (it correctly hedged a phantom-CRITICAL that sonnet over-escalated). If the future chunk-split lands, put the Insights/prioritization tail on opus. |
@@ -571,6 +572,12 @@ rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file cr
                            # Works in any consent mode — explicit command + preview approval
                            # IS consent. Can CREATE new docs (e.g. ADRs). Nothing in sharkrite
                            # edits docs without this approval loop (per-merge doc-sync retired).
+rite docs --resume <branch> # Resume a saved doc proposal from a terminal-less promote:
+                           # loads ${RITE_STATE_DIR}/doc-proposal-<safe-branch>.md, runs each
+                           # listed doc through the y/n/f approval loop (same as the TTY promote
+                           # path), applies approved changes via the docs-PR path, and removes
+                           # the proposal file after completion. Missing proposal → exit 1
+                           # listing available ${RITE_STATE_DIR}/doc-proposal-*.md files.
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
@@ -581,14 +588,18 @@ rite --sync <N> [<N>...]  # Sync issue feature branches: skips rebase when branc
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
 rite --promote <branch>    # Promote integration branch to main (PR + review + targeted gate +
                            # CRITICAL hard gate + NOW/LATER/DISMISSED assessment + squash-merge
-                           # + cleanup). Classify-only — there is NO fix loop at promote: fixing
-                           # on the integration branch would land code on main that skipped the
-                           # per-issue review cycle. ACTIONABLE_NOW findings become one
-                           # aggregated issue and ACTIONABLE_LATER become per-item issues —
-                           # both deduped against the follow-ups the constituent issues already
-                           # filed — and DISMISSED are dropped. When every surviving finding is
-                           # already tracked, nothing is filed. If the assessor is unavailable it falls back
-                           # to capturing the raw review — it never silently loses findings.
+                           # + cleanup + post-merge Tier 2 doc pass). Classify-only — there is
+                           # NO fix loop at promote: fixing on the integration branch would land
+                           # code on main that skipped the per-issue review cycle. ACTIONABLE_NOW
+                           # findings become one aggregated issue and ACTIONABLE_LATER become
+                           # per-item issues — both deduped against the follow-ups the constituent
+                           # issues already filed — and DISMISSED are dropped. When every
+                           # surviving finding is already tracked, nothing is filed. If the
+                           # assessor is unavailable it falls back to capturing the raw review —
+                           # it never silently loses findings. After the merge, a Tier 2 doc pass
+                           # runs (TTY: interactive review loop; no TTY: saves proposal to
+                           # .rite/state/doc-proposal-<branch>.md, prints `rite docs --resume`).
+                           # Doc rejection never blocks the merge outcome.
                            # See behavioral-design.md → "Promotion Review Is Assessed, Not Just
                            # Captured".
 rite --promote <branch> <issue>  # Single-issue promote: cherry-picks ONE staged ledger SHA onto a
@@ -608,7 +619,7 @@ rite --promote <branch> <issue>  # Single-issue promote: cherry-picks ONE staged
 
 **`rite plan`** generates GitHub issues from architectural docs. Loads the doc + project CLAUDE.md + the issue runbook (`docs/issue-runbook.md`) and generates well-structured issues via Claude. Interactive feedback loop: preview → approve/adjust → create. Supports natural language instructions for filtering (e.g., `rite plan "phases 2-4 except auth"`). Default doc(s) configured via `RITE_PLAN_DOCS` in `.rite/config`. Issues follow the runbook template: title format, labels (phase + category + priority), time estimates (Fibonacci, capped at 2hr), Claude Context, acceptance criteria with verification commands, done definitions, scope boundaries, and dependency chains.
 
-Auto-discovery injects grounding context beyond the explicit doc path: ADRs (`docs/**/*adr*.md`), root `README.md`, and remaining `docs/**/*.md` up to `RITE_PLAN_DOC_BYTE_CAP` bytes (default 50 KB). ADRs and README always load in full; other docs are dropped alphabetically when the cap is hit. Set `RITE_PLAN_DOC_BYTE_CAP=0` to disable entirely. Set `RITE_PLAN_INCLUDE_README=false` to skip README injection without disabling other auto-discovery. Doc block headers use project-relative paths (e.g., `--- docs/architecture/adr-001.md ---`) to prevent identical-label collisions when multiple files share the same basename.
+Auto-discovery injects grounding context beyond the explicit doc path. When `docs/docs-map.tsv` (v4) is present, discovery is **map-driven**: ADRs and README load in full; other feature-doc sections load one section at a time (by heading anchor) until `RITE_PLAN_DOC_BYTE_CAP` bytes (default 50 KB) of content have been loaded — sections past the cap are still **discoverable** (listed in an index block in the prompt) rather than silently skipped. Without a docs map, discovery falls back to whole-file loading: ADRs and README in full, then other `docs/**/*.md` files alphabetically until the cap is hit. `RITE_PLAN_DOC_BYTE_CAP` bounds *content loaded per pass*, never what is discoverable. Set `RITE_PLAN_DOC_BYTE_CAP=0` to disable auto-discovery entirely. Set `RITE_PLAN_INCLUDE_README=false` to skip README injection. Doc block headers use project-relative paths (e.g., `--- docs/architecture/adr-001.md ---`); map-driven section blocks use `--- docs/my-doc.md § Section Title ---`.
 
 The full `rite <issue>` resume correctly detects state (via PR comments/commits) and skips completed phases, so running standalone commands then resuming with the full lifecycle works seamlessly.
 
@@ -1018,6 +1029,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
 - `FULL_SUITE_SKIPPED` — scheduled run skipped without running the suite; `reason=outside_window` (clock outside 02:00–05:00) or `reason=batch_active` (live rite lock detected); `hour=<H>`. Health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is neither a pass nor a failure — a missing nightly report is explainable, not an alarm.
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
+- `DOC_PASS` — every doc model pass: `kind=promote|docs|align doc=<path|-> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`; when `duration_s > RITE_DOC_PASS_WARN_SECONDS` (default 120) an info-level suggestion to run `rite align-docs` is also printed (per-doc passes only; aggregate passes with `doc=-` never print the suggestion)
 - `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
 - `MAIN_CI_RED` — batch preflight found red CI on the target branch; `branch=<b> conclusion=<c>`; batch aborts unless `--allow-red-main` was passed
 - `CONFLICT_RESOLVE_ATTEMPT` — per-attempt diag from the conflict-resolver retry loop; `n=<attempt_number> remaining=<file_count>`. Emitted by `lib/utils/conflict-resolver.sh` before each provider session. Health reports aggregate these to surface conflict sets that consistently need multiple attempts.

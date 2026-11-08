@@ -272,11 +272,18 @@
 # tracking is opt-in (RITE_DOC_MODE below); nothing edits docs/ automatically.
 
 # Docs map auto-rebuild (default: true).
-# When true, docs_map_ensure() automatically rebuilds .rite/state/docs-map.tsv
+# When true, docs_map_ensure() automatically rebuilds docs/docs-map.tsv
 # when the file is missing. The map inventories README.md, CLAUDE.md, and
 # docs/**/*.md with headings and ADR flags for use by cluster-B doc features.
 # Set to "false" to suppress auto-rebuild (e.g. when the map is managed externally).
 # RITE_DOCS_MAP_AUTO=true
+
+# Model for the doc_update role (pending wiring to `rite docs` Tier-2 editing passes
+# and align-docs reconcile — consumer wiring forthcoming in Tier 2 issues). A doc edit
+# is read by a human as the product's description — quality justifies fable. Independent
+# of RITE_DOC_ASSESSMENT_MODEL (tag dedup, structured comparison). Override to trade
+# quality for speed when drafting or iterating quickly.
+# RITE_DOC_UPDATE_MODEL="claude-fable-5"
 
 # Doc drift consent (opt-in) — nothing edits docs/ automatically in any mode.
 #
@@ -290,3 +297,32 @@
 # LEAVE UNSET (default: empty) to be asked on the next supervised run or
 # `rite docs`. Unset records nothing — unattended runs never opt a repo in.
 # RITE_DOC_MODE="off"
+
+# Doc proposal growth warning threshold (percent).
+# In every doc-proposal preview, the computed byte delta is displayed.
+# When an edit grows the doc by more than this percentage AND the proposal
+# has no DESCRIPTION: line, the preview shows a visible flag prompting the
+# operator to add one explaining the growth.
+# The flag is informational only — the operator can still approve or skip.
+# Default: 15 (flag edits that grow the doc by more than 15%).
+# RITE_DOC_GROWTH_WARN_PCT=15
+
+# Restructure re-raise threshold (percent growth since last decision).
+# rite align-docs runs a restructure assessment before the assertion audit.
+# A restructure proposal for a doc is suppressed after a prior decision until
+# the doc grows by at least this percentage since the size recorded at that
+# decision.  When the doc crosses the threshold the proposal is re-raised.
+# History is written to ${RITE_STATE_DIR}/doc-approval-history.md (default:
+# .rite/state/doc-approval-history.md relative to the project root).
+# Default: 25 (re-raise when the doc has grown by ≥25% since last decision).
+# RITE_DOC_RESTRUCTURE_REGROWTH_PCT=25
+
+# Doc pass duration warning threshold (seconds).
+# When a doc model pass (promote, docs, or align) takes longer than this many
+# seconds, an info-level suggestion is printed recommending `rite align-docs`
+# for a full-scope doc audit. The pass completes normally — this
+# is informational only. Applies to per-doc passes; aggregate passes (doc=-)
+# never print the suggestion.
+# Default: 120 (warn when a single pass exceeds 2 minutes).
+# Set to 0 to silence the suggestion entirely.
+# RITE_DOC_PASS_WARN_SECONDS=120

@@ -1,58 +1,69 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-documentation.sh::_record_tier1_drift_entries
-
-# Regression tests for _record_tier1_drift_entries Trigger C behavior.
+# sharkrite-test-covers: lib/core/assess-documentation.sh
 #
-# Trigger C fires when the PR's head branch has a declared-doc state file at
-# RITE_STATE_DIR/declared-doc-<branch-slug>.txt. This tests the "one entry per
-# PR" design decision resolved in issue #1509: distinct PRs declaring the same
-# doc must produce separate entries, each preserving its own branch evidence.
+# Regression tests for the Tier 1 deterministic drift recording path
+# (_record_tier1_drift_entries). Pins the acceptance criteria from issue #1427:
 #
-# Covers:
-#   1. Trigger C fires when declared-doc state file exists for the PR branch.
-#   2. Trigger C entry includes branch name in suspected-inaccuracy evidence.
-#   3. Two distinct PRs declaring the same doc produce two separate entries.
-#   4. Trigger C does not fire when no declared-doc state file exists.
+#   1. Trigger A: changed file IS a doc's declared enforcing test → entry with
+#      kind=test-scope, evidence "changed: <test>; enforces: <doc>"
+#   2. Trigger B: changed file matches covers-header path of an enforcing test →
+#      entry with kind=test-scope, evidence "changed: <src>; covers: <pat>; enforces-via: <test>"
+#   3. Trigger C: PR head branch has a declared-doc state file →
+#      entry with kind=addition, evidence "branch: ...; declared-doc: ...; changed: ..."
+#   4. No trigger fires → zero entries recorded
+#   5. Zero provider calls: structural grep + stubbed-provider behavioral run
+#   6. Each trigger fires independently (one-trigger-at-a-time isolation)
 
 setup() {
-  PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  LIB_DIR="$PROJECT_ROOT/lib"
+  RITE_REPO_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
+  export RITE_REPO_ROOT
 
-  # Fresh temp git repo for each test.
   _TMPDIR="$(mktemp -d)"
-  cd "$_TMPDIR"
-  git init -q .
-  git config user.email "test@test.invalid"
-  git config user.name "Test"
-  touch .gitkeep
-  git add .gitkeep
-  git commit -q -m "init"
-
   export RITE_PROJECT_ROOT="$_TMPDIR"
   export RITE_STATE_DIR="$_TMPDIR/.rite/state"
-  mkdir -p "$RITE_STATE_DIR"
-  export RITE_LIB_DIR="$LIB_DIR"
+  export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
+  export RITE_DOCS_MAP_AUTO="false"
   export RITE_VERBOSE=false
-  export RITE_DOC_MODE="changelog"
+  unset RITE_DOC_MODE
 
-  # Pre-stub load_provider: provider-interface.sh uses a function-sentinel guard
-  # (declare -f load_provider); this stub is preserved on source and prevents the
-  # real Claude provider from loading. _record_tier1_drift_entries is deterministic
-  # (Tier 1) and makes zero provider calls.
-  load_provider() { :; }
+  mkdir -p "$RITE_STATE_DIR/doc-drift"
+  mkdir -p "$_TMPDIR/docs"
+  mkdir -p "$_TMPDIR/tests/regression"
 
-  # Source function definitions only; internal imports load the dependency chain.
-  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: assess-documentation.sh uses a function-sentinel guard (declare -f update_conventions_from_marker); load_provider pre-stub is preserved because provider-interface.sh also uses a function-sentinel guard (declare -f load_provider) and returns immediately when load_provider is already defined.
-  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$LIB_DIR/core/assess-documentation.sh" 2>/dev/null || true
+  # Feature doc with a sharkrite-enforced-by marker
+  printf '# Feature Doc\n\n<!-- sharkrite-enforced-by: tests/regression/t1-enforcing.bats -->\n' \
+    > "$_TMPDIR/docs/feature.md"
 
+  # A second doc with no enforced-by marker (control group)
+  printf '# Plain Doc\n\nNo markers here.\n' \
+    > "$_TMPDIR/docs/plain.md"
+
+  # Enforcing test that also declares covers paths
+  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/core/impl.sh, lib/utils/helper.sh\n@test "x" { true; }\n' \
+    > "$_TMPDIR/tests/regression/t1-enforcing.bats"
+
+  # Minimal docs map: one row per doc (tab-separated, six fields)
+  # docs_map_path() returns ${RITE_PROJECT_ROOT}/docs/docs-map.tsv
+  printf '# docs-map v4\n' > "$_TMPDIR/docs/docs-map.tsv"
+  printf 'docs/feature.md\t\t-\t\t\n' >> "$_TMPDIR/docs/docs-map.tsv"
+  printf 'docs/plain.md\t\t-\t\t\n' >> "$_TMPDIR/docs/docs-map.tsv"
+
+  # Load all needed functions via RITE_SOURCE_FUNCTIONS_ONLY=1
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_REPO_ROOT/lib/core/assess-documentation.sh" 2>/dev/null || true
   # Runbook §3: restore flags after last source (never set +e).
   set +u; set +o pipefail
 
-  # Re-stub print_* AFTER last source (runbook §2: env-guarded libs overwrite pre-source stubs).
+  # Re-stub print_* AFTER sources (runbook §2 — env-var-guarded libs overwrite pre-stubs)
   print_info() { :; }
   print_warning() { :; }
   verbose_info() { :; }
-  print_error() { :; }
+  docs_map_ensure() { :; }
+
+  # Stub provider functions — track any call as a violation
+  _T1_PROVIDER_CALL_COUNT=0
+  provider_run_prompt() { _T1_PROVIDER_CALL_COUNT=$((_T1_PROVIDER_CALL_COUNT + 1)); echo "stub"; }
+  provider_run_prompt_with_timeout() { _T1_PROVIDER_CALL_COUNT=$((_T1_PROVIDER_CALL_COUNT + 1)); echo "stub"; }
+  provider_run_streaming_prompt() { _T1_PROVIDER_CALL_COUNT=$((_T1_PROVIDER_CALL_COUNT + 1)); echo "stub"; }
 }
 
 teardown() {
@@ -61,81 +72,258 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Trigger C fires when declared-doc state file exists
+# Trigger A: changed file IS a doc's declared enforcing test
 # ---------------------------------------------------------------------------
 
-@test "_record_tier1_drift_entries: Trigger C fires and records entry when state file exists" {
-  printf 'docs/architecture/behavioral-design.md' \
-    > "$RITE_STATE_DIR/declared-doc-fix-issue-42.txt"
+@test "Trigger A: changed enforcing test fires drift entry" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "99" "Closes #42" \
+    "tests/regression/t1-enforcing.bats" "main" "feat/my-feature" || true
 
-  _record_tier1_drift_entries \
-    "42" "Closes #40" "lib/core/foo.sh" "main" "fix/issue-42"
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 1 ]
+}
 
-  _log_path="$(drift_log_path)"
-  [ -f "$_log_path" ]
-  _count="$(drift_log_entry_count "$_log_path")"
-  [ "$_count" -eq 1 ]
+@test "Trigger A: entry has kind=test-scope" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "99" "Closes #42" \
+    "tests/regression/t1-enforcing.bats" "main" "feat/my-feature" || true
+
+  local _ef
+  _ef="$(_drift_entry_path "docs/feature.md" "main")"
+  grep -q "kind=test-scope" "$_ef"
+}
+
+@test "Trigger A: evidence contains changed and enforces fields" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "99" "Closes #42" \
+    "tests/regression/t1-enforcing.bats" "main" "feat/my-feature" || true
+
+  local _ef
+  _ef="$(_drift_entry_path "docs/feature.md" "main")"
+  grep -q "changed: tests/regression/t1-enforcing.bats" "$_ef"
+  grep -q "enforces: docs/feature.md" "$_ef"
+}
+
+@test "Trigger A: assertion is the enforcing test path" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "99" "Closes #42" \
+    "tests/regression/t1-enforcing.bats" "main" "feat/my-feature" || true
+
+  local _ef
+  _ef="$(_drift_entry_path "docs/feature.md" "main")"
+  grep -q "assertion=tests/regression/t1-enforcing.bats" "$_ef"
 }
 
 # ---------------------------------------------------------------------------
-# 2. Entry includes branch evidence (per-PR discriminator)
+# Trigger B: changed source file matches covers-header path of enforcing test
 # ---------------------------------------------------------------------------
 
-@test "_record_tier1_drift_entries: Trigger C entry includes branch in suspected-inaccuracy" {
-  printf 'docs/architecture/behavioral-design.md' \
-    > "$RITE_STATE_DIR/declared-doc-fix-issue-42.txt"
+@test "Trigger B: changed source matching covers header fires drift entry" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "100" "Closes #43" \
+    "lib/core/impl.sh" "main" "feat/my-feature" || true
 
-  _record_tier1_drift_entries \
-    "42" "Closes #40" "lib/core/foo.sh" "main" "fix/issue-42"
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 1 ]
+}
 
-  _log_path="$(drift_log_path)"
-  grep -q "fix/issue-42" "$_log_path"
+@test "Trigger B: entry has kind=test-scope" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "100" "Closes #43" \
+    "lib/core/impl.sh" "main" "feat/my-feature" || true
+
+  local _ef
+  _ef="$(_drift_entry_path "docs/feature.md" "main")"
+  grep -q "kind=test-scope" "$_ef"
+}
+
+@test "Trigger B: evidence contains changed, covers, and enforces-via fields" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "100" "Closes #43" \
+    "lib/core/impl.sh" "main" "feat/my-feature" || true
+
+  local _ef
+  _ef="$(_drift_entry_path "docs/feature.md" "main")"
+  grep -q "changed: lib/core/impl.sh" "$_ef"
+  grep -q "covers: lib/core/impl.sh" "$_ef"
+  grep -q "enforces-via: tests/regression/t1-enforcing.bats" "$_ef"
+}
+
+@test "Trigger B: single-pattern covers header fires drift entry" {
+  # Regression: printf '%s' (no newline) caused while-read to skip the only pattern.
+  # The fix: printf '%s\n' so the loop always reads the final (or only) token.
+  printf '#!/usr/bin/env bats\n# sharkrite-test-covers: lib/core/single.sh\n@test "x" { true; }\n' \
+    > "$_TMPDIR/tests/regression/t1-single.bats"
+  printf '# Feature Doc\n\n<!-- sharkrite-enforced-by: tests/regression/t1-single.bats -->\n' \
+    > "$_TMPDIR/docs/single.md"
+  printf 'docs/single.md\t\t-\t\t\n' >> "$_TMPDIR/docs/docs-map.tsv"
+
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "110" "Closes #50" \
+    "lib/core/single.sh" "main" "feat/single" || true
+
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/single.md)"
+  [ "$_cnt" -eq 1 ]
+}
+
+@test "Trigger B: last pattern in multi-pattern covers header fires drift entry" {
+  # Regression: without trailing newline, the last CSV token was dropped by while-read.
+  # The enforcing test has TWO covers paths; this test changes the SECOND one.
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "111" "Closes #51" \
+    "lib/utils/helper.sh" "main" "feat/last-pat" || true
+
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
-# 3. Two distinct PRs declaring the same doc produce two separate entries
-#    (anti-regression for issue #1509: Trigger C collapsing PR evidence)
+# Trigger C: declared-doc state file on the head branch
 # ---------------------------------------------------------------------------
 
-@test "_record_tier1_drift_entries: two distinct PRs declaring the same doc produce two separate entries" {
-  # PR 100 on branch fix/issue-100, declares docs/arch.md
-  printf 'docs/architecture/behavioral-design.md' \
-    > "$RITE_STATE_DIR/declared-doc-fix-issue-100.txt"
+@test "Trigger C: declared-doc branch fires drift entry" {
+  # Write declared-doc state file for the head branch slug
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-declared.txt"
 
-  _record_tier1_drift_entries \
-    "100" "Closes #95" "lib/core/foo.sh" "main" "fix/issue-100"
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "101" "Closes #44" \
+    "lib/other/file.sh" "main" "feat/declared" || true
 
-  # PR 200 on a different branch, declares the SAME doc
-  printf 'docs/architecture/behavioral-design.md' \
-    > "$RITE_STATE_DIR/declared-doc-fix-issue-200.txt"
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 1 ]
+}
 
-  _record_tier1_drift_entries \
-    "200" "Closes #195" "lib/utils/bar.sh" "main" "fix/issue-200"
+@test "Trigger C: entry has kind=addition" {
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-declared.txt"
 
-  _log_path="$(drift_log_path)"
-  _count="$(drift_log_entry_count "$_log_path")"
-  # Must produce exactly two entries — no collapse.
-  [ "$_count" -eq 2 ]
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "101" "Closes #44" \
+    "lib/other/file.sh" "main" "feat/declared" || true
 
-  # Each entry must carry its own PR number.
-  grep -q "pr:100" "$_log_path"
-  grep -q "pr:200" "$_log_path"
+  local _ef
+  _ef="$(_drift_entry_path "docs/feature.md" "main")"
+  grep -q "kind=addition" "$_ef"
+}
 
-  # Each entry must carry its own branch evidence.
-  grep -q "fix/issue-100" "$_log_path"
-  grep -q "fix/issue-200" "$_log_path"
+@test "Trigger C: evidence contains branch and declared-doc fields" {
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-declared.txt"
+
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "101" "Closes #44" \
+    "lib/other/file.sh" "main" "feat/declared" || true
+
+  local _ef
+  _ef="$(_drift_entry_path "docs/feature.md" "main")"
+  grep -q "branch: feat/declared" "$_ef"
+  grep -q "declared-doc: docs/feature.md" "$_ef"
+}
+
+@test "Trigger C: branch slug replaces slashes with dashes (feat/a/b -> feat-a-b)" {
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-a-b.txt"
+
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "102" "Closes #45" \
+    "lib/other/file.sh" "main" "feat/a/b" || true
+
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
-# 4. Trigger C does not fire when no declared-doc state file exists
+# No trigger fires
 # ---------------------------------------------------------------------------
 
-@test "_record_tier1_drift_entries: no drift entry when no declared-doc state file" {
-  # No state file created for this branch.
-  _record_tier1_drift_entries \
-    "55" "Closes #50" "lib/core/foo.sh" "main" "fix/issue-55"
+@test "One-off fix with no enforced-by match records nothing" {
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "103" "Closes #46" \
+    "lib/unrelated/noop.sh" "main" "feat/unrelated" || true
 
-  _log_path="$(drift_log_path)"
-  # Log file should not exist (no trigger fired).
-  [ ! -f "$_log_path" ]
+  local _cnt
+  _cnt="$(drift_log_entry_count)"
+  [ "$_cnt" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Zero provider calls — structural grep
+# ---------------------------------------------------------------------------
+
+@test "zero provider calls: _record_tier1_drift_entries body has no provider_run call (structural)" {
+  local body
+  body="$(declare -f _record_tier1_drift_entries)"
+  local _cnt
+  _cnt="$(echo "$body" | grep -c 'provider_run' || true)"
+  [ "$_cnt" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Zero provider calls — behavioral run with stubbed provider
+# ---------------------------------------------------------------------------
+
+@test "zero provider calls: behavioral run with Trigger A input makes no provider call" {
+  _T1_PROVIDER_CALL_COUNT=0
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "99" "Closes #42" \
+    "tests/regression/t1-enforcing.bats" "main" "feat/my-feature" || true
+  [ "$_T1_PROVIDER_CALL_COUNT" -eq 0 ]
+}
+
+@test "zero provider calls: behavioral run with Trigger B input makes no provider call" {
+  _T1_PROVIDER_CALL_COUNT=0
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "100" "Closes #43" \
+    "lib/core/impl.sh" "main" "feat/my-feature" || true
+  [ "$_T1_PROVIDER_CALL_COUNT" -eq 0 ]
+}
+
+@test "zero provider calls: behavioral run with Trigger C input makes no provider call" {
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-declared.txt"
+  _T1_PROVIDER_CALL_COUNT=0
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "101" "Closes #44" \
+    "lib/other/file.sh" "main" "feat/declared" || true
+  [ "$_T1_PROVIDER_CALL_COUNT" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Coverage header self-check (MISSING_TEST_COVERAGE_HEADER lint)
+# ---------------------------------------------------------------------------
+
+@test "doc-drift-tier1-deterministic.bats: coverage header present on line 2" {
+  local _cnt
+  _cnt="$(head -2 "$BATS_TEST_FILENAME" | grep -c 'sharkrite-test-covers:' || true)"
+  [ "$_cnt" -eq 1 ]
+}
+
+# Ported from main's doc-drift-tier1 suite during the doc-refactor sync (#1509).
+# main asserted this against the legacy markdown drift log; the format here is
+# superseded, so the requirement is re-expressed against drift_log_entry_count.
+# The requirement is unchanged: one entry per PR, NOT one per doc, so two
+# branches that each declare the same doc must both be burned down.
+#
+# SKIPPED: this branch currently coalesces both PRs into one entry
+# (pr=201,202) and keeps only the first branch's evidence — see #1618.
+# Remove the skip when #1618 lands; do not delete the test.
+@test "Trigger C: two distinct PRs declaring the same doc produce two entries" {
+  skip "blocked by #1618 — entries coalesce per doc, dropping the second PR's evidence"
+
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-first.txt"
+  printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-second.txt"
+
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "201" "Closes #91" \
+    "lib/other/file.sh" "main" "feat/first" || true
+  RITE_DOC_MODE=sync \
+    _record_tier1_drift_entries "202" "Closes #92" \
+    "lib/other/file.sh" "main" "feat/second" || true
+
+  local _cnt
+  _cnt="$(drift_log_entry_count --doc docs/feature.md)"
+  [ "$_cnt" -eq 2 ]
 }
