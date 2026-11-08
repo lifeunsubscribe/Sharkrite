@@ -137,7 +137,10 @@ if [ -n "${RITE_LINT_FILES:-}" ]; then
     # Letting execution fall through to the rule loop is safe: SHELL_FILES is
     # empty so all SHELL_FILES-iterating rules are no-ops; only rules with
     # their own find loop (Rules 34/35) do real work.
-    if printf '%s\n' "$RITE_LINT_FILES" | grep -qE '\.bats$'; then
+    # Here-string: a producer | grep -q pipe under pipefail returns 141 when
+    # grep exits before a multi-write producer finishes (SIGPIPE) — the
+    # Rule 36 macOS false positive, #1633. Here it would skip the bats rules.
+    if grep -qE '\.bats$' <<< "$RITE_LINT_FILES"; then
       echo "Sharkrite custom lint: targeted scope (bats-only — running Rules 34/35/40)"
     else
       echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."

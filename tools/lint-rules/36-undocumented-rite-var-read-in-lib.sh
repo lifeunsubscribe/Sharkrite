@@ -74,19 +74,18 @@ if [ -z "$_r36_allowed_set" ]; then
   exit 1
 fi
 
-# Diagnostics on the FIRST violation only (issue #1633). This rule fires on
-# macOS CI for vars that ARE in the allowlist (three different vars so far —
-# #1605, PR #1625, main run 42502587335), passes on ubuntu for the same commit,
-# and does not reproduce on a macOS dev box. Four hypotheses have been ruled
-# out without a repro; the one thing every failing run lacked was evidence of
-# what the allowlist actually contained at the moment of the miss. So: record
-# the environment, the size of each allowlist input, whether the flagged var is
-# present in each, and the full combined list. Stderr only, nothing on a clean
-# run, verdicts untouched.
+# Diagnostics on the FIRST violation only (issue #1633). This rule fired on
+# macOS CI for vars that ARE in the allowlist (five different vars: #1605,
+# PR #1625, main run 42505835752, PR #1636 twice), passed on ubuntu for the
+# same commit, and never reproduced on a dev box. Root cause: the membership
+# check below was `printf '%s\n' "$allowed" | grep -qxF`, a SIGPIPE race under
+# pipefail (see the comment at the check). Kept as the verification instrument:
+# if a miss ever recurs, this records the environment, the size of each
+# allowlist input, whether the flagged var is present in each, and the full
+# combined list. Stderr only, nothing on a clean run, verdicts untouched.
 #
 # Membership here uses `grep -cxF ... <<<` — a here-string and a COUNT, so grep
-# reads all of its input and there is no producer|grep -q early-exit pipe. The
-# diagnostic must not be able to miss in the same way the rule might.
+# reads all of its input and there is no producer process to take SIGPIPE.
 _r36_diag_printed=false
 _r36_print_diag() {
   local _v="$1" _t _tv
@@ -154,7 +153,14 @@ for _r36_file in "${_r36_lib_files[@]}"; do
       [ -n "$_r36_var_name" ] || continue
 
       # Check if var is in the allowlist (documented set ∪ ledger).
-      if printf '%s\n' "$_r36_allowed_set" | grep -qxF "$_r36_var_name"; then
+      # Here-string, NOT `printf '%s\n' "$set" | grep -q`: the driver runs under
+      # pipefail, and bash's printf builtin emits a 3 KB allowlist as several
+      # write()s on macOS (1 KB stdio buffers; Linux writes it in one). When
+      # grep -q matched in an early chunk and exited before the last write,
+      # printf took SIGPIPE, the pipeline returned 141, and an allowlisted var
+      # was reported undocumented — one random var per run, macOS CI only
+      # (#1605, #1633). A here-string has no producer process to kill.
+      if grep -qxF "$_r36_var_name" <<< "$_r36_allowed_set"; then
         continue
       fi
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: tools/lint-rules/36-undocumented-rite-var-read-in-lib.sh, tools/sharkrite-lint.sh
+# sharkrite-test-covers: tools/lint-rules/36-undocumented-rite-var-read-in-lib.sh, tools/sharkrite-lint.sh, tools/lint-rules/21-bash-4-builtins-in-bin-bash-scripts-without.sh
 # Regression test for Rule 36 ledger isolation.
 #
 # Verifies that running the Rule 36 lint fragment does NOT mutate the tracked
@@ -176,4 +176,45 @@ EOF
   SHARKRITE_LINT_ONLY=36 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
   ! echo "$output" | grep -q 'rule36-diag'
+}
+
+# ---------------------------------------------------------------------------
+# Root cause of the macOS false positive (issue #1633)
+#
+# The driver runs under `set -o pipefail`. `printf '%s\n' "$allowed" | grep -qxF`
+# has a producer process: when grep -q matches in an early chunk and exits,
+# the still-writing printf takes SIGPIPE and the pipeline returns 141, so an
+# allowlisted var reads as "not in the allowlist". bash's printf emits the 3 KB
+# allowlist as several write()s on macOS (1 KB stdio buffers) and as one on
+# Linux — hence macOS-only, one random var per run, never on an idle dev box.
+# A here-string has no producer process. These pin the mechanism and the fix.
+# ---------------------------------------------------------------------------
+
+@test "pipefail turns a producer|grep -q early exit into rc 141; a here-string does not" {
+  # Mechanism, not a bash curiosity: this is exactly what the membership
+  # check did on macOS CI. The sleep forces the second write to land after
+  # grep has already matched and exited.
+  run bash -c 'set -o pipefail; { printf "RITE_A\n"; sleep 0.2; printf "RITE_B\n"; } | grep -qxF RITE_A'
+  [ "$status" -eq 141 ]
+  run bash -c 'set -o pipefail; v=$(printf "RITE_A\nRITE_B\n"); grep -qxF RITE_A <<< "$v"'
+  [ "$status" -eq 0 ]
+}
+
+@test "allowlist membership and the other multi-line lint guards use here-strings, not producer|grep -q" {
+  local rules_dir
+  rules_dir="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)/tools/lint-rules"
+  local r36="$rules_dir/36-undocumented-rite-var-read-in-lib.sh"
+  local r21="$rules_dir/21-bash-4-builtins-in-bin-bash-scripts-without.sh"
+
+  # Rule 36: the membership check is a here-string against the allowlist.
+  grep -qF 'grep -qxF "$_r36_var_name" <<< "$_r36_allowed_set"' "$r36"
+  ! grep -E '"\$_r36_allowed_set" \| grep -q' "$r36"
+
+  # Driver: the bats-only targeted-scope probe reads RITE_LINT_FILES via here-string.
+  grep -qF "grep -qE '\\.bats\$' <<< \"\$RITE_LINT_FILES\"" "$LINT_SCRIPT"
+  ! grep -E '"\$RITE_LINT_FILES" \| grep -q' "$LINT_SCRIPT"
+
+  # Rule 21: both whole-file guard scans are here-strings.
+  [ "$(grep -c '<<< "$_non_comment_lines"' "$r21")" -eq 2 ]
+  ! grep -E 'echo "\$_non_comment_lines" \| grep -q' "$r21"
 }
