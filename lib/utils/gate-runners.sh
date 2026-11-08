@@ -1244,7 +1244,7 @@ _cienv_gnu_prefix() {
     fi
   done
   for _d in /opt/homebrew/opt/gawk/libexec/gnubin /usr/local/opt/gawk/libexec/gnubin; do
-    if [ -d "$_d" ] && [ -x "$_d/gawk" ]; then
+    if [ -d "$_d" ] && [ -x "$_d/awk" ]; then
       _prefix="${_prefix}${_d}:"
       break
     fi

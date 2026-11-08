@@ -77,10 +77,9 @@ setup() {
 }
 
 @test "structural: skip count subtracts from pass count before terminal output" {
-  # _bats_pass currently includes TAP ^ok lines that have # SKIP.  We must
+  # _bats_pass currently includes TAP ^ok lines that have # skip.  We must
   # subtract _bats_skip_count so the digest shows genuine passes only.
-  grep -q '_bats_pass=.*_bats_pass.*_bats_skip_count' "${RITE_LIB_DIR}/utils/test-gate.sh" || \
-  grep -q '_bats_pass=$((' "${RITE_LIB_DIR}/utils/test-gate.sh" || {
+  grep -q '_bats_pass=.*_bats_pass.*_bats_skip_count' "${RITE_LIB_DIR}/utils/test-gate.sh" || {
     echo "FAIL: _bats_pass must be corrected by subtracting _bats_skip_count" >&2
     return 1
   }
@@ -91,8 +90,11 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "unit: _cienv_gnu_prefix returns empty string when no gnubin dirs exist" {
-  # Source gate-runners.sh then call the helper with paths that don't exist.
-  # Suppress the re-source guard by unsetting the sentinel function first.
+  # Skip when ggrep (Homebrew GNU grep) is installed — the function will find
+  # the real gnubin dirs and return a non-empty prefix, which is correct
+  # behaviour but defeats the "empty when absent" assertion.  Test 7 covers the
+  # installed case.
+  command -v ggrep >/dev/null 2>&1 && skip "ggrep (GNU grep via Homebrew) is installed — _cienv_gnu_prefix will return non-empty on this machine"
   _tmpdir=$(mktemp -d)
   cat > "$_tmpdir/probe.sh" <<'EOF'
 #!/bin/bash
@@ -169,23 +171,23 @@ EOF
 # Behavioral: skip count is extracted from TAP output
 # ---------------------------------------------------------------------------
 
-@test "behavioral: _bats_skip_count is positive when TAP contains SKIP lines" {
-  # Verify that the grep pattern '# SKIP' (uppercase) matches bats-core output.
-  # bats-core emits: "ok N test name # SKIP reason" (uppercase SKIP).
-  _tap=$(printf 'ok 1 runs fine\nok 2 skipped test # SKIP flock not available\nok 3 another skip # SKIP no tool\nnot ok 4 failure\n')
-  _count=$(printf '%s\n' "$_tap" | grep -c "# SKIP" || true)
+@test "behavioral: _bats_skip_count is positive when TAP contains skip lines" {
+  # Verify that the grep pattern '# skip' (lowercase) matches bats-core output.
+  # bats-core emits: "ok N test name # skip reason" (lowercase skip).
+  _tap=$(printf 'ok 1 runs fine\nok 2 skipped test # skip flock not available\nok 3 another skip # skip no tool\nnot ok 4 failure\n')
+  _count=$(printf '%s\n' "$_tap" | grep -c "# skip" || true)
   [ "$_count" -eq 2 ] || {
-    echo "FAIL: expected 2 SKIP lines, got $_count" >&2
+    echo "FAIL: expected 2 skip lines, got $_count" >&2
     return 1
   }
 }
 
-@test "behavioral: _bats_skip_count grep pattern does not match lowercase skip" {
-  # The gate uses uppercase 'SKIP' — bats-core always emits uppercase SKIP.
-  _tap=$(printf 'ok 1 test # skip lowercase should not match\n')
-  _count=$(printf '%s\n' "$_tap" | grep -c "# SKIP" || true)
+@test "behavioral: _bats_skip_count grep pattern does not match uppercase SKIP" {
+  # The gate uses lowercase 'skip' — ensure uppercase SKIP does not match.
+  _tap=$(printf 'ok 1 test # SKIP uppercase should not match\n')
+  _count=$(printf '%s\n' "$_tap" | grep -c "# skip" || true)
   [ "$_count" -eq 0 ] || {
-    echo "FAIL: lowercase '# skip' must not be counted as a skip directive" >&2
+    echo "FAIL: uppercase '# SKIP' must not be counted as a skip directive" >&2
     return 1
   }
 }
