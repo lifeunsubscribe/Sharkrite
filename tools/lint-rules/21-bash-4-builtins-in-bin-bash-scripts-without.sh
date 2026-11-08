@@ -65,12 +65,16 @@ for file in "${SHELL_FILES[@]}"; do
   _non_comment_lines=$(grep -v '^[[:space:]]*#' "$file" 2>/dev/null || true)
   # Shape 1: test-builtin numeric comparison (-lt/-gt/-le/-ge/-eq/-ne)
   # No redirect ambiguity: -lt etc. are unambiguous comparison keywords.
-  if echo "$_non_comment_lines" | grep -qE 'BASH_VERSINFO\[[0-9]+\][^#]*(-lt|-gt|-le|-ge|-eq|-ne)[[:space:]]+[0-9]'; then
+  # Here-strings, not `echo "$whole_file" | grep -q`: under pipefail a multi-KB
+  # producer takes SIGPIPE (rc 141) when grep exits on an early match, which
+  # would read as "no guard" and flag a guarded script (the Rule 36 macOS
+  # false positive, #1633).
+  if grep -qE 'BASH_VERSINFO\[[0-9]+\][^#]*(-lt|-gt|-le|-ge|-eq|-ne)[[:space:]]+[0-9]' <<< "$_non_comment_lines"; then
     continue
   fi
   # Shape 2: arithmetic conditional — anchored to "((" so ">" means comparison,
   # not redirect.  Inside "(( ))", "<" and ">" are always arithmetic operators.
-  if echo "$_non_comment_lines" | grep -qE '\(\([^)]*BASH_VERSINFO\[[0-9]+\][^)]*[<>][=]?[[:space:]]*[0-9]'; then
+  if grep -qE '\(\([^)]*BASH_VERSINFO\[[0-9]+\][^)]*[<>][=]?[[:space:]]*[0-9]' <<< "$_non_comment_lines"; then
     continue
   fi
 
