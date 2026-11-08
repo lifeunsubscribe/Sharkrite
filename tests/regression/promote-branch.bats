@@ -935,3 +935,139 @@ RUNEOF
   head -2 "$RITE_REPO_ROOT/tests/regression/promote-branch.bats" \
     | grep -q "sharkrite-test-covers: lib/core/promote-branch.sh, bin/rite"
 }
+
+# ===========================================================================
+# Group 9: Promotion PR body — size cap and surfaced gh stderr (#1637)
+# ===========================================================================
+
+# Writes a git stub good enough to reach Phase 2 (preflight passes, 0 behind).
+_write_phase2_git_stub() {
+  local _dir="$1"
+  mkdir -p "$_dir"
+  cat > "$_dir/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "abc1234567890123456789012345678901234abcd"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/cap-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_dir/git"
+}
+
+@test "promotion PR body over 60000 chars is truncated below GitHub's 65536 limit before gh pr create" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _body_file="$RITE_TEST_TMPDIR/sent_body.txt"
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-bin-cap"
+  _write_phase2_git_stub "$_fake_bin"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+# 90,000-char body: 1,800 lines of 49 x's — the live failure shape (an 84 KB
+# drift log appended to a 21 KB narrative).
+compose_promotion_pr_body() {
+  local i
+  for i in \$(seq 1 1800); do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n'; done
+  return 0
+}
+detect_critical_issues() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create)
+          # Capture the --body argument exactly as sent.
+          while [ \$# -gt 0 ]; do
+            if [ "\$1" = "--body" ]; then printf '%s' "\$2" > "$_body_file"; fi
+            shift
+          done
+          echo "https://github.com/owner/repo/pull/91"
+          return 0 ;;
+        edit|view) return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_test_gate() { return 0; }
+run_promote "cap-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "PR #91"
+  echo "$output" | grep -q "truncated to stay under GitHub's 65536-char limit"
+
+  [ -s "$_body_file" ]
+  local _sent_len
+  _sent_len=$(wc -c < "$_body_file" | tr -d ' ')
+  [ "$_sent_len" -lt 65536 ]
+  grep -q "promotion PR body truncated" "$_body_file"
+}
+
+@test "gh pr create failure surfaces gh's stderr instead of only the generic error" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-bin-err"
+  _write_phase2_git_stub "$_fake_bin"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+gh_safe() {
+  case "\${1:-} \${2:-}" in
+    "pr list")   echo ""; return 0 ;;
+    "pr create")
+      # What GitHub actually said on 2026-11-08 (gh relays the GraphQL error on stderr).
+      echo "GraphQL: Body is too long (maximum is 65536 characters) (createPullRequest)" >&2
+      return 1 ;;
+  esac
+  return 0
+}
+run_promote "cap-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "Failed to create promotion PR for branch 'cap-branch'"
+  echo "$output" | grep -q "gh pr create said:"
+  echo "$output" | grep -q "Body is too long (maximum is 65536 characters)"
+}
