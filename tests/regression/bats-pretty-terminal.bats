@@ -429,17 +429,23 @@ STUBEOF
 # ---------------------------------------------------------------------------
 
 @test "Makefile test target passes -F pretty when bats supports --report-formatter (behavioral)" {
-  # Create a fake bats that contains '--report-formatter' in its binary (so the
-  # Makefile's grep-based detection fires) and logs its argv so we can inspect
-  # which formatter flag was selected.
+  # Create a fake bats that advertises --report-formatter support and logs its
+  # argv so we can inspect which formatter flag was selected.
   _stub_dir="${BATS_TEST_TMPDIR}/mk_pretty_bats"
   mkdir -p "$_stub_dir"
   _mk_args_log="${BATS_TEST_TMPDIR}/mk_bats_args.log"
-  # The stub must contain '--report-formatter' as a literal string in its body
-  # because the Makefile does: grep -q -- '--report-formatter' "$(command -v bats)"
+  # The stub must advertise support via --help OUTPUT, because the Makefile
+  # probes with: bats --help 2>&1 | grep -q -- '--report-formatter'.
+  # It previously carried the flag as a comment in its body, which satisfied the
+  # older `grep -- '--report-formatter' "$(command -v bats)"` file probe; that
+  # probe was replaced because Homebrew's bats is a wrapper whose file does not
+  # contain the string. A body comment no longer makes the stub "capable".
   cat > "$_stub_dir/bats" <<STUB
 #!/bin/bash
-# --report-formatter
+if [ "\$1" = "--help" ]; then
+  printf '%s\n' '  --report-formatter <formatter>'
+  exit 0
+fi
 printf '%s\n' "\$@" >> "${_mk_args_log}"
 exit 0
 STUB
@@ -450,7 +456,9 @@ STUB
   mkdir -p "$_mk_dir/tests"
   cp "${BATS_TEST_DIRNAME}/../../Makefile" "$_mk_dir/Makefile"
 
-  run env -i HOME="$HOME" PATH="${_stub_dir}:/usr/bin:/bin" \
+  # TERM is set explicitly: env -i strips it, and the Makefile selects pretty
+  # only when a terminal is present (see the TERM-less case in the next test).
+  run env -i HOME="$HOME" TERM=xterm PATH="${_stub_dir}:/usr/bin:/bin" \
     make -C "$_mk_dir" test
   [ "$status" -eq 0 ]
 
@@ -460,6 +468,43 @@ STUB
     || { echo "FAIL: -F not passed to bats"; cat "$_mk_args_log"; return 1; }
   grep -q 'pretty' "$_mk_args_log" \
     || { echo "FAIL: pretty not passed to bats"; cat "$_mk_args_log"; return 1; }
+}
+
+@test "Makefile test target omits -F pretty when TERM is unset, but keeps the TAP report (behavioral)" {
+  # A capable bats on a TERM-less runner (CI). The pretty formatter needs tput,
+  # which fails without TERM and takes the whole bats pipeline down — live on
+  # PR #1625, both CI platforms: "tput: No value for $TERM", then
+  # "bats-format-tap failed with status 141". Pretty must be skipped, but the
+  # --report-formatter tap output must still be requested so the skip-count
+  # summary keeps working without a terminal.
+  _stub_dir="${BATS_TEST_TMPDIR}/mk_noterm_bats"
+  mkdir -p "$_stub_dir"
+  _mk_args_log="${BATS_TEST_TMPDIR}/mk_noterm_args.log"
+  cat > "$_stub_dir/bats" <<STUB
+#!/bin/bash
+if [ "\$1" = "--help" ]; then
+  printf '%s\n' '  --report-formatter <formatter>'
+  exit 0
+fi
+printf '%s\n' "\$@" >> "${_mk_args_log}"
+exit 0
+STUB
+  chmod +x "$_stub_dir/bats"
+
+  _mk_dir="${BATS_TEST_TMPDIR}/mk_noterm_proj"
+  mkdir -p "$_mk_dir/tests"
+  cp "${BATS_TEST_DIRNAME}/../../Makefile" "$_mk_dir/Makefile"
+
+  # env -i deliberately leaves TERM unset.
+  run env -i HOME="$HOME" PATH="${_stub_dir}:/usr/bin:/bin" \
+    make -C "$_mk_dir" test
+  [ "$status" -eq 0 ]
+
+  [ -f "$_mk_args_log" ] || { echo "FAIL: bats was never invoked"; return 1; }
+  ! grep -q 'pretty' "$_mk_args_log" \
+    || { echo "FAIL: pretty passed to bats without a TERM"; cat "$_mk_args_log"; return 1; }
+  grep -q -- '--report-formatter' "$_mk_args_log" \
+    || { echo "FAIL: TAP report not requested — skip count would be silently lost"; cat "$_mk_args_log"; return 1; }
 }
 
 @test "Makefile test target omits -F pretty when bats lacks report-formatter support (behavioral)" {

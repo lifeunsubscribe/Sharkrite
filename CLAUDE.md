@@ -750,6 +750,27 @@ rite 42 --assess-and-fix   # Assess + fix loop
 rite 42 --supervised
 ```
 
+### Optional: GNU toolchain for local Linux parity
+
+macOS ships BSD `awk`, BSD `grep`, and no `flock(1)`. An entire class of Linux-only failure is invisible locally without the GNU equivalents:
+
+- **`gawk` and GNU `grep`** (`ggrep`): let you reproduce Linux-only regex behaviour on the dev box by putting the gnubin dirs on `PATH` for a single run. Without them, a BSD-only regression passes locally and only surfaces on the Linux CI runner. This is what the `BSD_LENIENT_REGEX` lint rule (Rule 39H) catches statically, but the runtime path still needs manual verification for borderline cases.
+- **`flock`**: un-skips the two concurrency tests in `tests/concurrency/scratchpad-lock.bats` that otherwise never run on macOS — they guard with `command -v flock >/dev/null || skip "flock(1) not available on this system"`. Two of the six #1593 root causes lived in those tests.
+
+Install (all optional — `make test` and `make check` behave identically without them):
+
+```bash
+brew install gawk grep flock
+```
+
+To reproduce a Linux-only regex failure locally, prepend the gnubin dirs before running bats:
+
+```bash
+PATH="/opt/homebrew/opt/grep/libexec/gnubin:/opt/homebrew/opt/gawk/libexec/gnubin:$PATH" bats tests/lint/bsd-lenient-regex.bats
+```
+
+**Do not add the gnubin dirs to your shell profile.** Shadowing `awk`/`grep` globally changes sharkrite's own runtime behaviour on the dev box, which is the opposite of the portability goal. Scope the override to the single bats invocation that needs it.
+
 ### Test Coverage Headers (issue #462)
 
 Bats files in `tests/regression/` and `tests/lint/` can declare which source paths they cover via a single-line header:
