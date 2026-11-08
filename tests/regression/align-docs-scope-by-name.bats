@@ -1,6 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/docs-command.sh::docs_resolve_doc_scope
-# sharkrite-test-covers: lib/utils/doc-consent.sh::run_align_docs_switch
+# sharkrite-test-covers: lib/core/docs-command.sh::docs_resolve_doc_scope, lib/utils/doc-consent.sh::run_align_docs_switch
 # tests/regression/align-docs-scope-by-name.bats
 #
 # Regression tests for #1437: rite align-docs [doc ...] scoping.
