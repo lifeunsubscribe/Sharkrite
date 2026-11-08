@@ -176,3 +176,38 @@ _make_healthy_stub() {
   # No fallback warning should appear (self-substitution skipped)
   ! [[ "$output" == *"Model fallback: role=dev"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Test 5: Cross-process -- subprocess inherits capped-model memo
+# ---------------------------------------------------------------------------
+@test "RITE_MODEL_FALLBACK: subprocess inherits capped-model memo after healthcheck" {
+  _make_selective_cap_stub
+
+  # Child script re-sources the provider without running healthcheck.
+  # The idempotent _RITE_CAPPED_MODELS="${_RITE_CAPPED_MODELS:-}" must preserve
+  # the value exported by the parent rather than wipe it on re-source.
+  local _child="$TEST_TMPDIR/child-resolve.sh"
+  printf '#!/bin/bash\n' > "$_child"
+  printf 'set -euo pipefail\n' >> "$_child"
+  printf 'source "$RITE_LIB_DIR/providers/provider-interface.sh"\n' >> "$_child"
+  printf 'load_provider claude\n' >> "$_child"
+  printf 'provider_resolve_model review\n' >> "$_child"
+  chmod +x "$_child"
+
+  run bash -c "
+    export PATH=\"$STUB_BIN:\$PATH\"
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_REVIEW_MODEL='claude-fable-5-1'
+    export RITE_MODEL_FALLBACK='claude-sonnet-4-6'
+    source '$RITE_LIB_DIR/providers/provider-interface.sh'
+    load_provider 'claude'
+    provider_detect_cli 2>/dev/null || true
+    provider_healthcheck 2>/dev/null
+    bash \"$_child\"
+  " 2>&1
+  [ "$status" -eq 0 ]
+  # Child must return the fallback: it inherited the exported _RITE_CAPPED_MODELS
+  # and the idempotent := preserved it on re-source of claude.sh
+  [[ "$output" == *"claude-sonnet-4-6"* ]]
+}
