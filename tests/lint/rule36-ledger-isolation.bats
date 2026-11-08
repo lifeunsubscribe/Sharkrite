@@ -192,9 +192,11 @@ EOF
 
 @test "pipefail turns a producer|grep -q early exit into rc 141; a here-string does not" {
   # Mechanism, not a bash curiosity: this is exactly what the membership
-  # check did on macOS CI. The sleep forces the second write to land after
-  # grep has already matched and exited.
-  run bash -c 'set -o pipefail; { printf "RITE_A\n"; sleep 0.2; printf "RITE_B\n"; } | grep -qxF RITE_A'
+  # check did on macOS CI. The producer keeps writing until a write fails,
+  # so the late write is guaranteed to land after grep has exited — no
+  # fixed sleep to lose the race on a loaded runner (bounded at ~10s; grep
+  # exits on its first line, so normally one or two iterations).
+  run bash -c 'set -o pipefail; { printf "RITE_A\n"; i=0; while [ $i -lt 200 ]; do sleep 0.05; printf "RITE_B\n" || exit 141; i=$((i+1)); done; } | grep -qxF RITE_A'
   [ "$status" -eq 141 ]
   run bash -c 'set -o pipefail; v=$(printf "RITE_A\nRITE_B\n"); grep -qxF RITE_A <<< "$v"'
   [ "$status" -eq 0 ]
