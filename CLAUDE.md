@@ -581,8 +581,6 @@ rite docs --resume <branch> # Resume a saved doc proposal from a terminal-less p
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
-rite 42 43 --allow-red-main  # Bypass red-main CI preflight (batch only; not recommended — use when
-                           # fixing main is blocked but work must proceed)
 rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
 rite --sync <N> [<N>...]  # Sync issue feature branches: skips rebase when branch merges cleanly with its base (no stale-review on clean paths); on genuine conflict invokes the resolver before the manual fallback
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
@@ -1031,7 +1029,6 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 - `DOC_PASS` — every doc model pass: `kind=promote|docs|align doc=<path|-> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`; when `duration_s > RITE_DOC_PASS_WARN_SECONDS` (default 120) an info-level suggestion to run `rite align-docs` is also printed (per-doc passes only; aggregate passes with `doc=-` never print the suggestion)
 - `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
-- `MAIN_CI_RED` — batch preflight found red CI on the target branch; `branch=<b> conclusion=<c>`; batch aborts unless `--allow-red-main` was passed
 - `CONFLICT_RESOLVE_ATTEMPT` — per-attempt diag from the conflict-resolver retry loop; `n=<attempt_number> remaining=<file_count>`. Emitted by `lib/utils/conflict-resolver.sh` before each provider session. Health reports aggregate these to surface conflict sets that consistently need multiple attempts.
 - `CONFLICT_RESOLVE_GATE` — post-resolution syntax and test-count gate; `outcome=passed|failed syntax=<n> testcount=<n>` (emitted by `conflict-resolver.sh` after Check 2 and before the merge is committed; emitted whenever logging is loaded — always true in orchestrated runs)
 - `MERGE_GATE_CI` — CI check conclusion gate in `merge-pr.sh` Check 4; `outcome=blocked|passed|pending failed=<n> pending=<n> total=<n> pr=<n>`. `blocked` = at least one completed-FAILURE/ERROR; `pending` = no failures but pending checks exist; `passed` = all complete and green (or zero checks). Reads conclusions GitHub already computed — runs nothing itself.

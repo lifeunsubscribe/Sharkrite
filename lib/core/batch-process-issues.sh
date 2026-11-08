@@ -197,83 +197,6 @@ _batch_print_drift_summary() {
   print_info "${_total} drift entries pending across ${_docs} docs — run 'rite docs'"
 }
 
-# ---------------------------------------------------------------------------
-# _ci_preflight: one-API-read CI check — halts when the target branch's latest
-# completed workflow run (per workflow) has a red conclusion.
-#
-# Soundness guard for block-on-any: any gate failure in the targeted selection
-# is this change's to fix — only valid when the base branch is green. This
-# addresses the LeadFlow 2026-07-01 class and the orrery 2026-10-27 red-main
-# lint state where every intersecting slot's fix-loop retries burned on
-# failures that were not theirs.
-#
-# Fetches per_page=30 completed runs, groups by workflow_id to find the latest
-# run per workflow, then checks if any latest-per-workflow run is red. This
-# prevents a green deploy/scheduled run from masking a red CI run in
-# multi-workflow repos.
-#
-# One gh api call; never runs tests or lint. See CLAUDE.md →
-# "No full suites inside a workflow (CRITICAL)" for why the retired #916
-# full-suite preflight is NOT resurrected here.
-#
-# Args:
-#   $1 — "true" to bypass with a warning (set by --allow-red-main flag only)
-#
-# Reads: RITE_TARGET_BRANCH (defaults to main)
-#
-# Returns:
-#   0 — green, absent CI, API unreachable, or $1==true (--allow-red-main)
-#   1 — red CI and $1 != true (caller must exit)
-# ---------------------------------------------------------------------------
-_ci_preflight() {
-  local _target_branch="${RITE_TARGET_BRANCH:-main}"
-  local _allow="${1:-false}"
-
-  local _run_json
-  _run_json=$(gh_safe api \
-    "repos/{owner}/{repo}/actions/runs?branch=${_target_branch}&status=completed&per_page=30" \
-    2>/dev/null || true)
-
-  [ -z "$_run_json" ] && return 0
-
-  # Get the latest completed run per workflow; find the first red one.
-  local _red_run
-  _red_run=$(printf '%s' "$_run_json" | jq -r '
-    [.workflow_runs | group_by(.workflow_id)[] | .[0] |
-     select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")] |
-    .[0] | select(.) |
-    [.conclusion, (.name // "unknown"), (.html_url // "")] | join("\t")
-  ' 2>/dev/null || true)
-
-  [ -z "${_red_run:-}" ] && return 0
-
-  local _conclusion _name _url
-  _conclusion=$(printf '%s' "$_red_run" | cut -f1 || true)
-  _name=$(printf '%s' "$_red_run" | cut -f2 || true)
-  _url=$(printf '%s' "$_red_run" | cut -f3 || true)
-
-  if declare -f _diag >/dev/null 2>&1; then
-    _diag "MAIN_CI_RED branch=${_target_branch} conclusion=${_conclusion}"
-  fi
-
-  if [ "$_allow" = "true" ]; then
-    print_warning "${_target_branch} CI is red (${_name:-unknown} → ${_conclusion}) — proceeding via --allow-red-main"
-    return 0
-  fi
-
-  echo "" >&2
-  echo "Batch preflight failed: ${_target_branch} CI is red" >&2
-  echo "" >&2
-  echo "  Failing workflow: ${_name:-unknown}" >&2
-  echo "  URL: ${_url:-unavailable}" >&2
-  echo "" >&2
-  echo "  Next steps:" >&2
-  printf "    1. Fix the breakage on %s first, then retry the batch\n" "${_target_branch}" >&2
-  printf "    2. Or bypass with: rite <issues> --allow-red-main  (not recommended)\n" >&2
-  echo "" >&2
-  return 1
-}
-
 # Batch processing requires associative arrays (bash 4+)
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -312,7 +235,6 @@ ISSUE_LIST=()
 FILTER_TYPE=""
 FILTER_VALUE=""
 SMART_WAIT=false
-_allow_red_main=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -334,10 +256,6 @@ while [[ $# -gt 0 ]]; do
       FILTER_TYPE="state"
       FILTER_VALUE="$2"
       shift 2
-      ;;
-    --allow-red-main)
-      _allow_red_main=true
-      shift
       ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -860,16 +778,6 @@ load_provider "${RITE_DEV_PROVIDER:-claude}"
 provider_detect_cli || true
 if ! provider_healthcheck; then
   print_error "Batch aborted at pre-flight. Fix workspace trust and retry."
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# CI preflight: read-only check that the target branch is green before any
-# slot starts. One gh api call — never runs tests or lint. Halts with
-# remediation instructions when the latest completed run is red.
-# Pass --allow-red-main to bypass with a warning.
-# ---------------------------------------------------------------------------
-if ! _ci_preflight "$_allow_red_main"; then
   exit 1
 fi
 
