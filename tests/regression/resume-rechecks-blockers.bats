@@ -279,3 +279,71 @@ EOF
 
   [ ! -f "$called_file" ]
 }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tests: detect_aws_project Terraform branch
+# (regression for --max-depth=2 invalid grep flag that silently killed detection)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Run detect_aws_project in an isolated subprocess with stub dependencies.
+# Returns the subprocess exit code (0 = AWS project detected, 1 = not).
+_run_detect_aws_project() {
+  local project_root="$1"
+  local stub_lib_dir="$RITE_TEST_TMPDIR/stub-lib-aws"
+  local rite_repo_root="${RITE_REPO_ROOT}"
+
+  mkdir -p "$stub_lib_dir/utils"
+  printf '%s\n' '# stub' \
+    'send_blocker_notification() { :; }' \
+    'has_sent_notification() { return 1; }' \
+    'add_sent_notification() { :; }' > "$stub_lib_dir/utils/notifications.sh"
+  printf '%s\n' '# stub' 'gh_safe() { :; }' > "$stub_lib_dir/utils/gh-retry.sh"
+
+  bash <<EOF
+set -euo pipefail
+export RITE_LIB_DIR="$stub_lib_dir"
+export RITE_PROJECT_ROOT="$project_root"
+unset RITE_AWS_PROJECT 2>/dev/null || true
+source "${rite_repo_root}/lib/utils/blocker-rules.sh"
+detect_aws_project
+EOF
+}
+
+@test "detect_aws_project: .tf with AWS provider at root returns true" {
+  local tf_dir="$RITE_TEST_TMPDIR/tf-root"
+  mkdir -p "$tf_dir"
+  printf 'provider "aws" {\n  region = "us-east-1"\n}\n' > "$tf_dir/main.tf"
+
+  _run_detect_aws_project "$tf_dir"
+}
+
+@test "detect_aws_project: .tf with AWS provider at depth 2 returns true" {
+  local tf_dir="$RITE_TEST_TMPDIR/tf-depth2"
+  mkdir -p "$tf_dir/infra/aws"
+  printf 'provider "aws" {\n  region = "us-west-2"\n}\n' > "$tf_dir/infra/aws/main.tf"
+
+  _run_detect_aws_project "$tf_dir"
+}
+
+@test "detect_aws_project: .tf beyond depth 2 is not detected" {
+  local tf_dir="$RITE_TEST_TMPDIR/tf-deep"
+  mkdir -p "$tf_dir/a/b/c"
+  printf 'provider "aws" {\n  region = "us-east-1"\n}\n' > "$tf_dir/a/b/c/main.tf"
+
+  ! _run_detect_aws_project "$tf_dir"
+}
+
+@test "detect_aws_project: .tf without AWS provider returns false" {
+  local tf_dir="$RITE_TEST_TMPDIR/tf-noaws"
+  mkdir -p "$tf_dir"
+  printf 'provider "google" {\n  project = "my-project"\n}\n' > "$tf_dir/main.tf"
+
+  ! _run_detect_aws_project "$tf_dir"
+}
+
+@test "detect_aws_project: no .tf files returns false" {
+  local tf_dir="$RITE_TEST_TMPDIR/no-tf"
+  mkdir -p "$tf_dir"
+
+  ! _run_detect_aws_project "$tf_dir"
+}
