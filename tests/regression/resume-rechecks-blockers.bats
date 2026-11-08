@@ -319,8 +319,8 @@ EOF
 
 @test "detect_aws_project: .tf with AWS provider at depth 2 returns true" {
   local tf_dir="$RITE_TEST_TMPDIR/tf-depth2"
-  mkdir -p "$tf_dir/infra/aws"
-  printf 'provider "aws" {\n  region = "us-west-2"\n}\n' > "$tf_dir/infra/aws/main.tf"
+  mkdir -p "$tf_dir/infra"
+  printf 'provider "aws" {\n  region = "us-west-2"\n}\n' > "$tf_dir/infra/main.tf"
 
   _run_detect_aws_project "$tf_dir"
 }
