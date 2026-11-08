@@ -124,6 +124,13 @@ claude_provider_healthcheck() {
   if declare -f _diag >/dev/null 2>&1; then
     _diag "PROVIDER_PREFLIGHT outcome=ok"
   fi
+
+  # Model fallback preflight — only when opt-in var is set.
+  # Probes each distinct configured model once and records which are unavailable.
+  if [ -n "${RITE_MODEL_FALLBACK:-}" ]; then
+    _claude_model_fallback_preflight "$_cmd"
+  fi
+
   return 0
 }
 
@@ -805,7 +812,18 @@ EOF
 # Model Resolution
 # =============================================================================
 
-claude_provider_resolve_model() {
+# Run-scoped memo: space-delimited list of model names detected as unavailable
+# by _claude_model_fallback_preflight. Empty until preflight runs (or when
+# RITE_MODEL_FALLBACK is unset — preflight never runs in that case).
+_RITE_CAPPED_MODELS=""
+
+# _claude_provider_resolve_model_raw <role>
+#
+# Internal: raw role-to-model mapping without fallback substitution.
+# Called by both claude_provider_resolve_model (public, with fallback) and
+# _claude_model_fallback_preflight (which needs pre-substitution values to
+# build the probe set).
+_claude_provider_resolve_model_raw() {
   local role="$1"
   case "$role" in
     dev)            echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
@@ -855,6 +873,112 @@ claude_provider_resolve_model() {
     full_suite_report) echo "${RITE_FULL_SUITE_REPORT_MODEL:-claude-sonnet-4-6}" ;;
     *)              echo "${RITE_CLAUDE_MODEL:-claude-sonnet-4-6}" ;;
   esac
+}
+
+# _claude_model_fallback_preflight <cmd>
+#
+# Probes the distinct set of configured models (all roles deduped, plus
+# RITE_MODEL_FALLBACK itself). Records unavailable models in _RITE_CAPPED_MODELS.
+# Announces per-role substitutions with one operator line + one diag each.
+#
+# A model is "unavailable" when the probe exits non-zero AND the output matches
+# a known cap phrase (same regex as _claude_classify_exit). A non-zero exit
+# that does NOT match a cap phrase (network glitch, auth error) is ignored:
+# let the real call classify and handle it.
+#
+# Only called from claude_provider_healthcheck when RITE_MODEL_FALLBACK is set.
+_claude_model_fallback_preflight() {
+  local _cmd="$1"
+  local _fallback="${RITE_MODEL_FALLBACK:-}"
+
+  # Collect distinct raw models for all named roles
+  local _all_models="" _role _m
+  for _role in dev review assessment doc_assessment plan promote triage full_suite_report; do
+    _m=$(_claude_provider_resolve_model_raw "$_role")
+    case " ${_all_models} " in
+      *" ${_m} "*) ;;  # already seen
+      *) _all_models="${_all_models} ${_m}" ;;
+    esac
+  done
+  # Include the fallback itself so we can detect total-exhaustion (all models capped)
+  case " ${_all_models} " in
+    *" ${_fallback} "*) ;;
+    *) _all_models="${_all_models} ${_fallback}" ;;
+  esac
+
+  # Probe each distinct model; mark unavailable ones
+  _RITE_CAPPED_MODELS=""
+  local _p_stdout _p_stderr _p_exit
+  for _m in ${_all_models}; do
+    _p_stdout=$(mktemp)
+    _p_stderr=$(mktemp)
+    _p_exit=0
+    # Bounded at 30s — model probes are trivial; a hung probe must not stall the batch.
+    run_with_timeout 30 "$_cmd" --print "ok" --model "$_m" --dangerously-skip-permissions \
+      >"$_p_stdout" 2>"$_p_stderr" || _p_exit=$?
+    if [ "$_p_exit" -ne 0 ]; then
+      # Line-anchored on stdout (same rationale as _claude_classify_exit: stream-json
+      # transcript lines start with '{'; cap phrase at col 0 is the CLI's own notice).
+      # Stderr is unanchored — always the CLI's own output.
+      if grep -qiE "^(${_CLAUDE_CAP_RE})" "$_p_stdout" 2>/dev/null || \
+         grep -qiE "(${_CLAUDE_CAP_RE})" "$_p_stderr" 2>/dev/null; then
+        _RITE_CAPPED_MODELS="${_RITE_CAPPED_MODELS} ${_m}"
+      fi
+    fi
+    rm -f "$_p_stdout" "$_p_stderr"
+  done
+  export _RITE_CAPPED_MODELS
+
+  # Announce per-role substitutions: one operator line + one diag per affected role.
+  # Only when: role's model is capped AND fallback is different AND fallback is usable.
+  local _fallback_capped=0
+  case " ${_RITE_CAPPED_MODELS} " in
+    *" ${_fallback} "*) _fallback_capped=1 ;;
+  esac
+
+  for _role in dev review assessment doc_assessment plan promote triage full_suite_report; do
+    _m=$(_claude_provider_resolve_model_raw "$_role")
+    case " ${_RITE_CAPPED_MODELS} " in
+      *" ${_m} "*)
+        if [ "$_m" != "$_fallback" ] && [ "$_fallback_capped" -eq 0 ]; then
+          if declare -f print_warning >/dev/null 2>&1; then
+            print_warning "Model fallback: role=${_role} capped=${_m} → using ${_fallback}"
+          else
+            echo "Model fallback: role=${_role} capped=${_m} → using ${_fallback}" >&2
+          fi
+          if declare -f _diag >/dev/null 2>&1; then
+            _diag "MODEL_FALLBACK role=${_role} from=${_m} to=${_fallback}"
+          fi
+        fi
+        ;;
+    esac
+  done
+}
+
+claude_provider_resolve_model() {
+  local role="$1"
+  local _model
+  _model=$(_claude_provider_resolve_model_raw "$role")
+
+  # Apply fallback substitution when: opt-in is set, preflight ran and found a cap,
+  # this role's model is in the capped set, and the fallback itself is usable.
+  if [ -n "${RITE_MODEL_FALLBACK:-}" ] && [ -n "${_RITE_CAPPED_MODELS:-}" ]; then
+    local _fallback="${RITE_MODEL_FALLBACK}"
+    local _fallback_capped=0
+    case " ${_RITE_CAPPED_MODELS} " in
+      *" ${_fallback} "*) _fallback_capped=1 ;;
+    esac
+    case " ${_RITE_CAPPED_MODELS} " in
+      *" ${_model} "*)
+        if [ "$_model" != "$_fallback" ] && [ "$_fallback_capped" -eq 0 ]; then
+          echo "$_fallback"
+          return 0
+        fi
+        ;;
+    esac
+  fi
+
+  echo "$_model"
 }
 
 # =============================================================================
