@@ -56,7 +56,14 @@ setup() {
     detect_infrastructure_changes() { return 0; }
     detect_critical_issues() { return 0; }
     export -f detect_infrastructure_changes detect_critical_issues
-    # detect_lib_shrinkage is NOT exported here — the stale parent never had it
+    # detect_lib_shrinkage is NOT exported here — the stale parent never had it.
+    # When running from the rite gate, the rite process has already loaded the
+    # current blocker-rules.sh and exported detect_lib_shrinkage to the env.
+    # Explicitly unset it so this bash subprocess correctly simulates a stale
+    # parent that never defined detect_lib_shrinkage. unset -f also clears the
+    # BASH_FUNC_detect_lib_shrinkage%% env var, so the subshell below does not
+    # re-inherit it from the environment.
+    unset -f detect_lib_shrinkage 2>/dev/null || true
     # Subshell — analogous to create-pr.sh running as a child of batch-process
     (
       set -euo pipefail
