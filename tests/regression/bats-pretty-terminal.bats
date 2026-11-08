@@ -429,17 +429,23 @@ STUBEOF
 # ---------------------------------------------------------------------------
 
 @test "Makefile test target passes -F pretty when bats supports --report-formatter (behavioral)" {
-  # Create a fake bats that contains '--report-formatter' in its binary (so the
-  # Makefile's grep-based detection fires) and logs its argv so we can inspect
-  # which formatter flag was selected.
+  # Create a fake bats that advertises --report-formatter support and logs its
+  # argv so we can inspect which formatter flag was selected.
   _stub_dir="${BATS_TEST_TMPDIR}/mk_pretty_bats"
   mkdir -p "$_stub_dir"
   _mk_args_log="${BATS_TEST_TMPDIR}/mk_bats_args.log"
-  # The stub must contain '--report-formatter' as a literal string in its body
-  # because the Makefile does: grep -q -- '--report-formatter' "$(command -v bats)"
+  # The stub must advertise support via --help OUTPUT, because the Makefile
+  # probes with: bats --help 2>&1 | grep -q -- '--report-formatter'.
+  # It previously carried the flag as a comment in its body, which satisfied the
+  # older `grep -- '--report-formatter' "$(command -v bats)"` file probe; that
+  # probe was replaced because Homebrew's bats is a wrapper whose file does not
+  # contain the string. A body comment no longer makes the stub "capable".
   cat > "$_stub_dir/bats" <<STUB
 #!/bin/bash
-# --report-formatter
+if [ "\$1" = "--help" ]; then
+  printf '%s\n' '  --report-formatter <formatter>'
+  exit 0
+fi
 printf '%s\n' "\$@" >> "${_mk_args_log}"
 exit 0
 STUB
