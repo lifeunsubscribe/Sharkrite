@@ -3,7 +3,7 @@
 # Promotion PR body composer.
 #
 # Turns ledger entries, constituent PR titles/bodies/review summaries, aggregate
-# diff stats, recorded --sync conflicts, and the doc drift log (when present)
+# diff stats, recorded --sync conflicts, and a one-line doc-drift pending count
 # into a plain-English promotion PR narrative with per-issue subsections.
 #
 # Falls back to a deterministic template when the LLM call fails or returns
@@ -113,7 +113,7 @@ _parse_ledger_field() {
 #   3. Aggregate diff stats (git diff --stat origin/main...origin/<branch>)
 #   4. Per-issue git show --stat + first ~120 patch lines (snipped diff examples)
 #   5. Sync-conflict history from .rite/logs/*.log INTEGRATION_SYNC diag lines
-#   6. Doc drift log verbatim when present (docs/sharkrite-drift-log.md)
+#   6. Doc drift pending count — one line, never the log itself (#1637)
 #
 # Context is hard-capped at _PROMOTION_CONTEXT_CAP_BYTES; patch snips are
 # truncated first to stay within the cap.
@@ -328,17 +328,65 @@ ${_hits}"
   } >> "$out_file"
 
   # -------------------------------------------------------------------------
-  # 6. Doc drift log (verbatim when present)
+  # 6. Doc drift pending count (one line — the log is never inlined, #1637)
   # -------------------------------------------------------------------------
+  local drift_summary
+  drift_summary="$(_drift_pending_summary "$branch" 2>/dev/null || true)"
+  if [ -n "$drift_summary" ]; then
+    printf '## Known doc drift\n\n%s\n\n' "$drift_summary" >> "$out_file"
+  fi
+}
+
+# =============================================================================
+# _drift_pending_summary <branch>
+#
+# One line describing pending doc-drift entries, or nothing when the drift log
+# is absent or empty.
+#
+# The log is NEVER inlined. Entries are 300-3000 bytes of model prose each and
+# a GitHub PR body is capped at 65536 chars: on 2026-11-08 a 77-entry / 84 KB
+# log pushed the doc-refactor promotion body to 105 KB and `gh pr create` was
+# rejected (#1637). Per behavioral-design.md → "Documentation Drift", drift is
+# corrected after the merge through `rite docs` and the accepted entries are
+# folded into THAT docs PR — the promotion PR only needs the pending count.
+# The second number (entries recorded by this promotion's own PRs) tells the
+# reviewer how much of the backlog this branch produced.
+# =============================================================================
+_drift_pending_summary() {
+  local branch="$1"
   local drift_log
   drift_log="$(drift_log_path)"
-  if [ -f "$drift_log" ]; then
-    {
-      printf '## Known doc drift (docs/sharkrite-drift-log.md)\n\n'
-      cat "$drift_log"
-      printf '\n'
-    } >> "$out_file"
+  [ -f "$drift_log" ] || return 0
+
+  local total
+  total=$(drift_log_entry_count "$drift_log")
+  total="${total:-0}"
+  [ "$total" -gt 0 ] || return 0
+
+  # PR numbers of the unpromoted ledger entries, as a regex alternation.
+  local pr_alt="" _entry _pnum _promoted
+  while IFS= read -r _entry; do
+    [ -n "$_entry" ] || continue
+    _promoted=$(_parse_ledger_field "$_entry" "promoted" || true)
+    [ "${_promoted:-}" = "false" ] || continue
+    _pnum=$(_parse_ledger_field "$_entry" "pr" || true)
+    [ -n "${_pnum:-}" ] || continue
+    pr_alt="${pr_alt:+${pr_alt}|}${_pnum}"
+  done <<< "$(integration_ledger_entries "$branch" 2>/dev/null || true)"
+
+  # markers.sh is sourced at load (top of this file), so the constant is set.
+  # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_DOC_DRIFT is an internal marker constant (markers.sh), not user config; same exemption as drift-log.sh
+  local _marker="${RITE_MARKER_DOC_DRIFT:-}"
+  local mine=0
+  if [ -n "$pr_alt" ] && [ -n "$_marker" ]; then
+    # grep -c always prints a count — || true, never || echo 0 (CLAUDE.md).
+    mine=$(grep -cE "<!-- ${_marker} pr:(${pr_alt}) " "$drift_log" || true)
   fi
+
+  local noun="entries"
+  [ "$total" -eq 1 ] && noun="entry"
+  printf '%s drift %s pending in %s (%s recorded by PRs in this promotion). Docs are corrected after the merge via `rite docs`; the log is not inlined here.\n' \
+    "$total" "$noun" "$(drift_log_relpath)" "${mine:-0}"
 }
 
 # =============================================================================
@@ -354,7 +402,7 @@ ${_hits}"
 #      sync-conflict count) and embed in prompt
 #   3. Call provider_run_prompt_with_timeout on the promote role
 #   4. Non-zero exit OR empty/whitespace-only output → print_warning + fallback
-#   5. In both paths, append deterministic tail (## Constituent issues + drift)
+#   5. In both paths, append deterministic tail (## Constituent issues + one-line drift count)
 # =============================================================================
 compose_promotion_pr_body() {
   local branch="$1"
@@ -520,13 +568,11 @@ SIGNALS_EOF
   fi
   printf '\n'
 
-  # Drift log section (deterministic — verbatim from file when present)
-  local drift_log
-  drift_log="$(drift_log_path)"
-  if [ -f "$drift_log" ]; then
-    printf '## Known doc drift\n\n'
-    cat "$drift_log" 2>/dev/null || true
-    printf '\n'
+  # Drift summary (deterministic — one line, never the log; #1637)
+  local drift_summary
+  drift_summary="$(_drift_pending_summary "$branch" 2>/dev/null || true)"
+  if [ -n "$drift_summary" ]; then
+    printf '## Known doc drift\n\n%s\n' "$drift_summary"
   fi
 
   return 0
@@ -553,7 +599,9 @@ _emit_fallback_body() {
   printf '## Changes\n\n'
   if [ -n "$unpromoted_issues" ]; then
     while IFS= read -r _line; do
-      printf '- %s\n' "$_line"
+      # `--` ends option parsing: a format starting with '-' is otherwise read
+      # as an option ("printf: - : invalid option") and the bullet is lost.
+      printf -- '- %s\n' "$_line"
     done <<< "$unpromoted_issues"
   else
     printf '(no unpromoted ledger entries found)\n'

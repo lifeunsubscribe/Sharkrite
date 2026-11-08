@@ -572,3 +572,134 @@ EOF
   run grep -n "provider_resolve_model promote" "$composer"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Drift log: one-line pending summary, never the log itself (#1637)
+# ---------------------------------------------------------------------------
+
+# Writes a 3-entry drift log to $1. Two entries belong to this promotion's
+# ledger PRs (97, 98); one (500) does not.
+_write_drift_fixture() {
+  cat > "$1" << 'DRIFT'
+# Sharkrite Drift Log
+
+<!-- sharkrite-doc-drift pr:97 issue:42 recorded:2026-07-01T00:00:00Z -->
+**Changed files**: lib/a.sh
+**Suspected inaccuracy**: ENTRY_PROSE_MUST_NOT_APPEAR_IN_BODY one
+<!-- /sharkrite-doc-drift -->
+<!-- sharkrite-doc-drift pr:500 issue:9 recorded:2026-07-02T00:00:00Z -->
+**Changed files**: lib/b.sh
+**Suspected inaccuracy**: ENTRY_PROSE_MUST_NOT_APPEAR_IN_BODY two
+<!-- /sharkrite-doc-drift -->
+<!-- sharkrite-doc-drift pr:98 issue:43 recorded:2026-07-03T00:00:00Z -->
+**Changed files**: lib/c.sh
+**Suspected inaccuracy**: ENTRY_PROSE_MUST_NOT_APPEAR_IN_BODY three
+<!-- /sharkrite-doc-drift -->
+DRIFT
+}
+
+# Shared runner: sources the composer, stubs deps, points drift_log_path at
+# $DRIFT_FILE, and runs the named function. The LLM stub succeeds.
+_run_with_drift() {
+  local fn="$1" drift_file="$2"
+  run bash << EOF
+set +e
+export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+export RITE_STATE_DIR="$RITE_STATE_DIR"
+export RITE_PROJECT_ROOT="$PROJECT_ROOT"
+export PATH="$FAKE_BIN:\$PATH"
+RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
+set +e; set +u; set +o pipefail
+integration_ledger_entries() {
+  cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
+}
+gh_safe() {
+  case "\${1:-}" in
+    pr)   printf '{"title":"T","body":"B","state":"MERGED","comments":[]}\n' ;;
+    issue) printf '{"labels":[{"name":"enhancement"}],"body":"body"}\n' ;;
+  esac
+}
+git_fetch_safe() { return 0; }
+print_warning() { echo "WARNING: \$*" >&2; }
+provider_resolve_model() { echo "claude-opus-4-8"; }
+provider_run_prompt_with_timeout() { printf '## Summary\nnarrative\n'; return 0; }
+drift_log_path() { echo "$drift_file"; }
+case "$fn" in
+  compose) compose_promotion_pr_body "$TEST_BRANCH" "$CONTEXT_FILE" ;;
+  gather)  gather_promotion_context "$TEST_BRANCH" "$CONTEXT_FILE" && cat "$CONTEXT_FILE" ;;
+esac
+exit \$?
+EOF
+}
+
+@test "compose_promotion_pr_body: drift log present → one-line pending count, entries never inlined" {
+  printf '## Ledger entries\n\n' > "$CONTEXT_FILE"
+  local drift="${BATS_TEST_TMPDIR}/drift.md"
+  _write_drift_fixture "$drift"
+
+  _run_with_drift compose "$drift"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## Known doc drift"* ]]
+  [[ "$output" == *"3 drift entries pending in docs/sharkrite-drift-log.md (2 recorded by PRs in this promotion)"* ]]
+  [[ "$output" == *"rite docs"* ]]
+  # The log body is never copied into the PR body.
+  [[ "$output" != *"ENTRY_PROSE_MUST_NOT_APPEAR_IN_BODY"* ]]
+  [[ "$output" != *"<!-- sharkrite-doc-drift"* ]]
+  # The deterministic Closes tail still precedes it.
+  [[ "$output" == *"## Constituent issues"* ]]
+  [[ "$output" == *"Closes #42"* ]]
+}
+
+@test "compose_promotion_pr_body: no drift log → no Known doc drift section" {
+  printf '## Ledger entries\n\n' > "$CONTEXT_FILE"
+
+  _run_with_drift compose "${BATS_TEST_TMPDIR}/does-not-exist.md"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Known doc drift"* ]]
+  [[ "$output" == *"Closes #42"* ]]
+}
+
+@test "gather_promotion_context: drift log is summarized in the LLM context, not inlined" {
+  local drift="${BATS_TEST_TMPDIR}/drift.md"
+  _write_drift_fixture "$drift"
+
+  _run_with_drift gather "$drift"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"## Known doc drift"* ]]
+  [[ "$output" == *"3 drift entries pending"* ]]
+  [[ "$output" != *"ENTRY_PROSE_MUST_NOT_APPEAR_IN_BODY"* ]]
+}
+
+@test "compose_promotion_pr_body: fallback body lists each Closes line as a bullet (printf -- guard)" {
+  printf '## Ledger entries\n\n' > "$CONTEXT_FILE"
+
+  run bash << EOF
+set +e
+export RITE_LIB_DIR="$PROJECT_ROOT/lib"
+export RITE_STATE_DIR="$RITE_STATE_DIR"
+export RITE_PROJECT_ROOT="$PROJECT_ROOT"
+export PATH="$FAKE_BIN:\$PATH"
+RITE_SOURCE_FUNCTIONS_ONLY=1 source "$PROJECT_ROOT/lib/utils/promotion-composer.sh" 2>/dev/null || true
+set +e; set +u; set +o pipefail
+integration_ledger_entries() {
+  cat "$RITE_STATE_DIR/integration-branches/${TEST_BRANCH}.log" 2>/dev/null || true
+}
+gh_safe() { printf '{"title":"T","body":"B","state":"MERGED","comments":[]}\n'; }
+git_fetch_safe() { return 0; }
+print_warning() { echo "WARNING: \$*" >&2; }
+provider_resolve_model() { echo "claude-opus-4-8"; }
+provider_run_prompt_with_timeout() { return 1; }
+drift_log_path() { echo "${BATS_TEST_TMPDIR}/none.md"; }
+compose_promotion_pr_body "$TEST_BRANCH" "$CONTEXT_FILE" 2>&1
+exit \$?
+EOF
+
+  [ "$status" -eq 0 ]
+  # Before the fix bash parsed "- %s\n" as a printf option and dropped every bullet.
+  [[ "$output" != *"invalid option"* ]]
+  [[ "$output" == *"- Closes #42"* ]]
+  [[ "$output" == *"- Closes #43"* ]]
+}

@@ -535,6 +535,20 @@ run_promote() {
     _pr_body="Promotion of integration branch '${BRANCH}' to main."
   fi
 
+  # Cap the body under GitHub's 65536-char PR-body limit (same guard the two
+  # follow-up-issue writes below already carry). Backstop only: the composer
+  # no longer inlines the drift log (#1637 — an 84 KB log made a 105 KB body
+  # and gh rejected it with its stderr suppressed), so a normal body is ~20 KB.
+  # Back off to the last newline so a Closes line is never split mid-token.
+  if [ "${#_pr_body}" -gt 60000 ]; then
+    print_warning "Promotion PR body is ${#_pr_body} chars — truncated to stay under GitHub's 65536-char limit"
+    local _pr_body_cut="${_pr_body:0:60000}"
+    _pr_body_cut="${_pr_body_cut%$'\n'*}"
+    _pr_body="${_pr_body_cut}
+
+... (promotion PR body truncated — exceeded GitHub's 65536-char limit; full history is on the '${BRANCH}' branch)"
+  fi
+
   # Check for an existing open promotion PR (re-run after aborted gate).
   # Reuse it rather than creating a duplicate.
   local PROMO_PR=""
@@ -542,9 +556,16 @@ run_promote() {
     --json number --jq '.[0].number // ""' 2>/dev/null || true)
   PROMO_PR="${PROMO_PR:-}"
 
+  # gh's stderr is captured, not discarded: when GitHub rejects the write the
+  # reason (body too long, auth, ...) must reach the operator and the log.
+  local _pr_err=""
+  _pr_err=$(mktemp)
   if [ -n "$PROMO_PR" ]; then
     print_info "Reusing existing promotion PR #$PROMO_PR — refreshing body"
-    gh_safe pr edit "$PROMO_PR" --body "$_pr_body" 2>/dev/null || true
+    if ! gh_safe pr edit "$PROMO_PR" --body "$_pr_body" 2>"$_pr_err"; then
+      print_warning "Could not refresh promotion PR #$PROMO_PR body — continuing with the existing body"
+      [ -s "$_pr_err" ] && sed 's/^/    gh: /' "$_pr_err" >&2
+    fi
   else
     print_step "Creating promotion PR..."
     local _pr_title="Promote '$BRANCH' to main"
@@ -553,15 +574,21 @@ run_promote() {
       --base main \
       --head "$BRANCH" \
       --title "$_pr_title" \
-      --body "$_pr_body" 2>/dev/null || true)
+      --body "$_pr_body" 2>"$_pr_err" || true)
     PROMO_PR=$(printf '%s' "${_pr_url:-}" | grep -oE '[0-9]+$' || true)
     PROMO_PR="${PROMO_PR:-}"
     if [ -z "$PROMO_PR" ]; then
       print_error "Failed to create promotion PR for branch '$BRANCH'"
+      if [ -s "$_pr_err" ]; then
+        echo "  gh pr create said:" >&2
+        sed 's/^/    /' "$_pr_err" >&2
+      fi
+      rm -f "$_pr_err"
       exit 1
     fi
     print_success "Created promotion PR #$PROMO_PR"
   fi
+  rm -f "$_pr_err"
   echo ""
 
   # ── Phase 3: Review ──────────────────────────────────────────────────────

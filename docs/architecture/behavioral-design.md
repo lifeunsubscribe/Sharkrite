@@ -2552,6 +2552,38 @@ Sharkrite ships a default rubric per type; a repo overrides it in the docs
 map. The ADR is audited no less than any other doc — its role check is simply
 the one that compares *across* docs.
 
+### The promotion PR body never inlines the drift log (#1637)
+
+The promotion PR is the code-review artifact for an integration branch. The
+drift log is input to the Tier 2 doc pass that runs *after* the merge, and
+the accepted entries are folded into that docs PR body — so the promotion PR
+has no reason to carry them. `promotion-composer.sh` used to `cat` the whole
+file under a "Known doc drift" heading, in both the LLM context (after the
+50 KB cap check, so the cap did not apply) and the final body. On 2026-11-08
+`rite --promote doc-refactor` composed a 105 KB body — 21 KB of narrative and
+84 KB of drift log (77 entries, 74 of them from the retired unattended
+auto-opt-in) — and GitHub rejected it against its 65,536-char PR-body limit.
+The `gh pr create` call discarded stderr, so the run reported only "Failed to
+create promotion PR".
+
+Contract:
+
+- Both the context and the body get **one line** from
+  `_drift_pending_summary`: total pending entries, how many were recorded by
+  this promotion's own PRs, and the pointer to `rite docs`. Nothing when the
+  log is absent or empty. This is the Tier 1 "Visible" rule applied to
+  promote.
+- `promote-branch.sh` caps the body at 60,000 chars before `gh pr create` /
+  `gh pr edit` (backing off to the last newline, with a truncation pointer),
+  the same guard its two follow-up-issue writes already carry. A backstop:
+  with the log out, a 24-issue body is ~20 KB.
+- gh's stderr on those two writes is captured and printed on failure, never
+  `2>/dev/null`. A GitHub rejection must name itself in the log.
+
+Pinned by `tests/regression/promotion-composer.bats` (summary line present,
+entry text absent, fallback bullets emitted) and
+`tests/regression/promote-branch.bats` (body cap, stderr surfaced).
+
 ### The ADR: never edited at promote
 
 Promote sees one branch's slice; the ADR describes the whole product, so an
