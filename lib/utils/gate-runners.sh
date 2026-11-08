@@ -1215,3 +1215,39 @@ _node_scope_zero_tests() {
   grep -qE '(No tests found|Tests:[[:space:]]+0 total|Test Suites:[[:space:]]+0 total|No test files found)' \
     "$_nszt_file" 2>/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# _cienv_gnu_prefix — detect GNU tool gnubin dirs for CI-parity (#1607)
+#
+# Echoes a colon-terminated PATH prefix containing the gnubin dirs for GNU
+# grep and gawk when they are installed via Homebrew.  Echoes "" when neither
+# is present — callers must check for empty before prepending so they do not
+# introduce a leading colon.
+#
+# Install path order: Apple Silicon Homebrew (/opt/homebrew) first, then
+# Intel Homebrew (/usr/local/opt).  Only the first found dir for each tool is
+# included so the prefix is never duplicated.
+#
+# Used by run_test_gate to build the _bats_sandbox PATH so selected tests
+# exercise GNU regex semantics (the class that produced 18 of the 2026-10-27
+# red-main episode's failures — BSD/GNU regex divergence visible only in CI).
+# Graceful absence: returns "" on Linux (where system grep/awk ARE already GNU)
+# or on macOS without the Homebrew install — the gate then behaves as today.
+# ---------------------------------------------------------------------------
+_cienv_gnu_prefix() {
+  local _prefix=""
+  local _d
+  for _d in /opt/homebrew/opt/grep/libexec/gnubin /usr/local/opt/grep/libexec/gnubin; do
+    if [ -d "$_d" ] && [ -x "$_d/grep" ]; then
+      _prefix="${_prefix}${_d}:"
+      break
+    fi
+  done
+  for _d in /opt/homebrew/opt/gawk/libexec/gnubin /usr/local/opt/gawk/libexec/gnubin; do
+    if [ -d "$_d" ] && [ -x "$_d/awk" ]; then
+      _prefix="${_prefix}${_d}:"
+      break
+    fi
+  done
+  printf '%s' "$_prefix"
+}

@@ -450,6 +450,8 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Diag emission:** every gate run logs `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N`. Since the trigger removal, `mode=full` means only "no diff computable". The health report aggregates these into a "Test Selection" sub-section under Test Gate, with a WATCH threshold at avg selected/total > 50% (indicates header adoption is lagging).
 
+**CI-equivalent environment contract (#1607):** the targeted bats selection runs in an environment that mirrors CI: `claude` is masked by prepending a shim dir to `PATH` (the shim exits 1, so any test that silently depends on a live `claude` binary fails locally — which is the fix, not the bug), and GNU tools (gawk/ggrep) are preferred when installed (via #1596). The `make check`/lint runner still executes under the normal PATH — only bats children see the hostile-environment PATH. Neither change affects the selection itself — they affect what the selected tests observe. Skipped tests (TAP `# skip` lines) are counted separately so "0 failures" cannot be confused with "everything ran". Emitted as `[diag] GATE_ENV gnu=yes|no claude=masked flock=yes|no skipped=N pr=N`.
+
 **Override the diff base** via `RITE_TEST_GATE_DIFF_BASE` (default: `origin/main`). Useful for CI or local debugging.
 
 **Glob expansion hazard.** The selection function calls `set -f` (noglob) before splitting comma-separated patterns, then `set +f` after. Without `set -f`, a header like `lib/utils/*.sh` would be expanded against the filesystem at parse time, replacing the pattern with the list of currently-matching files — breaking the case-statement match against changed paths.
