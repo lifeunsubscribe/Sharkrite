@@ -137,7 +137,10 @@ if [ -n "${RITE_LINT_FILES:-}" ]; then
     # Letting execution fall through to the rule loop is safe: SHELL_FILES is
     # empty so all SHELL_FILES-iterating rules are no-ops; only rules with
     # their own find loop (Rules 34/35) do real work.
-    if printf '%s\n' "$RITE_LINT_FILES" | grep -qE '\.bats$'; then
+    # Here-string: a producer | grep -q pipe under pipefail returns 141 when
+    # grep exits before a multi-write producer finishes (SIGPIPE) — the
+    # Rule 36 macOS false positive, #1633. Here it would skip the bats rules.
+    if grep -qE '\.bats$' <<< "$RITE_LINT_FILES"; then
       echo "Sharkrite custom lint: targeted scope (bats-only — running Rules 34/35/40)"
     else
       echo "Sharkrite custom lint: no in-scope shell files in targeted set — skipping."
@@ -170,7 +173,7 @@ fi
 # Fail loudly here so a duplicate number can never ship unnoticed — a branch
 # that adds a colliding fragment goes red on its own `make lint`/gate.
 _lint_dup_nums=$(ls "$_LINT_RULES_DIR"/*.sh 2>/dev/null \
-  | sed -E 's#.*/([0-9]+)-.*#\1#' | sort | uniq -d)
+  | sed -E 's#.*/([0-9]+[A-Za-z]*)-.*#\1#' | sort | uniq -d)
 if [ -n "$_lint_dup_nums" ]; then
   echo "ERROR: duplicate lint-rule fragment number(s): $(echo $_lint_dup_nums)" >&2
   echo "       Each tools/lint-rules/NN-*.sh must use a unique NN prefix. Offenders:" >&2
@@ -215,8 +218,9 @@ fi
 for _rule_file in "$_LINT_RULES_DIR"/*.sh; do
   [ -f "$_rule_file" ] || continue
   if [ -n "${_lint_only_set:-}" ]; then
-    # Extract the NN- prefix and skip fragments not in the requested set.
-    _rule_num=$(basename "$_rule_file" | sed -E 's/^([0-9]+)-.*/\1/')
+    # Extract the NN- (or NNL-) prefix and skip fragments not in the requested set.
+    # Supports alphanumeric suffixes like "39H" alongside plain numeric "39".
+    _rule_num=$(basename "$_rule_file" | sed -E 's/^([0-9]+[A-Za-z]*)-.*$/\1/')
     case "$_lint_only_set" in
       *",${_rule_num},"*) ;;   # requested — source it
       *) continue ;;           # not requested — skip

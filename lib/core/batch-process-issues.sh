@@ -57,6 +57,7 @@ source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/cap-resume.sh"
+source "$RITE_LIB_DIR/utils/drift-log.sh"
 
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/providers/provider-interface.sh"
@@ -170,6 +171,109 @@ record_run() {
   echo "$(date -u +"%Y-%m-%dT%H:%M:%SZ") $issue $mode" >> "$history_file"
 }
 
+# _batch_print_drift_summary
+# Print one informational line when the batch finishes with pending drift entries.
+# Format: "N drift entries pending across M docs — run 'rite docs'"
+# Silent when N=0, RITE_STATE_DIR unset, or drift-log.sh not loaded.
+# No prompting; no effect on exit code.
+_batch_print_drift_summary() {
+  declare -f drift_log_entry_count >/dev/null 2>&1 || return 0
+  local _total _docs _f
+  _total="$(drift_log_entry_count --total || true)"
+  [ "${_total:-0}" -gt 0 ] || return 0
+  _docs=0
+  if [ -d "${RITE_STATE_DIR:-}/doc-drift" ]; then
+    while IFS= read -r _f; do
+      [ -n "$_f" ] || continue
+      _docs=$((_docs + 1))
+    done < <(
+      find "${RITE_STATE_DIR}/doc-drift" -mindepth 2 -name '*.log' \
+        2>/dev/null \
+        | sed 's|.*/||' \
+        | sort -u \
+        || true
+    )
+  fi
+  print_info "${_total} drift entries pending across ${_docs} docs — run 'rite docs'"
+}
+
+# ---------------------------------------------------------------------------
+# _ci_preflight: one-API-read CI check — halts when the target branch's latest
+# completed workflow run (per workflow) has a red conclusion.
+#
+# Soundness guard for block-on-any: any gate failure in the targeted selection
+# is this change's to fix — only valid when the base branch is green. This
+# addresses the LeadFlow 2026-07-01 class and the orrery 2026-10-27 red-main
+# lint state where every intersecting slot's fix-loop retries burned on
+# failures that were not theirs.
+#
+# Fetches per_page=30 completed runs, groups by workflow_id to find the latest
+# run per workflow, then checks if any latest-per-workflow run is red. This
+# prevents a green deploy/scheduled run from masking a red CI run in
+# multi-workflow repos.
+#
+# One gh api call; never runs tests or lint. See CLAUDE.md →
+# "No full suites inside a workflow (CRITICAL)" for why the retired #916
+# full-suite preflight is NOT resurrected here.
+#
+# Args:
+#   $1 — "true" to bypass with a warning (set by --allow-red-main flag only)
+#
+# Reads: RITE_TARGET_BRANCH (defaults to main)
+#
+# Returns:
+#   0 — green, absent CI, API unreachable, or $1==true (--allow-red-main)
+#   1 — red CI and $1 != true (caller must exit)
+# ---------------------------------------------------------------------------
+_ci_preflight() {
+  local _target_branch="${RITE_TARGET_BRANCH:-main}"
+  local _allow="${1:-false}"
+
+  local _run_json
+  _run_json=$(gh_safe api \
+    "repos/{owner}/{repo}/actions/runs?branch=${_target_branch}&status=completed&per_page=30" \
+    2>/dev/null || true)
+
+  [ -z "$_run_json" ] && return 0
+
+  # Get the latest completed run per workflow; find the first red one.
+  local _red_run
+  _red_run=$(printf '%s' "$_run_json" | jq -r '
+    [.workflow_runs | group_by(.workflow_id)[] | .[0] |
+     select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "startup_failure")] |
+    .[0] | select(.) |
+    [.conclusion, (.name // "unknown"), (.html_url // "")] | join("\t")
+  ' 2>/dev/null || true)
+
+  [ -z "${_red_run:-}" ] && return 0
+
+  local _conclusion _name _url
+  _conclusion=$(printf '%s' "$_red_run" | cut -f1 || true)
+  _name=$(printf '%s' "$_red_run" | cut -f2 || true)
+  _url=$(printf '%s' "$_red_run" | cut -f3 || true)
+
+  if declare -f _diag >/dev/null 2>&1; then
+    _diag "MAIN_CI_RED branch=${_target_branch} conclusion=${_conclusion}"
+  fi
+
+  if [ "$_allow" = "true" ]; then
+    print_warning "${_target_branch} CI is red (${_name:-unknown} → ${_conclusion}) — proceeding via --allow-red-main"
+    return 0
+  fi
+
+  echo "" >&2
+  echo "Batch preflight failed: ${_target_branch} CI is red" >&2
+  echo "" >&2
+  echo "  Failing workflow: ${_name:-unknown}" >&2
+  echo "  URL: ${_url:-unavailable}" >&2
+  echo "" >&2
+  echo "  Next steps:" >&2
+  printf "    1. Fix the breakage on %s first, then retry the batch\n" "${_target_branch}" >&2
+  printf "    2. Or bypass with: rite <issues> --allow-red-main  (not recommended)\n" >&2
+  echo "" >&2
+  return 1
+}
+
 # Batch processing requires associative arrays (bash 4+)
 if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   for _newer_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -208,6 +312,7 @@ ISSUE_LIST=()
 FILTER_TYPE=""
 FILTER_VALUE=""
 SMART_WAIT=false
+_allow_red_main=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -229,6 +334,10 @@ while [[ $# -gt 0 ]]; do
       FILTER_TYPE="state"
       FILTER_VALUE="$2"
       shift 2
+      ;;
+    --allow-red-main)
+      _allow_red_main=true
+      shift
       ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -340,7 +449,7 @@ _extract_dep_issues_from_body() {
 
     # Detect the canonical Dependencies: header (with or without ** markdown bold).
     # This is the form produced by the generator (PR #964) and the authoring standard.
-    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?\s*:'; then
+    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:'; then
       _in_deps=true
       # Strip parallel-with annotations before harvesting inline refs
       local _clean
@@ -359,7 +468,7 @@ _extract_dep_issues_from_body() {
     # Issues authored before PR #964 used this style; deps appear on following
     # lines as "After: #N" / "Blocked by: #N". The header line itself carries
     # no inline refs, so just enter dep-collection mode and continue.
-    if echo "$_bline" | grep -qiE '^##+ Dependencies\s*$'; then
+    if echo "$_bline" | grep -qiE '^##+ Dependencies[[:space:]]*$'; then
       _in_deps=true
       continue
     fi
@@ -433,12 +542,19 @@ _check_dep_queued_later() {
 # _ftm_file_overlap ISSUE_BODY
 #
 # Parse the issue body's "Files to Modify:" section and check whether any
-# declared path intersects the changed files of another in-flight worktree.
+# declared path intersects the changed files of a live in-flight worktree.
 #
-# Detection is local-only: git worktree list + git -C <wt> diff — no network
-# calls. Excludes the main checkout and the current working directory from
-# the worktree scan (this batch's own). An empty or missing "Files to
-# Modify:" section is a silent no-op (returns without setting either global).
+# A worktree is "live" iff a lock entry in RITE_LOCK_DIR has both a pid file
+# (kill -0 succeeds) and a cwd file whose content matches the worktree path.
+# Worktrees with no lock, a backfill-only lock (no pid), or a dead pid are
+# silently skipped — they are NOT counted as in-flight.
+#
+# No-op when the queue cannot reorder (_UNIQUE_ISSUE_COUNT <= 1): the check
+# is entirely skipped, producing no output.
+#
+# Detection is local-only: git worktree list + git -C <wt> diff + local lock
+# files — no network calls. Excludes the main checkout, the current working
+# directory, and the current issue's own pre-existing worktree.
 #
 # Diff base resolution order (most-to-least specific):
 #   1. merge-base HEAD origin/main  (production: remote ref)
@@ -446,13 +562,15 @@ _check_dep_queued_later() {
 #   3. rev-list --max-parents=0     (first commit — last resort)
 # Any worktree for which the base cannot be resolved is skipped silently.
 #
-# On overlap, sets globals _OVERLAP_FILES (comma-joined matching paths) and
-# _OVERLAP_WT (path of the first overlapping worktree).
+# On overlap, sets globals:
+#   _OVERLAP_FILES     — comma-joined matching paths
+#   _OVERLAP_WT        — path of the first live overlapping worktree
+#   _OVERLAP_ISSUE_NUM — issue number extracted from the lock dir name
 # Returns 0 always; caller inspects _OVERLAP_FILES for non-empty.
 #
-# Globals written: _OVERLAP_FILES, _OVERLAP_WT
+# Globals written: _OVERLAP_FILES, _OVERLAP_WT, _OVERLAP_ISSUE_NUM
 # Deliberate batch-only behavior: single-issue mode has no queue to defer
-# into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
+# into. See behavioral-design.md → "Cross-Batch File Overlap: Liveness Gate".
 # ---------------------------------------------------------------------------
 
 # batch_suffix_matches_issue <path> <issue_num>
@@ -475,6 +593,12 @@ _ftm_file_overlap() {
   local _issue_body="${1:-}"
   _OVERLAP_FILES=""
   _OVERLAP_WT=""
+  _OVERLAP_ISSUE_NUM=""
+
+  # No-op when the queue cannot reorder: a single-issue batch has nowhere to
+  # defer into, so the check is pointless and would produce a false positive.
+  local _queue_max="${_UNIQUE_ISSUE_COUNT:-0}"
+  [ "$_queue_max" -gt 1 ] || return 0
 
   # Step 1: extract the "Files to Modify:" section from the issue body.
   # Matches: "Files to Modify:", "**Files to Modify:**", with optional
@@ -567,8 +691,54 @@ _ftm_file_overlap() {
     done < <(printf '%s\n' "$_parsed_paths")
 
     if [ -n "$_overlap_list" ]; then
+      # Liveness gate: only count this worktree as "in-flight" if a live lock
+      # holds it. Scan RITE_LOCK_DIR for a lock entry whose issue number matches
+      # the worktree basename and whose pid is alive (kill -0). Worktrees with
+      # no lock, a backfill-only lock (no pid file), or a dead pid are skipped.
+      local _wt_live_issue=""
+      local _wt_lock_base="${RITE_LOCK_DIR:-}"
+      if [ -d "$_wt_lock_base" ]; then
+        local _lk
+        for _lk in "$_wt_lock_base"/issue-*.lock; do
+          [ -d "$_lk" ] || continue
+          [ -f "$_lk/pid" ] || continue
+          local _lk_pid
+          _lk_pid=$(cat "$_lk/pid" 2>/dev/null || true)
+          [ -n "$_lk_pid" ] || continue
+          kill -0 "$_lk_pid" 2>/dev/null || continue
+          # Live lock — confirm it owns this worktree.
+          local _lk_bname="${_lk##*/}"
+          local _lk_num="${_lk_bname#issue-}"
+          _lk_num="${_lk_num%.lock}"
+          # Tier 1: physical-cwd compare.  claude-workflow.sh rewrites the lock's
+          # cwd to pwd -P after cd-ing into the worktree, so both sides resolve to
+          # the same inode even when git worktree list returns /private/... while
+          # the lock file holds /var/... (macOS symlink layers).
+          local _lk_cwd _phys_wt_lk _phys_cwd_lk
+          _lk_cwd=$(cat "$_lk/cwd" 2>/dev/null || true)
+          if [ -n "$_lk_cwd" ]; then
+            _phys_wt_lk=$(cd "$_wt_dir" && pwd -P 2>/dev/null || true)
+            _phys_cwd_lk=$(cd "$_lk_cwd" && pwd -P 2>/dev/null || true)
+            if [ -n "$_phys_wt_lk" ] && [ -n "$_phys_cwd_lk" ] && [ "$_phys_wt_lk" = "$_phys_cwd_lk" ]; then
+              _wt_live_issue="$_lk_num"
+              break
+            fi
+          fi
+          # Tier 2: basename match (covers basename-encoded suffixes, legacy locks
+          # written before the cwd-update patch, and single-issue-mode worktrees
+          # whose names encode the issue number).
+          if batch_suffix_matches_issue "$(basename "$_wt_dir")" "$_lk_num"; then
+            _wt_live_issue="$_lk_num"
+            break
+          fi
+        done
+      fi
+      # No live lock confirmed for this worktree — not in-flight, skip it.
+      [ -n "$_wt_live_issue" ] || continue
+
       _OVERLAP_FILES="$_overlap_list"
       _OVERLAP_WT="$_wt_dir"
+      _OVERLAP_ISSUE_NUM="$_wt_live_issue"
       return 0
     fi
   done < <(git worktree list 2>/dev/null || true)
@@ -579,22 +749,29 @@ _ftm_file_overlap() {
 # ---------------------------------------------------------------------------
 # _apply_overlap_defer_or_warn
 #
-# Apply the defer-or-warn decision after _ftm_file_overlap has populated
-# _OVERLAP_FILES/_OVERLAP_WT.  When _OVERLAP_FILES is empty, returns 0
-# immediately (no overlap detected, caller proceeds).
+# Apply the defer-or-proceed decision after _ftm_file_overlap has populated
+# _OVERLAP_FILES/_OVERLAP_WT/_OVERLAP_ISSUE_NUM.  When _OVERLAP_FILES is
+# empty, returns 0 immediately (no overlap detected, caller proceeds).
 #
-# When overlap is detected:
-#   Below cap  → increments _DEFER_COUNT[$ISSUE_NUM], re-appends $ISSUE_NUM to
-#                ISSUE_LIST, sets ISSUE_STATUS[ISSUE_NUM]="deferred_for_overlap",
-#                prints a warning, and returns 1 (caller must `continue` the loop).
-#   Cap reached → prints a warn-in-place warning and returns 0 (caller proceeds).
+# Distinguishes two cases by checking whether _OVERLAP_ISSUE_NUM is in the
+# current batch's ISSUE_LIST:
+#
+#   Intra-batch (live lock belongs to an issue in this batch):
+#     Below cap  → increments _DEFER_COUNT[$ISSUE_NUM], re-appends $ISSUE_NUM
+#                  to ISSUE_LIST, sets ISSUE_STATUS[ISSUE_NUM]=deferred_for_overlap,
+#                  prints a warning, returns 1 (caller must `continue`).
+#     Cap reached → prints an info line stating the consequence, returns 0.
+#
+#   Cross-batch (live lock belongs to a different batch):
+#     Deferring cannot wait out another batch (clears on its own schedule).
+#     Prints one info line and returns 0 (proceed).
 #
 # Returns:
-#   0 → no overlap, or cap exhausted → caller runs the issue in place
-#   1 → issue deferred → caller must `continue` the batch loop
+#   0 → no overlap detected, cap exhausted, or cross-batch → caller proceeds
+#   1 → issue deferred (intra-batch, below cap) → caller must `continue`
 #
-# Globals read:  _OVERLAP_FILES, _OVERLAP_WT, ISSUE_NUM, _DEFER_COUNT,
-#                _UNIQUE_ISSUE_COUNT, ISSUE_LIST
+# Globals read:  _OVERLAP_FILES, _OVERLAP_WT, _OVERLAP_ISSUE_NUM,
+#                ISSUE_NUM, _DEFER_COUNT, _UNIQUE_ISSUE_COUNT, ISSUE_LIST
 # Globals written: _DEFER_COUNT, ISSUE_LIST, ISSUE_STATUS
 # Extracted so tests can source and call it directly rather than duplicating
 # the cap comparison and ISSUE_LIST re-append logic in a heredoc fixture.
@@ -602,22 +779,66 @@ _ftm_file_overlap() {
 _apply_overlap_defer_or_warn() {
   [ -n "${_OVERLAP_FILES:-}" ] || return 0
 
-  local _overlap_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
-  local _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+  local _wt_issue="${_OVERLAP_ISSUE_NUM:-}"
+  local _wt_basename
+  _wt_basename=$(basename "$_OVERLAP_WT")
 
-  if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
-    _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
-    print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — deferring to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
-    ISSUE_LIST+=("$ISSUE_NUM")
-    ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
-    if declare -f _diag >/dev/null 2>&1; then
-      _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT")"
+  # When the liveness gate didn't record an issue number (e.g. test fixtures
+  # that pre-populate _OVERLAP_FILES without running _ftm_file_overlap), try
+  # to infer the owning issue from the worktree basename via
+  # batch_suffix_matches_issue against each entry in ISSUE_LIST.
+  if [ -z "$_wt_issue" ] && [ -n "$_wt_basename" ]; then
+    local _il0
+    for _il0 in "${ISSUE_LIST[@]+"${ISSUE_LIST[@]}"}"; do
+      if batch_suffix_matches_issue "$_wt_basename" "$_il0"; then
+        _wt_issue="$_il0"
+        break
+      fi
+    done
+  fi
+
+  # Determine intra-batch vs cross-batch by scanning ISSUE_LIST for the
+  # owning issue number. The +idiom prevents unbound-variable under set -u
+  # when ISSUE_LIST is empty (should not happen, but be defensive).
+  local _is_intra=false
+  if [ -n "$_wt_issue" ]; then
+    local _il
+    for _il in "${ISSUE_LIST[@]+"${ISSUE_LIST[@]}"}"; do
+      if [ "$_il" = "$_wt_issue" ]; then
+        _is_intra=true
+        break
+      fi
+    done
+  fi
+
+  if [ "$_is_intra" = true ]; then
+    # Intra-batch: moving this issue to the end of the queue can clear the
+    # conflict once the overlapping issue finishes.
+    local _overlap_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
+    local _overlap_max="${_UNIQUE_ISSUE_COUNT:-${#ISSUE_LIST[@]}}"
+
+    if [ "$_overlap_defer_count" -lt "$_overlap_max" ]; then
+      _DEFER_COUNT[$ISSUE_NUM]=$(( _overlap_defer_count + 1 ))
+      print_warning "File overlap with live worktree for issue #$_wt_issue ($_wt_basename): ${_OVERLAP_FILES} — deferring issue #$ISSUE_NUM to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
+      ISSUE_LIST+=("$ISSUE_NUM")
+      ISSUE_STATUS["$ISSUE_NUM"]="deferred_for_overlap"
+      if declare -f _diag >/dev/null 2>&1; then
+        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$_wt_basename"
+      fi
+      return 1
+    else
+      print_info "File overlap with live worktree for issue #$_wt_issue ($_wt_basename): ${_OVERLAP_FILES} — cap reached, running in place; expect possible rebase churn"
+      if declare -f _diag >/dev/null 2>&1; then
+        _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$_wt_basename cap_exhausted=true"
+      fi
+      return 0
     fi
-    return 1
   else
-    print_warning "Cross-batch file overlap: issue #$ISSUE_NUM shares files (${_OVERLAP_FILES}) with in-flight worktree $(basename "$_OVERLAP_WT") — defer cap reached, running in place"
+    # Cross-batch: deferring cannot wait out another batch (it clears on its
+    # own schedule). Proceed; the warning states the consequence only.
+    print_info "File overlap with live worktree $_wt_basename (issue #$_wt_issue): ${_OVERLAP_FILES} — different batch owns this branch; expect possible rebase churn"
     if declare -f _diag >/dev/null 2>&1; then
-      _diag "OVERLAP_DEFER issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$(basename "$_OVERLAP_WT") cap_exhausted=true"
+      _diag "OVERLAP_CROSS_BATCH issue=$ISSUE_NUM files=${_OVERLAP_FILES} worktree=$_wt_basename other_issue=$_wt_issue"
     fi
     return 0
   fi
@@ -639,6 +860,16 @@ load_provider "${RITE_DEV_PROVIDER:-claude}"
 provider_detect_cli || true
 if ! provider_healthcheck; then
   print_error "Batch aborted at pre-flight. Fix workspace trust and retry."
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# CI preflight: read-only check that the target branch is green before any
+# slot starts. One gh api call — never runs tests or lint. Halts with
+# remediation instructions when the latest completed run is red.
+# Pass --allow-red-main to bypass with a warning.
+# ---------------------------------------------------------------------------
+if ! _ci_preflight "$_allow_red_main"; then
   exit 1
 fi
 
@@ -1530,13 +1761,22 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   fi  # [ "$ISSUE_STATE" != "CLOSED" ] — parent-PR + dep guards
 
   # ---------------------------------------------------------------------------
-  # Per-slot cross-batch file overlap check: warn and reorder when this
-  # issue's declared Files-to-Modify intersect an in-flight worktree's diff.
-  # Local git only — no network calls. Missing/empty "Files to Modify:"
-  # section is a silent no-op. Bounded by the shared _DEFER_COUNT anti-cycle
-  # cap (_UNIQUE_ISSUE_COUNT); cap exhausted → warning + run in place.
+  # Per-slot file overlap check: liveness gate + intra/cross-batch split.
+  # A worktree is "live" iff RITE_LOCK_DIR holds a lock entry with a live
+  # pid (kill -0) that owns the worktree via a two-tier check:
+  #   Tier 1: pwd -P of the worktree == pwd -P of the lock's cwd file
+  #           (resolves macOS /private/ vs /var/ symlink layers).
+  #   Tier 2: worktree basename encodes the lock's issue number per
+  #           batch_suffix_matches_issue (covers legacy locks written before
+  #           the cwd-update patch and single-issue-mode worktrees).
+  # Worktrees with no lock, a backfill-only lock (no pid), or a dead pid
+  # are silently skipped.
+  # No-op when _UNIQUE_ISSUE_COUNT <= 1 (unreorderable queue).
+  # Intra-batch overlap → defer to end of queue (bounded by _DEFER_COUNT cap).
+  # Cross-batch overlap → print_info + proceed (cannot wait out another batch).
+  # Local git + local lock files only — no network calls.
   # Deliberate batch-only divergence: single-issue mode has no queue to defer
-  # into. See behavioral-design.md → "Cross-Batch File Overlap: Warn and Reorder".
+  # into. See behavioral-design.md → "Cross-Batch File Overlap: Liveness Gate".
   #
   # Skipped for CLOSED issues: cleanup-only work touches no source files and
   # therefore cannot conflict with another worktree's diff. The parity contract
@@ -1547,6 +1787,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   if [ "$ISSUE_STATE" != "CLOSED" ]; then
     _OVERLAP_FILES=""
     _OVERLAP_WT=""
+    _OVERLAP_ISSUE_NUM=""
     _ftm_file_overlap "$ISSUE_BODY"
     _overlap_action_rc=0; _apply_overlap_defer_or_warn || _overlap_action_rc=$?
     if [ "$_overlap_action_rc" -ne 0 ]; then
@@ -2268,6 +2509,7 @@ if [ ${#BLOCKED_ISSUES[@]} -gt 0 ]; then
 fi
 
 # (Skipped Issues section is now emitted by _batch_print_stats above)
+_batch_print_drift_summary
 
 # Build comprehensive Slack summary
 NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*

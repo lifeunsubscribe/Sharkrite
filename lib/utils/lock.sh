@@ -83,7 +83,7 @@ _lock_steal() {
   local now
   now=$(_lock_read_token "$lp")
   [ "$now" = "$expected" ] || return 1
-  local dst="${lp}.stale.$$.${RANDOM}"
+  local dst="${lp}.stale.${BASHPID:-$$}.${RANDOM}"
   mv "$lp" "$dst" 2>/dev/null || return 1      # lost the race / already gone
   local got
   if [ -d "$dst" ]; then
@@ -122,11 +122,15 @@ lock_acquire() {
 
   # Unique identity for THIS acquisition: PID (for liveness) + nonce (so a reused
   # PID re-acquiring is never mistaken for the dead holder we observed).
-  local token="$$.${RANDOM}.${RANDOM}"
+  # $BASHPID (not $$): in ( ) & subshells $$ returns the PARENT's PID, so all
+  # workers share the same $$, causing the "is this my own lock?" check to fire
+  # for every waiter and allowing concurrent live-lock steals. $BASHPID is the
+  # actual PID of the current subprocess — unique per worker.
+  local token="${BASHPID:-$$}.${RANDOM}.${RANDOM}"
 
   # Prepare the token-bearing temp on the same filesystem, then hard-link it into
   # place. The link is the atomic gate; the token is present at creation.
-  local tmp="${lockfile}.tmp.$$.${RANDOM}"
+  local tmp="${lockfile}.tmp.${BASHPID:-$$}.${RANDOM}"
   if ! echo "$token" > "$tmp" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
     return 1
@@ -140,7 +144,7 @@ lock_acquire() {
       # `ln` into it — `ln file dir` nests the temp inside and falsely succeeds.
       cur=$(cat "$lockfile/pid" 2>/dev/null || true)
       hpid="${cur%%.*}"
-      if [ -z "$cur" ] || [ "$hpid" = "$$" ] || ! kill -0 "$hpid" 2>/dev/null; then
+      if [ -z "$cur" ] || [ "$hpid" = "${BASHPID:-$$}" ] || ! kill -0 "$hpid" 2>/dev/null; then
         _lock_steal "$lockfile" "$cur" || true
         continue
       fi
@@ -160,7 +164,7 @@ lock_acquire() {
         # never steal on empty: just retry. Legacy 0-byte cruft is cleared once by
         # the pre-loop check above, before contention.
         continue          # gone → retry; next `ln` wins or reads a live token
-      elif [ "$hpid" = "$$" ]; then
+      elif [ "$hpid" = "${BASHPID:-$$}" ]; then
         _lock_steal "$lockfile" "$cur" || true
         continue
       elif ! kill -0 "$hpid" 2>/dev/null; then
@@ -181,14 +185,14 @@ lock_acquire() {
   return 0
 }
 
-# lock_release <lockpath> — remove only if we hold it (token's PID matches $$).
+# lock_release <lockpath> — remove only if we hold it (token's PID matches $BASHPID).
 # Idempotent.
 lock_release() {
   local lockfile="$1"
   [ -e "$lockfile" ] || return 0
   local cur
   cur=$(_lock_read_token "$lockfile")
-  if [ "${cur%%.*}" = "$$" ]; then
+  if [ "${cur%%.*}" = "${BASHPID:-$$}" ]; then
     rm -rf "$lockfile" 2>/dev/null || true
   fi
   return 0

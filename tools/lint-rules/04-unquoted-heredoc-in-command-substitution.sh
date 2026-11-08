@@ -15,7 +15,7 @@ for file in "${SHELL_FILES[@]}"; do
     fi
 
     if echo "$line_content" | grep -qE '\$\([^)]*<<[^)]*(EOF|END|HEREDOC)' && \
-       ! echo "$line_content" | grep -qE "<<\s*'"; then
+       ! echo "$line_content" | grep -qE "<<[[:space:]]*'"; then
       print_violation "$file" "$line_num" "UNQUOTED_HEREDOC_CMDSUB" \
         "Unquoted heredoc in command substitution - use <<'EOF' to prevent expansion"
     fi

@@ -58,7 +58,7 @@ parse_scope_boundary() {
   echo "DO_PATTERNS_START"
   # Extract DO bullets (but not DO NOT).
   # Use BSD-compatible sed (no /i flag — use explicit character class ranges instead).
-  echo "$scope_section" | grep -iE '^\s*[-*]\s*DO:' | \
+  echo "$scope_section" | grep -iE '^[[:space:]]*[-*][[:space:]]*DO:' | \
     grep -ivE 'DO[[:space:]]*NOT' | \
     sed 's/^[[:space:]]*[-*][[:space:]]*[Dd][Oo]:[[:space:]]*//' | \
     sed 's/[[:space:]]*#.*//' | \
@@ -69,7 +69,7 @@ parse_scope_boundary() {
 
   echo "DONOT_PATTERNS_START"
   # Extract DO NOT bullets.
-  echo "$scope_section" | grep -iE '^\s*[-*]\s*DO[[:space:]]*NOT:' | \
+  echo "$scope_section" | grep -iE '^[[:space:]]*[-*][[:space:]]*DO[[:space:]]*NOT:' | \
     sed 's/^[[:space:]]*[-*][[:space:]]*[Dd][Oo][[:space:]]*[Nn][Oo][Tt]:[[:space:]]*//' | \
     sed 's/[[:space:]]*#.*//' | \
     sed 's/[[:space:]]*$//' | \

@@ -1,5 +1,6 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/gate-verdict.sh::_gate_build_verdict, lib/utils/gate-verdict.sh, lib/utils/test-gate.sh, tests/regression/batch-locked-issue-in-progress-status.bats
+# sharkrite-gate-serial
 #
 # Regression tests: gate observability for bats plan-vs-executed mismatch
 # (issue #804, PR #828's four blind fix rounds) and the not-run name

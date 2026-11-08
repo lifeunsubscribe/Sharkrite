@@ -156,7 +156,7 @@ EOF
 
   # Verify no bare `gh pr diff` or `gh pr view` calls (raw gh, not wrapped)
   local bare_gh_count
-  bare_gh_count=$(grep -cE '^\s*PR_(DATA|DIFF)=\$\(gh ' "$assess_doc" || true)
+  bare_gh_count=$(grep -cE '^[[:space:]]*PR_(DATA|DIFF)=\$\(gh ' "$assess_doc" || true)
   [ "$bare_gh_count" -eq 0 ]
 }
 

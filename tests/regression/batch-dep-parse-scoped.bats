@@ -435,7 +435,7 @@ Depends on #20 being ready first.
   }
 
   # Dead variable must be gone (checking for bare assignment, not the name in comments)
-  ! echo "$_fn_body" | grep -qE '^\s+_inline=\$\(' || {
+  ! echo "$_fn_body" | grep -qE '^[[:space:]]+_inline=\$\(' || {
     echo "FAIL: dead '_inline=\$(...)' assignment still present in _extract_dep_issues_from_body" >&2
     echo "      This is the SC2034 violation from the old implementation." >&2
     return 1

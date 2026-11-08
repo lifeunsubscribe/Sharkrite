@@ -14,11 +14,11 @@ for file in "${SHELL_FILES[@]}"; do
   fi
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
     # Match: sed -i '' (BSD format)
-    if echo "$line_content" | grep -qE "sed\s+-i\s+''"; then
+    if echo "$line_content" | grep -qE "sed[[:space:]]+-i[[:space:]]+''"; then
       # Check if there's a GNU fallback in the same file
       if ! grep -q 'sed --version' "$file" 2>/dev/null; then
         print_violation "$file" "$line_num" "BSD_SED_NO_FALLBACK" \

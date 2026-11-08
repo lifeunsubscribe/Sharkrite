@@ -406,16 +406,16 @@ BODY
   grep -q "^## unescaped-backtick-example$" "$conventions_file"
 
   # A 4-backtick bash fence opener must be present (not 3-backtick)
-  grep -q '^\`\`\`\`bash$' "$conventions_file"
+  grep -q '^````bash$' "$conventions_file"
 
   # A 4-backtick fence closer must be present
-  grep -q '^\`\`\`\`$' "$conventions_file"
+  grep -q '^````$' "$conventions_file"
 
   # The 3-backtick bash opener must NOT be present.
   # This entry's example contains ``` sequences; if the fence promotion logic
   # failed and used a 3-backtick fence, a ```bash opener would appear in the
   # file and the inner ``` would terminate the fence early.
-  run grep '^\`\`\`bash$' "$conventions_file"
+  run grep '^```bash$' "$conventions_file"
   [ "$status" -ne 0 ]
 
   # Verify the inner triple-backtick text is present (content not truncated)
@@ -430,7 +430,7 @@ BODY
   update_conventions_from_marker "42" "$pr_body"
 
   # The standard opener must be present (not the 4-backtick promoted one)
-  grep -q '^\`\`\`bash$' "$conventions_file"
+  grep -q '^```bash$' "$conventions_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -467,10 +467,10 @@ BODY
   grep -q "^## four-backtick-example$" "$conventions_file"
 
   # A 5-backtick bash fence opener must be present (promoted past 4)
-  grep -q '^\`\`\`\`\`bash$' "$conventions_file"
+  grep -q '^`````bash$' "$conventions_file"
 
   # A 5-backtick fence closer must be present
-  grep -q '^\`\`\`\`\`$' "$conventions_file"
+  grep -q '^`````$' "$conventions_file"
 
   # The 4-backtick content must be preserved inside the fence (not truncated)
   grep -q 'inline code span' "$conventions_file"
@@ -478,12 +478,12 @@ BODY
   # A 3-backtick bash opener must NOT be present — the seed convention has no
   # example, so any ```bash line in the file came from this entry.  If present,
   # the fence was under-promoted (3 backticks instead of 5).
-  run grep '^\`\`\`bash$' "$conventions_file"
+  run grep '^```bash$' "$conventions_file"
   [ "$status" -ne 0 ]
 
   # A 4-backtick bash opener must NOT be present — the example contains a
   # 4-backtick run, so a ````bash fence would be terminated by it prematurely.
-  run grep '^\`\`\`\`bash$' "$conventions_file"
+  run grep '^````bash$' "$conventions_file"
   [ "$status" -ne 0 ]
 
   # The references line must be correct

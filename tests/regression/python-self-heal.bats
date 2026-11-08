@@ -49,5 +49,5 @@ EOF
   grep -q '_venv_py=$(resolve_working_python' "${RITE_LIB_DIR}/core/claude-workflow.sh"
   grep -q 'run_with_timeout "$_pip_timeout" "$_venv_py" -m venv' "${RITE_LIB_DIR}/core/claude-workflow.sh"
   # The old unbounded bare-python3 venv creation must be gone.
-  ! grep -qE '^\s*if ! python3 -m venv \.venv' "${RITE_LIB_DIR}/core/claude-workflow.sh"
+  ! grep -qE '^[[:space:]]*if ! python3 -m venv \.venv' "${RITE_LIB_DIR}/core/claude-workflow.sh"
 }

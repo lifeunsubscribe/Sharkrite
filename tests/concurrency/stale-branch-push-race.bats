@@ -110,7 +110,10 @@ wait_at_barrier() {
       # (-b race-push-N) at that commit instead. They all push HEAD to the SAME
       # remote branch, which is what produces the non-fast-forward race.
       local worktree_path="$RITE_WORKTREE_DIR/process-${i}"
-      git worktree add -b "race-push-${i}" "$worktree_path" fix/test-issue-42 >/dev/null 2>&1
+      git worktree add -b "race-push-${i}" "$worktree_path" fix/test-issue-42 || {
+        echo "ERROR: worker $i: git worktree add -b race-push-${i} failed" >&2
+        exit 1
+      }
 
       cd "$worktree_path"
 
@@ -311,11 +314,20 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
-      # Each gets its own worktree
+      # Each worker gets its OWN local branch (stale-merge-N) starting from the
+      # same fix/stale-test-77 tip. git worktree add refuses to check out a branch
+      # already held by another worktree (fatal: '<branch>' is already checked out),
+      # so each worker needs a distinct local branch name. All push to the SAME
+      # remote ref to exercise the concurrent-push race.
       local worktree_path="$RITE_WORKTREE_DIR/stale-process-${i}"
-      git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
-
-      cd "$worktree_path"
+      git worktree add -b "stale-merge-${i}" "$worktree_path" "$branch_name" || {
+        echo "ERROR: worker $i: git worktree add -b stale-merge-${i} failed" >&2
+        exit 1
+      }
+      cd "$worktree_path" || {
+        echo "ERROR: worker $i: cd $worktree_path failed after worktree add" >&2
+        exit 1
+      }
 
       wait_at_barrier "stale_merge_test" "$num_processes" || exit 1
 
@@ -324,9 +336,12 @@ wait_at_barrier() {
       git merge origin/main --no-edit >/dev/null 2>&1
       local merge_exit=$?
 
-      # Try to push
-      git push origin "$branch_name" >/dev/null 2>&1
-      local push_exit=$?
+      # Push HEAD to the shared remote branch (races with other workers).
+      # Use `&& push_exit=0 || push_exit=$?` to capture the real exit code without
+      # letting bats' inherited errexit kill the subshell on a rejected push before
+      # push_exit is recorded.
+      local push_exit
+      git push origin "HEAD:$branch_name" >/dev/null 2>&1 && push_exit=0 || push_exit=$?
 
       echo "$merge_exit:$push_exit" > "$exit_codes_dir/process_${i}.exit"
 
@@ -384,10 +399,19 @@ wait_at_barrier() {
 
   for i in $(seq 1 $num_processes); do
     (
+      # Each worker gets its OWN local branch (force-test-worker-N) starting from
+      # the same fix/no-force-push-test tip. git worktree add refuses to check out
+      # a branch already held by another worktree, so each worker needs a distinct
+      # local branch name. All push to the SAME remote ref without --force.
       local worktree_path="$RITE_WORKTREE_DIR/force-test-${i}"
-      git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
-
-      cd "$worktree_path"
+      git worktree add -b "force-test-worker-${i}" "$worktree_path" "$branch_name" || {
+        echo "ERROR: worker $i: git worktree add -b force-test-worker-${i} failed" >&2
+        exit 1
+      }
+      cd "$worktree_path" || {
+        echo "ERROR: worker $i: cd $worktree_path failed after worktree add" >&2
+        exit 1
+      }
 
       wait_at_barrier "force_test" "$num_processes" || exit 1
 
@@ -395,10 +419,13 @@ wait_at_barrier() {
       git add no-force.txt
       git commit -m "Change $i" >/dev/null 2>&1
 
-      # MUST use refspec, NEVER --force
-      # This should reject if not fast-forward (expected behavior)
-      git push origin "$branch_name:$branch_name" >/dev/null 2>&1
-      echo $? > "$exit_codes_dir/process_${i}.exit"
+      # MUST use refspec, NEVER --force.
+      # Push HEAD to the shared remote branch; rejection is expected for the loser.
+      # Capture exit code safely: bare `git push; echo $?` under bats' inherited
+      # errexit kills the subshell on rejection before the exit file is written.
+      local push_exit
+      git push origin "HEAD:$branch_name" >/dev/null 2>&1 && push_exit=0 || push_exit=$?
+      echo "$push_exit" > "$exit_codes_dir/process_${i}.exit"
 
       cd "$FIXTURE_REPO"
       git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
@@ -407,16 +434,30 @@ wait_at_barrier() {
 
   wait
 
-  # Verify at least one succeeded without force
+  # Verify exactly one succeeded without force (>1 would mean force push occurred)
   local success_count=0
+  local rejection_count=0
   for i in $(seq 1 $num_processes); do
     if [ -f "$exit_codes_dir/process_${i}.exit" ]; then
       exit_code=$(cat "$exit_codes_dir/process_${i}.exit")
-      [ "$exit_code" -eq 0 ] && success_count=$((success_count + 1))
+      if [ "$exit_code" -eq 0 ]; then
+        success_count=$((success_count + 1))
+      else
+        rejection_count=$((rejection_count + 1))
+      fi
     fi
   done
 
-  [ "$success_count" -ge 1 ]
+  [ "$success_count" -eq 1 ] || {
+    echo "FAIL: $success_count pushes succeeded (expected exactly 1) — force-push regression if >1"
+    return 1
+  }
+
+  # Loser must have been rejected (not silently dropped or force-pushed)
+  [ "$rejection_count" -ge 1 ] || {
+    echo "FAIL: Expected at least one rejection, got $rejection_count — force-push prevention not working"
+    return 1
+  }
 
   # Clean up
   git branch -D "$branch_name" >/dev/null 2>&1 || true

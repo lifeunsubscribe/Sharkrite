@@ -139,7 +139,7 @@ while IFS= read -r bats_file; do
         break
       fi
       # Keep scanning if this line is a pure comment line (e.g. # shellcheck …)
-      if echo "$_prev_line" | grep -qE '^\s*#'; then
+      if echo "$_prev_line" | grep -qE '^[[:space:]]*#'; then
         _r34_lookback=$((_r34_lookback - 1))
         continue
       fi

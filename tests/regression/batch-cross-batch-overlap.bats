@@ -43,7 +43,9 @@ BATCH_PROCESSOR="$REPO_ROOT/lib/core/batch-process-issues.sh"
 _setup_wt_repo() {
   local _overlap_file="${1:-lib/core/batch-process-issues.sh}"
   local _repo="$BATS_TEST_TMPDIR/repo-$$"
-  local _wt="$BATS_TEST_TMPDIR/wt-$$"
+  # Encode issue 99 in the basename so batch_suffix_matches_issue("ft-cross-overlap_b99","99")
+  # matches the auto-created issue-99.lock in _build_overlap_script.
+  local _wt="$BATS_TEST_TMPDIR/ft-cross-overlap_b99"
 
   mkdir -p "$_repo"
   git -C "$_repo" init -q
@@ -129,8 +131,10 @@ _build_overlap_script() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Stub print_warning (used by _apply_overlap_defer_or_warn; not available outside the full lib chain)
+# Stubs for print_* (not available outside the full lib chain)
 print_warning() { printf 'WARNING: %s\n' "\$*" >&2; }
+print_info()    { printf 'INFO: %s\n' "\$*" >&2; }
+_diag()         { true; }
 
 # Inline production functions extracted from batch-process-issues.sh
 ${_fn0_body}
@@ -143,15 +147,34 @@ declare -A ISSUE_STATUS
 declare -A _DEFER_COUNT
 _UNIQUE_ISSUE_COUNT=${_unique_count}
 _DEFER_COUNT[42]=${_defer_count}
-ISSUE_LIST=(42)
+# Issue 99 is the simulated "other intra-batch issue" that owns the overlapping
+# worktree. It must be in ISSUE_LIST for the intra-batch path to defer.
+ISSUE_LIST=(42 99)
 ISSUE_NUM=42
 
 # Globals written by _ftm_file_overlap
 _OVERLAP_FILES=""
 _OVERLAP_WT=""
+_OVERLAP_ISSUE_NUM=""
 
 # Run from the fixture repo so git worktree list works
 cd "${_repo}"
+
+# Create a live RITE_LOCK_DIR with issue-99 pointing to the other worktree.
+# The liveness gate requires a pid file + kill -0: use \$\$ (this script's PID).
+_auto_lock_dir="${_repo}/locks-auto"
+mkdir -p "\$_auto_lock_dir"
+_main_wt_scan=\$(git rev-parse --show-toplevel 2>/dev/null || true)
+while IFS= read -r _wt_scan; do
+  _awt="\${_wt_scan%% *}"
+  [ -d "\$_awt" ] || continue
+  [ "\$_awt" = "\$_main_wt_scan" ] && continue
+  mkdir -p "\$_auto_lock_dir/issue-99.lock"
+  printf '%d\n' \$\$ > "\$_auto_lock_dir/issue-99.lock/pid"
+  printf '%s\n' "\$_awt" > "\$_auto_lock_dir/issue-99.lock/cwd"
+  break
+done < <(git worktree list 2>/dev/null || true)
+RITE_LOCK_DIR="\$_auto_lock_dir"
 
 ISSUE_BODY=\$(cat "${_body_file}")
 
@@ -446,7 +469,7 @@ BODY
   # Extract lines between the overlap-check comment marker and the next
   # section comment, then verify no network tool is invoked.
   _block=$(awk '
-    /Per-slot cross-batch file overlap check/ { in_block=1 }
+    /Per-slot file overlap check/ { in_block=1 }
     in_block && /Check if issue is actively being worked on/ { exit }
     in_block { print }
   ' "$BATCH_PROCESSOR" || true)
