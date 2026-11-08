@@ -225,9 +225,10 @@ EOF
 # Entry file: $RITE_STATE_DIR/doc-drift/<branch>/<doc-slug>.log
 # Format: tab-separated key=value, one line per (doc, assertion) pair.
 #
-# Accumulate-in-place: a repeat hit for the same (doc, assertion) appends
-# the PR to the existing entry's comma-separated pr= list — no duplicate
-# lines.  (conventions-catalog rule.)
+# Idempotent re-record: a repeat hit for the same (pr, doc, assertion) is
+# a no-op — the entry already carries this PR's evidence.  A DIFFERENT PR
+# for the same (doc, assertion) appends a new entry, preserving each PR's
+# own branch evidence and issue number (#1509: one entry per PR, not per doc).
 #
 # Locking: acquires per-file lock_acquire/lock_release from lock.sh (#706).
 #
@@ -322,10 +323,10 @@ drift_log_append() {
       if (hasdoc && hasassert && prfldidx > 0) {
         _prnums = substr($prfldidx, 4)
         _check  = "," _prnums ","
-        if (index(_check, "," _newpr ",") == 0) {
-          $prfldidx = $prfldidx "," _newpr
+        if (index(_check, "," _newpr ",") > 0) {
+          matched=1
         }
-        matched=1
+        # else: same (doc,assertion) but a different PR — treat as new entry
       }
       print
     }
