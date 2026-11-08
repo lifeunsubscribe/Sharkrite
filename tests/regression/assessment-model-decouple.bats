@@ -37,6 +37,7 @@ setup() {
 #!/bin/bash
 set -euo pipefail
 _fn=$(awk '
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }

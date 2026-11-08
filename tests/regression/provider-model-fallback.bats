@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/providers/claude.sh::_claude_model_fallback_preflight|claude_provider_resolve_model|claude_provider_healthcheck
+# sharkrite-test-covers: lib/providers/claude.sh::_claude_model_fallback_preflight|claude_provider_resolve_model|claude_provider_healthcheck|_claude_provider_resolve_model_raw
 # Regression tests for RITE_MODEL_FALLBACK opt-in model fallback (issue #1613).
 #
 # When RITE_MODEL_FALLBACK is set, provider_healthcheck probes each distinct

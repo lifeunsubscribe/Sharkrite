@@ -815,7 +815,13 @@ EOF
 # Run-scoped memo: space-delimited list of model names detected as unavailable
 # by _claude_model_fallback_preflight. Empty until preflight runs (or when
 # RITE_MODEL_FALLBACK is unset — preflight never runs in that case).
-_RITE_CAPPED_MODELS=""
+# Idempotent: subprocess re-sources inherit the exported memo instead of wiping it.
+_RITE_CAPPED_MODELS="${_RITE_CAPPED_MODELS:-}"
+
+# Canonical ordered role list used by _claude_model_fallback_preflight.
+# Single authoritative definition: both the probe loop and the announce loop
+# reference this variable so adding a new role updates both automatically.
+_CLAUDE_PROVIDER_ROLES="dev review assessment doc_assessment plan promote triage full_suite_report"
 
 # _claude_provider_resolve_model_raw <role>
 #
@@ -893,7 +899,7 @@ _claude_model_fallback_preflight() {
 
   # Collect distinct raw models for all named roles
   local _all_models="" _role _m
-  for _role in dev review assessment doc_assessment plan promote triage full_suite_report; do
+  for _role in $_CLAUDE_PROVIDER_ROLES; do
     _m=$(_claude_provider_resolve_model_raw "$_role")
     case " ${_all_models} " in
       *" ${_m} "*) ;;  # already seen
@@ -916,14 +922,16 @@ _claude_model_fallback_preflight() {
     # Bounded at 30s — model probes are trivial; a hung probe must not stall the batch.
     run_with_timeout 30 "$_cmd" --print "ok" --model "$_m" --dangerously-skip-permissions \
       >"$_p_stdout" 2>"$_p_stderr" || _p_exit=$?
-    if [ "$_p_exit" -ne 0 ]; then
-      # Line-anchored on stdout (same rationale as _claude_classify_exit: stream-json
-      # transcript lines start with '{'; cap phrase at col 0 is the CLI's own notice).
-      # Stderr is unanchored — always the CLI's own output.
-      if grep -qiE "^(${_CLAUDE_CAP_RE})" "$_p_stdout" 2>/dev/null || \
+    # Line-anchored on stdout (same rationale as _claude_classify_exit: stream-json
+    # transcript lines start with '{'; cap phrase at col 0 is the CLI's own notice).
+    # Stderr is unanchored — always the CLI's own output.
+    # Parity with _claude_classify_exit exit-0 branch (issue #1121): a cap notice
+    # on stdout with exit 0 is a valid cap signal and must be recorded.
+    if grep -qiE "^(${_CLAUDE_CAP_RE})" "$_p_stdout" 2>/dev/null; then
+      _RITE_CAPPED_MODELS="${_RITE_CAPPED_MODELS} ${_m}"
+    elif [ "$_p_exit" -ne 0 ] && \
          grep -qiE "(${_CLAUDE_CAP_RE})" "$_p_stderr" 2>/dev/null; then
-        _RITE_CAPPED_MODELS="${_RITE_CAPPED_MODELS} ${_m}"
-      fi
+      _RITE_CAPPED_MODELS="${_RITE_CAPPED_MODELS} ${_m}"
     fi
     rm -f "$_p_stdout" "$_p_stderr"
   done
@@ -936,7 +944,7 @@ _claude_model_fallback_preflight() {
     *" ${_fallback} "*) _fallback_capped=1 ;;
   esac
 
-  for _role in dev review assessment doc_assessment plan promote triage full_suite_report; do
+  for _role in $_CLAUDE_PROVIDER_ROLES; do
     _m=$(_claude_provider_resolve_model_raw "$_role")
     case " ${_RITE_CAPPED_MODELS} " in
       *" ${_m} "*)
