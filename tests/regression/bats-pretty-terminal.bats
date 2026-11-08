@@ -456,7 +456,9 @@ STUB
   mkdir -p "$_mk_dir/tests"
   cp "${BATS_TEST_DIRNAME}/../../Makefile" "$_mk_dir/Makefile"
 
-  run env -i HOME="$HOME" PATH="${_stub_dir}:/usr/bin:/bin" \
+  # TERM is set explicitly: env -i strips it, and the Makefile selects pretty
+  # only when a terminal is present (see the TERM-less case in the next test).
+  run env -i HOME="$HOME" TERM=xterm PATH="${_stub_dir}:/usr/bin:/bin" \
     make -C "$_mk_dir" test
   [ "$status" -eq 0 ]
 
@@ -466,6 +468,43 @@ STUB
     || { echo "FAIL: -F not passed to bats"; cat "$_mk_args_log"; return 1; }
   grep -q 'pretty' "$_mk_args_log" \
     || { echo "FAIL: pretty not passed to bats"; cat "$_mk_args_log"; return 1; }
+}
+
+@test "Makefile test target omits -F pretty when TERM is unset, but keeps the TAP report (behavioral)" {
+  # A capable bats on a TERM-less runner (CI). The pretty formatter needs tput,
+  # which fails without TERM and takes the whole bats pipeline down — live on
+  # PR #1625, both CI platforms: "tput: No value for $TERM", then
+  # "bats-format-tap failed with status 141". Pretty must be skipped, but the
+  # --report-formatter tap output must still be requested so the skip-count
+  # summary keeps working without a terminal.
+  _stub_dir="${BATS_TEST_TMPDIR}/mk_noterm_bats"
+  mkdir -p "$_stub_dir"
+  _mk_args_log="${BATS_TEST_TMPDIR}/mk_noterm_args.log"
+  cat > "$_stub_dir/bats" <<STUB
+#!/bin/bash
+if [ "\$1" = "--help" ]; then
+  printf '%s\n' '  --report-formatter <formatter>'
+  exit 0
+fi
+printf '%s\n' "\$@" >> "${_mk_args_log}"
+exit 0
+STUB
+  chmod +x "$_stub_dir/bats"
+
+  _mk_dir="${BATS_TEST_TMPDIR}/mk_noterm_proj"
+  mkdir -p "$_mk_dir/tests"
+  cp "${BATS_TEST_DIRNAME}/../../Makefile" "$_mk_dir/Makefile"
+
+  # env -i deliberately leaves TERM unset.
+  run env -i HOME="$HOME" PATH="${_stub_dir}:/usr/bin:/bin" \
+    make -C "$_mk_dir" test
+  [ "$status" -eq 0 ]
+
+  [ -f "$_mk_args_log" ] || { echo "FAIL: bats was never invoked"; return 1; }
+  ! grep -q 'pretty' "$_mk_args_log" \
+    || { echo "FAIL: pretty passed to bats without a TERM"; cat "$_mk_args_log"; return 1; }
+  grep -q -- '--report-formatter' "$_mk_args_log" \
+    || { echo "FAIL: TAP report not requested — skip count would be silently lost"; cat "$_mk_args_log"; return 1; }
 }
 
 @test "Makefile test target omits -F pretty when bats lacks report-formatter support (behavioral)" {

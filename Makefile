@@ -53,7 +53,12 @@ fix:
 # Run tests (if bats is available).
 # When FILTER is set, restrict to tests/$(FILTER)/; otherwise run tests/.
 # Uses --formatter pretty when the installed bats supports --report-formatter
-# (bats-core >= 1.5); falls back to plain TAP on older versions.
+# (bats-core >= 1.5) AND a terminal is present; falls back to plain TAP otherwise.
+# The TERM gate matters: the pretty formatter shells out to tput, which dies on a
+# TERM-less runner ("tput: No value for $TERM"), and that takes the whole bats
+# pipeline down (bats-format-tap exits 141 on the broken pipe). CI has no TERM,
+# so the first run where the capability probe actually worked turned CI red
+# (PR #1625). The TAP report file is kept regardless — the skip count needs it.
 # After the run, prints a one-line count of skipped tests when any were skipped,
 # so "0 failures" is not mistaken for "all tests ran" (the flock-skip failure
 # mode from #1593). Requires bats >= 1.5 for --report-formatter; older bats
@@ -63,7 +68,10 @@ test:
 		_skip_tmpdir=""; \
 		if bats --help 2>&1 | grep -q -- '--report-formatter'; then \
 			_skip_tmpdir=$$(mktemp -d "$${TMPDIR:-/tmp}/rite_skip_XXXXXX"); \
-			_bats_fmt="-F pretty --report-formatter tap --output $$_skip_tmpdir"; \
+			_bats_fmt="--report-formatter tap --output $$_skip_tmpdir"; \
+			if [ -n "$${TERM:-}" ] && [ "$${TERM:-}" != "dumb" ]; then \
+				_bats_fmt="-F pretty $$_bats_fmt"; \
+			fi; \
 		else \
 			_bats_fmt=""; \
 		fi; \
