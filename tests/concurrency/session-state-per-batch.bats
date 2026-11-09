@@ -163,9 +163,11 @@ wait_at_barrier() {
       # Clean up our own state file
       rm -f "$SESSION_STATE_FILE"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Each batch must report exactly increments_per_batch completions
   for batch_num in $(seq 1 $num_batches); do
@@ -221,6 +223,7 @@ wait_at_barrier() {
     echo "$verdict" > "$results_dir/batch_A.verdict"
     rm -f "$SESSION_STATE_FILE"
   ) &
+  _pids+=($!)
 
   # Batch B — accumulates only ~3min of work (well under the 1h budget)
   (
@@ -240,8 +243,10 @@ wait_at_barrier() {
     echo "$verdict" > "$results_dir/batch_B.verdict"
     rm -f "$SESSION_STATE_FILE"
   ) &
+  _pids+=($!)
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   [ -f "$results_dir/batch_A.verdict" ]
   [ -f "$results_dir/batch_B.verdict" ]

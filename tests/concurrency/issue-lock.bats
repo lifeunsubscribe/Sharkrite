@@ -245,9 +245,11 @@ wait_at_barrier() {
         echo "$_acq $_rel" > "$intervals_dir/process_${i}.interval"
       fi
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Count how many processes got the lock
   local success_count=0
@@ -330,9 +332,11 @@ wait_at_barrier() {
         echo "$_acq $_rel" > "$intervals_dir/process_${i}.interval"
       fi
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Count successes
   local success_count=0
@@ -390,9 +394,11 @@ wait_at_barrier() {
       # Release
       release_issue_lock "$issue_num"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # All processes should succeed (different issues = different locks)
   for i in $(seq 1 $num_processes); do
