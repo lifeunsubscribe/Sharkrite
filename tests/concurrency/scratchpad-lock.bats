@@ -450,8 +450,8 @@ GHEOF
   local lockfile="${SCRATCHPAD_FILE}.lock"
   local followup_result="$RITE_TEST_TMPDIR/followup_result"
 
-  # Force the mkdir lock strategy via environment variable so that lock state
-  # is observable as a filesystem directory: it exists while the lock is held
+  # Force the symlink lock strategy via environment variable so that lock state
+  # is observable as a filesystem symlink: it exists while the lock is held
   # and is removed by release_scratchpad_lock when the RETURN trap fires.
   # This is more reliable than PATH manipulation, which does not prevent
   # command -v flock from finding flock elsewhere in the PATH.
@@ -465,7 +465,7 @@ GHEOF
   source "$RITE_LIB_DIR/utils/scratchpad-manager.sh"
 
   # Verify the strategy override was honoured: acquire + immediately release,
-  # then confirm the lock path is a directory (mkdir path) not a plain file
+  # then confirm the lock path is a symlink (portable path) not a plain file
   # (flock path).  Catches misconfiguration before the real test assertion.
   acquire_scratchpad_lock
   [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
@@ -498,12 +498,12 @@ GHEOF
     return 1
   }
 
-  # (c) Primary assertion: the lock directory must be absent immediately after
-  # the function returned.  On the mkdir path the directory persists until
+  # (c) Primary assertion: the lock symlink must be absent immediately after
+  # the function returned.  On the symlink path the symlink persists until
   # release_scratchpad_lock removes it.  If the RETURN trap did not fire, the
-  # directory is still present here and the test fails.
-  [ ! -d "$lockfile" ] || {
-    echo "FAIL: lock directory still exists after log_encountered_issue returned" >&2
+  # symlink is still present here and the test fails.
+  [ ! -L "$lockfile" ] || {
+    echo "FAIL: lock symlink still exists after log_encountered_issue returned" >&2
     echo "      RETURN trap did not fire — lock was never released" >&2
     ls -la "$lockfile" >&2
     return 1
@@ -569,8 +569,8 @@ GHEOF
   local lockfile="${SCRATCHPAD_FILE}.lock"
   local third_result="$RITE_TEST_TMPDIR/third_result"
 
-  # Force the mkdir lock strategy via environment variable so that lock state
-  # is observable as a filesystem directory.  PATH manipulation is insufficient
+  # Force the symlink lock strategy via environment variable so that lock state
+  # is observable as a filesystem symlink.  PATH manipulation is insufficient
   # because command -v flock still finds flock elsewhere in the PATH even when
   # an empty directory is prepended.
   export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
@@ -609,9 +609,9 @@ GHEOF
     return 1
   }
 
-  # Sanity check: no leftover lock directory before the duplicate call.
-  [ ! -d "$lockfile" ] || {
-    echo "FAIL: lock directory unexpectedly present before duplicate call" >&2
+  # Sanity check: no leftover lock symlink before the duplicate call.
+  [ ! -L "$lockfile" ] || {
+    echo "FAIL: lock symlink unexpectedly present before duplicate call" >&2
     return 1
   }
 
@@ -627,11 +627,11 @@ GHEOF
     "Fix dup" \
     "Dup handled" 2>/dev/null
 
-  # Primary assertion: the lock directory must be absent immediately after the
+  # Primary assertion: the lock symlink must be absent immediately after the
   # duplicate call returned via the early-return path.  If the RETURN trap did
-  # not fire, the directory is still present and the test fails.
-  [ ! -d "$lockfile" ] || {
-    echo "FAIL: lock directory still exists after duplicate log_encountered_issue returned" >&2
+  # not fire, the symlink is still present and the test fails.
+  [ ! -L "$lockfile" ] || {
+    echo "FAIL: lock symlink still exists after duplicate log_encountered_issue returned" >&2
     echo "      RETURN trap did not fire on the early-return (duplicate) path" >&2
     ls -la "$lockfile" >&2
     return 1
@@ -743,16 +743,18 @@ GHEOF
   holder_pid=$(cat "$holder_pid_file")
   local lockfile="${SCRATCHPAD_FILE}.lock"
 
-  # Precondition: the lock directory must exist (confirms mkdir path was used)
-  [ -d "$lockfile" ] || {
-    echo "FAIL: lock directory does not exist — holder did not use mkdir path" >&2
+  # Precondition: the lock symlink must exist (confirms symlink path was used)
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lock symlink does not exist — holder did not use symlink path" >&2
     kill "$holder_bgpid" 2>/dev/null || true
     return 1
   }
 
-  # Precondition: the PID file inside the lock directory must exist
-  [ -f "$lockfile/pid" ] || {
-    echo "FAIL: PID file missing inside lock directory after holder acquired" >&2
+  # Precondition: the symlink must carry a PID as its target
+  local _pre_pid
+  _pre_pid=$(readlink "$lockfile" 2>/dev/null || true)
+  [ -n "$_pre_pid" ] || {
+    echo "FAIL: lock symlink has no PID target after holder acquired" >&2
     kill "$holder_bgpid" 2>/dev/null || true
     return 1
   }
@@ -762,11 +764,11 @@ GHEOF
   kill -KILL "$holder_pid" 2>/dev/null || true
   wait "$holder_bgpid" 2>/dev/null || true
 
-  # Confirm the lock directory is still present after the SIGKILL.
+  # Confirm the lock symlink is still present after the SIGKILL.
   # This is the key precondition that ensures the waiter must go through the
   # stale-reclaim code path rather than acquiring an already-released lock.
-  [ -d "$lockfile" ] || {
-    echo "FAIL: lock directory disappeared after SIGKILL — mkdir path not in use" >&2
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lock symlink disappeared after SIGKILL — symlink path not in use" >&2
     return 1
   }
 
@@ -855,19 +857,126 @@ GHEOF
 }
 
 # ---------------------------------------------------------------------------
-# Test 9: Re-entrancy guard — nested acquire on mkdir path does not drop lock
+# Test 8b: Two waiters racing on a stale symlink lock — only one holds at a time
+#
+# Regression test for the rename-before-remove reclaim strategy (issue #1651).
+# Previously, two concurrent waiters that both observed a dead PID would each
+# call rm -rf and then mkdir, and both could win, holding the lock simultaneously.
+#
+# With the symlink design, each waiter calls mv to rename the stale symlink to a
+# unique per-waiter path before removing it.  mv is atomic; exactly one mv wins.
+# The loser's mv returns non-zero and it retries ln -s, correctly waiting for the
+# winner.
+#
+# Acceptance criteria:
+#   - Both waiters eventually acquire the lock (neither starves)
+#   - At no point do both hold the lock simultaneously (mutual exclusion)
+# ---------------------------------------------------------------------------
+@test "two waiters on stale symlink lock — rename-before-remove admits exactly one at a time" {
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+  local lock_acquired_file="$RITE_TEST_TMPDIR/lock_acquired_stale_race"
+  local holder_pid_file="$RITE_TEST_TMPDIR/holder_pid_stale_race"
+
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+
+  # Spawn a holder, SIGKILL it to leave the stale symlink behind.
+  "${BASH}" -c '
+    set -uo pipefail
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    acquire_scratchpad_lock
+    echo $$ > "'"$holder_pid_file"'"
+    touch "'"$lock_acquired_file"'"
+    sleep 60
+  ' &
+  local holder_bgpid=$!
+
+  # Wait for holder to acquire
+  local wait_count=0
+  while [ ! -f "$lock_acquired_file" ] && [ "$wait_count" -lt 50 ]; do
+    sleep 0.1
+    wait_count=$((wait_count + 1))
+  done
+  [ -f "$lock_acquired_file" ] || {
+    echo "FAIL: holder never acquired the lock" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  local holder_pid
+  holder_pid=$(cat "$holder_pid_file")
+  kill -KILL "$holder_pid" 2>/dev/null || true
+  wait "$holder_bgpid" 2>/dev/null || true
+
+  # Confirm stale symlink is present
+  [ -L "$lockfile" ] || {
+    echo "FAIL: stale lock symlink not present after SIGKILL" >&2
+    return 1
+  }
+
+  # Spawn 2 waiters at a barrier; each holds the lock for 0.2s while flagged
+  for i in 1 2; do
+    (
+      wait_at_barrier "stale_race_${BATS_TEST_NUMBER}" 2 || exit 1
+      source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+      if acquire_scratchpad_lock; then
+        touch "$RITE_TEST_TMPDIR/active_stale_$i"
+        sleep 0.2
+        rm -f "$RITE_TEST_TMPDIR/active_stale_$i"
+        release_scratchpad_lock
+        echo "success" > "$RITE_TEST_TMPDIR/result_stale_$i"
+      else
+        echo "failed" > "$RITE_TEST_TMPDIR/result_stale_$i"
+      fi
+    ) &
+  done
+
+  # Monitor for simultaneous overlap while waiters run (10s budget)
+  local overlap_detected=false
+  local poll=0
+  while [ "$poll" -lt 100 ]; do
+    if [ -f "$RITE_TEST_TMPDIR/active_stale_1" ] && [ -f "$RITE_TEST_TMPDIR/active_stale_2" ]; then
+      overlap_detected=true
+      break
+    fi
+    sleep 0.1
+    poll=$((poll + 1))
+  done
+
+  wait
+
+  # Both waiters must have succeeded
+  for i in 1 2; do
+    local res
+    res=$(cat "$RITE_TEST_TMPDIR/result_stale_$i" 2>/dev/null || echo "missing")
+    [ "$res" = "success" ] || {
+      echo "FAIL: waiter $i did not acquire the lock (result: $res)" >&2
+      return 1
+    }
+  done
+
+  [ "$overlap_detected" = "false" ] || {
+    echo "FAIL: both waiters held the lock simultaneously — mutual exclusion broken" >&2
+    return 1
+  }
+
+  unset RITE_SCRATCHPAD_LOCK_STRATEGY
+}
+
+# ---------------------------------------------------------------------------
+# Test 9: Re-entrancy guard — nested acquire on symlink path does not drop lock
 #
 # Verifies that a second call to acquire_scratchpad_lock() while the lock is
 # already held (same shell, same process) increments the depth counter and
-# returns 0 WITHOUT re-entering the mkdir machinery.  A matching inner release
-# decrements the counter but does NOT remove the lock directory.  Only the
-# outermost release (depth 1→0) removes the directory.
+# returns 0 WITHOUT re-entering the symlink machinery.  A matching inner release
+# decrements the counter but does NOT remove the lock symlink.  Only the
+# outermost release (depth 1→0) removes the symlink.
 #
 # Acceptance criteria (issue #150):
 #   (a) Second acquire returns 0 (_SCRATCHPAD_LOCK_DEPTH becomes 2)
-#   (b) Lock directory still exists after the inner release
+#   (b) Lock symlink still exists after the inner release
 #   (c) _SCRATCHPAD_LOCK_HELD is still "true" after the inner release
-#   (d) Outer release (depth 1→0) removes the lock directory
+#   (d) Outer release (depth 1→0) removes the lock symlink
 #   (e) A concurrent process can acquire after the outer release
 # ---------------------------------------------------------------------------
 @test "re-entrancy guard: nested acquire/release on mkdir path preserves outer lock" {
@@ -889,32 +998,32 @@ GHEOF
     echo "FAIL: expected depth=1 after outer acquire, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2
     return 1
   }
-  [ -d "$lockfile" ] || {
-    echo "FAIL: lock directory missing after outer acquire" >&2
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lock symlink missing after outer acquire" >&2
     return 1
   }
 
-  # Inner acquire (re-entrant, depth 1→2) — must not re-enter mkdir machinery
+  # Inner acquire (re-entrant, depth 1→2) — must not re-enter symlink machinery
   acquire_scratchpad_lock
   [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 2 ] || {
     echo "FAIL: expected depth=2 after inner acquire, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2
     return 1
   }
-  # (a) lock directory must still be present (mkdir path not re-entered)
-  [ -d "$lockfile" ] || {
-    echo "FAIL: lock directory missing after inner acquire — mkdir machinery re-entered" >&2
+  # (a) lock symlink must still be present (symlink path not re-entered)
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lock symlink missing after inner acquire — symlink machinery re-entered" >&2
     return 1
   }
 
-  # Inner release (depth 2→1) — must NOT remove the lock directory
+  # Inner release (depth 2→1) — must NOT remove the lock symlink
   release_scratchpad_lock
   [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 1 ] || {
     echo "FAIL: expected depth=1 after inner release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2
     return 1
   }
-  # (b) lock directory must still exist: inner release must not drop the outer lock
-  [ -d "$lockfile" ] || {
-    echo "FAIL: lock directory removed by inner release — outer lock dropped prematurely" >&2
+  # (b) lock symlink must still exist: inner release must not drop the outer lock
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lock symlink removed by inner release — outer lock dropped prematurely" >&2
     return 1
   }
   # (c) _SCRATCHPAD_LOCK_HELD must still be true
@@ -923,11 +1032,11 @@ GHEOF
     return 1
   }
 
-  # Outer release (depth 1→0) — must remove the lock directory
+  # Outer release (depth 1→0) — must remove the lock symlink
   release_scratchpad_lock
-  # (d) lock directory must be gone now
-  [ ! -d "$lockfile" ] || {
-    echo "FAIL: lock directory still present after outer release" >&2
+  # (d) lock symlink must be gone now
+  [ ! -L "$lockfile" ] || {
+    echo "FAIL: lock symlink still present after outer release" >&2
     ls -la "$lockfile" >&2
     return 1
   }
@@ -989,23 +1098,23 @@ GHEOF
   # Depth 2→3
   acquire_scratchpad_lock
   [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 3 ] || { echo "FAIL: depth should be 3, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
-  [ -d "$lockfile" ] || { echo "FAIL: lock dir missing at depth 3" >&2; return 1; }
+  [ -L "$lockfile" ] || { echo "FAIL: lock symlink missing at depth 3" >&2; return 1; }
 
   # Release depth 3→2
   release_scratchpad_lock
   [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 2 ] || { echo "FAIL: depth should be 2 after first release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
-  [ -d "$lockfile" ] || { echo "FAIL: lock dir removed at depth 2 (should still be held)" >&2; return 1; }
+  [ -L "$lockfile" ] || { echo "FAIL: lock symlink removed at depth 2 (should still be held)" >&2; return 1; }
 
   # Release depth 2→1
   release_scratchpad_lock
   [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 1 ] || { echo "FAIL: depth should be 1 after second release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
-  [ -d "$lockfile" ] || { echo "FAIL: lock dir removed at depth 1 (should still be held)" >&2; return 1; }
+  [ -L "$lockfile" ] || { echo "FAIL: lock symlink removed at depth 1 (should still be held)" >&2; return 1; }
   [ "${_SCRATCHPAD_LOCK_HELD}" = "true" ] || { echo "FAIL: held should still be true at depth 1" >&2; return 1; }
 
   # Release depth 1→0 — this is the outermost, must release
   release_scratchpad_lock
   [ "${_SCRATCHPAD_LOCK_DEPTH}" -eq 0 ] || { echo "FAIL: depth should be 0 after outermost release, got ${_SCRATCHPAD_LOCK_DEPTH}" >&2; return 1; }
-  [ ! -d "$lockfile" ] || { echo "FAIL: lock dir still present after outermost release" >&2; return 1; }
+  [ ! -L "$lockfile" ] || { echo "FAIL: lock symlink still present after outermost release" >&2; return 1; }
   [ "${_SCRATCHPAD_LOCK_HELD}" = "false" ] || { echo "FAIL: held should be false after outermost release" >&2; return 1; }
 }
 
@@ -1207,9 +1316,9 @@ GHEOF
 
   # (a) After the subprocess exits, the lock must be free.
   # The trap handler must have reset depth to 1 and then released the OS lock.
-  # If the old (broken) behavior is present, the mkdir lock directory still exists.
-  [ ! -d "$lockfile" ] || {
-    echo "FAIL: lock directory still present after trapped abnormal exit at depth 2" >&2
+  # If the old (broken) behavior is present, the lock symlink still exists.
+  [ ! -L "$lockfile" ] || {
+    echo "FAIL: lock symlink still present after trapped abnormal exit at depth 2" >&2
     echo "      _scratchpad_lock_trap_release did not reset depth before releasing" >&2
     ls -la "$lockfile" >&2
     return 1

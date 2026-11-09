@@ -1024,9 +1024,8 @@ All three locks share a second race, **distinct from the same-host assumption ab
 
 **Status:**
 - `issue-lock.sh` **fixed inline** (commit `0deefb8`) via `_atomic_steal_stale_lock`: reclaim by renaming (`mv`) the stale dir to a unique per-process path before removing it — only one racer's `mv` succeeds, serialising the steal; the existing `mkdir` gate then admits exactly one acquirer. 0/200 overlaps post-fix.
-- `scratchpad-lock.sh` and `session-tracker.sh` have the same class but are **deferred to #706** rather than accreting three different ad-hoc patches. Their two data-loss tests are concurrency (gate-excluded), so they don't block the gate.
-
-**Do NOT "fix" the deferred two with another bespoke patch** — that's the trap #706 exists to avoid. The correct fix is to **unify all three locks onto one primitive** and migrate together.
+- `scratchpad-lock.sh` **fixed in #1651** via symlink-based acquire: `ln -s "$$" "$lockfile"` is atomic (symlink(2)/POSIX), so the lock carries its owner's PID the instant it exists — there is no create→PID-write window. Stale reclaim uses rename-before-remove (`mv "$lockfile" "$lockfile.stale.$$"`): two concurrent waiters both see a dead PID but only one `mv` wins, serialising the steal. Grace-reclaim branch deleted; the bad state it patched is now unrepresentable.
+- `session-tracker.sh` has the same class but is **deferred to #706** — its data-loss test is concurrency (gate-excluded), so it doesn't block the gate.
 
 **Resolution (#706): `lib/utils/lock.sh` — one atomic primitive.** A single shared lock replaces the bespoke implementations. It is an `ln(1)` hard-link lock whose file content is a unique `<pid>.<nonce>` token, written into a private temp file *before* the link — so the lock carries its identity atomically the instant it exists. There is **no create→PID-write window** (the root cause above). Each property below was pinned by a finding during bring-up:
 - **`ln` gate** — `link(2)` is atomic and fails if the target exists; exactly one of N racers wins (verified: 1 winner of 50 concurrent linkers).
@@ -1038,7 +1037,7 @@ Validated: 50-process × 10-round distinct-PID stress → **0 lost / 0 overlaps*
 
 **Platform seam.** `lock.sh` is the single place the OS concurrency model lives (atomic create-exclusive, process liveness, atomic rename — all POSIX, uniform on macOS + Linux; macOS has no `flock(1)`, so the `ln` path carries correctness). A future **Windows** backend swaps exactly the three public functions (`lock_acquire`/`lock_release`/`lock_held_pid`) over `CreateFile CREATE_NEW` / `OpenProcess` / `MoveFileEx` — nothing outside `lock.sh` encodes the assumptions. See the file header for the contract.
 
-**Adoption.** `session-tracker.sh` is migrated onto `lock.sh` (this fixes the named lost-increment bug; `session-state-race.bats` passes under load). `scratchpad-lock.sh` and `issue-lock.sh` are follow-up adopters: scratchpad is a clean swap pending its strategy-specific test updates; `issue-lock.sh` additionally stores `cwd`/`backfill` metadata **inside** its lock dir (read by `repo-status.sh` + `backfill_worktree_locks`), so it needs a metadata-layout migration and keeps its working `_atomic_steal_stale_lock` (#707) until then. Neither is buggy in normal single-host use.
+**Adoption.** `session-tracker.sh` is migrated onto `lock.sh` (this fixes the named lost-increment bug; `session-state-race.bats` passes under load). `scratchpad-lock.sh` fixed its own race independently in #1651 (symlink acquire + rename-before-remove reclaim — no longer a follow-up adopter; its test suite is updated). `issue-lock.sh` additionally stores `cwd`/`backfill` metadata **inside** its lock dir (read by `repo-status.sh` + `backfill_worktree_locks`), so it needs a metadata-layout migration and keeps its working `_atomic_steal_stale_lock` (#707) until then; it is the remaining follow-up adopter for `lock.sh`.
 
 ### PR Follow-up Lock: Timing Budget
 
