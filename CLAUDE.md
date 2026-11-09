@@ -931,7 +931,7 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 
 **What it writes:**
 - Full transcript to `.rite/logs/full-suite-YYYYMMDD.log` (header with date/host/branch; one log per day, appended)
-- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
+- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed|aborted lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
 **`--scheduled` flag (used by the scheduled plist):** Enables three guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour, lock state, or deadline.
