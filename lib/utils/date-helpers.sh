@@ -92,6 +92,16 @@ iso_to_local_display() {
     # `date -j -f` reads the UTC wall-clock as local time and stamps it with
     # the local zone name — "04:10Z" displayed as "4:10 AM MST" (live:
     # review headers six hours off, 2026-11-08).
+    #
+    # Offset-suffixed timestamps (e.g. 2025-10-28T14:42:18+05:30) are not
+    # handled here: BSD `date -j -f` silently drops trailing content and exits
+    # 0, so the offset would be stripped and the time treated as UTC — a
+    # silently wrong result. Fall through to the raw passthrough instead.
+    case "$iso_timestamp" in
+      *Z) ;;  # UTC — proceed with component parse below
+      *)  echo "$iso_timestamp"; return 0 ;;
+    esac
+
     local year month day time _epoch
     year=$(echo "$iso_timestamp" | cut -d'T' -f1 | cut -d'-' -f1)
     month=$(echo "$iso_timestamp" | cut -d'T' -f1 | cut -d'-' -f2)

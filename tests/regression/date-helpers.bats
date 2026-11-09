@@ -165,6 +165,20 @@ teardown() {
   [ "$result" = "Nov 08, 2026 - 9:10 PM MST" ]
 }
 
+# BSD date -j -f silently drops trailing content and exits 0, so an
+# offset-suffixed timestamp (e.g. +05:30) would have the offset stripped and
+# the time treated as UTC — a silently wrong result.  The BSD branch must
+# passthrough any non-Z timestamp rather than mis-converting it.
+@test "iso_to_local_display passes through offset-suffixed timestamp on BSD" {
+  # This test is meaningful only on macOS (BSD date). On Linux the GNU branch
+  # handles offset forms natively, so we skip rather than assert the passthrough.
+  if date --version >/dev/null 2>&1; then
+    skip "GNU date handles offset-form natively; passthrough guard is BSD-only"
+  fi
+  result=$(iso_to_local_display "2025-10-28T14:42:18+05:30")
+  [ "$result" = "2025-10-28T14:42:18+05:30" ]
+}
+
 # =============================================================================
 # Edge cases and error handling
 # =============================================================================
