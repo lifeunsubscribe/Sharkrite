@@ -1,9 +1,26 @@
 #!/bin/bash
+set -euo pipefail
+# Re-source guard: skip if already loaded (idempotent sourcing)
+if declare -f acquire_issue_lock >/dev/null 2>&1; then
+  return 0 2>/dev/null || true
+fi
 # lib/utils/issue-lock.sh - Per-issue locking to prevent concurrent rite invocations
 #
 # Prevents two `rite N` invocations from entering the same worktree simultaneously,
-# which would corrupt in-flight work. Uses mkdir-style atomic locking with PID file
-# for liveness checking and stale lock reclamation.
+# which would corrupt in-flight work. Uses symlink-based atomic locking: a lock is
+# published as a symlink pointing to a fully-formed temp directory that already
+# contains the PID (and cwd) file.  symlink(2) is atomic and fails when the target
+# path already exists, so the lock is never observable without its owner.  No
+# create→PID-write window exists for a concurrent waiter to exploit.
+#
+# Stale reclaim uses rename-before-remove (mv): two waiters racing on the same stale
+# lock both call mv, but only one succeeds — the loser retries cleanly.
+#
+# Release removes the symlink first, then the target temp directory.
+#
+# Legacy real-directory locks left by older code are handled transparently: the
+# acquire loop detects them, reclaims them via the same rename-before-remove path,
+# and then publishes the new symlink lock.
 #
 # SAME-HOST ASSUMPTION
 # --------------------
@@ -52,163 +69,165 @@
 # across runs and across paths — the key written by one path is readable by the
 # other's _followup_dedup_check Source 1 check.
 
-set -euo pipefail
-
-# Re-source guard: skip if already loaded (idempotent sourcing)
-if declare -f acquire_issue_lock >/dev/null 2>&1; then
-  return 0 2>/dev/null || true
-fi
-
 # Source config if RITE_LOCK_DIR not already set (defined in config.sh)
 if [ -z "${RITE_LOCK_DIR:-}" ]; then
   _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   source "$_SCRIPT_DIR/config.sh"
 fi
 
-# Atomically claim ownership of a stale lock directory before removing it.
+# Atomically steal a stale lock — symlink-style (new design) or directory-style (legacy).
 #
-# WHY: the previous reclaim path was `rm -rf "$lock_dir"; continue` followed by a
-# loop-back to `mkdir "$lock_dir"`. That is two non-atomic steps. Under
-# concurrent reclamation of the SAME stale lock, two processes could each read
-# the dead PID, then process A reclaims (rm + mkdir + writes its live PID) while
-# process B — having already decided to reclaim based on its now-stale dead-PID
-# read — runs `rm -rf "$lock_dir"`, DELETING A's freshly-acquired live lock, then
-# `mkdir`s its own. Result: A and B both believe they hold the lock (live
-# double-hold, reproduced ~6% of concurrent-reclaim trials).
+# mv is atomic on POSIX and serialises the steal: exactly one of N concurrent
+# reclaimers whose mv succeeds owns the steal; the losers' mv returns non-zero and
+# they re-loop to re-evaluate the lock state.
 #
-# FIX: rename (mv) is atomic on POSIX and serialises the steal. Only the process
-# whose `mv "$lock_dir" "$unique"` succeeds owns the steal; concurrent callers'
-# mv fails because the source no longer exists. The winner removes the renamed
-# dir; the next `mkdir "$lock_dir"` (the existing atomic gate) then admits exactly
-# one acquirer. A caller whose mv fails simply re-loops and re-evaluates the lock,
-# which by then is either free (mkdir wins) or held by the steal winner.
+# For symlink-style locks the target temp directory is also removed so it does not
+# orphan under RITE_LOCK_DIR.  For legacy real-directory locks (and backfill dirs),
+# the directory itself is removed.
 #
 # Args: lock_dir
-# Returns: 0 if this process won the steal (dir removed), 1 if it lost the race.
-_atomic_steal_stale_lock() {
+# Returns: 0 if this process won the steal, 1 if it lost the race.
+_atomic_steal_lock() {
   local lock_dir="$1"
-  # Unique per-process, per-call destination so concurrent steals never collide.
   local steal_dst="${lock_dir}.stale.$$.${RANDOM}"
   if mv "$lock_dir" "$steal_dst" 2>/dev/null; then
-    rm -rf "$steal_dst" 2>/dev/null || true
+    if [ -L "$steal_dst" ]; then
+      # Symlink-style lock: remove the symlink then its private target temp dir.
+      local _target; _target=$(readlink "$steal_dst" 2>/dev/null || true)
+      rm -f "$steal_dst" 2>/dev/null || true
+      [ -n "$_target" ] && rm -rf "$_target" 2>/dev/null || true
+    else
+      # Legacy real-directory lock (or backfill dir).
+      rm -rf "$steal_dst" 2>/dev/null || true
+    fi
     return 0
   fi
-  # Lost the rename race (another reclaimer already moved/removed it, or a fresh
-  # holder mkdir'd a new dir at this path). Nothing to remove.
   return 1
 }
 
-# Acquire per-issue lock with PID-based liveness checking
+# Acquire per-issue lock with PID-based liveness checking.
 # Args: issue_number
-# Returns: 0 on success, 1 if locked by another live process
+# Returns: 0 on success, 1 if locked by another live process (timeout)
 acquire_issue_lock() {
   local issue_number="$1"
   local lock_dir="${RITE_LOCK_DIR}/issue-${issue_number}.lock"
 
-  # Ensure lock directory exists
   mkdir -p "${RITE_LOCK_DIR}"
+
+  # Pre-populate a private temp directory with our PID and cwd, then publish
+  # atomically via ln -s.  symlink(2) is atomic and fails if $lock_dir already
+  # exists, so the lock is fully-formed the instant it becomes visible — there is
+  # no create→PID-write window for a waiter to exploit.
+  local _tmp_dir
+  _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  echo ${BASHPID:-$$} > "$_tmp_dir/pid"
+  pwd > "$_tmp_dir/cwd" 2>/dev/null || true
 
   local lock_attempts=0
   local max_attempts=30
-  local _grace_period_consumed=false
 
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    # Check if the holding process is still alive
-    if [ -f "$lock_dir/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+  # Guard: [ -L "$lock_dir" ] prevents calling ln -sn when a symlink exists (early-
+  # out optimization — ln -sn would also refuse to dereference, but the guard avoids
+  # the syscall entirely).  [ -d "$lock_dir" ] guards against legacy real-directory locks.
+  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -sn "$_tmp_dir" "$lock_dir" 2>/dev/null; do
+    local lock_pid=""
+    if [ -L "$lock_dir" ] || [ -d "$lock_dir" ]; then
+      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
+    elif [ -e "$lock_dir" ]; then
+      # Unexpected non-symlink, non-directory (e.g. plain file) — remove it.
+      rm -f "$lock_dir" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
+      continue
+    else
+      # ln -sn failed for a reason other than EEXIST (e.g. parent dir vanished).
+      mkdir -p "${RITE_LOCK_DIR}" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
+      continue
+    fi
 
+    # Backfill lock: sentinel present, no pid — reclaim immediately.
+    if [ -f "$lock_dir/backfill" ] && [ -z "$lock_pid" ]; then
+      echo "⚠️  Reclaiming backfill lock for issue #${issue_number}" >&2
+      _atomic_steal_lock "$lock_dir"
+      continue
+    fi
+
+    if [ -n "$lock_pid" ]; then
       # kill -0: same-host assumption — only valid within a single PID namespace.
       # See file-level comment for details. RITE_LOCK_DIR must not be on shared storage.
-      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-        # Holding process is dead — atomically steal the stale lock, then re-loop.
-        # Whether the steal won or lost the race, re-evaluate the lock on the next
-        # iteration: it is now either free (our mkdir wins) or freshly held by the
-        # steal winner (its live PID blocks us). Never blindly mkdir after a steal.
+      if ! kill -0 "$lock_pid" 2>/dev/null; then
         echo "⚠️  Reclaiming stale lock from dead process (PID $lock_pid)" >&2
-        _atomic_steal_stale_lock "$lock_dir"
+        _atomic_steal_lock "$lock_dir"
         continue
       fi
 
-      # Defense-in-depth: if WE are the lock holder (same PID), reclaim our own lock.
-      # This happens when a script execs itself to restart (exec replaces the process
-      # image without firing EXIT traps, so the "release_issue_lock" EXIT trap from the
-      # previous incarnation never ran). The re-exec'd process has the same $$ and finds
-      # its own live lock. Reclaim it silently and retry the mkdir.
-      # Live failure: issue #343 batch run 2026-06-06.
-      if [ -n "$lock_pid" ] && [ "$lock_pid" = "$$" ]; then
+      # Defense-in-depth: reclaim self-held lock (post-exec restart: exec replaces
+      # the process image without firing EXIT traps, so the previous incarnation's
+      # release never ran; the re-exec'd process has the same $$ and finds its own
+      # live lock).  Live failure: issue #343 batch run 2026-06-06.
+      if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
         echo "⚠️  Reclaiming self-held lock (post-exec restart) for issue #${issue_number}" >&2
-        _atomic_steal_stale_lock "$lock_dir"
+        _atomic_steal_lock "$lock_dir"
         continue
       fi
 
-      # Lock is held by a live process
+      # Lock is held by a live process.
       if [ $lock_attempts -eq 0 ]; then
         echo "❌ Issue #${issue_number} is already being processed by PID ${lock_pid}" >&2
         echo "   Refusing to start. Wait for it to finish, or run 'rite ${issue_number} --undo' if it crashed." >&2
       fi
     else
-      # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
-      # this window is effectively eliminated for holders using this module, but
-      # a crashed holder or a very old holder using the pre-atomic code path
-      # could still leave this state.  Give it a grace period before reclaiming
-      # — consistent with scratchpad-lock.sh and session-tracker.sh.
-      # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
-      # Only consume the grace period once per acquisition attempt: repeated
-      # no-PID encounters within the same retry loop must not each add a full
-      # sleep (that would compound latency beyond the 1-second-per-retry budget).
-      if [ "$_grace_period_consumed" = "false" ]; then
-        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
-        _grace_period_consumed=true
-      fi
-      if [ ! -f "$lock_dir/pid" ]; then
-        echo "⚠️  Reclaiming stale lock (no PID file after grace period)" >&2
-        _atomic_steal_stale_lock "$lock_dir"
-        continue
-      fi
+      # No PID, no backfill sentinel — legacy empty dir or unexpected state.
+      # Reclaim immediately (no grace period in the symlink design).
+      echo "⚠️  Reclaiming stale lock (no PID file) for issue #${issue_number}" >&2
+      _atomic_steal_lock "$lock_dir"
+      continue
     fi
 
     lock_attempts=$((lock_attempts + 1))
     if [ $lock_attempts -ge $max_attempts ]; then
       echo "❌ Lock timeout after ${max_attempts} seconds" >&2
+      rm -rf "$_tmp_dir" 2>/dev/null || true
       return 1
     fi
 
     sleep 1
   done
 
-  # Write our PID atomically via temp+rename so a concurrent waiter never sees
-  # the lock dir exist with no PID file (the TOCTOU window the old direct echo
-  # could create between mkdir and PID write).
-  local _pid_tmp
-  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
-  echo $$ > "$_pid_tmp"
-  mv "$_pid_tmp" "${lock_dir}/pid"
-
-  # Write cwd file so repo-status.sh can map lock → worktree without lsof/procfs.
-  # Written after the PID file so readers that check cwd existence always have a
-  # valid PID to cross-reference.  Best-effort: failure does not block acquisition.
-  local _cwd_tmp
-  _cwd_tmp=$(mktemp "${lock_dir}/cwd.XXXXXX")
-  pwd > "$_cwd_tmp" 2>/dev/null && mv "$_cwd_tmp" "${lock_dir}/cwd" || rm -f "$_cwd_tmp" 2>/dev/null || true
-
   return 0
 }
 
-# Release per-issue lock
+# Release per-issue lock — only removes the lock owned by this process (PID-checked).
 # Args: issue_number
 release_issue_lock() {
   local issue_number="$1"
   local lock_dir="${RITE_LOCK_DIR}/issue-${issue_number}.lock"
 
-  if [ -d "$lock_dir" ]; then
-    # Only remove if it's our lock (PID matches)
-    if [ -f "$lock_dir/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-      if [ "$lock_pid" = "$$" ]; then
-        rm -rf "$lock_dir" 2>/dev/null || true
-      fi
+  local lock_pid=""
+  if [ -L "$lock_dir" ]; then
+    lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
+      local _target; _target=$(readlink "$lock_dir" 2>/dev/null || true)
+      rm -f "$lock_dir" 2>/dev/null || true
+      [ -n "$_target" ] && rm -rf "$_target" 2>/dev/null || true
+    fi
+  elif [ -d "$lock_dir" ]; then
+    # Legacy real-directory lock.
+    lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
+      rm -rf "$lock_dir" 2>/dev/null || true
     fi
   fi
 }
@@ -217,18 +236,16 @@ release_issue_lock() {
 #
 # Prevents two concurrent `rite` batch invocations from contending on shared
 # state (scratchpad locks, worktree pool).  Only one batch may hold this lock
-# at a time.  A second invocation detects a live holder and refuses loudly
-# (exit 17) instead of silently corrupting in-flight work.
+# at a time.  A second invocation that detects a live holder refuses immediately
+# (returns 1; caller should exit 17) rather than waiting.
 #
-# Lock structure:
-#   ${RITE_LOCK_DIR}/batch.lock/pid     — holding batch's PID (atomic write)
-#   ${RITE_LOCK_DIR}/batch.lock/issues  — space-separated issue list for diagnostics
-#   ${RITE_LOCK_DIR}/batch.lock/cwd     — working directory for diagnostics
+# Lock structure (symlink → temp dir):
+#   ${RITE_LOCK_DIR}/batch.lock/pid     — holding batch's PID
+#   ${RITE_LOCK_DIR}/batch.lock/issues  — space-separated issue list (diagnostics)
+#   ${RITE_LOCK_DIR}/batch.lock/cwd     — working directory (diagnostics)
 #
 # Same-host assumption and stale-lock reclamation follow the same logic as
-# acquire_issue_lock: kill -0 liveness, _atomic_steal_stale_lock for the
-# concurrent-reclaim race.  See the file-level comment for the shared-storage
-# caveat.
+# acquire_issue_lock.  See the file-level comment for the shared-storage caveat.
 #
 # Args: issue_list (space-separated string of issue numbers, for diagnostics)
 # Returns: 0 on success (lock acquired)
@@ -237,109 +254,91 @@ acquire_batch_lock() {
   local issue_list="${1:-}"
   local lock_dir="${RITE_LOCK_DIR}/batch.lock"
 
-  # Ensure lock directory parent exists
   mkdir -p "${RITE_LOCK_DIR}"
+
+  local _tmp_dir
+  _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  echo ${BASHPID:-$$} > "$_tmp_dir/pid"
+  printf '%s\n' "$issue_list" > "$_tmp_dir/issues" 2>/dev/null || true
+  pwd > "$_tmp_dir/cwd" 2>/dev/null || true
 
   local lock_attempts=0
   local max_attempts=30
-  local _grace_period_consumed=false
 
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    # Check if the holding process is still alive
-    if [ -f "$lock_dir/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -sn "$_tmp_dir" "$lock_dir" 2>/dev/null; do
+    local lock_pid=""
+    if [ -L "$lock_dir" ] || [ -d "$lock_dir" ]; then
+      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
+    elif [ -e "$lock_dir" ]; then
+      rm -f "$lock_dir" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Batch lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
+      continue
+    else
+      mkdir -p "${RITE_LOCK_DIR}" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Batch lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
+      continue
+    fi
 
-      # kill -0: same-host assumption — only valid within a single PID namespace.
-      # See file-level comment for details. RITE_LOCK_DIR must not be on shared storage.
-      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-        # Holding process is dead — atomically steal the stale lock, then re-loop.
+    if [ -n "$lock_pid" ]; then
+      # kill -0: same-host assumption — see file-level comment.
+      if ! kill -0 "$lock_pid" 2>/dev/null; then
         echo "⚠️  Reclaiming stale batch lock from dead process (PID $lock_pid)" >&2
-        _atomic_steal_stale_lock "$lock_dir"
+        _atomic_steal_lock "$lock_dir"
         continue
       fi
 
-      # Defense-in-depth: if WE are the lock holder (same PID), reclaim our own lock.
-      # This can happen if a batch script execs itself to restart without releasing.
-      if [ -n "$lock_pid" ] && [ "$lock_pid" = "$$" ]; then
+      if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
         echo "⚠️  Reclaiming self-held batch lock (post-exec restart)" >&2
-        _atomic_steal_stale_lock "$lock_dir"
+        _atomic_steal_lock "$lock_dir"
         continue
       fi
 
-      # Lock is held by a live batch — report holder details and refuse.
+      # Lock is held by a live batch — refuse immediately.
       local holder_issues=""
-      if [ -f "$lock_dir/issues" ]; then
-        holder_issues=$(cat "$lock_dir/issues" 2>/dev/null || echo "")
-      fi
+      [ -f "$lock_dir/issues" ] && holder_issues=$(cat "$lock_dir/issues" 2>/dev/null || echo "")
       echo "❌ Another batch is already running (PID ${lock_pid})" >&2
-      if [ -n "$holder_issues" ]; then
-        echo "   Holder is processing: ${holder_issues}" >&2
-      fi
+      [ -n "$holder_issues" ] && echo "   Holder is processing: ${holder_issues}" >&2
       echo "   Wait for it to finish, or kill PID ${lock_pid} if it crashed." >&2
+      rm -rf "$_tmp_dir" 2>/dev/null || true
       return 1
     else
-      # Lock dir exists but no PID file — give a grace period before reclaiming
-      # (same pattern as acquire_issue_lock: atomic PID write closes this window,
-      # but a crashed holder may leave the dir without a pid file).
-      if [ "$_grace_period_consumed" = "false" ]; then
-        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
-        _grace_period_consumed=true
-      fi
-      if [ ! -f "$lock_dir/pid" ]; then
-        echo "⚠️  Reclaiming stale batch lock (no PID file after grace period)" >&2
-        _atomic_steal_stale_lock "$lock_dir"
-        continue
-      fi
+      # No PID — reclaim immediately (no grace period in the symlink design).
+      echo "⚠️  Reclaiming stale batch lock (no PID file)" >&2
+      _atomic_steal_lock "$lock_dir"
+      continue
     fi
-
-    lock_attempts=$((lock_attempts + 1))
-    if [ $lock_attempts -ge $max_attempts ]; then
-      echo "❌ Batch lock timeout after ${max_attempts} seconds" >&2
-      return 1
-    fi
-
-    sleep 1
   done
-
-  # Write PID atomically via temp+rename so a concurrent waiter never sees the
-  # lock dir exist with no PID file (the TOCTOU window the old direct echo creates).
-  local _pid_tmp
-  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
-  echo $$ > "$_pid_tmp"
-  mv "$_pid_tmp" "${lock_dir}/pid"
-
-  # Write issue list for diagnostics (the holder's issue list visible to refusers).
-  # Best-effort: failure does not block acquisition.
-  local _issues_tmp
-  _issues_tmp=$(mktemp "${lock_dir}/issues.XXXXXX")
-  printf '%s\n' "$issue_list" > "$_issues_tmp" 2>/dev/null && \
-    mv "$_issues_tmp" "${lock_dir}/issues" || \
-    rm -f "$_issues_tmp" 2>/dev/null || true
-
-  # Write cwd for diagnostics.  Best-effort: failure does not block acquisition.
-  local _cwd_tmp
-  _cwd_tmp=$(mktemp "${lock_dir}/cwd.XXXXXX")
-  pwd > "$_cwd_tmp" 2>/dev/null && mv "$_cwd_tmp" "${lock_dir}/cwd" || \
-    rm -f "$_cwd_tmp" 2>/dev/null || true
 
   return 0
 }
 
-# Release repo-level batch mutex
-# Only removes the lock if our PID matches (pid-checked, same as release_issue_lock).
-# Safe to call from EXIT traps and SIGINT handlers.
+# Release repo-level batch mutex — PID-checked, safe in EXIT traps.
 release_batch_lock() {
   local lock_dir="${RITE_LOCK_DIR}/batch.lock"
 
-  if [ -d "$lock_dir" ]; then
-    # Only remove if it's our lock (PID matches)
-    if [ -f "$lock_dir/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-      if [ "$lock_pid" = "$$" ]; then
-        rm -rf "$lock_dir" 2>/dev/null || true
-      fi
+  if [ -L "$lock_dir" ]; then
+    local lock_pid; lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
+      local _target; _target=$(readlink "$lock_dir" 2>/dev/null || true)
+      rm -f "$lock_dir" 2>/dev/null || true
+      [ -n "$_target" ] && rm -rf "$_target" 2>/dev/null || true
+    fi
+  elif [ -d "$lock_dir" ]; then
+    local lock_pid; lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
+      rm -rf "$lock_dir" 2>/dev/null || true
     fi
   fi
 }
@@ -419,54 +418,61 @@ acquire_pr_followup_lock() {
   # Ensure lock directory parent exists
   mkdir -p "${RITE_LOCK_DIR}"
 
+  local _tmp_dir
+  _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  echo ${BASHPID:-$$} > "$_tmp_dir/pid"
+
   local lock_attempts=0
   # Allow up to 60 seconds — the critical section (gh issue list + gh issue create)
   # takes ~5-10s in practice; 60s gives ample room while still failing safely.
-  #
-  # The lock holder may also sleep for RITE_FOLLOWUP_LOCK_DWELL_S (default 5s)
-  # after create before releasing (see assess-and-resolve.sh post-create dwell).
-  # This dwell extends the holder's critical section but not the effective wait
-  # for most waiters: a waiter that was queued during the dwell will find the
-  # source-marker sentinel file fresh and short-circuit BEFORE acquiring the lock,
-  # so it never actually spends its budget waiting out the dwell.  In the rare
-  # case where the sentinel is unavailable, the worst-case hold time is
-  # ~10s (critical section) + 5s (dwell) = ~15s, well inside the 60s budget.
   local max_attempts=60
-  local _grace_period_consumed=false
 
-  while ! mkdir "$lock_dir" 2>/dev/null; do
-    # Check if the holding process is still alive
-    if [ -f "$lock_dir/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -sn "$_tmp_dir" "$lock_dir" 2>/dev/null; do
+    local lock_pid=""
+    if [ -L "$lock_dir" ] || [ -d "$lock_dir" ]; then
+      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
+    elif [ -e "$lock_dir" ]; then
+      rm -f "$lock_dir" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        if [ -n "$source_issue" ]; then
+          echo "❌ Follow-up lock timeout for PR #${pr_number} / key ${source_issue} after ${max_attempts}s" >&2
+        else
+          echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
+        fi
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
+      continue
+    else
+      mkdir -p "${RITE_LOCK_DIR}" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        if [ -n "$source_issue" ]; then
+          echo "❌ Follow-up lock timeout for PR #${pr_number} / key ${source_issue} after ${max_attempts}s" >&2
+        else
+          echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
+        fi
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
+      continue
+    fi
 
-      # kill -0: same-host assumption — only valid within a single PID namespace.
-      # See file-level comment for details. RITE_LOCK_DIR must not be on shared storage.
-      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-        # Holding process is dead — reclaim stale lock
+    if [ -n "$lock_pid" ]; then
+      # kill -0: same-host assumption — see file-level comment.
+      if ! kill -0 "$lock_pid" 2>/dev/null; then
         echo "⚠️  Reclaiming stale followup lock from dead process (PID $lock_pid)" >&2
-        rm -rf "$lock_dir" 2>/dev/null
+        _atomic_steal_lock "$lock_dir"
         continue
       fi
     else
-      # Lock dir exists but no PID file.  With atomic PID writes (mktemp + mv)
-      # this window is effectively eliminated for holders using this module, but
-      # a crashed holder or a very old holder using the pre-atomic code path
-      # could still leave this state.  Give it a grace period before reclaiming
-      # — consistent with scratchpad-lock.sh and session-tracker.sh.
-      # Default: 1s; override via _RITE_LOCK_GRACE_PERIOD_S for tests.
-      # Only consume the grace period once per acquisition attempt: repeated
-      # no-PID encounters within the same retry loop must not each add a full
-      # sleep (that would compound latency beyond the 1-second-per-retry budget).
-      if [ "$_grace_period_consumed" = "false" ]; then
-        sleep "${_RITE_LOCK_GRACE_PERIOD_S:-1}"
-        _grace_period_consumed=true
-      fi
-      if [ ! -f "$lock_dir/pid" ]; then
-        echo "⚠️  Reclaiming stale followup lock (no PID file after grace period)" >&2
-        rm -rf "$lock_dir" 2>/dev/null || true
-        continue
-      fi
+      # No PID — reclaim immediately (no grace period in the symlink design).
+      echo "⚠️  Reclaiming stale followup lock (no PID file)" >&2
+      _atomic_steal_lock "$lock_dir"
+      continue
     fi
 
     lock_attempts=$((lock_attempts + 1))
@@ -479,19 +485,12 @@ acquire_pr_followup_lock() {
       else
         echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
       fi
+      rm -rf "$_tmp_dir" 2>/dev/null || true
       return 1
     fi
 
     sleep 1
   done
-
-  # Write our PID atomically via temp+rename so a concurrent waiter never sees
-  # the lock dir exist with no PID file (the TOCTOU window the old direct echo
-  # could create between mkdir and PID write).
-  local _pid_tmp
-  _pid_tmp=$(mktemp "${lock_dir}/pid.XXXXXX")
-  echo $$ > "$_pid_tmp"
-  mv "$_pid_tmp" "${lock_dir}/pid"
 
   # Contention signal: when RITE_FOLLOWUP_LOCK_CONTENDED_FILE is set and the
   # lock was acquired after blocking (lock_attempts > 0), write "contended" to
@@ -520,14 +519,18 @@ release_pr_followup_lock() {
   fi
   local lock_dir="${RITE_LOCK_DIR}/${lock_key}"
 
-  if [ -d "$lock_dir" ]; then
-    # Only remove if it's our lock (PID matches)
-    if [ -f "$lock_dir/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-      if [ "$lock_pid" = "$$" ]; then
-        rm -rf "$lock_dir" 2>/dev/null || true
-      fi
+  local lock_pid=""
+  if [ -L "$lock_dir" ]; then
+    lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
+      local _target; _target=$(readlink "$lock_dir" 2>/dev/null || true)
+      rm -f "$lock_dir" 2>/dev/null || true
+      [ -n "$_target" ] && rm -rf "$_target" 2>/dev/null || true
+    fi
+  elif [ -d "$lock_dir" ]; then
+    lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
+      rm -rf "$lock_dir" 2>/dev/null || true
     fi
   fi
 }

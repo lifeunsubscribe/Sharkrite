@@ -165,9 +165,9 @@ teardown() {
 # issue-lock.sh: PID file is written atomically via mktemp + mv
 # ---------------------------------------------------------------------------
 
-@test "issue-lock: PID file is present immediately after acquire (atomic write)" {
+@test "issue-lock: PID file is present immediately after acquire (symlink-atomic write)" {
   # Verify the PID file exists right after acquire returns — no window where
-  # lock dir exists but has no PID (the old non-atomic echo > file race).
+  # lock dir exists but has no PID.  Also verifies the lock is a symlink (#1701).
   run bash -c "
     export RITE_PROJECT_ROOT='${RITE_TEST_TMPDIR}'
     export RITE_DATA_DIR='.rite'
@@ -178,8 +178,9 @@ teardown() {
 
     _lock_dir=\"\${RITE_LOCK_DIR}/issue-555.lock\"
 
-    # Lock dir must exist
-    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: lock dir not created'; exit 1; }
+    # Lock must be a symlink (new atomic design) — still passes [ -d ] via symlink follow
+    [ -L \"\$_lock_dir\" ] || { echo 'FAIL: lock is not a symlink after acquire'; exit 1; }
+    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: lock symlink does not point to a directory'; exit 1; }
 
     # PID file must exist immediately — no grace period, no polling needed
     [ -f \"\$_lock_dir/pid\" ] || { echo 'FAIL: PID file missing immediately after acquire'; exit 1; }
@@ -189,6 +190,13 @@ teardown() {
     [ \"\$_written_pid\" = \"\$\$\" ] || { echo \"FAIL: PID mismatch: expected \$\$ got \$_written_pid\"; exit 1; }
 
     release_issue_lock 555
+
+    # After release: symlink must be gone (-L catches a dangling symlink -e misses)
+    if [ -e \"\$_lock_dir\" ] || [ -L \"\$_lock_dir\" ]; then
+      echo 'FAIL: lock still exists after release'
+      exit 1
+    fi
+
     echo 'PASS: PID file present immediately after acquire'
   "
   [ "$status" -eq 0 ]
@@ -206,13 +214,22 @@ teardown() {
 
     _lock_dir=\"\${RITE_LOCK_DIR}/pr-101-src-42-followup.lock\"
 
-    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: followup lock dir not created'; exit 1; }
+    # Lock must be a symlink (new atomic design)
+    [ -L \"\$_lock_dir\" ] || { echo 'FAIL: followup lock is not a symlink after acquire'; exit 1; }
+    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: followup lock symlink does not point to a directory'; exit 1; }
+
     [ -f \"\$_lock_dir/pid\" ] || { echo 'FAIL: PID file missing after followup acquire'; exit 1; }
 
     _written_pid=\$(cat \"\$_lock_dir/pid\")
     [ \"\$_written_pid\" = \"\$\$\" ] || { echo \"FAIL: PID mismatch: expected \$\$ got \$_written_pid\"; exit 1; }
 
     release_pr_followup_lock 101 42
+
+    if [ -e \"\$_lock_dir\" ] || [ -L \"\$_lock_dir\" ]; then
+      echo 'FAIL: followup lock still exists after release'
+      exit 1
+    fi
+
     echo 'PASS: followup PID file present immediately after acquire'
   "
   [ "$status" -eq 0 ]
