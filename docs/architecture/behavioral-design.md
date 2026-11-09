@@ -2746,3 +2746,62 @@ requirement"). The contract:
   `load_provider` aliases it as `provider_healthcheck` via the standard dispatch.
 
 **Enforcement:** `tests/regression/provider-trust-preflight.bats`.
+
+## Batch-End Follow-Up Reconciliation (#1552)
+
+**Problem:** The per-merge v1 reconciliation (`_reconcile_followup_issues_on_merge`
+in `merge-pr.sh`) applies `needs-re-triage` unconditionally to every follow-up
+whose parent PR merged. Nothing ever consumed the label, so stale findings
+accumulated from birth. Live failure (orrery batch 2026-10-27): follow-up #19's
+blocker was resolved by a later PR in the same batch but was not closed;
+follow-up #13's prescribed fix landed while its actual vulnerable surface remained,
+and it needed annotation rather than closure.
+
+**Two-tier design:**
+
+1. **Deterministic filter (Tier 1, zero LLM calls):** For each follow-up issue
+   created during the batch that carries both `sharkrite-finding-sha` (from #1547)
+   and `sharkrite-finding-location` markers, compute `git diff --name-only
+   <finding-sha>..<target-ref>`. If the finding's file did NOT change, the issue
+   is left untouched — no network writes, no LLM call.
+
+2. **Judgment (Tier 2, one call per changed finding):** Only changed findings
+   progress to classification. The triage role model (`provider_resolve_model
+   "triage"`) receives the finding text and the current code region and returns
+   compact JSON `{"verdict":"resolved|partially-resolved|still-open","reason":...}`.
+
+**Three outcomes:**
+- `resolved` → close with a comment citing the commit range that fixed it.
+- `partially-resolved` → annotate with a comment stating the remaining surface;
+  leave open.
+- `still-open` → remove `needs-re-triage` label (the batch confirmed it still
+  needs work); leave open.
+
+**Security no-auto-close guard:** Issues labeled `security` are NEVER auto-closed
+regardless of verdict. A `resolved` verdict posts the evidence comment and leaves
+the issue open for human review and close. This guard is enforced inside
+`_do_close_or_comment` in `lib/utils/reconcile-followups.sh`.
+
+**Scope constraint — batch-local only:** The pass reconciles only follow-up
+issues created during the current batch run (sourced from `_batch_followups_created`
+which reads `FOLLOWUP_CREATED` diag lines from the batch's own log). Follow-ups
+from other batches or other repos are out of scope.
+
+**Pre-#1547 fallback:** Follow-ups missing either marker are silently skipped.
+The v1 `needs-re-triage` label remains the in-batch breadcrumb for such issues.
+
+**Provider degradation:** When a cap or auth error fires (`provider_run_prompt`
+exits 5 or 18), the pass lists remaining unclassified candidates in stdout and
+emits the diag with the actual partial counts. Nothing is auto-closed on the
+deterministic signal alone — a changed file is not proof of resolution (orrery
+#13 is the proof).
+
+**Opt-out:** `RITE_BATCH_RECONCILE=false` in `.rite/config` disables the entire
+pass for repos with high issue volume or rate-limit concerns.
+
+**Diag:** `FOLLOWUP_RECONCILED closed=N annotated=N verified=N skipped=N`
+
+**Files:** `lib/utils/reconcile-followups.sh` (new), `lib/core/batch-process-issues.sh`
+(hook after `_batch_print_drift_summary`).
+
+**Enforcement:** `tests/regression/batch-end-reconcile.bats`.

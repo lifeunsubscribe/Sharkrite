@@ -129,6 +129,18 @@
 # See: docs/architecture/exit-codes.md — exit 16
 # RITE_BATCH_GATE_TRIP=3
 
+# Batch-end follow-up reconciliation pass (default: enabled).
+# After all batch merges, re-checks every follow-up issue created during the
+# batch that carries both sharkrite-finding-sha and sharkrite-finding-location
+# markers (from #1547). For changed findings, runs one triage-role
+# classification call to determine if the finding is resolved, partially
+# resolved, or still open — then closes / annotates / verifies accordingly.
+# Issues labeled "security" are never auto-closed (comment-only).
+# Pre-#1547 issues missing the markers are silently skipped.
+# Set to false to skip the pass entirely (e.g. for repos with high issue
+# volume where the GitHub API calls would exceed rate limits).
+# RITE_BATCH_RECONCILE=false
+
 # Unscoped suite warning threshold in seconds (default: 300).
 # When a target repo's full test suite takes this long or longer on a fix cycle,
 # the gate emits a once-per-gate-run warning recommending scoped selection (sharkrite #975
