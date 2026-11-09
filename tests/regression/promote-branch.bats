@@ -174,6 +174,171 @@ RUNEOF
   echo "$output" | grep -q "rite --sync behind-branch"
 }
 
+@test "preflight: open PR targeting the branch blocks promote and names PR, issue, and commands" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-bin-inflight"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "abc1234567890abc"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/inflight-branch"; exit 0 ;;
+  worktree|push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)
+          printf '[{"number":55,"headRefName":"ft-my-feature_b42","baseRefName":"inflight-branch","body":"Closes #42"}]\n'
+          return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "inflight-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "PR #55"
+  echo "$output" | grep -q "issue #42"
+  echo "$output" | grep -q "rite --branch inflight-branch 42"
+  echo "$output" | grep -q "rite 42 --undo"
+}
+
+@test "preflight: open PR targeting the branch emits PROMOTE_BLOCKED_INFLIGHT diag" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _diag_log="$RITE_TEST_TMPDIR/diag-inflight.log"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-bin-inflight-diag"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "abc1234567890abc"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/diag-branch"; exit 0 ;;
+  worktree|push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+_diag_log="$_diag_log"
+_diag() { printf '%s\n' "\$*" >> "\$_diag_log"; }
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)
+          printf '[{"number":77,"headRefName":"ft-another_b99","baseRefName":"diag-branch","body":"Closes #99"}]\n'
+          return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "diag-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1 || true
+  [ "$status" -eq 1 ]
+  grep -q "PROMOTE_BLOCKED_INFLIGHT" "$_diag_log"
+  grep -q "branch=diag-branch" "$_diag_log"
+  grep -q "open_prs=1" "$_diag_log"
+}
+
+@test "preflight: open PR targeting a different branch does not block promote" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-bin-other-branch"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "abc1234567890abc"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/clean-branch"; exit 0 ;;
+  worktree|push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        # PR targets a DIFFERENT branch, not the one being promoted
+        list)
+          printf '[{"number":33,"headRefName":"ft-other_b7","baseRefName":"some-other-branch","body":"Closes #7"}]\n'
+          return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+gather_promotion_context() { return 0; }
+run_promote "clean-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1 || true
+  # In-flight guard must NOT fire
+  ! echo "$output" | grep -q "Cannot promote"
+  # Must reach Preflight passed
+  echo "$output" | grep -q "Preflight passed"
+}
+
 # ===========================================================================
 # Group 3: Re-run reuses existing open promotion PR
 # ===========================================================================
