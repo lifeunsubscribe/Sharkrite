@@ -1025,7 +1025,7 @@ All three locks share a second race, **distinct from the same-host assumption ab
 **Status:**
 - `issue-lock.sh` **fixed inline** (commit `0deefb8`) via `_atomic_steal_stale_lock`: reclaim by renaming (`mv`) the stale dir to a unique per-process path before removing it — only one racer's `mv` succeeds, serialising the steal; the existing `mkdir` gate then admits exactly one acquirer. 0/200 overlaps post-fix.
 - `scratchpad-lock.sh` **fixed in #1651** via symlink-based acquire: `ln -s "$$" "$lockfile"` is atomic (symlink(2)/POSIX), so the lock carries its owner's PID the instant it exists — there is no create→PID-write window. Stale reclaim uses rename-before-remove (`mv "$lockfile" "$lockfile.stale.$$"`): two concurrent waiters both see a dead PID but only one `mv` wins, serialising the steal. Grace-reclaim branch deleted; the bad state it patched is now unrepresentable.
-- `session-tracker.sh` has the same class but is **deferred to #706** — its data-loss test is concurrency (gate-excluded), so it doesn't block the gate.
+- `session-tracker.sh` has the same class and is **fixed by #706** via migration onto `lock.sh` — see Adoption below.
 
 **Resolution (#706): `lib/utils/lock.sh` — one atomic primitive.** A single shared lock replaces the bespoke implementations. It is an `ln(1)` hard-link lock whose file content is a unique `<pid>.<nonce>` token, written into a private temp file *before* the link — so the lock carries its identity atomically the instant it exists. There is **no create→PID-write window** (the root cause above). Each property below was pinned by a finding during bring-up:
 - **`ln` gate** — `link(2)` is atomic and fails if the target exists; exactly one of N racers wins (verified: 1 winner of 50 concurrent linkers).
