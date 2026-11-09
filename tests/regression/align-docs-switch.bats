@@ -194,6 +194,77 @@ teardown() {
   [[ "$output" == *'RITE_DOC_MODE="sync"'* ]]
 }
 
+@test "run_align_docs_switch TTY y-path runs docs_run_restructure_assessment after enabling" {
+  # Verify the first-run yes path falls through to the passes without a second invocation.
+  # Uses _RITE_FORCE_TTY=1 to satisfy the TTY guard inside _run_align_docs_passes when
+  # stdin is a here-string (not a real TTY). Stubs are defined after source so the
+  # function-sentinel re-source guard on doc-consent.sh cannot overwrite them.
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    unset RITE_DOC_MODE 2>/dev/null || true
+    export _RITE_FORCE_TTY=1
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
+    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
+    _align_docs_prompt_and_record
+  " <<< "y"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RESTRUCTURE_RAN"* ]]
+}
+
+@test "run_align_docs_switch TTY y-path runs docs_run_assertion_audit after enabling" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    unset RITE_DOC_MODE 2>/dev/null || true
+    export _RITE_FORCE_TTY=1
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
+    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
+    _align_docs_prompt_and_record
+  " <<< "y"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"AUDIT_RAN"* ]]
+}
+
+@test "run_align_docs_switch TTY n-path records off and runs no passes" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    unset RITE_DOC_MODE 2>/dev/null || true
+    export _RITE_FORCE_TTY=1
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
+    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
+    _align_docs_prompt_and_record
+    grep '^RITE_DOC_MODE=' '$RITE_PROJECT_ROOT/.rite/config' || true
+  " <<< "n"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'RITE_DOC_MODE="off"'* ]]
+  [[ "$output" != *"RESTRUCTURE_RAN"* ]]
+  [[ "$output" != *"AUDIT_RAN"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Structural: "run again" message removed (#1654)
+# ---------------------------------------------------------------------------
+
+@test "doc-consent.sh no longer contains the 'run again' message" {
+  count=$(grep -c "again to start" \
+    "$RITE_REPO_ROOT/lib/utils/doc-consent.sh" || true)
+  [ "$count" -eq 0 ]
+}
+
 # ---------------------------------------------------------------------------
 # Prompt text invariant: must state the audit runs either way
 # ---------------------------------------------------------------------------
