@@ -586,7 +586,7 @@ rite docs --resume <branch> # Resume a saved doc proposal from a terminal-less p
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
-rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
+rite --sync <branch>       # Merge origin/main into an integration branch (explicit; promote runs it only when the merge is clean)
 rite --sync <N> [<N>...]  # Sync issue feature branches: skips rebase when branch merges cleanly with its base (no stale-review on clean paths); on genuine conflict invokes the resolver before the manual fallback
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
 rite --promote <branch>    # Promote integration branch to main (PR + review + targeted gate +

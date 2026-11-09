@@ -473,3 +473,101 @@ _run_rite() {
   grep -q 'integration-branches' "$_lib"
   grep -q '\[ -d ' "$_lib"
 }
+
+# ===========================================================================
+# Tests 25–28: #1642 — --clean-only mode in sync_integration_branch
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test 25: Structural — --clean-only mode returns exit 3 on conflict
+#          (resolver must not be invoked; this is a code-path existence check).
+# ---------------------------------------------------------------------------
+@test "sync_integration_branch --clean-only path exists and emits conflict_deferred" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  # The clean-only conflict path must exist
+  grep -q '_clean_only' "$_lib"
+  grep -q 'conflict_deferred' "$_lib"
+  # It must return 3 (not 1) on conflict_deferred
+  grep -q 'return 3' "$_lib"
+}
+
+# ---------------------------------------------------------------------------
+# Test 26: Structural — clean-only mode never invokes the resolver.
+#          The if-block for --clean-only must come BEFORE the resolver call.
+# ---------------------------------------------------------------------------
+@test "sync_integration_branch --clean-only block precedes resolver invocation" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  # The clean-only early-return must appear before attempt_claude_merge_resolution
+  local _clean_line _resolver_line
+  _clean_line=$(grep -n '_clean_only.*true' "$_lib" | grep 'if\|=.*true' | head -1 | cut -d: -f1 || true)
+  _resolver_line=$(grep -n 'attempt_claude_merge_resolution' "$_lib" | head -1 | cut -d: -f1 || true)
+  [ -n "$_clean_line" ]
+  [ -n "$_resolver_line" ]
+  [ "$_clean_line" -lt "$_resolver_line" ]
+}
+
+# ---------------------------------------------------------------------------
+# Test 27: Behavioral — sync_integration_branch with --clean-only returns 3
+#          and emits conflict_deferred when git merge fails.
+# ---------------------------------------------------------------------------
+@test "sync_integration_branch --clean-only returns 3 when merge conflicts" {
+  # Stub all dep functions
+  print_header()  { true; }
+  print_info()    { true; }
+  print_step()    { true; }
+  print_success() { true; }
+  print_warning() { true; }
+  print_error()   { true; }
+  print_status()  { true; }
+  git_fetch_safe()   { return 0; }
+  verify_post_merge() { return 0; }
+  _diag() {
+    # Capture the diag line into a file for assertion
+    printf '%s\n' "$*" >> "${_CLEAN_ONLY_DIAG_FILE:-/dev/null}"
+  }
+
+  # Use a PATH-stub git that makes `git merge` fail (non-zero exit) while
+  # merge --abort and other git commands succeed.
+  local _stub_bin="$RITE_TEST_TMPDIR/stub-git-clean-only"
+  local _real_git
+  _real_git=$(command -v git)
+  mkdir -p "$_stub_bin"
+  printf '#!/bin/bash\nif [ "${1:-}" = "-C" ]; then\n  shift 2\nfi\nif [ "${1:-}" = "merge" ] && [ "${2:-}" != "--abort" ] && [ "${2:-}" != "-base" ] && [ "${2:-}" != "base" ]; then\n  exit 1\nfi\nexec "%s" "$@"\n' "$_real_git" > "$_stub_bin/git"
+  chmod +x "$_stub_bin/git"
+
+  export PATH="$_stub_bin:$PATH"
+  export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
+  export RITE_LOCK_DIR="$RITE_TEST_TMPDIR/locks-co"
+  export RITE_STATE_DIR="$RITE_TEST_TMPDIR/state-co"
+  mkdir -p "$RITE_LOCK_DIR" "$RITE_STATE_DIR"
+
+  local _diag_file="$RITE_TEST_TMPDIR/clean_only_diag.txt"
+  export _CLEAN_ONLY_DIAG_FILE="$_diag_file"
+
+  source "$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  set +u; set +o pipefail
+
+  # Call with --clean-only; expect exit 3
+  local _rc=0
+  sync_integration_branch "test-integ-branch" "--clean-only" || _rc=$?
+
+  [ "$_rc" -eq 3 ]
+  # conflict_deferred diag must have been emitted
+  grep -q 'conflict_deferred' "$_diag_file"
+}
+
+# ---------------------------------------------------------------------------
+# Test 28: Structural — rebase and force-push pins still hold for
+#          sync_integration_branch with the new --clean-only code path.
+# ---------------------------------------------------------------------------
+@test "sync_integration_branch clean-only code path contains no rebase or force-push" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  # Scope to sync_integration_branch only via closing-brace sentinel (same as
+  # test 7 above); exclude comment lines so the docstring for sync_issue_branch
+  # (which legitimately mentions force-with-lease) does not trip the check.
+  ! sed -n '/^sync_integration_branch()/,/^}/p' "$_lib" | \
+    grep -v '^#\|^ *#' | grep -nE 'git rebase|push --force|push -f'
+}

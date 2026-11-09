@@ -96,6 +96,17 @@ integration_ledger_entries()       { return 0; }
 integration_ledger_mark_promoted() { return 0; }
 STUB
 
+  # integration-sync.sh stub: provides sync_integration_branch returning 1 by
+  # default (simulates a failed/conflicted sync so promote exits 1 with the
+  # "Sync it first" instruction). Tests that need a specific outcome (clean
+  # merge, conflict_deferred) write their own stub after calling this helper.
+  cat > "$_lib/utils/integration-sync.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f sync_integration_branch >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+sync_integration_branch() { return 1; }
+STUB
+
   cat > "$_lib/providers/provider-interface.sh" << 'STUB'
 #!/bin/bash
 set -euo pipefail
