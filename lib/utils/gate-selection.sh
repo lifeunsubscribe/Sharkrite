@@ -456,11 +456,57 @@ _bats_file_matches_changed() {
   return 1
 }
 
+# _bats_file_has_body_reference — returns 0 when any shell-source changed path
+# appears in the bats file body as a fixed-string.
+# Args: $1=bats_file (absolute), $2=changed_files (newline-separated)
+# A changed path is a shell source when it matches lib/**/*.sh, bin/*, or
+# tools/**/*.sh. Two fixed-string patterns are tried per changed path:
+#   1. The full relative path (e.g. "lib/providers/claude.sh") — catches
+#      variable assignments like CLAUDE_SH="$ROOT/lib/providers/claude.sh"
+#   2. A leading-slash-prefixed suffix (e.g. "/providers/claude.sh") — catches
+#      $RITE_LIB_DIR-style references like source "$RITE_LIB_DIR/providers/claude.sh"
+_bats_file_has_body_reference() {
+  local bats_file="$1"
+  local changed_files="$2"
+  local _changed _suffix _changed_re
+  while IFS= read -r _changed; do
+    [ -z "$_changed" ] && continue
+    case "$_changed" in
+      lib/*.sh|bin/*|tools/*.sh) ;;
+      *) continue ;;
+    esac
+    # Rule 1: full relative path, whole-token match
+    # Escape regex metacharacters in the path (only '.' in .sh extensions
+    # matters in practice). Trailing anchor prevents bin/rite from matching
+    # bin/rite-full-suite: the char after the path must not be in [-_./a-zA-Z0-9].
+    _changed_re=$(printf '%s' "$_changed" | sed 's/\./\\./g' || true)
+    if grep -qE -- "${_changed_re}([^-_./a-zA-Z0-9]|$)" "$bats_file" 2>/dev/null; then
+      return 0
+    fi
+    # Rule 2: strip the leading path component and anchor with /
+    # Only apply when the suffix still contains a directory separator — a bare
+    # name (e.g. "rite" from "bin/rite") would match /rite-full-suite and
+    # similar substrings in 20%+ of bats files, recreating full-suite conditions.
+    # Paths that need this rule (e.g. $RITE_LIB_DIR/providers/claude.sh) always
+    # have at least one '/' in the stripped suffix.
+    _suffix="${_changed#*/}"
+    case "$_suffix" in
+      */*)
+        if grep -qF -- "/$_suffix" "$bats_file" 2>/dev/null; then
+          return 0
+        fi
+        ;;
+    esac
+  done <<< "$changed_files"
+  return 1
+}
+
 # _select_tests_by_changed_paths — produce the bats invocation plan
 # Args: $1=changed_files (newline-separated), $2=project_root
 # Stdout: one of
 #   FORCE_FULL                              — run full suite (no diff computable ONLY)
 #   <newline-separated list of bats files>  — targeted subset, relative to project_root
+#      lines prefixed "by_ref:" were selected via body reference (not header/self-diff)
 #   (empty)                                 — diff exists but no covered tests; caller skips bats
 # Returns 0 always (caller handles empty/full).
 # There are no path-based full-suite triggers — selection is always targeted
@@ -482,11 +528,25 @@ _select_tests_by_changed_paths() {
   # Walk every bats file and decide inclusion. Output is relative paths so the
   # caller can `cd "$project_root" && bats <relative-paths>`.
   #
-  # First rule (obvious-case shortcut): if the file IS itself in the diff, run
-  # it. The sharkrite-test-covers header lists SOURCE paths, not test paths —
+  # Rule 1 (self-diff shortcut): if the file IS itself in the diff, run it.
+  # The sharkrite-test-covers header lists SOURCE paths, not test paths —
   # without this check, editing a .bats file would match no header anywhere,
   # the selection would come back empty, and the edited file's own tests
   # would never run for the very change that touched them.
+  #
+  # Rule 2 (header match): comma-separated declared paths, glob-capable.
+  # Runs before the body-reference check so that header-matched files are
+  # emitted bare (no prefix) and only body-only rescues carry "by_ref:".
+  # Without this ordering every header declares the path as a string literal,
+  # so the body grep fires first and overcounts by_ref in the diag.
+  #
+  # Rule 3 (body reference): select the file if its text contains any changed
+  # shell-source path (lib/**/*.sh, bin/*, tools/**/*.sh) as a fixed-string.
+  # This catches tests that source, grep, or reference a changed file without
+  # declaring it in the sharkrite-test-covers header. Runs AFTER the header
+  # check; output is prefixed "by_ref:" so the caller can count them separately
+  # for the TEST_GATE_SELECTION diag. Comments documenting a dependency are a
+  # dependency — the fixed-string match is intentionally comment-inclusive.
   (cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null) \
     | while IFS= read -r _rel; do
         if echo "$changed_files" | grep -Fxq "$_rel"; then
@@ -495,6 +555,10 @@ _select_tests_by_changed_paths() {
         fi
         if _bats_file_matches_changed "$project_root/$_rel" "$changed_files" "$project_root"; then
           echo "$_rel"
+          continue
+        fi
+        if _bats_file_has_body_reference "$project_root/$_rel" "$changed_files"; then
+          echo "by_ref:$_rel"
         fi
       done
 }

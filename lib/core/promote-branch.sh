@@ -516,6 +516,60 @@ run_promote() {
     fi
   fi
 
+  # Open-PR inflight guard: refuse if any open PR targets the integration branch.
+  # Phase 7 deletes the branch; GitHub silently closes any PR whose base disappears,
+  # orphaning worktrees and losing in-flight work.
+  # Query shape mirrors repo-status.sh:649: --json number,body,headRefName,baseRefName
+  local _inflight_prs_json
+  if ! _inflight_prs_json=$(gh_safe pr list --state open \
+    --json number,body,headRefName,baseRefName --limit 200); then
+    print_error "Cannot verify in-flight PRs for '${BRANCH}': gh pr list failed."
+    echo "  Refusing to promote — cannot guarantee no in-flight PRs target this branch." >&2
+    exit 1
+  fi
+  _inflight_prs_json="${_inflight_prs_json:-[]}"
+
+  local _inflight_count=0
+  local _jq_exit=0
+  _inflight_count=$(printf '%s' "$_inflight_prs_json" | jq --arg b "$BRANCH" \
+    '[.[] | select(.baseRefName == $b)] | length' 2>/dev/null) || _jq_exit=$?
+  if [ "${_jq_exit}" -ne 0 ]; then
+    print_error "Cannot verify in-flight PRs for '${BRANCH}': failed to parse gh pr list output."
+    echo "  Refusing to promote — cannot guarantee no in-flight PRs target this branch." >&2
+    exit 1
+  fi
+  _inflight_count="${_inflight_count:-0}"
+
+  if [ "${_inflight_count:-0}" -gt 0 ]; then
+    _diag "PROMOTE_BLOCKED_INFLIGHT branch=${BRANCH} open_prs=${_inflight_count}"
+    print_error "Cannot promote '${BRANCH}': ${_inflight_count} open PR(s) still target this branch."
+    echo "  Promoting deletes the branch — GitHub would silently close these PRs." >&2
+    echo "  Finish or abandon each in-flight issue first:" >&2
+    echo "" >&2
+    while IFS= read -r _ip_entry; do
+      [ -n "${_ip_entry:-}" ] || continue
+      local _ip_num _ip_head _ip_body _ip_issue
+      _ip_num=$(printf '%s' "$_ip_entry" | jq -r '.number // ""' 2>/dev/null || true)
+      _ip_head=$(printf '%s' "$_ip_entry" | jq -r '.headRefName // ""' 2>/dev/null || true)
+      _ip_body=$(printf '%s' "$_ip_entry" | jq -r '.body // ""' 2>/dev/null || true)
+      _ip_issue=$(printf '%s' "$_ip_body" | \
+        grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | \
+        head -1 | grep -oE '[0-9]+' || true)
+      if [ -n "${_ip_issue:-}" ]; then
+        echo "    PR #${_ip_num}  (issue #${_ip_issue})  ${_ip_head:-}" >&2
+        echo "      Finish:  rite --branch ${BRANCH} ${_ip_issue}" >&2
+        echo "      Abandon: rite ${_ip_issue} --undo" >&2
+      else
+        echo "    PR #${_ip_num}  ${_ip_head:-}" >&2
+        echo "      Finish:  rite --branch ${BRANCH} <issue>" >&2
+        echo "      Abandon: rite <issue> --undo" >&2
+      fi
+      echo "" >&2
+    done < <(printf '%s' "$_inflight_prs_json" | jq -c --arg b "$BRANCH" \
+      '[.[] | select(.baseRefName == $b)] | .[]' 2>/dev/null || true)
+    exit 1
+  fi
+
   print_success "Preflight passed — $_unpromoted_count unpromoted ledger entry(ies)"
   echo ""
 

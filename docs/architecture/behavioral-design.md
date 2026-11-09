@@ -444,11 +444,12 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 1. **No full-suite triggers — selection is always targeted.** The original #462 design escalated to the full suite when the commit touched `lib/utils/test-gate.sh`, `tools/*-lint.sh`, `Makefile`, `tests/helpers/*`, or `tests/fixtures/*`. That trigger list was **removed 2026-06-12**: a full run costs hours per fix-loop iteration, drowns real findings in load-induced flake (live failure: issue #484 died mid-loop to a 165-file gate run), and fired on exactly the issues that maintain the gate/lint tooling. **Accepted trade-off:** changes to `Makefile`/`tests/fixtures/*` currently select zero bats files, and `tests/helpers/*` selects only the few files whose headers name helpers despite helpers being sourced everywhere — this gap is deliberate until a focused mechanism exists (issue #482 tracks the compensating periodic full-suite safety net). Re-adding a trigger list requires consciously deleting the pinning tests in `test-gate-targeted-selection.bats`. The lint-side full-scan triggers (`_LINT_GATE_FULL_SUITE_TRIGGERS`) are NOT removed — a full lint scan costs seconds.
 2. **Headerless files are skipped** (post-#480 backfill flipped the default in #481; the `MISSING_TEST_COVERAGE_HEADER` lint rule enforces headers on new files). A *directly changed* `.bats` file always runs itself regardless of headers.
-3. **Header match.** For files with a header, the comma-separated path list is intersected with the commit's changed-file set via shell case-statement glob matching. Globs (`lib/utils/*.sh`) supported; note `*` doesn't match `/` per standard bash glob rules.
+3. **Header match.** For files with a header, the comma-separated path list is intersected with the commit's changed-file set via shell case-statement glob matching. Globs (`lib/utils/*.sh`) supported; note `*` doesn't match `/` per standard bash glob rules. Header match takes priority — `by_ref=N` counts only files selected by body reference that no header matched.
+4. **Body reference match (#1657).** A bats file is also selected when its text contains any changed shell-source path (`lib/**/*.sh`, `bin/*`, `tools/**/*.sh`) as a whole-token match — this catches tests that source, grep, or reference a changed file without declaring it in the header. Comments documenting a dependency are a dependency; the match is intentionally comment-inclusive. Runs after header match so only body-only rescues carry `by_ref:`. The `by_ref=N` field in `TEST_GATE_SELECTION` diag counts files selected via this rule.
 
 **Empty diff no longer auto-runs the full suite.** Since the FORCE_FULL-opt-in hardening (see "Full-suite is OPT-IN" below), an empty/errored diff against the default base → run ZERO bats (or skip on an unresolvable base), NOT the full suite. The full suite is reachable only via the explicit `RITE_GATE_FORCE_FULL=1` / deliberate `DIFF_BASE=HEAD` signals. **Empty selection** (diff exists, no covered tests) skips bats entirely with `mode=targeted selected=0`.
 
-**Diag emission:** every gate run logs `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N`. Since the trigger removal, `mode=full` means only "no diff computable". The health report aggregates these into a "Test Selection" sub-section under Test Gate, with a WATCH threshold at avg selected/total > 50% (indicates header adoption is lagging).
+**Diag emission:** every gate run logs `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N by_ref=N pr=N`. Since the trigger removal, `mode=full` means only "no diff computable". `by_ref=N` counts files selected via body reference (rule 4 above). The health report aggregates these into a "Test Selection" sub-section under Test Gate, with a WATCH threshold at avg selected/total > 50% (indicates header adoption is lagging).
 
 **CI-equivalent environment contract (#1607):** the targeted bats selection runs in an environment that mirrors CI: `claude` is masked by prepending a shim dir to `PATH` (the shim exits 1, so any test that silently depends on a live `claude` binary fails locally — which is the fix, not the bug), and GNU tools (gawk/ggrep) are preferred when installed (via #1596). The `make check`/lint runner still executes under the normal PATH — only bats children see the hostile-environment PATH. Neither change affects the selection itself — they affect what the selected tests observe. Skipped tests (TAP `# skip` lines) are counted separately so "0 failures" cannot be confused with "everything ran". Emitted as `[diag] GATE_ENV gnu=yes|no claude=masked flock=yes|no skipped=N pr=N`.
 
@@ -2217,6 +2218,26 @@ three-way outcome (assessed-with-NOW / assessed-with-nothing / not-assessed),
 the env contract passed to the assessor, and the no-bare-`exit` best-effort
 property of the region.
 
+## Promote Preflight: In-Flight PR Guard (#1641)
+
+`rite --promote <branch>` Phase 7 deletes the integration branch (remote + local) after the squash-merge. GitHub silently closes any open PR whose base branch disappears — orphaning the in-flight worktree and losing the branch pointer for cleanup.
+
+**The guard.** At the end of the Phase 1 preflight, before any gh mutation, `run_promote` calls:
+
+```bash
+gh pr list --state open --json number,body,headRefName,baseRefName --limit 200
+```
+
+(the same query shape `repo-status.sh` uses for its Integration Branches display). It filters the result with jq for entries where `baseRefName == <branch>`. If any exist: emit `PROMOTE_BLOCKED_INFLIGHT branch=<b> open_prs=<n>` to the diag stream, print the PR number, the issue it closes (extracted from the PR body via the standard `Closes #N` pattern), and the exact commands to finish or abandon the in-flight work, then exit 1. If none exist: guard is a no-op.
+
+**No override flag.** There is intentionally no `--force` or `--bypass-inflight` flag. The correct resolution is to finish or undo the in-flight issues — not to skip a guard whose purpose is preventing silent data loss.
+
+**Scope.** This guard applies only to the full-branch promote path (`rite --promote <branch>` with no issue argument). The single-issue cherry-pick path (`rite --promote <branch> <issue>`) does not delete the branch and is therefore unaffected.
+
+**Diag:** `PROMOTE_BLOCKED_INFLIGHT branch=<b> open_prs=<n>` — emitted before `exit 1`; never emitted when the guard passes.
+
+**Regression:** `tests/regression/promote-branch.bats` Group 2 — "open PR targeting the branch blocks promote and names PR, issue, and commands"; "emits PROMOTE_BLOCKED_INFLIGHT diag"; "open PR targeting a different branch does not block promote".
+
 ## The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)
 
 `attempt_claude_merge_resolution` returns 0 for "conflicts resolved **in the
@@ -2805,3 +2826,45 @@ pass for repos with high issue volume or rate-limit concerns.
 (hook after `_batch_print_drift_summary`).
 
 **Enforcement:** `tests/regression/batch-end-reconcile.bats`.
+
+## Follow-up Worktree Adoption
+
+A follow-up issue carrying a `sharkrite-parent-pr:N` marker may reuse the parent
+PR's branch and local worktree. The adoption decision is made in one place and
+one place only: **`detect_parent_pr_attachment`** (`lib/utils/pr-detection.sh`).
+
+**Contract:**
+- Parent PR state = `OPEN` → `adopt`: the follow-up's dev session, review, and
+  merge target the parent PR end-to-end (same branch, same worktree if present).
+- Parent PR state = `MERGED` or `CLOSED` → `ignore`: the marker is kept for
+  traceability but the follow-up runs fresh on a new branch from main.
+
+**Single decision point — why it matters:**
+
+Before #1630, `workflow-runner.sh` called `detect_parent_pr_attachment` and
+correctly refused to adopt a MERGED parent, but `claude-workflow.sh`'s
+`find_worktree_for_task` independently fetched the parent PR's `headRefName`
+*without* checking state. When a human merged the parent via `gh pr merge
+--delete-branch` (which removes the remote branch but not the local worktree),
+the lingering local worktree was adopted; the script navigated into it, saw
+"PR #N is MERGED", and exited with "Work already completed" — reporting the
+wrong issue/PR pair and doing no work for the follow-up.
+
+**How the contract is enforced:**
+
+1. `workflow-runner.sh` calls `detect_parent_pr_attachment` and exports
+   `_RITE_PARENT_ATTACHMENT_MODE` / `_RITE_PARENT_PR_BRANCH` before invoking
+   `claude-workflow.sh`, so the verdict travels with the subprocess. The export
+   only happens when `PR_NUMBER` is **unknown** (empty/null) — i.e. no prior PR
+   was found for this follow-up issue, so attachment resolution runs. When
+   `PR_NUMBER` is already known (the follow-up already has its own PR from an
+   earlier run), the block is skipped entirely and neither var is exported; step 2's
+   fallback path in `find_worktree_for_task` applies for standalone invocations.
+2. `find_worktree_for_task` reads those env vars when present (no redundant API
+   call in orchestrated runs) and falls back to calling `detect_parent_pr_attachment`
+   directly when invoked standalone.
+3. The two callers reach the same answer because they both route through the same
+   function — independent re-derivation of "is the parent still live?" is the
+   bug class this design prevents.
+
+**Enforcement:** `tests/regression/followup-merged-parent-worktree.bats`.

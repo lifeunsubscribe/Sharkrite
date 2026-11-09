@@ -258,7 +258,7 @@ Chunk 6 (lint backstop)  ── land LAST, after 3+4 ── [SEPARABLE, ordering
 
 `run_promote <branch>` in `lib/core/promote-branch.sh` executes in seven phases:
 
-1. **Preflight** — fetch `origin/main` + `origin/<branch>`; verify ledger has ≥1 `promoted=false` entry; assert the branch is not behind main (never auto-syncs — sync is explicit via `rite --sync <branch>`).
+1. **Preflight** — fetch `origin/main` + `origin/<branch>`; verify ledger has ≥1 `promoted=false` entry; assert the branch is not behind main (never auto-syncs — sync is explicit via `rite --sync <branch>`); refuse if any open PRs target the branch (Phase 7 deletes it, which would silently close them — finish or undo each in-flight issue first; see `behavioral-design.md` → "Promote Preflight: In-Flight PR Guard").
 2. **Promotion PR** — compose a narrative PR body via `RITE_PROMOTE_MODEL` (default `claude-opus-4-8`; own var, decoupled from `RITE_REVIEW_MODEL`); create or refresh a `head=<branch> base=main` PR.
 3. **Review** — `local-review.sh` generates and posts a review on the promotion PR.
 4. **Targeted gate** — `run_test_gate` runs `make check` + targeted `bats` selection (the same targeted gate used by the per-issue workflow, scoped to what the integration branch changed relative to `origin/main`) inside a temporary worktree on `origin/<branch>`. Failure exits 1 with a remediation command. The gate writes a JSON verdict to `<worktree>/.rite-promote-gate.json`; on failure, if that file is non-empty, `promote-branch.sh` copies it to `.rite/state/promote-gate-<branch>.json` and prints the failing items before removing the worktree, so the operator can recover details after cleanup (#1210, #1244).

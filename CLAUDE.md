@@ -58,7 +58,7 @@ lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthes
 ### Workflow Phases
 
 0. **Trivial-fix fast-path (#531)** — Before Phase 1, if the issue body carries a concrete patch (a fenced ` ```diff ` block under a `<!-- sharkrite-fastpath -->` marker), `try_trivial_fix_fastpath` (`lib/utils/trivial-fix-fastpath.sh`) applies it deterministically (`git apply`) and merges it **only if** the cheap haiku triage classifier returns `trivial` AND the post-commit gate passes — skipping the dev session + full review. All checks run before any commit/push/PR, so any failure (or an ineligible issue) is a side-effect-free fall-through to Phase 1. Inert until issues adopt the marker. See `behavioral-design.md` → "Trivial-Fix Fast-Path + Initial Phase 2/3 Parallelism".
-1. **Development** — Claude implements the fix in a worktree
+1. **Development** — Claude implements the fix in a worktree. For follow-up issues carrying a `sharkrite-parent-pr:N` marker, the worktree is reused from the parent PR only while the parent PR is OPEN; a MERGED or CLOSED parent means a fresh branch from main (see `behavioral-design.md` → "Follow-up worktree adoption").
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
    - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit; for node repos the targeted selection also includes the target repo's `scripts.lint` (eslint scoped to changed files, other runners full — opt-out: `RITE_GATE_REPO_LINT=false`). **CI-equivalent environment (#1607):** the targeted bats selection runs with `claude` masked (shim that exits 1) and GNU tools (gawk/ggrep gnubin) prepended when installed (via #1596), so a local gate pass predicts a CI pass. The `make check`/lint runner still executes under the normal PATH. Skipped tests are counted and surfaced in the `GATE_ENV` diag.
@@ -795,7 +795,7 @@ Bats files in `tests/regression/` and `tests/lint/` can declare which source pat
 @test "..." { ... }
 ```
 
-The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers and runs only the bats files whose covered paths intersect the commit's changed-file list. Files **without** a header are **skipped** (post-#480 backfill; the `MISSING_TEST_COVERAGE_HEADER` lint rule enforces headers on new files). A directly changed `.bats` file always runs itself. Patterns support globs (`lib/utils/*.sh`). Concurrency files (`tests/concurrency/*.bats`) are selected by header like any other bats file; each carries `# sharkrite-gate-serial` so the gate runs them in the serial lane rather than the parallel `--jobs` group (#1659).
+The post-commit `test_gate` (in `lib/utils/test-gate.sh`) reads these headers and runs only the bats files whose covered paths intersect the commit's changed-file list. Files **without** a header are **skipped** (post-#480 backfill; the `MISSING_TEST_COVERAGE_HEADER` lint rule enforces headers on new files). A directly changed `.bats` file always runs itself. Patterns support globs (`lib/utils/*.sh`). Concurrency files (`tests/concurrency/*.bats`) are selected by header like any other bats file; each carries `# sharkrite-gate-serial` so the gate runs them in the serial lane rather than the parallel `--jobs` group (#1659). A bats file is also selected when its body references a changed shell-source path (`lib/**/*.sh`, `bin/*`, `tools/**/*.sh`) as a fixed string — this catches tests that source or extract from a changed file without declaring it in the header (#1657).
 
 **There are NO bats full-suite triggers — selection is always targeted.** The original trigger list (gate/lint/Makefile/helpers/fixtures changes → full 165-file run) was removed 2026-06-12: full runs cost hours per fix-loop iteration and drown findings in load flake. Changes to `Makefile`/`tests/fixtures/*` select zero bats files and `tests/helpers/*` selects only its few covering files — an accepted, documented gap until #482's periodic safety net lands. Do NOT re-add trigger paths; pinning tests in `tests/regression/test-gate-targeted-selection.bats` enforce this. The one remaining full-suite path is the no-diff fallback (exploited deliberately by `post-merge-verify.sh`'s main-broken check). Lint full-scan triggers are unaffected (full lint costs seconds). See `docs/architecture/behavioral-design.md` → "Test Selection by Changed Paths".
 
@@ -813,7 +813,7 @@ Adopt it where the ratio is bad: before the #1236 split, `test-gate.sh` was ~2,9
 
 **This philosophy is not sharkrite-specific.** When sharkrite builds or extends a test framework in ANY repo, it wires the tightest correct selection the toolchain supports (jest `--findRelatedTests`, `pytest-testmon`, per-workspace mapping in monorepos) and never settles for "run everything". The doctrine and per-runner guidance live in `docs/test-authoring-runbook.md`, which is loaded into every dev session (project override: `.rite/test-authoring-runbook.md`).
 
-**Diag emission**: every gate run emits `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N pr=N` for health-report aggregation (`mode=full` now occurs only when no diff is computable).
+**Diag emission**: every gate run emits `[diag] TEST_GATE_SELECTION mode=targeted|full selected=N total=N by_ref=N pr=N` for health-report aggregation (`mode=full` now occurs only when no diff is computable; `by_ref=N` counts files selected via body reference rather than header).
 
 When you add a new bats file, include the header — headerless files are skipped by the gate, so a missing header means your tests never run for the code they cover.
 
@@ -931,14 +931,15 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 
 **What it writes:**
 - Full transcript to `.rite/logs/full-suite-YYYYMMDD.log` (header with date/host/branch; one log per day, appended)
-- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
+- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed|aborted lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
-**`--scheduled` flag (used by the scheduled plist):** Enables two guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour or lock state.
+**`--scheduled` flag (used by the scheduled plist):** Enables three guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour, lock state, or deadline.
 
 - **Window guard:** A run starting outside 02:00–05:00 local time exits 0 immediately without running anything, appends a skip line to the daily log, and emits `[diag] FULL_SUITE_SKIPPED reason=outside_window hour=<H>`. A catch-up firing at 09:00 (launchd sleep catch-up) is therefore a no-op. Skipping the night IS the desired behavior — deferring into working hours is the bug being fixed.
 - **Busy guard:** A run exits 0 immediately when any live rite lock exists (issue or batch lock with a valid PID that answers `kill -0`). Backfill locks (no pid file) and dead-pid locks do NOT count as busy. Emits `[diag] FULL_SUITE_SKIPPED reason=batch_active hour=<H>`.
-- **Health-report aggregation:** A skipped night emits `FULL_SUITE_SKIPPED`, not `FULL_SUITE_RUN` — health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is treated as neither pass nor failure (no green tick, no WARNING entry).
+- **Deadline guard:** Computes remaining seconds until 05:00 at bats-start time (after make check), applies a floor of `_FULL_SUITE_MIN_DEADLINE_S` (default: 1200 s / 20 min), and wraps the bats run with `gtimeout`/`timeout`. On kill (exit 124/137): appends `=== Scheduled run ABORTED at window end ===` to the daily log, emits `[diag] FULL_SUITE_RUN outcome=aborted reason=window_end duration_s=N`, leaves `full-suite-failure.flag` untouched (an abort is not a verdict), skips investigate/remediation, and exits 0. If neither `gtimeout` nor `timeout` is available, the deadline is silently skipped. Override the floor via `RITE_FULL_SUITE_MIN_DEADLINE` (useful for testing).
+- **Health-report aggregation:** A skipped night emits `FULL_SUITE_SKIPPED`, not `FULL_SUITE_RUN` — health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is treated as neither pass nor failure. An aborted run emits `FULL_SUITE_RUN outcome=aborted`, which is counted in `FSR_TOTAL` but not in `FSR_PASSED` or `FSR_FAILED` — the same neither-pass-nor-fail treatment.
 
 A skip line in the daily log looks like:
 ```
@@ -975,6 +976,8 @@ systemctl --user list-timers | grep sharkrite
 
 **Configuration:**
 - `RITE_BATS_JOBS=N` — parallelism override (auto-detects via GNU parallel by default)
+- `RITE_BATS_TEST_TIMEOUT=N` — per-test ceiling in seconds (default: 300 for full-suite; the gate uses 120 — both override via this same var)
+- `RITE_FULL_SUITE_MIN_DEADLINE=N` — floor for the window-end deadline in seconds (default: 1200; set to a small value in tests to exercise the deadline guard without waiting 20 min)
 - `RITE_FULL_SUITE_REPORT_MODEL` — model for the investigation report interpretation (default: `claude-sonnet-4-6`)
 - Parallelism: auto-detected (uses `nproc`/`sysctl hw.ncpu` when GNU parallel is installed)
 
@@ -1029,7 +1032,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `FOLLOWUP_CREATED` — a follow-up issue was filed (source issue, PR, new issue number). Emitted by BOTH per-issue creation sites (`assess-and-resolve.sh` rollup, `assess-review-issues.sh` ACTIONABLE_LATER per-item); the batch reporter harvests these for its `Issues Created` line. The promote path has its own `PROMOTE_FOLLOWUP_CREATED` / `PROMOTE_ASSESSED_FOLLOWUP_CREATED` and is deliberately excluded from a batch's total.
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
-- `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
+- `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`); `outcome=passed|failed|aborted` (`aborted` = killed by deadline guard before a verdict, neither pass nor fail)
 - `FULL_SUITE_SKIPPED` — scheduled run skipped without running the suite; `reason=outside_window` (clock outside 02:00–05:00) or `reason=batch_active` (live rite lock detected); `hour=<H>`. Health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is neither a pass nor a failure — a missing nightly report is explainable, not an alarm.
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 - `DOC_PASS` — every doc model pass: `kind=promote|docs|align doc=<path|-> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`; when `duration_s > RITE_DOC_PASS_WARN_SECONDS` (default 120) an info-level suggestion to run `rite align-docs` is also printed (per-doc passes only; aggregate passes with `doc=-` never print the suggestion)

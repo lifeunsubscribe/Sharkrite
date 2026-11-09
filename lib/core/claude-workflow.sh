@@ -1589,18 +1589,29 @@ find_worktree_for_task() {
     # inner extraction, which returns empty, which under set -e + pipefail kills
     # the script silently. Same bug fixed in batch-process-issues.sh (commit 206f2be).
     if echo "$issue_body" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then
-      # Extract parent PR number from body marker
-      local parent_pr=$(echo "$issue_body" | grep -oE "${RITE_MARKER_PARENT_PR}:[0-9]+" | cut -d: -f2 || true)
-
-      if [ -n "$parent_pr" ]; then
-        pr_branch=$(gh_safe pr view "$parent_pr" --json headRefName --jq '.headRefName' || true)
-
-        if [ -n "$pr_branch" ] && [ "$pr_branch" != "null" ]; then
-          # Found parent PR's branch - this follow-up should work on same branch
-          # Continue below to find worktree
-          :
-        fi
+      # Single decision point for follow-up attachment: detect_parent_pr_attachment
+      # (pr-detection.sh). Using it here prevents the two code paths (workflow-runner.sh
+      # and find_worktree_for_task) from reaching different answers — the bug in #1630
+      # where headRefName was fetched without state so a MERGED parent's lingering
+      # worktree was adopted and the script bailed with "Work already completed" for
+      # the wrong issue/PR.
+      #
+      # When called from workflow-runner.sh, it already ran detect_parent_pr_attachment
+      # and exported _RITE_PARENT_ATTACHMENT_MODE / _RITE_PARENT_PR_BRANCH; consume
+      # them to avoid a redundant GitHub API call. When invoked standalone, derive
+      # the verdict ourselves by calling the shared helper.
+      local _fwt_attach_mode="${_RITE_PARENT_ATTACHMENT_MODE:-}"
+      local _fwt_parent_branch="${_RITE_PARENT_PR_BRANCH:-}"
+      if [ -z "$_fwt_attach_mode" ]; then
+        detect_parent_pr_attachment "$issue_body"
+        _fwt_attach_mode="$PARENT_ATTACHMENT_MODE"
+        _fwt_parent_branch="${PARENT_PR_BRANCH:-}"
       fi
+
+      if [ "$_fwt_attach_mode" = "adopt" ] && [ -n "$_fwt_parent_branch" ] && [ "$_fwt_parent_branch" != "null" ]; then
+        pr_branch="$_fwt_parent_branch"
+      fi
+      # ignore / none: fall through to Closes #N / title matching for THIS issue
     fi
 
     # If not a follow-up or couldn't find parent, use normal logic
@@ -2092,9 +2103,12 @@ if [ -z "$ISSUE_NUMBER" ]; then
 
     if [ "$PR_STATE" = "MERGED" ]; then
       print_success "Work already completed!"
-      echo "  Issue #${ISSUE_NUMBER:-?} (PR #$PR_NUMBER): $PR_TITLE"
+      echo "  PR #$PR_NUMBER (branch: $CURRENT_BRANCH): $PR_TITLE"
       echo "  Status: MERGED"
       echo "  URL: $PR_URL"
+      if [ -n "${ISSUE_NUMBER:-}" ]; then
+        echo "  Requested for issue: #$ISSUE_NUMBER"
+      fi
       echo ""
       print_info "Nothing to do - exiting"
       exit 0

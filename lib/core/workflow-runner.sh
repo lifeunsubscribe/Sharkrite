@@ -3132,6 +3132,11 @@ run_workflow() {
     if [ -n "$_attachment_issue_body" ]; then
       detect_parent_pr_attachment "$_attachment_issue_body"
       # PARENT_ATTACHMENT_MODE, PARENT_PR_NUMBER, PARENT_PR_BRANCH are now set.
+      # Export the verdict so claude-workflow.sh's find_worktree_for_task can consume
+      # it without a redundant GitHub API call. The _RITE_ prefix marks these as
+      # internal env vars, exempt from UNDOCUMENTED_RITE_VAR (Rule 36).
+      export _RITE_PARENT_ATTACHMENT_MODE="$PARENT_ATTACHMENT_MODE"
+      export _RITE_PARENT_PR_BRANCH="${PARENT_PR_BRANCH:-}"
 
       if [ "$PARENT_ATTACHMENT_MODE" = "adopt" ] && [ -n "$PARENT_PR_NUMBER" ]; then
         PR_NUMBER="$PARENT_PR_NUMBER"
