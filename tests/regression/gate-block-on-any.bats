@@ -169,11 +169,12 @@ teardown() { rm -rf "${TEST_REPO:-}"; }
     false
   }
 
-  # DROP_RETRY_MEDIUM_LOW must also still be set in that path (filters MEDIUM/LOW
-  # from tech-debt issue at retry limit — regression guard for defect #5).
+  # DROP_RETRY_MEDIUM_LOW must NOT exist — the severity filter was removed in
+  # issue #1691 (severity is not the worth-tracking judge; the assessor's
+  # necessity bar is). An unfixed MEDIUM/LOW at retry cap is filed, not dropped.
   run grep -n "DROP_RETRY_MEDIUM_LOW=true" "$_script"
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: DROP_RETRY_MEDIUM_LOW=true not found — MEDIUM/LOW filter at retry cap removed"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: DROP_RETRY_MEDIUM_LOW=true found — severity filter at retry cap must be absent"
     false
   }
 }
