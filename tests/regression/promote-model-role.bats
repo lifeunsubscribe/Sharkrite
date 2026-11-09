@@ -25,6 +25,7 @@ setup() {
 #!/bin/bash
 set -euo pipefail
 _fn=$(awk '
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
@@ -84,6 +85,7 @@ teardown() {
 #!/bin/bash
 set -euo pipefail
 _fn=$(awk '
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
@@ -109,6 +111,6 @@ TWO_ROLE_EOF
 # ---------------------------------------------------------------------------
 
 @test "claude.sh: promote role defined and backed by RITE_PROMOTE_MODEL" {
-  run grep -E '^\s*promote\)\s+echo\s+"\$\{RITE_PROMOTE_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
+  run grep -E '^[[:space:]]*promote\)[[:space:]]+echo[[:space:]]+"\$\{RITE_PROMOTE_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
   [ "$status" -eq 0 ]
 }

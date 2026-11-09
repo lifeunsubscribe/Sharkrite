@@ -204,6 +204,18 @@ _build_guard_script() {
   local _state="$1"
   local _script="$BATS_TEST_TMPDIR/guard-test-$$.sh"
 
+  local _fn0_tmp="$BATS_TEST_TMPDIR/fn0-$$.sh"
+  awk '
+    /^batch_suffix_matches_issue[(][)]/ { in_fn=1 }
+    in_fn { print }
+    in_fn && /^}$/ { exit }
+  ' "$BATCH_PROCESSOR" > "$_fn0_tmp" 2>/dev/null
+
+  grep -q "batch_suffix_matches_issue" "$_fn0_tmp" 2>/dev/null || {
+    echo "ERROR: could not extract batch_suffix_matches_issue from $BATCH_PROCESSOR" >&2
+    return 1
+  }
+
   local _fn2_tmp="$BATS_TEST_TMPDIR/fn2-$$.sh"
   awk '
     /^_apply_overlap_defer_or_warn[(][)]/ { in_fn=1 }
@@ -216,6 +228,8 @@ _build_guard_script() {
     return 1
   }
 
+  local _fn0_body
+  _fn0_body=$(cat "$_fn0_tmp" || true)
   local _fn2_body
   _fn2_body=$(cat "$_fn2_tmp" || true)
 
@@ -225,7 +239,10 @@ _build_guard_script() {
     'set -euo pipefail' \
     '' \
     'print_warning() { printf "WARNING: %s\n" "$*" >&2; }' \
+    'print_info()    { printf "INFO: %s\n" "$*" >&2; }' \
     '_diag() { true; }' \
+    '' \
+    "${_fn0_body}" \
     '' \
     "${_fn2_body}" \
     '' \
@@ -241,7 +258,8 @@ _build_guard_script() {
     '# We are testing the ISSUE_STATE guard, not overlap detection (that is' \
     '# tested in batch-cross-batch-overlap.bats).' \
     '_OVERLAP_FILES="lib/utils/docs-map.sh"' \
-    '_OVERLAP_WT="/worktrees/other-issue_b1000-1001"' \
+    '# _OVERLAP_WT basename encodes issue 42 so batch_suffix_matches_issue("ft-overlap-work_b42","42") infers intra-batch.' \
+    '_OVERLAP_WT="/worktrees/ft-overlap-work_b42"' \
     '' \
     '_list_len_before="${#ISSUE_LIST[@]}"' \
     '' \

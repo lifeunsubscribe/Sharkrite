@@ -34,7 +34,7 @@ lib/core/assess-review-issues.sh  # Three-state assessment (NOW/LATER/DISMISSED)
 lib/core/assess-and-resolve.sh    # Review loop driver (calls assess, decides action)
 lib/core/merge-pr.sh              # Merge PR, cleanup worktree
 lib/core/plan-issues.sh           # Issue generation from architectural docs
-lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + targeted gate + assessment + merge + cleanup)
+lib/core/promote-branch.sh        # rite --promote orchestrator (promotion PR + review + targeted gate + assessment + merge + cleanup + post-merge doc pass)
 lib/core/docs-command.sh          # rite docs orchestrator (consent/audit/directed-update engine + reconcile — cluster-B entry point)
 lib/providers/provider-interface.sh # Provider abstraction dispatcher
 lib/providers/claude.sh           # Claude Code CLI provider (only shipped provider)
@@ -43,8 +43,8 @@ lib/utils/config.sh               # Config loading, path setup, provider variabl
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/integration-ledger.sh   # Integration branch ledger (issue↔SHA record, append/entries/mark_promoted)
 lib/utils/doc-consent.sh          # Doc-drift opt-in (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; unset = never asked, records nothing)
-lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → .rite/state/docs-map.tsv)
-lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — written per merge only with recorded consent)
+lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → docs/docs-map.tsv)
+lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — per-doc/per-branch entry files under RITE_STATE_DIR/doc-drift/, one entry per PR (#1509: dedupe key is (pr,doc,assertion) — distinct PRs for the same doc each get their own entry), locked via lock.sh)
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
 lib/utils/repo-status.sh          # Repo-wide status display (worktrees, phases, issues)
 lib/utils/scratchpad-manager.sh   # Scratchpad lifecycle (security findings, encountered issues)
@@ -61,12 +61,12 @@ lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthes
 1. **Development** — Claude implements the fix in a worktree
 2. **Push/PR** — Push commits, create/update PR, detect review sensitivity areas
 3. **Review/Assess Loop** — Generate review + run post-commit gate in parallel, assess combined findings (review + gate), fix ACTIONABLE_NOW items (up to 3 retries)
-   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit
+   - Gate (`test-gate.sh`) runs `make check` + `bats -r tests/` **in parallel** with review generation after each commit; for node repos the targeted selection also includes the target repo's `scripts.lint` (eslint scoped to changed files, other runners full — opt-out: `RITE_GATE_REPO_LINT=false`). **CI-equivalent environment (#1607):** the targeted bats selection runs with `claude` masked (shim that exits 1) and GNU tools (gawk/ggrep gnubin) prepended when installed (via #1596), so a local gate pass predicts a CI pass. The `make check`/lint runner still executes under the normal PATH. Skipped tests are counted and surfaced in the `GATE_ENV` diag.
    - **The INITIAL pass parallelizes too (#531):** `run_workflow`'s Phase 2 fires the gate in the background concurrent with the first review (bounded wait via the #654 backstop), so the first assessment also sees `[GATE]` findings. Previously the gate ran only inside the fix loop.
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - **Block-on-any:** the gate blocks/feeds the fix loop on **any** test failure in the targeted selection. `outcome=passed ⟺ zero failures`. This is sound because `main` is kept green (the green-main work, #707) — so any failure in the selection is this change's to fix. Phase 3 deleted the old baseline-diff machinery (re-run failing files at the diff base, suppress pre-existing reds) once it had nothing to tolerate. See `behavioral-design.md` → "Gate Block-on-Any".
    - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s)
-   - **No full suites inside a workflow (CRITICAL).** Gate runs are always the targeted selection. A full unfiltered `bats -r tests/` belongs ONLY in the overnight `rite --full-suite` pipeline — never in a batch preflight, a phase gate, or any interactive path. Besides costing 10–25 min per invocation, a full run puts the `tests/concurrency/` suites (which spawn competing processes by design) into the `--jobs 8` parallel group where they starve past `BATS_TEST_TIMEOUT` and report a healthy main as red. This retired the green-main preflight (#916, removed 2026-10-13 after it false-halted two batches). If main-greenness needs checking, do it lazily: re-run only the already-failing tests against main and subtract matches.
+   - **No full suites inside a workflow (CRITICAL).** Gate runs are always the targeted selection. A full unfiltered `bats -r tests/` belongs ONLY in the overnight `rite --full-suite` pipeline — never in a batch preflight, a phase gate, or any interactive path. Besides costing 10–25 min per invocation, a full run puts the `tests/concurrency/` suites (which spawn competing processes by design) into the `--jobs 8` parallel group where they starve past `BATS_TEST_TIMEOUT` and report a healthy main as red. This retired the green-main preflight (#916, removed 2026-10-13 after it false-halted two batches). If main-greenness needs checking, do it lazily: re-run only the already-failing tests against main and subtract matches. Note: the `Barrier timeout waiting for N processes (got 1)` message can indicate two distinct failure modes — resource starvation from full-suite parallel execution (the reason above), OR a dead worker that never reached the barrier due to a broken setup step (issue #1597: `git worktree add` on a shared branch silently kills workers 2..N before they touch the barrier). The two look identical at the barrier but have different root causes; a barrier timeout in a CI-only run on a lightly-loaded runner is more likely a dead-worker bug than starvation.
    - Fix session uses `bash -n` syntax-check only — no `make check`/`bats`/`pytest` inside the LLM session
 4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
 5. **Completion** — Notifications, cleanup
@@ -111,6 +111,7 @@ Each task uses the model that fits its nature. Every role has its own independen
 | Finding assessment | `RITE_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Classifies review findings NOW/LATER/DISMISSED — three-state classification of structured findings, sonnet's job. Own var (#1187): it previously inherited the review model from the review marker, so pinning review to fable silently ran the loop's highest-count LLM call on fable too. |
 | Issue planning | `RITE_PLAN_MODEL` | `claude-opus-4-8` | Generates issues from ADRs — highest-stakes reasoning (must honor ADRs, never hallucinate fixtures). Its own var, decoupled from review so moving review off opus can't silently downgrade planning. Before this role existed, `plan-issues.sh` passed `""` and rode `RITE_REVIEW_MODEL` invisibly. |
 | Doc assessment | `RITE_DOC_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Structured pattern matching and comparison — sonnet's sweet spot |
+| Doc update (`doc_update`) | `RITE_DOC_UPDATE_MODEL` | `claude-fable-5` | LLM-authored doc edits read by humans as the product's description — quality justifies fable. Independent of `doc_assessment` (tag dedup, diff comparison). Role added; wiring to `docs-command.sh` Tier-2 editing pass is pending (forthcoming in Tier 2 issues). |
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
 | Triage / classify | `RITE_TRIAGE_MODEL` | `claude-haiku-4-5` | Narrow binary/bucket classification (trivial-vs-substantive diff; doc categorization) — haiku's job |
 | Health report | `RITE_HEALTH_MODEL` | `claude-sonnet-4-6` | Mostly templating pre-computed stats + fixed-threshold checks; thin interpretive tail. Decoupled from review so the report stops riding opus. A/B (2026-06-15) showed sonnet at coverage parity with opus; opus's only edge was calibration on ambiguous signals (it correctly hedged a phantom-CRITICAL that sonnet over-escalated). If the future chunk-split lands, put the Insights/prioritization tail on opus. |
@@ -118,6 +119,8 @@ Each task uses the model that fits its nature. Every role has its own independen
 | Promotion PR body | `RITE_PROMOTE_MODEL` | `claude-opus-4-8` | Narrative synthesis across many issues for a production-code-review audience — the promotion PR is the management-facing review artifact for an entire integration branch. Opus because output quality directly affects the human review gate. Own var: moving review off opus must never silently downgrade promotion narratives with it. |
 
 **Never pass `""` as the model arg** to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on defaults — an empty model silently falls through to `resolve_model "review"` (opus). Pass an explicit role via the provider-agnostic **`provider_resolve_model <role>`** (not the claude-prefixed `claude_provider_resolve_model` — `lib/core`/`lib/utils` must stay provider-agnostic). Both invariants are enforced by lint: `PROVIDER_MODEL_FALLTHROUGH` (Rule 31) rejects the bare `""`, `DIRECT_PROVIDER_CALL` (Rule 32) rejects direct `claude_provider_*` calls. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
+
+**Opt-in fallback when a pinned model is out of credits**: set `RITE_MODEL_FALLBACK=<working-model>` in `.rite/config`. Healthcheck probes each distinct configured model for roles that go through `provider_resolve_model` (dev, review, assessment, doc_assessment, plan, promote, triage, full_suite_report) and substitutes the fallback for any that are capped — per-role independence is preserved (each role's var still controls its default; only an actually-capped model is replaced). Note: `RITE_HEALTH_MODEL` is used directly in `bin/rite-health-report` without routing through `provider_resolve_model`, so it is not probed and not subject to substitution. Emits one `MODEL_FALLBACK` diag and one operator warning per affected role. When the fallback itself is also unavailable, the existing exit-5/cap-resume path fires normally. When unset (default), no probes run and behavior is byte-identical to before.
 
 ## Shell Conventions
 
@@ -494,6 +497,7 @@ Path-based detectors (infrastructure, migrations, auth, docs, expensive services
 Only content-aware and practical conditions block merges:
 
 - **CRITICAL review findings** — requires fix or approval
+- **CI check failures** — any check in `statusCheckRollup` whose `conclusion` is `FAILURE` or `ERROR` blocks the merge (`MERGE_GATE_CI`). Pending checks (`conclusion == null`) are advisory only — no polling, no sleep, zero added latency. The gate reads conclusions GitHub already computed; it runs no tests itself. Replaces the inert `isRequired` filter (a GitHub paid-plan feature unavailable here). Implemented in `lib/core/merge-pr.sh` Check 4.
 - **Test/build failures** — non-zero exit from test suite
 - **Session limits** — dual-cap model (issue #283):
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)
@@ -568,6 +572,12 @@ rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file cr
                            # Works in any consent mode — explicit command + preview approval
                            # IS consent. Can CREATE new docs (e.g. ADRs). Nothing in sharkrite
                            # edits docs without this approval loop (per-merge doc-sync retired).
+rite docs --resume <branch> # Resume a saved doc proposal from a terminal-less promote:
+                           # loads ${RITE_STATE_DIR}/doc-proposal-<safe-branch>.md, runs each
+                           # listed doc through the y/n/f approval loop (same as the TTY promote
+                           # path), applies approved changes via the docs-PR path, and removes
+                           # the proposal file after completion. Missing proposal → exit 1
+                           # listing available ${RITE_STATE_DIR}/doc-proposal-*.md files.
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
@@ -576,14 +586,18 @@ rite --sync <N> [<N>...]  # Sync issue feature branches: skips rebase when branc
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
 rite --promote <branch>    # Promote integration branch to main (PR + review + targeted gate +
                            # CRITICAL hard gate + NOW/LATER/DISMISSED assessment + squash-merge
-                           # + cleanup). Classify-only — there is NO fix loop at promote: fixing
-                           # on the integration branch would land code on main that skipped the
-                           # per-issue review cycle. ACTIONABLE_NOW findings become one
-                           # aggregated issue and ACTIONABLE_LATER become per-item issues —
-                           # both deduped against the follow-ups the constituent issues already
-                           # filed — and DISMISSED are dropped. When every surviving finding is
-                           # already tracked, nothing is filed. If the assessor is unavailable it falls back
-                           # to capturing the raw review — it never silently loses findings.
+                           # + cleanup + post-merge Tier 2 doc pass). Classify-only — there is
+                           # NO fix loop at promote: fixing on the integration branch would land
+                           # code on main that skipped the per-issue review cycle. ACTIONABLE_NOW
+                           # findings become one aggregated issue and ACTIONABLE_LATER become
+                           # per-item issues — both deduped against the follow-ups the constituent
+                           # issues already filed — and DISMISSED are dropped. When every
+                           # surviving finding is already tracked, nothing is filed. If the
+                           # assessor is unavailable it falls back to capturing the raw review —
+                           # it never silently loses findings. After the merge, a Tier 2 doc pass
+                           # runs (TTY: interactive review loop; no TTY: saves proposal to
+                           # .rite/state/doc-proposal-<branch>.md, prints `rite docs --resume`).
+                           # Doc rejection never blocks the merge outcome.
                            # See behavioral-design.md → "Promotion Review Is Assessed, Not Just
                            # Captured".
 rite --promote <branch> <issue>  # Single-issue promote: cherry-picks ONE staged ledger SHA onto a
@@ -603,7 +617,7 @@ rite --promote <branch> <issue>  # Single-issue promote: cherry-picks ONE staged
 
 **`rite plan`** generates GitHub issues from architectural docs. Loads the doc + project CLAUDE.md + the issue runbook (`docs/issue-runbook.md`) and generates well-structured issues via Claude. Interactive feedback loop: preview → approve/adjust → create. Supports natural language instructions for filtering (e.g., `rite plan "phases 2-4 except auth"`). Default doc(s) configured via `RITE_PLAN_DOCS` in `.rite/config`. Issues follow the runbook template: title format, labels (phase + category + priority), time estimates (Fibonacci, capped at 2hr), Claude Context, acceptance criteria with verification commands, done definitions, scope boundaries, and dependency chains.
 
-Auto-discovery injects grounding context beyond the explicit doc path: ADRs (`docs/**/*adr*.md`), root `README.md`, and remaining `docs/**/*.md` up to `RITE_PLAN_DOC_BYTE_CAP` bytes (default 50 KB). ADRs and README always load in full; other docs are dropped alphabetically when the cap is hit. Set `RITE_PLAN_DOC_BYTE_CAP=0` to disable entirely. Set `RITE_PLAN_INCLUDE_README=false` to skip README injection without disabling other auto-discovery. Doc block headers use project-relative paths (e.g., `--- docs/architecture/adr-001.md ---`) to prevent identical-label collisions when multiple files share the same basename.
+Auto-discovery injects grounding context beyond the explicit doc path. When `docs/docs-map.tsv` (v4) is present, discovery is **map-driven**: ADRs and README load in full; other feature-doc sections load one section at a time (by heading anchor) until `RITE_PLAN_DOC_BYTE_CAP` bytes (default 50 KB) of content have been loaded — sections past the cap are still **discoverable** (listed in an index block in the prompt) rather than silently skipped. Without a docs map, discovery falls back to whole-file loading: ADRs and README in full, then other `docs/**/*.md` files alphabetically until the cap is hit. `RITE_PLAN_DOC_BYTE_CAP` bounds *content loaded per pass*, never what is discoverable. Set `RITE_PLAN_DOC_BYTE_CAP=0` to disable auto-discovery entirely. Set `RITE_PLAN_INCLUDE_README=false` to skip README injection. Doc block headers use project-relative paths (e.g., `--- docs/architecture/adr-001.md ---`); map-driven section blocks use `--- docs/my-doc.md § Section Title ---`.
 
 The full `rite <issue>` resume correctly detects state (via PR comments/commits) and skips completed phases, so running standalone commands then resuming with the full lifecycle works seamlessly.
 
@@ -685,6 +699,7 @@ bats tests/             # Run test suite directly (bypasses make wrapper)
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — a `RITE_*` variable is read in `lib/` but is absent from both `config/project.conf.example` and `config/rite.conf.example`. Pre-existing undocumented vars are exempted via `tools/lint-rules/36-undocumented-rite-var.ledger` (frozen count as of 2026-07-14 — DO NOT add new ledger entries). New vars must be documented with a commented-out option entry in one of the config examples. Genuinely internal (non-config) new variables should use the `_RITE_` prefix, which falls outside this rule's pattern by construction. Suppress with `# sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: ...` on the preceding line for the rare internal var that must keep a bare `RITE_` name.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — a literal `origin/main` (slash form) or `origin main` (two-word form) appears on a non-comment line in one of the ten §5.2 BECOMES-TARGET files (`lib/core/claude-workflow.sh`, `workflow-runner.sh`, `create-pr.sh`, `merge-pr.sh`, `lib/utils/trivial-fix-fastpath.sh`, `mid-run-rebase.sh`, `conflict-resolver.sh`, `scope-checker.sh`, `test-gate.sh`, `stale-branch.sh`). These files are target-branch-aware: they should resolve the target via `resolve_target_branch` (#1033). A hardcoded `origin/main` silently mixes trunk code into integration-branch worktrees. Suppress with `# sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: ...` on the preceding line for sites that are genuinely trunk-relative (§5.1 STAYS-MAIN survivors: local-main housekeeping, cold-start function defaults, gate-selection hints where over-selecting vs main errs safe). See: `docs/architecture/branch-flag-design.md` §5/§6.4.
 - `UNSCOPED_LINTER_IN_BATS` (Rule 40) — a `.bats` file invokes `sharkrite-lint.sh` (or a `$*LINT_SCRIPT` variable) via `bash` without `SHARKRITE_LINT_ONLY` scoping on the same line or any of the 3 preceding lines. An unscoped full-scan per `@test` under `bats --jobs 8` starves the CPU, blows the 120s `BATS_TEST_TIMEOUT`, and drags the gate to its 1800s watchdog (live: batch 155134 2026-07-18, slot #1021 2026-10-11). Fix: add `SHARKRITE_LINT_ONLY=NN run bash "$LINT_SCRIPT"` (inline prefix) to scope to the rule(s) under test. Genuine all-rules sweeps must carry a suppression and be serial-marked. Suppress with `# sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: ...` on the preceding line; state why scoping would defeat the test purpose and confirm the file is serial-marked.
+- `BSD_LENIENT_REGEX` (Rule 39H) — a BSD-lenient regex idiom that silently misbehaves on GNU/Linux. Two sub-checks: **(A)** `\s` inside a `grep`/`awk`/`sed` regex argument: BSD reads `\s` as a literal `s` (no POSIX definition), GNU reads it as whitespace shorthand. A test using `\s` to strip comment lines leaves all indented comments in the data on BSD, making assertions pass against the wrong (comment-contaminated) content. Fix: use `[[:space:]]` (POSIX character class). **(B)** `\`` inside a single-quoted `grep` pattern: GNU grep treats `\`` as a beginning-of-buffer anchor so the pattern cannot match mid-file, while BSD grep reads a plain backtick. Fix: remove the backslash. Scope: `lib/`, `bin/`, `tools/` `*.sh` files AND `tests/**/*.bats`. Not flagged: full-line comments, non-command positions (e.g. `echo` strings), `tests/fixtures/`. Suppress with `# sharkrite-lint disable BSD_LENIENT_REGEX - Reason: ...` on the preceding line. Live regressions in four test files fixed in #1593; this rule prevents recurrence. Use `SHARKRITE_LINT_ONLY=39H` for fast-path testing. See `tests/lint/bsd-lenient-regex.bats`.
 - `BARE_BSD_SED_I_IN_BATS` (Rule 41) — a `.bats` file uses bare `sed -i ''` (the BSD form). Rule 10 forbids this in `bin/`, `lib/` and `tools/`, but its file list only covers `*.sh` there, so `.bats` files were unscanned. On GNU sed (Linux CI) the empty string is read as the *script* and the expression as a *filename*, so the call dies with `sed: can't read s/a/b/: No such file or directory` — passing on the macOS dev box and failing the Linux half of the matrix. Live: `gate-function-scoped-selection.bats` used it in a fixture helper, 14/14 green on macOS and 14/14 red on ubuntu-latest, with main's CI red for days and the cause buried in a ~40-failure log (2026-10-14). Fix: source `lib/utils/portable-cmds.sh` and call `portable_sed_i`. Exempt: `@test` title lines, single-quoted heredoc bodies (that content belongs to the fixture file being written), comments, and `tests/fixtures/`. Suppress with `# sharkrite-lint disable BARE_BSD_SED_I_IN_BATS - Reason: ...` on the preceding line for a fixture STRING or grep pattern that is never executed as sed.
 
 **Suppressing false positives:**
@@ -709,6 +724,7 @@ Supported suppression rules:
 - `UNDOCUMENTED_RITE_VAR` (Rule 36) — for the rare internal `RITE_*` variable that must keep a bare `RITE_` name despite not being a user-facing config var. State why the `_RITE_` prefix cannot be used and why the var does not belong in either config example.
 - `RAW_ORIGIN_MAIN_REF` (Rule 38) — for sites in the ten BECOMES-TARGET files where `origin/main` is genuinely trunk-relative: local-main housekeeping in `merge-pr.sh`, already-fixed trunk-health verification in `workflow-runner.sh`, cold-start function defaults in `conflict-resolver.sh`/`scope-checker.sh`/`test-gate.sh`, gate-selection hints in `stale-branch.sh`, and cross-worktree protection fallbacks in `claude-workflow.sh`. State the specific §5.1 reason (trunk housekeeping / cold-start default / gate-selection hint / etc.).
 - `UNSCOPED_LINTER_IN_BATS` (Rule 40) — for genuine all-rules sweeps in `.bats` files where `SHARKRITE_LINT_ONLY` would defeat the test purpose (e.g. stdin-safety tests, structural grep tests). State why scoping is inappropriate and confirm the file carries a `# sharkrite-gate-serial` marker. Note: Rule 40's static analysis cannot see `SHARKRITE_LINT_ONLY` exported in `setup()` — a helper function's invocation may also need suppression even when setup exports the var; document which setup function provides the scoping.
+- `BSD_LENIENT_REGEX` (Rule 39H) — for a grep/awk/sed invocation that intentionally uses `\s` or `\`` and is guaranteed to run only on a platform where the idiom is safe (e.g. a third-party tool wrapper that cannot be changed, or a fixture STRING that is never executed). State the specific platform guarantee or the inert-string reason.
 - `BARE_BSD_SED_I_IN_BATS` (Rule 41) — for a fixture STRING or a grep pattern in a `.bats` file that contains the BSD form but is never executed as sed (rule meta-tests do this to assert Rule 05/10 fire). State that the occurrence is inert.
 
 **Pre-push hook** (optional):
@@ -742,6 +758,27 @@ rite 42 --assess-and-fix   # Assess + fix loop
 # Test full lifecycle
 rite 42 --supervised
 ```
+
+### Optional: GNU toolchain for local Linux parity
+
+macOS ships BSD `awk`, BSD `grep`, and no `flock(1)`. An entire class of Linux-only failure is invisible locally without the GNU equivalents:
+
+- **`gawk` and GNU `grep`** (`ggrep`): let you reproduce Linux-only regex behaviour on the dev box by putting the gnubin dirs on `PATH` for a single run. Without them, a BSD-only regression passes locally and only surfaces on the Linux CI runner. This is what the `BSD_LENIENT_REGEX` lint rule (Rule 39H) catches statically, but the runtime path still needs manual verification for borderline cases.
+- **`flock`**: un-skips the two concurrency tests in `tests/concurrency/scratchpad-lock.bats` that otherwise never run on macOS — they guard with `command -v flock >/dev/null || skip "flock(1) not available on this system"`. Two of the six #1593 root causes lived in those tests.
+
+Install (all optional — `make test` and `make check` behave identically without them):
+
+```bash
+brew install gawk grep flock
+```
+
+To reproduce a Linux-only regex failure locally, prepend the gnubin dirs before running bats:
+
+```bash
+PATH="/opt/homebrew/opt/grep/libexec/gnubin:/opt/homebrew/opt/gawk/libexec/gnubin:$PATH" bats tests/lint/bsd-lenient-regex.bats
+```
+
+**Do not add the gnubin dirs to your shell profile.** Shadowing `awk`/`grep` globally changes sharkrite's own runtime behaviour on the dev box, which is the opposite of the portability goal. Scope the override to the single bats invocation that needs it.
 
 ### Test Coverage Headers (issue #462)
 
@@ -799,11 +836,12 @@ The prompt passed to Claude Code in `claude-workflow.sh` must include:
 - **BSD vs GNU date**: macOS uses BSD date. Always handle both with `if date --version` detection.
 - **PR comment markers**: Use `contains("<!-- sharkrite-local-review")` (no closing `-->`) because markers include attributes like `model:opus timestamp:...`.
 - **Exit codes**: Canonical table lives in `docs/architecture/exit-codes.md`. Key codes:
+  - `lib/providers/claude.sh`: exit 5 for "usage cap detected on any provider runner path (all six: run_agentic_session, run_prompt, run_prompt_with_timeout, run_streaming_prompt, run_classify, run_uncached)"; exit 18 for "provider auth failure on any provider runner path"
   - `assess-and-resolve.sh`: exit 0 for "ready to merge", exit 1 for "manual intervention needed", exit 2 for "loop to fix", exit 3 for "review stale — route back to Phase 2", exit 5 for "usage cap during fix session or review regeneration (composite phase_assess_and_resolve only — standalone script does not emit 5)", exit 18 for "provider auth failure during fix session (composite phase_assess_and_resolve only — standalone script does not emit 18)"
   - `merge-pr.sh`: exit 0 for "merge and cleanup succeeded", exit 1 for "merge failed", exit 6 for "merge succeeded but cleanup failed"
   - `stale-branch.sh` → `workflow-runner.sh`: exit 11 for "stale branch restarted fresh" (caller resets resume state). **Not 10** — exit 10 is reserved for `batch-process-issues.sh` "blocker detected — defer issue"
   - `workflow-runner.sh` (`handle_closed_issue`): exit 12 for "issue was already closed at start, no new work done". **Single-issue mode exits 0** (surprising non-zero would break `set -e` chains in nightly automation). **Batch mode exits 12** — `batch-process-issues.sh` uses this sentinel to skip the post-issue gh API calls (pr list / pr view x3 / issue list) that are only meaningful after active dev work. Batch capture pattern: `_WF_EXIT=0; cmd || _WF_EXIT=$?` (never bare `if cmd; then` when exit 12 must be distinguished from exit 0). See `docs/architecture/exit-codes.md`.
-  - `workflow-runner.sh` (`handle_branch_mismatch`): exit 19 for "branch mismatch — PR base != effective target branch; refusal, batch records `branch_mismatch` SKIPPED class". Both modes propagate 19 without printing "Workflow failed". User must re-run with the corrected `rite --branch <base> <N>` command shown in the error output. See `docs/architecture/exit-codes.md`.
+  - `workflow-runner.sh` (`handle_branch_mismatch`): exit 19 for "branch mismatch — PR base != effective target branch; refusal, batch records `branch_mismatch` SKIPPED class". Both modes propagate 19 without printing "Workflow failed". The error block names the source tier of the effective target (`state file` / `RITE_TARGET_BRANCH env var` / `default`) and prescribes a corrected command: **state-file-driven** → `rite --branch <pr_base> N` (the `--base` handler in `main()` deletes the stale state file before the mismatch check runs, breaking the loop); **env/default-driven** → `rite N` or `rite --branch <pr_base> N`. See `docs/architecture/exit-codes.md`.
 - **RITE_ORCHESTRATED**: When `workflow-runner.sh` calls `claude-workflow.sh`, it sets `RITE_ORCHESTRATED=true`. This tells `claude-workflow.sh` to skip its internal PR/review workflow (create-pr.sh call) — those are handled by the orchestrator's Phase 2/3. Without this, reviews get generated twice.
 - **Encountered Issues**: When discovering out-of-scope issues during development, follow the protocol in `docs/architecture/encountered-issues-system.md`
 - **Phase handoff cwd contract**: When `phase_merge_pr` returns, cwd is always `$RITE_PROJECT_ROOT` — it restores cwd after removing the worktree. Any phase that runs after merge (e.g. `phase_completion`) must also start with `cd "$RITE_PROJECT_ROOT" 2>/dev/null || true` as defense-in-depth. Violating this causes `fatal: Unable to read current working directory` from `gh`'s internal git probe. See `docs/architecture/behavioral-design.md` → "Phase Handoff cwd Invariants" and `tests/regression/post-merge-cwd-restored.bats`.
@@ -891,6 +929,17 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 - Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
+**`--scheduled` flag (used by the scheduled plist):** Enables two guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour or lock state.
+
+- **Window guard:** A run starting outside 02:00–05:00 local time exits 0 immediately without running anything, appends a skip line to the daily log, and emits `[diag] FULL_SUITE_SKIPPED reason=outside_window hour=<H>`. A catch-up firing at 09:00 (launchd sleep catch-up) is therefore a no-op. Skipping the night IS the desired behavior — deferring into working hours is the bug being fixed.
+- **Busy guard:** A run exits 0 immediately when any live rite lock exists (issue or batch lock with a valid PID that answers `kill -0`). Backfill locks (no pid file) and dead-pid locks do NOT count as busy. Emits `[diag] FULL_SUITE_SKIPPED reason=batch_active hour=<H>`.
+- **Health-report aggregation:** A skipped night emits `FULL_SUITE_SKIPPED`, not `FULL_SUITE_RUN` — health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is treated as neither pass nor failure (no green tick, no WARNING entry).
+
+A skip line in the daily log looks like:
+```
+=== Scheduled run SKIPPED: outside window (2:00-5:00), hour=9 ===
+```
+
 **`--investigate` flag (used by the scheduled plist):** When passed to a failing run, triggers three additional steps after the failure flag is written:
 
 1. **Investigate** — re-runs each failing `.bats` file *serially* (no `--jobs`). A serial run distinguishes genuine failures from parallel-starvation timeouts (the class that false-halted batches 2026-10-12/13). Each originally-failing test is classified as `persistent` (still fails serially) or `cleared-on-serial-rerun` (flake). Lint violations are always `persistent` (deterministic, no parallelism involved).
@@ -899,7 +948,7 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 
 3. **Remediate** — if any persistent failures exist, files ONE issue carrying `<!-- sharkrite-full-suite-remediation:<hash> -->` (hash = `cksum` of sorted persistent test names + lint count, anchored in the dedup search so the guard matches the hash not the bare prefix). A second run with the same failing set detects the existing issue and skips creation. If `gh issue create` fails, an orphan artifact is appended to `.rite/orphaned-followup-items.md` so findings are not silently lost. Purely-cleared (all-flake) runs file no issue.
 
-**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). Manual runs without `--investigate` keep today's behavior (run + flag, no investigation).
+**Scheduling (recommended: nightly at 3 AM):** The default plist schedule is nightly (`Hour=3, Minute=0`, no `Weekday` key). The plist ships `--investigate --scheduled` so the job applies both guards automatically. A closed lid at 3 AM → skipped night; this is correct — do not add buffering or retry logic. To guarantee no missed nights on a laptop, opt in to a repeating wake: `sudo pmset repeat wakeorpoweron MTWRFSU 02:55:00`.
 
 macOS (launchd):
 ```bash
@@ -927,9 +976,10 @@ systemctl --user list-timers | grep sharkrite
 **Health report integration:** `rite --health-report` aggregates `FULL_SUITE_RUN` diag lines from `full-suite-*.log` files. Any `outcome=failed` in the reporting period promotes to a WARNING section. The failure flag is checked at report time and surfaced as an action item.
 
 ```bash
-rite --full-suite                       # Run now (no investigation)
-rite --full-suite --investigate         # Run + investigate + report + remediation issue
-cat .rite/state/full-suite-failure.flag # See current failure details if any
+rite --full-suite                                    # Run now (manual — always runs, no guards)
+bin/rite-full-suite --investigate                    # Run + investigate + report + remediation issue
+bin/rite-full-suite --investigate --scheduled        # Scheduled mode: skip outside 02:00-05:00 or when busy
+cat .rite/state/full-suite-failure.flag     # See current failure details if any
 cat .rite/reports/full-suite-$(date +%Y%m%d).md  # See today's investigation report
 ```
 
@@ -975,7 +1025,15 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
 - `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
+- `FULL_SUITE_SKIPPED` — scheduled run skipped without running the suite; `reason=outside_window` (clock outside 02:00–05:00) or `reason=batch_active` (live rite lock detected); `hour=<H>`. Health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is neither a pass nor a failure — a missing nightly report is explainable, not an alarm.
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
+- `DOC_PASS` — every doc model pass: `kind=promote|docs|align doc=<path|-> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`; when `duration_s > RITE_DOC_PASS_WARN_SECONDS` (default 120) an info-level suggestion to run `rite align-docs` is also printed (per-doc passes only; aggregate passes with `doc=-` never print the suggestion)
 - `PROVIDER_PREFLIGHT` — workspace trust check at batch/single-issue start; `outcome=ok` (trusted) or `outcome=untrusted_workspace repo=<path>` (trust not set — batch aborts with fix command)
+- `CONFLICT_RESOLVE_ATTEMPT` — per-attempt diag from the conflict-resolver retry loop; `n=<attempt_number> remaining=<file_count>`. Emitted by `lib/utils/conflict-resolver.sh` before each provider session. Health reports aggregate these to surface conflict sets that consistently need multiple attempts.
+- `CONFLICT_RESOLVE_GATE` — post-resolution syntax and test-count gate; `outcome=passed|failed syntax=<n> testcount=<n>` (emitted by `conflict-resolver.sh` after Check 2 and before the merge is committed; emitted whenever logging is loaded — always true in orchestrated runs)
+- `MERGE_GATE_CI` — CI check conclusion gate in `merge-pr.sh` Check 4; `outcome=blocked|passed|pending failed=<n> pending=<n> total=<n> pr=<n>`. `blocked` = at least one completed-FAILURE/ERROR; `pending` = no failures but pending checks exist; `passed` = all complete and green (or zero checks). Reads conclusions GitHub already computed — runs nothing itself.
+- `GATE_FINDING_RESOLVED` — a prior `[GATE] ACTIONABLE_NOW` item was dropped from the LLM assessment output by `_resolve_prior_gate_findings` (issue #1613); `issue=<N> finding=<first 120 chars of header>`. Emitted once per dropped item. See `behavioral-design.md` → "Gate-Origin Re-raise Policy".
+- `MODEL_FALLBACK` — a role's configured model was detected as unavailable at preflight and substituted with `RITE_MODEL_FALLBACK`; `role=<r> from=<original_model> to=<fallback_model>`. Emitted once per affected role during healthcheck. Only fires when `RITE_MODEL_FALLBACK` is set.
+- `GATE_ENV` — CI-equivalent environment status for a sharkrite gate run; `gnu=yes|no` (GNU tools prepended to PATH), `claude=masked` (always — shim dir prepended), `flock=yes|no` (flock(1) available, determines whether concurrency tests run), `skipped=N` (bats skip-directive count from TAP), `pr=N`. Emitted once per targeted gate run, sharkrite repos only.
 
 If rtk causes more token waste (re-runs, confusion) than it saves, uninstall: `rtk init --global --uninstall && brew uninstall rtk`

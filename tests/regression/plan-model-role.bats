@@ -36,6 +36,7 @@ setup() {
 #!/bin/bash
 set -euo pipefail
 _fn=$(awk '
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
@@ -95,6 +96,7 @@ teardown() {
 #!/bin/bash
 set -euo pipefail
 _fn=$(awk '
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
@@ -120,7 +122,7 @@ TWO_ROLE_EOF
 # ---------------------------------------------------------------------------
 
 @test "claude.sh: plan role defined and backed by RITE_PLAN_MODEL" {
-  run grep -E '^\s*plan\)\s+echo\s+"\$\{RITE_PLAN_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
+  run grep -E '^[[:space:]]*plan\)[[:space:]]+echo[[:space:]]+"\$\{RITE_PLAN_MODEL:-claude-opus-4-8\}"' "$CLAUDE_SH"
   [ "$status" -eq 0 ]
 }
 

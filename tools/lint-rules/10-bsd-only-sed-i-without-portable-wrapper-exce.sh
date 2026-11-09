@@ -10,11 +10,11 @@ for file in "${SHELL_FILES[@]}"; do
   fi
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
     # Match: sed -i '' (BSD form)
-    if echo "$line_content" | grep -qE "sed\s+-i\s+''"; then
+    if echo "$line_content" | grep -qE "sed[[:space:]]+-i[[:space:]]+''"; then
       print_violation "$file" "$line_num" "BARE_BSD_SED_I" \
         "Use portable_sed_i() from lib/utils/portable-cmds.sh instead of bare 'sed -i '''"
     fi

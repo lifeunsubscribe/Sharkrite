@@ -64,6 +64,7 @@ SUPERVISED=false
 SYNC_ARGS=()
 PROMOTE_BRANCH=""
 PROMOTE_ISSUE=""
+RITE_DECLARED_DOC=""
 _INVOCATION_FLAGS=()
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -204,6 +205,17 @@ while [[ $# -gt 0 ]]; do
       _INVOCATION_FLAGS+=("--branch" "$2")
       shift 2
       ;;
+    --doc)
+      # Declare the feature doc associated with the target integration branch.
+      # Absence is a warning, never a block. Association is declared, never inferred.
+      if [ -z "${2:-}" ] || [[ "$2" == -* ]]; then
+        print_error "--doc requires a file path"
+        exit 1
+      fi
+      RITE_DECLARED_DOC="$2"
+      _INVOCATION_FLAGS+=("--doc" "$2")
+      shift 2
+      ;;
     --promote)
       # Open a promotion PR for an integration branch and merge it to main.
       # Optional trailing issue number: --promote <branch> <issue>
@@ -259,9 +271,17 @@ while [[ $# -gt 0 ]]; do
       DOCS_ARGS=("$@")
       shift $#
       ;;
+    align-docs)
+      MODE="align-docs"
+      shift
+      # Collect remaining args (optional --disable flag)
+      ALIGN_DOCS_ARGS=("$@")
+      shift $#
+      ;;
     --version|-v)
       echo "rite version $VERSION"
-      exit 0
+      _RITE_VERSION_REQUESTED=true
+      shift
       ;;
     --help|-h)
       echo "rite - Sharkrite CLI v${VERSION}"
@@ -284,8 +304,11 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --reset-approval         Clear ALL saved blocker approvals (global reset)"
       echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
       echo "  rite plan --preview [doc]     Preview issues without creating them"
-      echo "  rite docs                     Doc consent/audit: enable sync, audit drift, or report"
-      echo "  rite docs \"<instructions>\"    Directed doc update (routes to engine in #1049)"
+      echo "  rite align-docs               Enable/disable doc drift tracking (the on/off switch)"
+      echo "  rite align-docs --disable     Turn off doc drift tracking"
+      echo "  rite docs                     Doc audit: check docs against code (requires align-docs first)"
+      echo "  rite docs \"<instructions>\"    Directed doc update"
+      echo "  rite docs --resume <branch>   Resume a saved doc proposal from a terminal-less promote"
       echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
       echo "  rite --init                   Initialize .rite/ in current project"
       echo "  rite --backfill-locks         Backfill issue lock files for legacy worktrees"
@@ -307,6 +330,7 @@ while [[ $# -gt 0 ]]; do
       echo "  --bypass-blockers          Skip hard gates in unsupervised mode (CRITICAL findings, session limits)"
       echo "  --allow-main-base          Allow merging a main-based PR when session target is non-main (overrides integration-branch guard)"
       echo "  --branch <name>            Target integration branch (default: main; inert until #1033)"
+      echo "  --doc <path>               Feature doc for the integration branch (e.g. docs/features/foo.md)"
       echo "  --no-log                   Disable logging (logs are on by default)"
       echo "  --verbose                  Show extra detail (branch cleanup explanations, etc.)"
       echo "  --log=FILE                 Log to a specific file instead of auto-generated path"
@@ -338,8 +362,11 @@ while [[ $# -gt 0 ]]; do
       echo "  rite plan docs/phases.md   # Generate issues from doc"
       echo "  rite plan \"phases 2-4\"     # Natural language filtering"
       echo "  rite plan --preview        # Preview without creating"
-      echo "  rite docs                  # Turn on doc drift tracking or audit drift (first-time: consent flow)"
-      echo "  rite docs \"update arch\"    # Directed doc update (engine lands in #1049)"
+      echo "  rite align-docs            # Enable/disable doc drift tracking"
+      echo "  rite align-docs --disable  # Turn off doc drift tracking"
+      echo "  rite docs                  # Audit docs against code (run align-docs first)"
+      echo "  rite docs \"update arch\"    # Directed doc update"
+      echo "  rite docs --resume my/branch  # Resume a saved doc proposal"
       echo "  rite --status              # Repo-wide status overview"
       echo "  rite --status --by-label   # Status grouped by label"
       echo "  rite 21 --dry-run          # See what would happen"
@@ -411,6 +438,13 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# --doc requires --branch: the declared doc is per-integration-branch, not per-issue.
+if [ -n "${RITE_DECLARED_DOC:-}" ] && [ "${RITE_TARGET_BRANCH:-main}" = "main" ]; then
+  print_error "--doc requires a non-main integration branch (use rite --branch <name> --doc ...)"
+  echo "  Re-run with: rite --branch <name> --doc ${RITE_DECLARED_DOC} ..." >&2
+  exit 1
+fi
 
 # --- resolve_dispatch_key (pure) ---------------------------------------------
 # Maps the dispatch tuple (MODE, batch filter, PR input, issue args) to a
@@ -504,6 +538,10 @@ resolve_dispatch_key() {
       ;;
     docs)
       echo "docs"
+      return 0
+      ;;
+    align-docs)
+      echo "align-docs"
       return 0
       ;;
     full|dev-and-pr|review-latest|assess-and-fix|status|undo)
@@ -667,7 +705,15 @@ resolve_dispatch_plan() {
       return 0
       ;;
     docs)
-      echo "docs-command.sh::rite_docs ${DOCS_ARGS[*]:-}  (docs consent/audit/drift via claude)"
+      echo "docs-command.sh::rite_docs ${DOCS_ARGS[*]:-}  (docs audit/drift via claude)"
+      return 0
+      ;;
+    align-docs)
+      if [ -n "${ALIGN_DOCS_ARGS[*]:-}" ] && [ "${ALIGN_DOCS_ARGS[0]:-}" != "--disable" ]; then
+        echo "docs-command.sh::docs_resolve_doc_scope ${ALIGN_DOCS_ARGS[*]:-}  (resolve doc scope by name)"
+      else
+        echo "doc-consent.sh::run_align_docs_switch ${ALIGN_DOCS_ARGS[*]:-}  (enable/disable doc drift tracking)"
+      fi
       return 0
       ;;
     status-repo-wide)
@@ -746,6 +792,76 @@ resolve_dispatch_plan() {
 }
 # --- end resolve_dispatch_plan ------------------------------------------------
 
+# --doc validation, persistence, and missing-doc warning.
+# Placed here — after function definitions, before the log bootstrap — so
+# --version exits cleanly without spinning up the log infrastructure (which
+# would truncate a parent workflow's inherited RITE_LOG_FILE).
+if [ -n "${RITE_DECLARED_DOC:-}" ]; then
+  # Validate: must end in .md
+  case "$RITE_DECLARED_DOC" in
+    *.md) ;;
+    *)
+      print_error "--doc path must be a .md file (got: $RITE_DECLARED_DOC)"
+      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <path>.md ..." >&2
+      exit 1
+      ;;
+  esac
+  # Resolve to absolute path for existence and repo-root checks below.
+  if [[ "$RITE_DECLARED_DOC" == /* ]]; then
+    _doc_abs="$RITE_DECLARED_DOC"
+  else
+    _doc_abs="${RITE_PROJECT_ROOT}/${RITE_DECLARED_DOC}"
+  fi
+  if [ ! -f "$_doc_abs" ]; then
+    print_error "--doc file not found: $RITE_DECLARED_DOC"
+    echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <existing-path>.md ..." >&2
+    exit 1
+  fi
+  # Normalize to resolve .. traversal before the under-root check.
+  _doc_abs_real="$(cd "$(dirname "$_doc_abs")" && pwd -P)/$(basename "$_doc_abs")"
+  _root_real="$(cd "$RITE_PROJECT_ROOT" && pwd -P)"
+  # Validate: must be under the repo root
+  case "$_doc_abs_real" in
+    "${_root_real}/"*) ;;
+    *)
+      print_error "--doc path must be inside the repo (got: $RITE_DECLARED_DOC)"
+      echo "  Re-run with: rite --branch ${RITE_TARGET_BRANCH:-<branch>} --doc <repo-relative-path>.md ..." >&2
+      exit 1
+      ;;
+  esac
+  # Persist per-branch declaration. Guard: do not persist on no-target
+  # invocations (e.g. bare `rite --branch X --doc Y` with no issue number) —
+  # those exit 1 with "No issues specified" and must not overwrite the state
+  # file, which would silently suppress future missing-doc warnings.
+  _doc_rel="${_doc_abs_real#${_root_real}/}"
+  _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
+  _doc_state_file="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
+  _doc_is_no_target=false
+  if [ "$MODE" = "full" ] && [ "${#ARGS[@]}" -eq 0 ] && [ "${#BATCH_FILTER_ARGS[@]}" -eq 0 ] && [ -z "${PR_INPUT:-}" ] && [ "${_RITE_VERSION_REQUESTED:-}" != "true" ]; then
+    _doc_is_no_target=true
+  fi
+  if [ "${RITE_DRY_RUN:-}" != "true" ] && [ "$_doc_is_no_target" != "true" ]; then
+    mkdir -p "$RITE_STATE_DIR" 2>/dev/null || true
+    echo "$_doc_rel" > "$_doc_state_file"
+  fi
+elif [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then
+  # --branch without --doc: warn when doc tracking is active and no prior declaration exists.
+  _doc_branch_safe="${RITE_TARGET_BRANCH//\//-}"
+  _existing_state="${RITE_STATE_DIR}/declared-doc-${_doc_branch_safe}.txt"
+  if [ ! -f "${_existing_state}" ]; then
+    case "${RITE_DOC_MODE:-}" in
+      sync|changelog)
+        print_warning "--branch ${RITE_TARGET_BRANCH} declared without --doc; feature doc association missing"
+        ;;
+    esac
+  fi
+fi
+# --version: exit here, before the log bootstrap, so we don't spin up the
+# log infrastructure and truncate a parent workflow's inherited RITE_LOG_FILE.
+if [ "${_RITE_VERSION_REQUESTED:-}" = "true" ]; then
+  exit 0
+fi
+
 # Dry-run choke point (fail-closed): plan-and-exit BEFORE any side effect.
 # MUST stay immediately after the arg-parse loop and BEFORE the logging block
 # below — logging setup creates a log file and rotates (deletes) old logs, and
@@ -791,7 +907,7 @@ fi
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ] || [ "$MODE" = "align-docs" ]; then
   # full-suite manages its own log file (per-run to .rite/logs/full-suite-YYYYMMDD.log)
   RITE_LOG_AUTO=false
 fi
@@ -1090,35 +1206,19 @@ if [ "$MODE" = "init" ]; then
   fi
 
   # ─────────────────────────────────────────────────────────────────
-  # Doc drift consent (opt-in; nothing edits docs/ automatically)
+  # Doc drift mode: report current state; consent is owned by `rite align-docs`
   # ─────────────────────────────────────────────────────────────────
   _config_file_for_doc_mode="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"
 
-  # Source doc-consent helpers (provides record_doc_mode)
   source "$RITE_LIB_DIR/utils/doc-consent.sh"
-  # Also ensure docs-map builder is available for both branches below
-  source "$RITE_LIB_DIR/utils/docs-map.sh"
 
-  if grep -qE '^RITE_DOC_MODE=' "$_config_file_for_doc_mode" 2>/dev/null; then
-    # Already recorded — load and announce
-    _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
-    print_info "Doc mode already configured: ${_recorded_mode:-sync}"
+  _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
+  if [ "$_recorded_mode" = "off" ]; then
+    print_info "Doc drift tracking off — run 'rite align-docs' to re-enable"
+  elif [ -n "$_recorded_mode" ]; then
+    print_info "Doc mode: ${_recorded_mode} (use 'rite align-docs --disable' to turn off)"
   else
-    echo ""
-    echo "  Sharkrite can track which docs a merge may have made inaccurate, and"
-    echo "  'rite docs' then proposes fixes for your approval. Docs are never edited"
-    echo "  automatically."
-    read -p "  Track doc drift for this repo? [y/N] " -n 1 -r
-    echo
-    if [[ ${REPLY:-N} =~ ^[Yy]$ ]]; then
-      record_doc_mode "sync"
-      print_success "Doc drift tracking on (review with 'rite docs')"
-    else
-      record_doc_mode "off"
-      print_info "Doc drift tracking off (run 'rite docs' to turn it on)"
-    fi
-    # Build docs map (both branches)
-    docs_map_build
+    print_info "Doc drift tracking not configured — run 'rite align-docs' to enable"
   fi
 
   # Create backward-compat symlink if .claude/ exists
@@ -1428,6 +1528,23 @@ fi
 if [ "$MODE" = "docs" ]; then
   source "$RITE_LIB_DIR/core/docs-command.sh"
   rite_docs "${DOCS_ARGS[@]+"${DOCS_ARGS[@]}"}"
+  exit $?
+fi
+
+# Handle align-docs mode — on/off switch and (with doc names) scope resolver
+if [ "$MODE" = "align-docs" ]; then
+  if [ -n "${ALIGN_DOCS_ARGS[*]:-}" ] && [ "${ALIGN_DOCS_ARGS[0]:-}" != "--disable" ]; then
+    # Positional doc names: resolve scope and echo resolved paths.
+    source "$RITE_LIB_DIR/core/docs-command.sh"
+    docs_resolve_doc_scope "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
+    exit $?
+  fi
+  # --disable flag or no args: source docs-command.sh so the restructure
+  # assessment hook (docs_run_restructure_assessment) is available when
+  # run_align_docs_switch fires for an already-enabled repo.
+  # docs-command.sh sources doc-consent.sh internally.
+  source "$RITE_LIB_DIR/core/docs-command.sh"
+  run_align_docs_switch "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
   exit $?
 fi
 

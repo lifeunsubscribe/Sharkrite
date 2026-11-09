@@ -22,7 +22,6 @@ setup() {
   setup_test_tmpdir
 
   export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
-  export RITE_STATE_DIR="${RITE_TEST_TMPDIR}/.rite/state"
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 
   # _MARKER_DIR is used by _mark_updated() when called from the extracted functions
@@ -774,11 +773,11 @@ IDX_EOF
   # Seed a minimal docs-map.tsv so docs_map_tag_section_by_pointer can find the
   # "conventions.md / grep -c pattern" row and write the tag into it.
   # docs_map_render_tag_index then merges the updated map entry into tag-index.md.
-  mkdir -p "${RITE_TEST_TMPDIR}/.rite/state"
+  mkdir -p "${RITE_TEST_TMPDIR}/docs"
   printf '# docs-map v4 sha=test built=2026-01-01T00:00:00Z\n' \
-    > "${RITE_TEST_TMPDIR}/.rite/state/docs-map.tsv"
+    > "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
   printf 'docs/architecture/conventions.md\ttest-sha\t-\t2\tgrep -c pattern\tsome-fp\tfeature\t-\t-\t-\n' \
-    >> "${RITE_TEST_TMPDIR}/.rite/state/docs-map.tsv"
+    >> "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
 
   # Seed the index with the new tag's heading (as update_conventions_from_marker
   # would just have done in production).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/utils/config.sh
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/utils/config.sh, lib/providers/claude.sh
 # Regression test: RITE_DOC_ASSESSMENT_MODEL is independent of RITE_REVIEW_MODEL
 # Issue #341
 #
@@ -40,6 +40,7 @@ set -euo pipefail
 # Source just the resolver function by extracting it with awk, then eval it.
 _fn=$(awk '
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
   in_fn && /\}/ { depth--; if (depth==0) { in_fn=0 } }
@@ -89,6 +90,7 @@ teardown() {
 set -euo pipefail
 _fn=$(awk '
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
   in_fn && /\}/ { depth--; if (depth==0) { in_fn=0 } }
@@ -120,6 +122,7 @@ TWO_ROLE_EOF
 set -euo pipefail
 _fn=$(awk '
   /^claude_provider_resolve_model[(][)]/ { in_fn=1; depth=0 }
+  /^_claude_provider_resolve_model_raw[(][)]/ { in_fn=1; depth=0 }
   in_fn { print }
   in_fn && /\{/ { depth++ }
   in_fn && /\}/ { depth--; if (depth==0) { in_fn=0 } }

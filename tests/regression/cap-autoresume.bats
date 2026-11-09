@@ -191,7 +191,7 @@ STUB
 @test "unit: flag on, future epoch, AC power → caffeinate invoked, rite exec'd with issues" {
   _manifest="$_tmpdir/cap-resume.json"
   # reset_epoch = 1 second from now so the wait loop exits immediately
-  _future=$(( $(date +%s) + 1 ))
+  _future=$(( $(date +%s) + 5 ))
   _write_manifest "$_manifest" "42 43" "" "$_future" "false"
 
   # Stub rite: records its args and exits 0
@@ -278,7 +278,7 @@ STUB
 
 @test "unit: flag on, future epoch, battery power → caffeinate NOT invoked, rite still exec'd" {
   _manifest="$_tmpdir/cap-resume.json"
-  _future=$(( $(date +%s) + 1 ))
+  _future=$(( $(date +%s) + 5 ))
   _write_manifest "$_manifest" "55" "" "$_future" "false"
 
   cat > "$_tmpdir/rite" <<'STUB'

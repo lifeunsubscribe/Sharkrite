@@ -11,7 +11,7 @@ for file in "${SHELL_FILES[@]}"; do
     prev_line=$(sed -n "${prev_line_num}p" "$file" 2>/dev/null || echo "")
 
     # Check if previous line has || true (which destroys PIPESTATUS)
-    if echo "$prev_line" | grep -qE '\|\|\s*true\s*$'; then
+    if echo "$prev_line" | grep -qE '\|\|[[:space:]]*true[[:space:]]*$'; then
       print_violation "$file" "$line_num" "PIPESTATUS_AFTER_OR_TRUE" \
         "PIPESTATUS used after '|| true' - PIPESTATUS is lost/stale"
     fi

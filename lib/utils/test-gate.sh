@@ -263,6 +263,9 @@ run_test_gate() {
   # Census entry: populated inside the sharkrite path just before _compute_bats_jobs;
   # initialised empty here so the trap's rm -f is a no-op for non-sharkrite paths.
   local _gate_census_file=""
+  # CI-equivalent env shim dir: created inside the sharkrite path; initialised
+  # empty here so the trap's rm -rf guard is always safe regardless of path taken.
+  local _cienv_shim_dir=""
   # Register cleanup for this invocation's specific files (never a glob).
   # Also write a valid-JSON crash sentinel if the function exits non-zero before
   # _gate_write_json runs — an empty/absent output_file causes jq to silently
@@ -274,6 +277,7 @@ run_test_gate() {
         rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_sc_exit_file:-}" "${_lint_exit_file:-}" "${_bats_exit_file:-}" "${_nonsr_exit_file:-}" "${_sc_raw_individual:-}" "${_lint_raw_individual:-}" "${_bats_pretty_capture:-}"
         rm -f "${_gate_census_file:-}"
         [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
+        [ -n "${_cienv_shim_dir:-}" ] && rm -rf "${_cienv_shim_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
             printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
@@ -285,6 +289,9 @@ run_test_gate() {
   local _tests_exit=0
   local _lint_count=0
   local _tests_count=0
+  # CI-equivalent env diag fields (#1607): initialised to safe defaults so the
+  # GATE_ENV diag is always well-formed even when the sharkrite path is skipped.
+  local _has_gnu="no" _has_flock="no" _bats_skip_count=0
   # Reason for a non-skipped gate failure that produces no parseable items
   # (e.g. runner_unavailable when the test runner binary is missing).
   # Propagated to the gate JSON so assess-and-resolve.sh can name the cause
@@ -580,6 +587,37 @@ run_test_gate() {
       -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
       -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
       -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)
+
+    # --- CI-equivalent environment assembly (#1607) ---
+    # Three hostile-environment factors are present in CI but absent locally:
+    #   1. claude binary absent/untrusted — masked with a stub that exits 1.
+    #      Any selected test that silently depends on a real CLI now fails
+    #      locally — which is the #1534 class (10 of the 2026-10-27 episode's
+    #      38 failures). "Un-masking" to fix a failure is the bug, not the fix.
+    #   2. GNU tools preferred (gawk/ggrep gnubin from #1596) — prepended when
+    #      installed so selected tests exercise GNU regex semantics. The BSD/GNU
+    #      divergence produced 18 of the episode's failures.
+    #   3. flock(1) availability — surfaced in GATE_ENV diag so the skip count
+    #      is visible ("0 failures" != "everything ran").
+    # All three are ADDITIVE: absent tools → gate behaves exactly as today.
+    _cienv_shim_dir=$(mktemp -d "/tmp/rite_gate_cienv_${PR_NUMBER:-0}_$$_XXXXXX" 2>/dev/null || true)
+    if [ -d "${_cienv_shim_dir:-}" ]; then
+      printf '#!/bin/sh\necho "[gate-cienv] claude is masked in CI-equivalent gate environment" >&2\nexit 1\n' \
+        > "$_cienv_shim_dir/claude"
+      chmod +x "$_cienv_shim_dir/claude" 2>/dev/null || true
+    fi
+    local _gnu_prefix
+    _gnu_prefix=$(_cienv_gnu_prefix)
+    [ -n "${_gnu_prefix:-}" ] && _has_gnu="yes"
+    command -v flock >/dev/null 2>&1 && _has_flock="yes"
+    local _cienv_path
+    if [ -d "${_cienv_shim_dir:-}" ]; then
+      _cienv_path="${_cienv_shim_dir}:${_gnu_prefix:-}${PATH}"
+    else
+      _cienv_path="${_gnu_prefix:-}${PATH}"
+    fi
+    _bats_sandbox+=(PATH="$_cienv_path")
+
     local _bats_watchdog=()
     local _gate_bats_timeout="${RITE_GATE_BATS_TIMEOUT:-1800}"
     if [ "$_gate_bats_timeout" != "0" ]; then
@@ -1255,6 +1293,98 @@ run_test_gate() {
           _normalize_node_test_output "$_tests_raw_file" "$project_root"
         fi
       fi
+
+      # --- Node: target repo lint (scripts.lint, issue #1545) ---
+      # Run the target repo's own lint script when present. Scoped to changed
+      # JS/TS files when the runner is eslint; full run otherwise (non-eslint
+      # tools do not have a universal file-arg interface). Disabled via
+      # RITE_GATE_REPO_LINT=false in .rite/config.
+      if [ "${RITE_GATE_REPO_LINT:-true}" != "false" ]; then
+        local _node_lint_script=""
+        command -v jq >/dev/null 2>&1 \
+          && _node_lint_script=$(jq -r '.scripts.lint // ""' "$project_root/package.json" 2>/dev/null || true)
+        if [ -n "$_node_lint_script" ]; then
+          local _node_lint_runner _node_lint_pm
+          _node_lint_runner=$(_resolve_node_lint_runner "$project_root")
+          _node_lint_pm=$(_node_pkg_manager "$project_root")
+          local _node_lint_raw_f _node_lint_exit_f
+          _node_lint_raw_f=$(mktemp "/tmp/rite_gate_nlint_raw_${PR_NUMBER:-0}_$$_XXXXXX")
+          _node_lint_exit_f=$(mktemp "/tmp/rite_gate_nlint_exit_${PR_NUMBER:-0}_$$_XXXXXX")
+
+          # Scope to changed source files when eslint is the runner (eslint
+          # accepts file args; passing specific files avoids scanning the whole
+          # repo and honours the no-full-suites-in-workflow doctrine).
+          local _node_lint_scoped=false
+          local _node_lint_src_files=""
+          local _node_lint_eslint_noop=false
+          if [ "$_node_lint_runner" = "eslint" ] \
+             || printf '%s\n' "$_node_lint_script" | grep -q '\beslint\b'; then
+            _node_lint_src_files=$(printf '%s\n' "${_nonsr_changed_files:-}" \
+              | grep -E '\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$' | grep -v '^$' || true)
+            if [ -n "$_node_lint_src_files" ]; then
+              _node_lint_scoped=true
+            else
+              # eslint runner but no changed JS/TS files — nothing to lint; skip
+              # rather than fall through to a full-repo run (scope boundary: DO NOT
+              # add full-repo lint runs where file-scoping is available).
+              _node_lint_eslint_noop=true
+            fi
+          fi
+
+          if [ "$_node_lint_scoped" = "true" ]; then
+            local _nlint_files_arr=() _nlf
+            while IFS= read -r _nlf; do
+              [ -n "$_nlf" ] || continue
+              [ -f "$project_root/$_nlf" ] || continue
+              _nlint_files_arr+=("$project_root/$_nlf")
+            done < <(printf '%s\n' "$_node_lint_src_files")
+            if [ ${#_nlint_files_arr[@]} -gt 0 ]; then
+              echo "[test-gate] Node lint: eslint scoped to ${#_nlint_files_arr[@]} changed file(s)" >> "$_gate_raw_sink"
+              local _eslint_bin="$project_root/node_modules/.bin/eslint"
+              if [ -x "$_eslint_bin" ]; then
+                { (cd "$project_root" && "$_eslint_bin" "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                  | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+              elif [ "$_node_lint_pm" = "pnpm" ]; then
+                # pnpm lint -- <files> passes args to the script but the script's own
+                # positional args (e.g. '.') survive, linting the whole repo.
+                # Use pnpm exec to invoke eslint directly with only the changed files.
+                { (cd "$project_root" && pnpm exec eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                  | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+              else
+                # npm run lint -- <files> has the same '.' problem; use npx to bypass.
+                { (cd "$project_root" && npx --no-install eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                  | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+              fi
+            else
+              # All changed JS/TS files were deleted — nothing to lint
+              echo "[test-gate] Node lint: all changed JS/TS files deleted — skipping" >> "$_gate_raw_sink"
+              echo 0 > "$_node_lint_exit_f"
+            fi
+          elif [ "$_node_lint_eslint_noop" = "true" ]; then
+            echo "[test-gate] Node lint: eslint runner with no changed JS/TS files — skipping" >> "$_gate_raw_sink"
+            echo 0 > "$_node_lint_exit_f"
+          else
+            echo "[test-gate] Node lint: ${_node_lint_pm} lint (runner: ${_node_lint_runner:-unknown})" >> "$_gate_raw_sink"
+            if [ "$_node_lint_pm" = "pnpm" ]; then
+              { (cd "$project_root" && pnpm lint 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+            else
+              { (cd "$project_root" && npm run lint 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
+            fi
+          fi
+
+          local _node_lint_exit
+          _node_lint_exit=$(cat "$_node_lint_exit_f" 2>/dev/null || echo 1)
+          _node_lint_exit=${_node_lint_exit:-1}
+          rm -f "$_node_lint_exit_f"
+          if [ "$_node_lint_exit" -ne 0 ]; then
+            _normalize_eslint_output "$_node_lint_raw_f" "$_lint_raw_file" "$project_root"
+            _lint_exit=1
+          fi
+          rm -f "$_node_lint_raw_f"
+        fi
+      fi
     elif [ -f "$project_root/pytest.ini" ] || [ -d "$project_root/tests" ]; then
       # Provision pytest-testmon for per-cycle scoped gating (#1127 / #975).
       # Only when native scoping is enabled; failure degrades to unscoped (#1125).
@@ -1386,6 +1516,13 @@ run_test_gate() {
   if [ "$_is_sharkrite" = "true" ]; then
     _bats_pass=$(grep -c "^ok " "$_tests_raw_file" 2>/dev/null || true)
     _bats_fail_total=$(grep -c "^not ok " "$_tests_raw_file" 2>/dev/null || true)
+    # Count TAP skip directives (^ok ... # skip) so "0 failures" is not
+    # confusable with "everything ran" (#1607).  -i matches both bats-core's
+    # lowercase "# skip" and any uppercase "# SKIP" variant.
+    _bats_skip_count=$(grep -ciE "^ok .*# skip" "$_tests_raw_file" 2>/dev/null || true)
+    # _bats_pass currently includes skip lines (^ok matches both) — subtract
+    # skips so the terminal digest reports genuine passes only.
+    _bats_pass=$(( _bats_pass - _bats_skip_count ))
     if [ "$_bats_fail_total" -gt 0 ]; then
       _summary_names=$(_extract_tap_failure_names "$_tests_raw_file")
     fi
@@ -1491,6 +1628,7 @@ run_test_gate() {
   # live terminal). Surface the high-signal result here so concurrent phases
   # aren't drowned. Named failures appear once; full transcript is in the log.
   if [ "$_is_sharkrite" = "true" ]; then
+    _diag "GATE_ENV gnu=${_has_gnu} claude=masked flock=${_has_flock} skipped=${_bats_skip_count} pr=${PR_NUMBER:-?}"
     if [ "$_lint_count" -gt 0 ]; then
       echo "[test-gate] lint: ${_lint_count} finding(s) blocking — full output in run log"
     fi
@@ -1505,9 +1643,13 @@ run_test_gate() {
         done
         [ -n "${RITE_LOG_FILE:-}" ] && echo "   Full bats output: ${RITE_LOG_FILE}"
       fi
-    elif [ "$_bats_pass" -gt 0 ]; then
+    elif [ "$_bats_pass" -gt 0 ] || [ "${_bats_skip_count:-0}" -gt 0 ]; then
       if [ "$_gate_verbose" = "false" ]; then
-        echo "[test-gate] bats: ${_bats_pass} passed, 0 failed ✅"
+        if [ "${_bats_skip_count:-0}" -gt 0 ]; then
+          echo "[test-gate] bats: ${_bats_pass} passed, ${_bats_skip_count} skipped, 0 failed ✅"
+        else
+          echo "[test-gate] bats: ${_bats_pass} passed, 0 failed ✅"
+        fi
       fi
     fi
     # In summary mode, hint where the raw output can be found (only when we

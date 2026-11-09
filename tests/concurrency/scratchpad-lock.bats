@@ -1089,18 +1089,26 @@ GHEOF
   # Verify the outer lock is still held: a concurrent subshell must NOT be able to
   # acquire the flock lock while the outer caller still holds it.
   local inner_release_probe="$RITE_TEST_TMPDIR/inner_release_probe"
-  (
+  # Probe from a FRESH bash process, not a ( ) subshell.  A subshell inherits the
+  # caller's _SCRATCHPAD_LOCK_HELD=true / _SCRATCHPAD_LOCK_DEPTH=1, so
+  # acquire_scratchpad_lock took its re-entrancy fast path and returned 0 without
+  # ever asking the OS for the lock — the probe reported "acquired" unconditionally
+  # and the assertion fired.  A real competing process inherits no shell state, which
+  # is what `"${BASH}" -c` reproduces (same idiom as the mkdir-path probes in this
+  # file).  Only reachable where flock(1) exists: on a bare macOS box this test
+  # skips, which is why it stayed hidden until CI ran it on ubuntu (2026-10-27).
+  # 5s timeout: long enough for a legitimate acquire on slow CI (distinguishes
+  # "blocked because the lock is held" from "timed out on a slow system").
+  RITE_SCRATCHPAD_LOCK_TIMEOUT=5 "${BASH}" -c '
+    set -uo pipefail
     source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
-    # 5s timeout: long enough for a legitimate acquire to succeed on slow CI
-    # (distinguishes "blocked because lock is held" from "timed out on slow system")
-    export RITE_SCRATCHPAD_LOCK_TIMEOUT=5
     if acquire_scratchpad_lock 2>/dev/null; then
       release_scratchpad_lock
-      echo "acquired" > "$inner_release_probe"
+      echo "acquired" > "$1"
     else
-      echo "blocked" > "$inner_release_probe"
+      echo "blocked" > "$1"
     fi
-  )
+  ' _ "$inner_release_probe"
   [ -f "$inner_release_probe" ] || {
     echo "FAIL: inner-release probe subprocess did not write result" >&2
     release_scratchpad_lock

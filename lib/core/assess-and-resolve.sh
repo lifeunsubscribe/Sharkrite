@@ -549,6 +549,8 @@ _resolve_time_estimate() {
 #                 RITE_PROJECT_ROOT, CURRENT_HEAD_SHA,
 #                 RITE_ACCEPT_RED_MAIN, _RITE_MAIN_BASELINE_FILE
 # Globals written: GATE_PREPEND_ITEMS (appended), GATE_NOW_COUNT (incremented)
+#                  _GATE_HAD_VALID_VERDICT (true when gate ran for the current HEAD
+#                  without stale SHA or timeout/crash; read by _resolve_prior_gate_findings)
 # Side effects:   deletes the gate findings file after consumption
 # ---------------------------------------------------------------------------
 _build_gate_prepend_items() {
@@ -556,6 +558,10 @@ _build_gate_prepend_items() {
   # return to guard the zero-findings early-exit path (line ~1714). Must not
   # use `local` — the caller needs to see the value after this function returns.
   _gate_verdict_is_stale=false
+  # Initialize valid-verdict sentinel. Set to true when the gate file is present
+  # and not stale — read by _resolve_prior_gate_findings (issue #1613) to decide
+  # whether prior [GATE] items can be resolved by evidence rather than re-raised.
+  _GATE_HAD_VALID_VERDICT=false
 
   # Detect gate findings file (env var from workflow-runner, or fallback path)
   local _f="${RITE_GATE_FINDINGS:-}"
@@ -612,6 +618,15 @@ _build_gate_prepend_items() {
       print_warning "Gate verdict was recorded at ${_gate_verdict_sha:0:8} (current HEAD: ${CURRENT_HEAD_SHA:0:8}) — verdict may not reflect the current state, but failures are still reported"
       echo ""
     fi
+  fi
+
+  # Mark verdict as valid when file is present and not stale. This covers both
+  # passing gates (exit_code=0, no items emitted) and failing ones. Covers the
+  # case where CURRENT_HEAD_SHA is unavailable (no SHA mismatch check → not stale).
+  # The gate_timeout/gate_crashed arms below override this back to false since a
+  # killed gate is not a verdict — it's an absence of one.
+  if [ "${_gate_verdict_is_stale:-false}" != "true" ]; then
+    _GATE_HAD_VALID_VERDICT=true
   fi
 
   if [ "$_gate_skipped" != "true" ] && [ "$_gate_exit_code" -ne 0 ]; then
@@ -808,6 +823,9 @@ _build_gate_prepend_items() {
 "
         GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
         print_warning "Gate was killed before completing (${_gate_skip_reason}) — change is unverified, blocking (#1014)"
+        # A killed gate is not a verdict — override the valid-verdict sentinel so
+        # _resolve_prior_gate_findings does not falsely clear prior [GATE] items.
+        _GATE_HAD_VALID_VERDICT=false
         ;;
     esac
   fi
@@ -820,11 +838,132 @@ _build_gate_prepend_items() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_prior_gate_findings — resolve stale prior [GATE] ACTIONABLE_NOW
+# items using the gate verdict as the authoritative oracle (issue #1613).
+#
+# Problem: on retry passes, assess-review-issues.sh RULE 1 re-raises prior
+# [GATE] items when the LLM review text does not confirm they were fixed.
+# That is correct for review-origin findings (no objective check available),
+# but wrong for gate-origin items — a deterministic re-check exists and is
+# already computed.
+#
+# Fix: after the LLM assessment returns, compare each [GATE] ACTIONABLE_NOW
+# item in ASSESSMENT_RESULT against GATE_PREPEND_ITEMS (the current gate's
+# actual failures for the current HEAD):
+#
+#   • _GATE_HAD_VALID_VERDICT=true (gate ran for the current HEAD): any [GATE]
+#     item absent from GATE_PREPEND_ITEMS is confirmed passing — drop it.
+#     Items present in both are also dropped (they arrive via GATE_PREPEND_ITEMS
+#     and would be duplicated by the caller's prepend).
+#
+#   • _GATE_HAD_VALID_VERDICT=false (standalone --assess-and-fix without a
+#     preceding gate run): attempt a targeted bats rerun of the specific file
+#     from the prior assessment comment. A passing run resolves the item; a
+#     failure or unrunnable state keeps it (conservative). Lint [GATE] items
+#     are always kept (conservative — running make check would violate the
+#     no-full-suite contract).
+#
+# A genuinely-failing gate item remains ACTIONABLE_NOW — only stale re-raises
+# (the test now passes but the LLM re-raised it on silence) are dropped.
+#
+# Globals read:   RETRY_COUNT, ASSESSMENT_RESULT, _GATE_HAD_VALID_VERDICT,
+#                 GATE_PREPEND_ITEMS, PR_NUMBER, ISSUE_NUMBER,
+#                 RITE_MARKER_ASSESSMENT, RITE_LOG_FILE
+# Globals written: ASSESSMENT_RESULT (filtered in place)
+# ---------------------------------------------------------------------------
+_resolve_prior_gate_findings() {
+  # Only active on retry passes — RULE 1 is inactive on the first pass.
+  [ "${RETRY_COUNT:-0}" -gt 0 ] 2>/dev/null || return 0
+
+  # Only relevant when there are [GATE] ACTIONABLE_NOW items to check.
+  local _gate_now_in_result
+  _gate_now_in_result=$(echo "$ASSESSMENT_RESULT" | grep -c "^### \[GATE\] .* - ACTIONABLE_NOW" || true)
+  [ "${_gate_now_in_result:-0}" -gt 0 ] || return 0
+
+  local _resolved_count=0
+  local _drop_file
+  _drop_file=$(mktemp)
+
+  if [ "${_GATE_HAD_VALID_VERDICT:-false}" = "true" ]; then
+    # Main path: gate ran for the current HEAD. Any [GATE] ACTIONABLE_NOW item
+    # in ASSESSMENT_RESULT is either still failing (in GATE_PREPEND_ITEMS) or
+    # stale (not in GATE_PREPEND_ITEMS). Drop all of them from ASSESSMENT_RESULT:
+    # still-failing ones are covered by the caller's GATE_PREPEND_ITEMS prepend
+    # (dropping prevents double-counting); stale ones are confirmed resolved.
+    local _fh
+    while IFS= read -r _fh; do
+      [ -z "$_fh" ] && continue
+      _diag "GATE_FINDING_RESOLVED issue=${ISSUE_NUMBER:-} finding=$(printf '%s' "$_fh" | cut -c1-120)"
+      printf '%s\n' "$_fh" >> "$_drop_file"
+      _resolved_count=$(( _resolved_count + 1 ))
+    done < <(echo "$ASSESSMENT_RESULT" | grep "^### \[GATE\] .* - ACTIONABLE_NOW" || true)
+  else
+    # Fallback path: no valid gate verdict (standalone --assess-and-fix without
+    # a preceding gate run). Attempt a targeted single-file bats rerun for each
+    # [GATE] bats test item. Source: prior assessment comment's Location field.
+    # Lint [GATE] items are kept — make check would violate the no-full-suite contract.
+    local _prior_body=""
+    if command -v gh >/dev/null 2>&1 && [ -n "${PR_NUMBER:-}" ]; then
+      local _jq_prior
+      _jq_prior="[.comments[] | select(.body | contains(\"<!-- ${RITE_MARKER_ASSESSMENT}\"))] | sort_by(.createdAt) | reverse | .[0].body"
+      _prior_body=$(gh_safe pr view "$PR_NUMBER" --json comments \
+        --jq "$_jq_prior" 2>/dev/null || true)
+      _prior_body="${_prior_body:-}"
+    fi
+
+    local _fh
+    while IFS= read -r _fh; do
+      [ -z "$_fh" ] && continue
+      case "$_fh" in
+        '### [GATE] bats failure:'*)
+          # Extract Location (bats file) from the prior assessment comment's finding
+          # block for this exact header. The LLM re-raises with a paraphrased title,
+          # so we cannot match by title — use the original header from the prior
+          # assessment which preserves the gate's exact title format.
+          local _loc_file=""
+          if [ -n "$_prior_body" ]; then
+            _loc_file=$(printf '%s' "$_prior_body" | awk -v hdr="$_fh" '
+              $0 == hdr { in_block=1; next }
+              in_block && /^\*\*Location:\*\*/ { loc=$0; sub(/^\*\*Location:\*\*[[:space:]]*/, "", loc); if (loc~/\.bats$/) print loc; exit }
+              in_block && /^### / { exit }
+            ' || true)
+            _loc_file="${_loc_file:-}"
+          fi
+          if [ -n "$_loc_file" ] && [ -f "$_loc_file" ] && \
+             command -v bats >/dev/null 2>&1; then
+            local _rerun_exit=0
+            bats "$_loc_file" >/dev/null 2>&1 || _rerun_exit=$?
+            if [ "$_rerun_exit" -eq 0 ]; then
+              _diag "GATE_FINDING_RESOLVED issue=${ISSUE_NUMBER:-} finding=$(printf '%s' "$_fh" | cut -c1-120)"
+              printf '%s\n' "$_fh" >> "$_drop_file"
+              _resolved_count=$(( _resolved_count + 1 ))
+            fi
+          fi
+          ;;
+        # Lint and synthetic blocks: no targeted rerun — keep them (conservative).
+      esac
+    done < <(echo "$ASSESSMENT_RESULT" | grep "^### \[GATE\] .* - ACTIONABLE_NOW" || true)
+  fi
+
+  # Remove resolved headers and their body blocks from ASSESSMENT_RESULT.
+  if [ "$_resolved_count" -gt 0 ]; then
+    ASSESSMENT_RESULT=$(printf '%s\n' "$ASSESSMENT_RESULT" | awk '
+      NR==FNR { drop[$0]=1; next }
+      /^### / { skip=($0 in drop) ? 1 : 0 }
+      !skip { print }
+    ' "$_drop_file" - || true)
+    print_info "${_resolved_count} prior [GATE] item(s) resolved by gate verdict — dropped from assessment"
+  fi
+  rm -f "$_drop_file"
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above (_followup_dedup_check,
-# _resolve_priority_label, _resolve_done_def, _resolve_time_estimate) without
-# executing the script body (which parses args, sets up exec redirects,
-# installs traps, and makes live gh/claude calls).
+# _resolve_priority_label, _resolve_done_def, _resolve_time_estimate,
+# _build_gate_prepend_items, _resolve_prior_gate_findings) without executing
+# the script body (which parses args, sets up exec redirects, installs traps,
+# and makes live gh/claude calls).
 # ---------------------------------------------------------------------------
 if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || true
@@ -1557,6 +1696,11 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
   fi
   unset _per_item_issues_file
 
+  # Resolve stale prior [GATE] ACTIONABLE_NOW items using the gate verdict as
+  # the oracle (issue #1613). Must run before GATE_PREPEND_ITEMS is prepended
+  # so the filter only sees LLM-raised [GATE] items, not the current gate's.
+  _resolve_prior_gate_findings
+
   if [ $ASSESSMENT_EXIT_CODE -eq 0 ] && [ -n "$ASSESSMENT_RESULT" ] && [ "$ASSESSMENT_RESULT" != "ALL_ITEMS" ]; then
     print_success "Smart assessment complete - three-state categorization applied"
 
@@ -2283,6 +2427,9 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _findings_cap_validated="$_findings_cap_raw"
   fi
 
+  # Capture HEAD SHA once for all finding provenance markers in this assessment pass.
+  _assessment_head_sha=$(git rev-parse --short HEAD 2>/dev/null || true)
+
   while IFS= read -r _fh_line; do
     [ -z "$_fh_line" ] && continue
 
@@ -2499,6 +2646,19 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     SOURCE_ISSUE_MARKER=""
     [ -n "${ISSUE_NUMBER:-}" ] && SOURCE_ISSUE_MARKER="<!-- ${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER} -->"
 
+    # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
+    # Location value is LLM-derived; allowlist-check before embedding in an HTML comment
+    # so that a value containing --> cannot terminate the comment early and corrupt the
+    # parent-pr marker on the same line (same contract as ITEM_VERIFICATION, above).
+    _finding_location_marker=""
+    if [ -n "${_f_location:-}" ] && printf '%s' "${_f_location}" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+      # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+      _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${_f_location} -->"
+    fi
+    _finding_sha_marker=""
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
+    [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
+
     # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
     # For follow-ups, all parent-PR changed files are candidates for inspection;
     # none are guaranteed to require modification, so emit all under "Files to Read:"
@@ -2509,7 +2669,7 @@ ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 Files to Modify:
 - _Determine from the finding above_"
 
-    FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->
+    FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
 
 ${_f_reasoning:-${_clean_title}}
@@ -2660,6 +2820,15 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
           if [ -n "$_new_issue_num" ]; then
             FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${_new_issue_num} "
             _rollup_any_created=true
+
+            # Prevent this follow-up from inheriting the parent batch's
+            # integration-branch target. Follow-ups filed here belong on main.
+            # claude-workflow.sh reads this marker before writing the
+            # target-branch state file (sharkrite-target-transport) and skips
+            # the write when it is present.
+            if [ -n "${RITE_STATE_DIR:-}" ]; then
+              touch "${RITE_STATE_DIR}/followup-no-inherit-${_new_issue_num}.marker" 2>/dev/null || true
+            fi
 
             # Durable local evidence (primary dedup guard across processes)
             # Keyed by _FOLLOWUP_FINDING_KEY (source-issue + title slug) so

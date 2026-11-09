@@ -9,7 +9,7 @@
 echo "Checking for '\${VAR:-\"{}\"}' parameter expansion bug..."
 for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
     if echo "$line_content" | grep -qE ':-\{\}\}'; then

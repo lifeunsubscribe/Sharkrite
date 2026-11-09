@@ -6,11 +6,11 @@ echo "Checking for 'eval' with potentially untrusted data..."
 for file in "${SHELL_FILES[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
     # Match: eval with variables that might contain GitHub data
-    if echo "$line_content" | grep -qE '\beval\s+.*\$'; then
+    if echo "$line_content" | grep -qE '\beval[[:space:]]+.*\$'; then
       # Check if the variable name suggests GitHub/API data
       if echo "$line_content" | grep -qiE '\$(gh|api|response|body|pr_|issue_|json)'; then
         print_warning "$file" "$line_num" "EVAL_UNTRUSTED_DATA" \

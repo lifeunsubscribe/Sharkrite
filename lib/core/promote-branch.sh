@@ -535,6 +535,20 @@ run_promote() {
     _pr_body="Promotion of integration branch '${BRANCH}' to main."
   fi
 
+  # Cap the body under GitHub's 65536-char PR-body limit (same guard the two
+  # follow-up-issue writes below already carry). Backstop only: the composer
+  # no longer inlines the drift log (#1637 — an 84 KB log made a 105 KB body
+  # and gh rejected it with its stderr suppressed), so a normal body is ~20 KB.
+  # Back off to the last newline so a Closes line is never split mid-token.
+  if [ "${#_pr_body}" -gt 60000 ]; then
+    print_warning "Promotion PR body is ${#_pr_body} chars — truncated to stay under GitHub's 65536-char limit"
+    local _pr_body_cut="${_pr_body:0:60000}"
+    _pr_body_cut="${_pr_body_cut%$'\n'*}"
+    _pr_body="${_pr_body_cut}
+
+... (promotion PR body truncated — exceeded GitHub's 65536-char limit; full history is on the '${BRANCH}' branch)"
+  fi
+
   # Check for an existing open promotion PR (re-run after aborted gate).
   # Reuse it rather than creating a duplicate.
   local PROMO_PR=""
@@ -542,9 +556,16 @@ run_promote() {
     --json number --jq '.[0].number // ""' 2>/dev/null || true)
   PROMO_PR="${PROMO_PR:-}"
 
+  # gh's stderr is captured, not discarded: when GitHub rejects the write the
+  # reason (body too long, auth, ...) must reach the operator and the log.
+  local _pr_err=""
+  _pr_err=$(mktemp)
   if [ -n "$PROMO_PR" ]; then
     print_info "Reusing existing promotion PR #$PROMO_PR — refreshing body"
-    gh_safe pr edit "$PROMO_PR" --body "$_pr_body" 2>/dev/null || true
+    if ! gh_safe pr edit "$PROMO_PR" --body "$_pr_body" 2>"$_pr_err"; then
+      print_warning "Could not refresh promotion PR #$PROMO_PR body — continuing with the existing body"
+      [ -s "$_pr_err" ] && sed 's/^/    gh: /' "$_pr_err" >&2
+    fi
   else
     print_step "Creating promotion PR..."
     local _pr_title="Promote '$BRANCH' to main"
@@ -553,15 +574,21 @@ run_promote() {
       --base main \
       --head "$BRANCH" \
       --title "$_pr_title" \
-      --body "$_pr_body" 2>/dev/null || true)
+      --body "$_pr_body" 2>"$_pr_err" || true)
     PROMO_PR=$(printf '%s' "${_pr_url:-}" | grep -oE '[0-9]+$' || true)
     PROMO_PR="${PROMO_PR:-}"
     if [ -z "$PROMO_PR" ]; then
       print_error "Failed to create promotion PR for branch '$BRANCH'"
+      if [ -s "$_pr_err" ]; then
+        echo "  gh pr create said:" >&2
+        sed 's/^/    /' "$_pr_err" >&2
+      fi
+      rm -f "$_pr_err"
       exit 1
     fi
     print_success "Created promotion PR #$PROMO_PR"
   fi
+  rm -f "$_pr_err"
   echo ""
 
   # ── Phase 3: Review ──────────────────────────────────────────────────────
@@ -874,6 +901,9 @@ ${_promo_now_items}"
           ensure_labels_exist "from-review,tech-debt" 2>/dev/null || true
         fi
 
+        # Promotion follow-ups intentionally do NOT carry a followup-no-inherit
+        # marker (unlike assess-and-resolve.sh follow-ups): they are filed against
+        # an integration branch and the next run should target that same branch.
         local _promo_now_url
         if _promo_now_url=$(gh_safe issue create \
               --title "Promotion review ACTIONABLE_NOW findings: ${BRANCH}" \
@@ -957,6 +987,9 @@ assessed NOW/LATER/DISMISSED. Close the ones that do not warrant work.
 
 ${_promo_review_body}"
 
+    # Fallback follow-ups intentionally do NOT carry a followup-no-inherit
+    # marker: they are filed against an integration branch and the next run
+    # should target that same branch.
     local _promo_issue_url
     if _promo_issue_url=$(gh_safe issue create \
           --title "Promotion review follow-ups: ${BRANCH}" \
@@ -1070,6 +1103,36 @@ ${_promo_review_body}"
     gh_safe issue comment "$_pn" \
       --body "Promoted to main in PR #$PROMO_PR" 2>/dev/null || true
   done
+
+  # ── Phase 8: Post-merge doc pass (best-effort, #1435) ─────────────────────
+  #
+  # The code has already merged. Doc rejection never blocks anything. Every
+  # failure path warns and falls through — promote's exit code is unchanged
+  # (the #1278 no-bare-exit property). No bare `exit` in this block.
+  #
+  # ADR observations: the cross-doc just-in-case pass in docs_run_promote_doc_pass
+  # writes ADR observations to the ADR drift namespace (doc-drift-adr/) via
+  # adr_drift_log_append — NEVER as edits.  A wrong ADR edit is a wrong product.
+  # Observations are reconciled on-demand via `rite align-docs` (docs_reconcile_adr_drift).
+  if ! declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
+    if [ -f "$RITE_LIB_DIR/core/docs-command.sh" ]; then
+      source "$RITE_LIB_DIR/core/docs-command.sh" 2>/dev/null || true
+    fi
+  fi
+  if declare -f docs_run_promote_doc_pass >/dev/null 2>&1; then
+    echo ""
+    docs_run_promote_doc_pass "$BRANCH" "${PROMO_PR:-}" || true
+    # Report ADR observations recorded during this promotion (entries only, no edits)
+    if declare -f adr_drift_log_entry_count >/dev/null 2>&1; then
+      local _ph8_adr_count=0
+      _ph8_adr_count="$(adr_drift_log_entry_count --total || echo 0)"
+      if [ "${_ph8_adr_count:-0}" -gt 0 ]; then
+        print_info "Phase 8: ${_ph8_adr_count} ADR observation(s) recorded — run 'rite align-docs' to reconcile"
+      fi
+    fi
+  else
+    print_warning "Phase 8: docs_run_promote_doc_pass unavailable — skipping post-merge doc pass for '${BRANCH}'" >&2
+  fi
 
   # Summary
   echo ""

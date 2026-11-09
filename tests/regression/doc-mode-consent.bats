@@ -188,7 +188,7 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# ensure_doc_mode: non-TTY context → session-only changelog, no config write
+# ensure_doc_mode: permanent no-op — consent owned by `rite align-docs`
 # ---------------------------------------------------------------------------
 
 @test "ensure_doc_mode in non-TTY records nothing and leaves the repo opted out" {
@@ -263,27 +263,23 @@ teardown() {
 # bin/rite --init wiring: structural pins
 # ---------------------------------------------------------------------------
 
-@test "bin/rite init block contains the consent question text" {
-  # Structural: exact question wording is an invariant (acceptance criteria)
+@test "bin/rite init block does NOT contain the consent prompt (consent owned by align-docs)" {
+  # Structural: --init no longer prompts; 'rite align-docs' is the single entry point
   count=$(grep -c "Track doc drift for this repo? \[y/N\]" \
     "$RITE_REPO_ROOT/bin/rite" || true)
-  [ "$count" -ge 1 ]
+  [ "$count" -eq 0 ]
   # Docs are never edited automatically — the prompt must not promise it
   run grep -c "May sharkrite update files in docs/" "$RITE_REPO_ROOT/bin/rite"
   [ "$output" = "0" ]
 }
 
-@test "bin/rite init block calls docs_map_build" {
-  count=$(grep -c 'docs_map_build' "$RITE_REPO_ROOT/bin/rite" || true)
+@test "bin/rite init block references rite align-docs for doc tracking setup" {
+  count=$(grep -c "rite align-docs" "$RITE_REPO_ROOT/bin/rite" || true)
   [ "$count" -ge 1 ]
 }
 
 @test "bin/rite init block sources doc-consent.sh" {
   grep -q 'doc-consent.sh' "$RITE_REPO_ROOT/bin/rite"
-}
-
-@test "bin/rite init block sources docs-map.sh" {
-  grep -q 'docs-map.sh' "$RITE_REPO_ROOT/bin/rite"
 }
 
 # ---------------------------------------------------------------------------
