@@ -2,13 +2,16 @@
 # lib/utils/scratchpad-lock.sh - Portable advisory lock for the shared scratchpad file
 #
 # All scratchpad writers MUST acquire this lock before modifying SCRATCHPAD_FILE.
-# The lock is a directory (mkdir is atomic) containing a PID file written atomically
-# via a temp-file rename (no TOCTOU between mkdir and PID write).
+# The portable path uses a symlink lock: `ln -s "$$" "$lockfile"` is atomic
+# (symlink(2)/POSIX), so the lock carries its owner's PID the instant it exists.
+# There is no create→PID-write window that a waiter can exploit.
 #
 # Features:
-#   - Atomic PID write: temp file + mv, so a waiting process never sees a window
-#     where the lock dir exists but has no PID file (the old TOCTOU).
-#   - Stale-lock reclaim: dead holder's lock is removed and the waiter retries.
+#   - Atomic PID-bearing acquire: ln -s creates a symlink whose target IS the PID,
+#     so a waiter never sees a window where the lock exists but has no PID.
+#   - Stale-lock reclaim: rename first (mv, atomic; exactly one racer wins), then
+#     remove the renamed path and retry. Two waiters racing on a dead holder's lock
+#     each try mv; only one succeeds, serialising the steal.
 #   - Timeout is a soft failure (return 1) — never proceeds without the lock,
 #     but never kills the caller either. All scratchpad writes are advisory;
 #     callers must skip the write on acquire failure, not abort. (The old
@@ -16,7 +19,7 @@
 #     converting successfully merged issues into batch failures.)
 #   - Trap-based release: _setup_scratchpad_lock_trap installs EXIT/INT/TERM handlers.
 #   - flock fast-path on Linux: where flock(1) is available, use it (faster + avoids
-#     the directory-based machinery entirely for the common case).
+#     the symlink-based machinery entirely for the common case).
 #   - Re-entrancy guard: nested acquire() calls in the same shell are safe — the
 #     depth counter (_SCRATCHPAD_LOCK_DEPTH) tracks nesting; the OS lock is acquired
 #     once (0→1) and released once (1→0), so inner callers never drop the outer lock.
@@ -110,20 +113,28 @@ acquire_scratchpad_lock() {
   # flock on a regular file is simpler, atomic, and kernel-maintained.
   #
   # Override: if RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir is set, skip flock
-  # entirely and use the portable mkdir path.  This is used in tests to
+  # entirely and use the portable symlink path.  This is used in tests to
   # force a strategy that makes lock state observable as a filesystem
-  # directory (so the RETURN-trap tests can assert [ ! -d "$lockfile" ]).
+  # symlink (so the RETURN-trap tests can assert [ ! -L "$lockfile" ]).
   # ------------------------------------------------------------------
   if [ "${RITE_SCRATCHPAD_LOCK_STRATEGY:-}" != "mkdir" ] && command -v flock >/dev/null 2>&1; then
-    # Clean up any leftover mkdir-style lock directory from a previous run where
-    # flock was not available.  The directory would block flock from creating its
-    # plain-file lock at the same path (open(2) fails if a directory is in the way).
-    if [ -d "$lockfile" ]; then
-      # Only reclaim if the directory has no live holder PID.
+    # Clean up any leftover symlink- or directory-style lock from a previous run
+    # where flock was not available.  Either would block flock's open(2)/exec.
+    if [ -L "$lockfile" ]; then
+      # Only reclaim if the symlink has no live holder PID.
       local _stale_pid
-      _stale_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      _stale_pid=$(readlink "$lockfile" 2>/dev/null || true)
       if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
-        echo "scratchpad-lock: removing leftover mkdir-style lock dir before flock acquire" >&2
+        echo "scratchpad-lock: removing leftover symlink-style lock before flock acquire" >&2
+        rm -f "$lockfile" 2>/dev/null || true
+      fi
+    elif [ -d "$lockfile" ]; then
+      # Legacy directory-style lock from a pre-#1651 run. Only reclaim if the
+      # recorded holder PID is dead (or missing) — prevents stealing a live lock.
+      local _dir_pid
+      _dir_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      if [ -z "$_dir_pid" ] || ! kill -0 "$_dir_pid" 2>/dev/null; then
+        echo "scratchpad-lock: removing leftover directory-style lock before flock acquire" >&2
         rm -rf "$lockfile" 2>/dev/null || true
       fi
     fi
@@ -146,58 +157,123 @@ acquire_scratchpad_lock() {
   fi
 
   # ------------------------------------------------------------------
-  # Portable path: mkdir-based lock with atomic PID write via mv
+  # Portable path: symlink-based atomic PID-bearing lock
   #
-  # Problem with the previous implementation:
-  #   mkdir "$LOCKFILE" && echo $$ > "$LOCKFILE/pid"
-  # Between those two operations another waiter could see:
-  #   - lock dir exists
-  #   - no pid file
-  #   - and conclude "stale lock" → rm -rf → reclaim race
+  # ln -s "$$" "$lockfile" is atomic (symlink(2)/POSIX): exactly one of N
+  # competing processes wins when multiple call it simultaneously.  The
+  # symlink target IS the holder's PID — there is no create→PID-write
+  # window, so the grace-reclaim heuristic is not needed and is deleted.
   #
-  # Fix: write PID to a temp file first, then rename into the lock dir.
-  # Because rename(2) is atomic within the same filesystem, a waiter
-  # either sees the pid file or it doesn't — no half-written state.
+  # Stale reclaim: rename first (mv "$lockfile" "$lockfile.stale.$$"),
+  # then remove.  mv is atomic; two waiters that both see a dead PID each
+  # try mv but only one succeeds, serialising the steal.  The loser's mv
+  # returns non-zero and it falls through to the next sleep+retry cycle.
   # ------------------------------------------------------------------
 
-  # Clean up any leftover flock-style lock file (plain file, not dir).
-  # This handles the case where flock was previously available but isn't now.
-  if [ -f "$lockfile" ] && [ ! -d "$lockfile" ]; then
+  # Clean up any leftover flock-style lock file (plain file, not symlink) or
+  # a stale directory-style lock from a pre-#1651 run with a dead holder PID.
+  # Skipping this would send the while loop into the else-branch on every iteration
+  # for the directory case (infinite spin on live holders handled there instead).
+  if [ -f "$lockfile" ] && [ ! -L "$lockfile" ]; then
     rm -f "$lockfile"
+  elif [ -d "$lockfile" ]; then
+    local _pre_dir_pid
+    _pre_dir_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+    if [ -z "$_pre_dir_pid" ] || ! kill -0 "$_pre_dir_pid" 2>/dev/null; then
+      # Use rename-before-remove (same pattern as the while loop's stale-reclaim)
+      # so we don't accidentally remove a live symlink a concurrent acquirer placed
+      # between our kill -0 check and the rm.
+      local _pre_stale="${lockfile}.stale.preflight.$$"
+      if mv "$lockfile" "$_pre_stale" 2>/dev/null; then
+        local _pre_post_pid
+        _pre_post_pid=$(cat "$_pre_stale/pid" 2>/dev/null || true)
+        if [ -d "$_pre_stale" ] && [ "$_pre_post_pid" = "$_pre_dir_pid" ]; then
+          echo "scratchpad-lock: removing leftover directory-style lock before portable acquire" >&2
+          rm -rf "$_pre_stale" 2>/dev/null || true
+        else
+          mv "$_pre_stale" "$lockfile" 2>/dev/null || true
+        fi
+      fi
+    fi
+    # Live directory-style holder: leave it in place; the while loop handles it.
   fi
 
   local lock_attempts=0
-  local pid_tmp
 
-  while ! mkdir "$lockfile" 2>/dev/null; do
-    # Check if the holding process is still alive
-    if [ -f "$lockfile/pid" ]; then
-      local lock_pid
-      lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+  # Guard: on POSIX, `ln -s PID <existing-directory>` succeeds by creating
+  # PID as a symlink INSIDE the directory and returning 0, which would falsely
+  # appear as a successful lock acquisition.  The `[ -d "$lockfile" ]` prefix
+  # prevents calling ln -s when the lockfile is still a directory, keeping the
+  # loop in the directory-handling branch until the directory is gone.
+  while [ -d "$lockfile" ] || ! ln -s "$$" "$lockfile" 2>/dev/null; do
+    # Read the holder's PID from the symlink target.
+    local lock_pid
+    lock_pid=$(readlink "$lockfile" 2>/dev/null || true)
+
+    if [ -n "$lock_pid" ]; then
       # kill -0: same-host assumption — only valid within a single PID namespace.
       # Do not point SCRATCHPAD_FILE (and thus its lockfile) at shared/network
       # storage; kill -0 checks the local process table only and will give false
       # "process is dead" results for PIDs held by processes on other hosts.
-      if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
-        # Holding process is dead — reclaim the stale lock
-        echo "scratchpad-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2
-        rm -rf "$lockfile" 2>/dev/null || true
-        continue  # retry mkdir immediately
-      fi
-      # Lock is held by a live process — wait
-    else
-      # Lock dir exists but no PID file yet.
-      # With the old code this was "crashed between mkdir and PID write" and
-      # was treated as stale. With the new atomic mv approach, this window
-      # is eliminated for holders using this module. However, a holder still
-      # using the old code (or a very brief race during startup) could still
-      # produce this state. Give it one second grace before reclaiming.
-      sleep 1
-      if [ ! -f "$lockfile/pid" ]; then
-        echo "scratchpad-lock: reclaiming lock dir with no PID after grace period" >&2
-        rm -rf "$lockfile" 2>/dev/null || true
+      if ! kill -0 "$lock_pid" 2>/dev/null; then
+        # Holder is dead — rename first so only one waiter wins the steal,
+        # then remove the renamed path and retry ln -s.
+        local stale_path="${lockfile}.stale.$$"
+        if mv "$lockfile" "$stale_path" 2>/dev/null; then
+          # Verify the renamed symlink still carries the dead PID we observed.
+          # Between kill -0 and mv, a fresh acquirer could have replaced the
+          # stale symlink with a new live-PID one; we'd then hold (and delete)
+          # their live lock, admitting two simultaneous holders.
+          local _post_mv_pid
+          _post_mv_pid=$(readlink "$stale_path" 2>/dev/null || true)
+          if [ "$_post_mv_pid" = "$lock_pid" ]; then
+            echo "scratchpad-lock: reclaiming stale lock from dead process (PID $lock_pid)" >&2
+            rm -f "$stale_path" 2>/dev/null || true
+          else
+            # PID changed — a new acquirer slipped in between our check and mv.
+            # Restore their lock and let them keep it; we retry ln -s normally.
+            mv "$stale_path" "$lockfile" 2>/dev/null || true
+          fi
+        fi
+        # Whether mv succeeded or failed, retry ln -s immediately.
         continue
       fi
+      # Lock is held by a live process — fall through to wait below.
+    else
+      # readlink returned empty. Two cases:
+      # 1. Lockfile is a directory (legacy pre-#1651 lock): check the PID file.
+      #    Dead holder → rename-before-remove and retry; live holder → fall
+      #    through to increment + sleep (avoids infinite spin on the directory).
+      # 2. No lockfile at all: the holder released between our ln -s failing and
+      #    readlink being called — retry immediately without counting the wait.
+      if [ -d "$lockfile" ]; then
+        local _dir_pid
+        _dir_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+        if [ -z "$_dir_pid" ] || ! kill -0 "$_dir_pid" 2>/dev/null; then
+          local _stale_dir="${lockfile}.stale.$$"
+          if mv "$lockfile" "$_stale_dir" 2>/dev/null; then
+            # Verify what we renamed is still the dead-PID directory we observed.
+            # Between kill -0 and mv, a peer can remove the dead dir and acquire
+            # a live symlink; our mv would have renamed that live symlink, leaving
+            # the peer lock-less while both proceed — two simultaneous holders.
+            local _post_mv_dir_pid
+            _post_mv_dir_pid=$(cat "$_stale_dir/pid" 2>/dev/null || true)
+            if [ -d "$_stale_dir" ] && [ "$_post_mv_dir_pid" = "$_dir_pid" ]; then
+              echo "scratchpad-lock: reclaiming stale directory-style lock from dead process (PID ${_dir_pid:-unknown})" >&2
+              rm -rf "$_stale_dir" 2>/dev/null || true
+            else
+              # Not the dead directory we expected; restore and retry.
+              mv "$_stale_dir" "$lockfile" 2>/dev/null || true
+            fi
+          fi
+          continue  # retry ln -s immediately
+        fi
+        # Live directory-style holder: fall through to increment + sleep.
+      elif [ ! -e "$lockfile" ] && [ ! -L "$lockfile" ]; then
+        # Lockfile vanished — holder just released; retry immediately.
+        continue
+      fi
+      # Unexpected non-symlink obstruction: fall through to increment + sleep.
     fi
 
     if [ "$lock_attempts" -eq 0 ]; then
@@ -209,7 +285,7 @@ acquire_scratchpad_lock() {
       # Soft failure — never proceed without holding the lock, but return
       # (not exit) so the caller can skip its advisory write and continue.
       echo "WARNING: scratchpad lock busy after ${max_attempts}s — caller will skip this advisory write." >&2
-      echo "         If the lock is stale, remove it: rm -rf \"$lockfile\"" >&2
+      echo "         If the lock is stale, remove it: rm -f \"$lockfile\"" >&2
       _SCRATCHPAD_LOCK_HELD=false
       _SCRATCHPAD_LOCK_DEPTH=0
       return 1
@@ -217,11 +293,7 @@ acquire_scratchpad_lock() {
     sleep 1
   done
 
-  # We now own the lock directory. Write our PID atomically via temp+rename.
-  # Any waiter that checks after this point will see a valid PID file.
-  pid_tmp=$(mktemp "${lockfile}/pid.XXXXXX")
-  echo $$ > "$pid_tmp"
-  mv "$pid_tmp" "${lockfile}/pid"
+  # Acquired: the symlink target is already our PID — no separate write needed.
 
   _SCRATCHPAD_LOCK_HELD=true
   _SCRATCHPAD_LOCK_STRATEGY="mkdir"
@@ -265,12 +337,12 @@ release_scratchpad_lock() {
     flock -u "$_SCRATCHPAD_LOCK_FD" 2>/dev/null || true
     eval "exec ${_SCRATCHPAD_LOCK_FD}>&-" 2>/dev/null || true
   else
-    # mkdir-style lock: verify PID before removing
-    if [ -d "$lockfile" ] && [ -f "$lockfile/pid" ]; then
+    # symlink-style lock: verify this process still owns it before removing
+    if [ -L "$lockfile" ]; then
       local lock_pid
-      lock_pid=$(cat "$lockfile/pid" 2>/dev/null || true)
+      lock_pid=$(readlink "$lockfile" 2>/dev/null || true)
       if [ "$lock_pid" = "$$" ]; then
-        rm -rf "$lockfile" 2>/dev/null || true
+        rm -f "$lockfile" 2>/dev/null || true
       fi
     fi
   fi
