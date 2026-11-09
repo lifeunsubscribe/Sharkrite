@@ -91,13 +91,15 @@ fi
 # pre_merge_ref (optional, default: HEAD~1):
 #   The commit SHA or ref representing the state BEFORE the merge/rebase.
 #   Used as RITE_TEST_GATE_DIFF_BASE for targeted selection.
-#   For merge commits: HEAD~1 is the pre-merge feature branch tip.
-#   For rebases: pass "origin/main" (issue #854). Passing the pre-rebase HEAD
-#   pulls every rebased-in main commit into the selection — after a heavy merge
-#   day that is 180+ bats files per resumed branch, re-paid on every restart.
-#   The main delta was already gated per-merge (green-main invariant, #707);
-#   the rebase-conflict question is answered by the branch's own coverage
-#   running against the post-rebase tree (origin/main...HEAD, three-dot).
+#   Pass the target ref (e.g. "origin/main" or "origin/<branch>") — not the
+#   pre-merge/pre-rebase HEAD. Using the target ref diffs from the target tip
+#   to HEAD, selecting only this branch's own changed files (#854/#1655).
+#   Passing the pre-merge tip instead pulls every target-merged commit into the
+#   selection — after a heavy merge day that is 180+ bats files per resumed
+#   branch, re-paid on every restart. The target delta was already gated
+#   per-merge (green-main invariant, #707); only the branch's own coverage
+#   needs to run against the post-merge/rebase tree.
+#   HEAD~1 default remains for legacy callers that have not been updated.
 #
 # For non-Sharkrite repos (npm/pytest/make test), the original test
 # command construction and execution path is preserved unchanged.
@@ -110,9 +112,9 @@ fi
 # ===================================================================
 verify_post_merge() {
   local worktree_path="${1:-.}"
-  # pre_merge_ref: the commit that was HEAD before the merge/rebase.
-  # Defaults to HEAD~1 (parent of current HEAD, i.e. the pre-merge commit).
-  # Callers that saved the pre-rebase HEAD should pass it explicitly.
+  # pre_merge_ref: target ref to diff against (e.g. "origin/main").
+  # Defaults to HEAD~1 for legacy callers not yet updated (#854/#1655).
+  # Callers should pass the target ref to select only branch-own files.
   local pre_merge_ref="${2:-HEAD~1}"
 
   # Honor skip flag
@@ -121,22 +123,29 @@ verify_post_merge() {
   fi
 
   # No-overlap skip: post-merge verification exists to catch SEMANTIC conflicts
-  # where main's rebased-in commits break the branch's work despite a clean
-  # textual merge. That can only happen if main's new commits and the branch's
-  # own changes touch the SAME files. When they don't overlap, verifying is pure
-  # waste — and the wasted minutes let main advance further, so the branch ends
-  # up behind again (the treadmill). Compute the overlap and skip when empty.
+  # where the target's merged-in commits break the branch's work despite a clean
+  # textual merge. That can only happen if the target's new commits and the
+  # branch's own changes touch the SAME files. When they don't overlap, verifying
+  # is pure waste. Compute the overlap and skip when empty.
   #
-  # Defensive: skip ONLY on a confidently-computed empty overlap. Any git hiccup
-  # (bad ref, shallow clone, empty file set) falls through to verifying — the
-  # safe default. merge-base(pre_merge_ref, origin/main) is the divergence point;
-  # main's files = changes from there to origin/main; the branch's files = its
-  # own footprint on top of current main (origin/main..HEAD, post-rebase).
+  # pre_merge_ref = PRE (pre-rebase branch tip SHA, the typical caller case):
+  #   _mb = merge-base(PRE, HEAD) = common ancestor before the branch diverged.
+  #   _main_files = diff(PRE, HEAD) = files the rebase pulled in from the target.
+  #   _branch_files = diff(_mb, PRE) = files the branch changed originally.
+  #   Non-overlapping → safe to skip. Overlapping → must verify.
+  #
+  # pre_merge_ref = origin/<target> (#854/#1655 updated callers):
+  #   _mb = merge-base(origin/main, HEAD) = origin/main (ancestor of rebased HEAD).
+  #   _branch_files = diff(origin/main, origin/main) = empty → condition false →
+  #   always falls through to verification (conservative, no false-skip on
+  #   integration-branch targets).
+  #
+  # Defensive: any git hiccup (_mb empty) falls through to verifying — safe default.
   local _mb _main_files _branch_files _overlap
-  _mb=$(git -C "$worktree_path" merge-base "$pre_merge_ref" origin/main 2>/dev/null || true)
+  _mb=$(git -C "$worktree_path" merge-base "$pre_merge_ref" HEAD 2>/dev/null || true)
   if [ -n "$_mb" ]; then
-    _main_files=$(git -C "$worktree_path" diff --name-only "$_mb" origin/main 2>/dev/null | sort -u || true)
-    _branch_files=$(git -C "$worktree_path" diff --name-only origin/main HEAD 2>/dev/null | sort -u || true)
+    _main_files=$(git -C "$worktree_path" diff --name-only "$pre_merge_ref" HEAD 2>/dev/null | sort -u || true)
+    _branch_files=$(git -C "$worktree_path" diff --name-only "$_mb" "$pre_merge_ref" 2>/dev/null | sort -u || true)
     if [ -n "$_main_files" ] && [ -n "$_branch_files" ]; then
       _overlap=$(comm -12 <(printf '%s\n' "$_main_files") <(printf '%s\n' "$_branch_files") 2>/dev/null || true)
       if [ -z "$_overlap" ]; then
@@ -165,14 +174,26 @@ verify_post_merge() {
     # make shellcheck + make lint + bats on the subset, emits
     # [diag] TEST_GATE_SELECTION mode=... for health-report aggregation.
     #
-    # Diff base for feature-branch run: pre_merge_ref (the commit that was
-    # HEAD before the merge/rebase). Using three-dot origin/main...HEAD here
-    # would exclude main-originated files via the merge-base shortcut —
-    # exactly the files that could cause silent semantic conflicts.
-    # pre_merge_ref → HEAD~1 by default → git diff HEAD~1...HEAD shows
-    # only what the merge commit itself introduced.
+    # Diff base for feature-branch run: pre_merge_ref (the target ref,
+    # e.g. "origin/main" or "origin/<branch>"). Diffing from the target
+    # tip to HEAD selects only this branch's own changed files — the
+    # target delta was already gated per-merge (green-main, #707) and
+    # re-verifying its full coverage union wastes gate time (#854/#1655).
     # ---------------------------------------------------------------
     echo "Running post-merge verification (targeted gate)..." >&2
+
+    # Fast-forward with no branch-own commits: HEAD already equals pre_merge_ref.
+    # diff($pre_merge_ref, HEAD) is empty → gate-selection returns FORCE_FULL,
+    # triggering the in-workflow full suite this codebase prohibits. Nothing
+    # branch-own exists to verify. Return early instead.
+    local _head_sha _target_sha
+    _head_sha=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null || true)
+    _target_sha=$(git -C "$worktree_path" rev-parse "$pre_merge_ref" 2>/dev/null || true)
+    if [ -n "$_head_sha" ] && [ -n "$_target_sha" ] && [ "$_head_sha" = "$_target_sha" ]; then
+      echo "Post-merge verification skipped — fast-forward (HEAD equals target tip; no branch-own commits to verify)" >&2
+      _diag "POST_MERGE_VERIFY skip=fast-forward pre_ref=${pre_merge_ref} pr=${PR_NUMBER:-?}"
+      return 0
+    fi
 
     local _pmv_gate_file
     _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$_XXXXXX")

@@ -3053,9 +3053,11 @@ if [[ "$BRANCH_NAME" != "main" && "$BRANCH_NAME" != "develop" && "$BRANCH_NAME" 
     if [ "$BEHIND_COUNT" -gt 0 ]; then
       print_status "Branch is $BEHIND_COUNT commit(s) behind ${_target} — merging origin/${_target}..."
       if git merge "origin/${_target}" --no-edit 2>/dev/null; then
-      # Verify merge didn't introduce silent semantic conflicts
+      # Verify merge didn't introduce silent semantic conflicts.
+      # Pass origin/${_target} so the gate diffs from the target tip to HEAD —
+      # selecting only this branch's own files, not main's (#1655/#854 ruling).
       source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
-      if ! verify_post_merge "."; then
+      if ! verify_post_merge "." "origin/${_target}"; then
         print_warning "Merge with ${_target} introduced test failures — reverting merge"
         git reset --hard HEAD~1 2>/dev/null || true
         print_error "Silent semantic conflict: merge succeeds but tests fail ($BEHIND_COUNT commits behind)"
