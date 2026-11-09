@@ -101,6 +101,35 @@ ensure_doc_mode() {
 }
 
 # ---------------------------------------------------------------------------
+# _run_align_docs_passes
+#
+# Internal helper: run restructure assessment then assertion audit when the
+# functions are available and stdin is an interactive terminal.
+# Shared by the already-enabled path and the first-run yes path so both
+# behave identically without duplicating the TTY guard logic.
+# ---------------------------------------------------------------------------
+_run_align_docs_passes() {
+  if declare -f docs_run_restructure_assessment >/dev/null 2>&1; then
+    if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+      docs_run_restructure_assessment
+    else
+      if declare -f print_info >/dev/null 2>&1; then
+        print_info "Restructure assessment skipped (not an interactive terminal — run 'rite align-docs' interactively)."
+      fi
+    fi
+  fi
+  if declare -f docs_run_assertion_audit >/dev/null 2>&1; then
+    if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+      docs_run_assertion_audit
+    else
+      if declare -f print_info >/dev/null 2>&1; then
+        print_info "Assertion audit skipped (not an interactive terminal — run 'rite align-docs' interactively)."
+      fi
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # run_align_docs_switch [--disable]
 #
 # The single on/off entry point for doc drift tracking. Called by `rite align-docs`.
@@ -114,7 +143,8 @@ ensure_doc_mode() {
 #               If non-TTY: print a message, never enable, exit 0.
 #               If TTY + never enabled: ask y/n; prompt text states the audit
 #               runs either way. Records sync on yes, off on no.
-#               After enabling: print "Audit not yet implemented" and exit 0.
+#               After enabling: fall through into the restructure assessment
+#               and assertion audit (same passes as the already-enabled path).
 #
 # Degrades gracefully in non-TTY ([ -t 0 ] false) — never enables unattended.
 # ---------------------------------------------------------------------------
@@ -149,25 +179,7 @@ run_align_docs_switch() {
       else
         echo "  Doc drift tracking is on (mode: ${RITE_DOC_MODE}). Run 'rite align-docs --disable' to turn it off." >&2
       fi
-      # Restructure assessment first — invoked when docs-command.sh is loaded
-      # (sourced by bin/rite before run_align_docs_switch for the no-args path).
-      # Guard: non-TTY runs must not trigger the interactive approval loop.
-      if declare -f docs_run_restructure_assessment >/dev/null 2>&1; then
-        if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
-          docs_run_restructure_assessment
-        else
-          print_info "Restructure assessment skipped (not an interactive terminal — run 'rite align-docs' interactively)."
-        fi
-      fi
-      # Assertion audit second — one doc_update call per map section.
-      # Uses the same TTY guard; the audit shows a confirmation gate before making calls.
-      if declare -f docs_run_assertion_audit >/dev/null 2>&1; then
-        if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
-          docs_run_assertion_audit
-        else
-          print_info "Assertion audit skipped (not an interactive terminal — run 'rite align-docs' interactively)."
-        fi
-      fi
+      _run_align_docs_passes
       return 0
       ;;
   esac
@@ -209,11 +221,7 @@ _align_docs_prompt_and_record() {
     else
       echo "  Doc drift tracking enabled." >&2
     fi
-    if declare -f print_info >/dev/null 2>&1; then
-      print_info "Run 'rite align-docs' again to start the restructure assessment and assertion audit."
-    else
-      echo "  Run 'rite align-docs' again to start the restructure assessment and assertion audit." >&2
-    fi
+    _run_align_docs_passes
   else
     record_doc_mode "off"
     if declare -f print_info >/dev/null 2>&1; then
