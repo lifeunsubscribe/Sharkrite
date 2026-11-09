@@ -91,13 +91,15 @@ fi
 # pre_merge_ref (optional, default: HEAD~1):
 #   The commit SHA or ref representing the state BEFORE the merge/rebase.
 #   Used as RITE_TEST_GATE_DIFF_BASE for targeted selection.
-#   For merge commits: HEAD~1 is the pre-merge feature branch tip.
-#   For rebases: pass "origin/main" (issue #854). Passing the pre-rebase HEAD
-#   pulls every rebased-in main commit into the selection — after a heavy merge
-#   day that is 180+ bats files per resumed branch, re-paid on every restart.
-#   The main delta was already gated per-merge (green-main invariant, #707);
-#   the rebase-conflict question is answered by the branch's own coverage
-#   running against the post-rebase tree (origin/main...HEAD, three-dot).
+#   Pass the target ref (e.g. "origin/main" or "origin/<branch>") — not the
+#   pre-merge/pre-rebase HEAD. Using the target ref diffs from the target tip
+#   to HEAD, selecting only this branch's own changed files (#854/#1655).
+#   Passing the pre-merge tip instead pulls every target-merged commit into the
+#   selection — after a heavy merge day that is 180+ bats files per resumed
+#   branch, re-paid on every restart. The target delta was already gated
+#   per-merge (green-main invariant, #707); only the branch's own coverage
+#   needs to run against the post-merge/rebase tree.
+#   HEAD~1 default remains for legacy callers that have not been updated.
 #
 # For non-Sharkrite repos (npm/pytest/make test), the original test
 # command construction and execution path is preserved unchanged.
@@ -110,9 +112,9 @@ fi
 # ===================================================================
 verify_post_merge() {
   local worktree_path="${1:-.}"
-  # pre_merge_ref: the commit that was HEAD before the merge/rebase.
-  # Defaults to HEAD~1 (parent of current HEAD, i.e. the pre-merge commit).
-  # Callers that saved the pre-rebase HEAD should pass it explicitly.
+  # pre_merge_ref: target ref to diff against (e.g. "origin/main").
+  # Defaults to HEAD~1 for legacy callers not yet updated (#854/#1655).
+  # Callers should pass the target ref to select only branch-own files.
   local pre_merge_ref="${2:-HEAD~1}"
 
   # Honor skip flag
@@ -165,12 +167,11 @@ verify_post_merge() {
     # make shellcheck + make lint + bats on the subset, emits
     # [diag] TEST_GATE_SELECTION mode=... for health-report aggregation.
     #
-    # Diff base for feature-branch run: pre_merge_ref (the commit that was
-    # HEAD before the merge/rebase). Using three-dot origin/main...HEAD here
-    # would exclude main-originated files via the merge-base shortcut —
-    # exactly the files that could cause silent semantic conflicts.
-    # pre_merge_ref → HEAD~1 by default → git diff HEAD~1...HEAD shows
-    # only what the merge commit itself introduced.
+    # Diff base for feature-branch run: pre_merge_ref (the target ref,
+    # e.g. "origin/main" or "origin/<branch>"). Diffing from the target
+    # tip to HEAD selects only this branch's own changed files — the
+    # target delta was already gated per-merge (green-main, #707) and
+    # re-verifying its full coverage union wastes gate time (#854/#1655).
     # ---------------------------------------------------------------
     echo "Running post-merge verification (targeted gate)..." >&2
 

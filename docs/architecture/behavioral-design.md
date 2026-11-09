@@ -466,7 +466,7 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Mechanism** (`workflow-runner.sh::run_workflow`): capture `_pre_fix_head=$(git rev-parse HEAD)` before the fix session, then run the loop gate with `RITE_TEST_GATE_DIFF_BASE="$_pre_fix_head"`. The initial Phase-2 gate still runs full (against `origin/main`); only the per-iteration re-runs are incremental.
 
-**Correctness:** each change is gated when introduced (its own coverage), relying on accurate `sharkrite-test-covers` headers (the green-main Phase-2 tightening + the `MISSING_TEST_COVERAGE_HEADER` lint). `post-merge-verify` re-runs the gate on the merged state as the cumulative backstop. **Enforcement:** `tests/regression/gate-incremental-fix-loop-selection.bats`.
+**Correctness:** each change is gated when introduced (its own coverage), relying on accurate `sharkrite-test-covers` headers (the green-main Phase-2 tightening + the `MISSING_TEST_COVERAGE_HEADER` lint). `post-merge-verify` re-runs the gate on the merged state as the cumulative backstop — when the branch merged or rebased onto the target, the gate diffs from the target ref (`origin/<target>`), not the pre-merge tip, so only the branch's own files drive test selection (both merge and rebase paths, #854/#1655). **Enforcement:** `tests/regression/gate-incremental-fix-loop-selection.bats`.
 
 ### Gate Block-on-Any (CRITICAL)
 

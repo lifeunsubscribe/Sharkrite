@@ -23,8 +23,10 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
   grep -q 'verify_post_merge "." "origin/main"' "${RITE_LIB_DIR}/utils/divergence-handler.sh"
 }
 
-@test "structural: merge-context call sites keep the HEAD~1 default (no second arg)" {
-  # stale-branch legacy merge path + claude-workflow post-merge remain default-based.
+@test "structural: stale-branch legacy merge-path call sites keep the HEAD~1 default" {
+  # The supervised legacy merge path in stale-branch.sh (not in scope for the #1655
+  # rebase-ruling extension) still uses no second arg. claude-workflow.sh now
+  # passes origin/${_target} (see post-merge-verify-scope.bats).
   _merge_sites=$(grep -c 'verify_post_merge "\$worktree_path";' "${RITE_LIB_DIR}/utils/stale-branch.sh" || true)
   [ "$_merge_sites" -ge 2 ]
 }
