@@ -128,6 +128,14 @@ probes, add `# sharkrite-gate-serial` within the file's first 15 lines so the
 gate keeps it out of parallel batches. Audit: the 6 flaky files caused roughly
 half of all failure-event content, and none of them carried the hint.
 
+Never use a bare `wait` in a test that spawns workers. Under `BATS_TEST_TIMEOUT`
+(the gate sets 120 s, the nightly 300 s) bats keeps a watchdog child in the test
+shell, and a bare `wait` blocks on it until the timeout kills the test — a test
+that passes in 300 ms plainly fails as `# timeout after 120 s` in the gate
+(#1690). Collect `_pids+=($!)` after each spawn and
+`wait "${_pids[@]+"${_pids[@]}"}" || true`; `tests/lint/concurrency-no-bare-wait.bats`
+enforces this for `tests/concurrency/`.
+
 ### 7. Fixture hygiene (prompt-residue)
 
 - Generated-fixture strings must not contain patterns that repo-wide pin tests

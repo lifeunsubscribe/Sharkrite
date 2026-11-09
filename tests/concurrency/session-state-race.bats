@@ -111,9 +111,11 @@ wait_at_barrier() {
 
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify all processes completed
   for i in $(seq 1 $num_processes); do
@@ -160,9 +162,11 @@ wait_at_barrier() {
 
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify all processes exited successfully
   for i in $(seq 1 $num_processes); do
@@ -212,6 +216,7 @@ wait_at_barrier() {
 
     echo $? > "$exit_codes_dir/process_1.exit"
   ) &
+  _pids+=($!)
 
   # Process 2: reinitialize in the middle
   (
@@ -224,6 +229,7 @@ wait_at_barrier() {
 
     echo $? > "$exit_codes_dir/process_2.exit"
   ) &
+  _pids+=($!)
 
   # Process 3: more updates
   (
@@ -236,8 +242,10 @@ wait_at_barrier() {
 
     echo $? > "$exit_codes_dir/process_3.exit"
   ) &
+  _pids+=($!)
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify JSON is still valid at the end.
   # Issue #8's locking makes init_session an upsert (no-op if file already exists),
@@ -271,9 +279,11 @@ wait_at_barrier() {
 
       echo $? > "$exit_codes_dir/process_${proc}.exit"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Primary check: JSON must not be corrupted.
   # Issue #8's session-state locking must hold even under high concurrency (10×10).
@@ -313,9 +323,11 @@ wait_at_barrier() {
 
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify file exists and is valid JSON
   [ -f "$SESSION_STATE_FILE" ]
@@ -372,9 +384,11 @@ wait_at_barrier() {
 
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # All processes must have completed without error
   for i in $(seq 1 $num_processes); do

@@ -141,10 +141,12 @@ wait_at_barrier() {
 
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    _pids+=($!)
   done
 
   # Wait for all background processes
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify all processes exited successfully
   for i in $(seq 1 $num_processes); do
@@ -352,9 +354,11 @@ GHEOF
       update_scratchpad_from_pr "$((100 + i))" "Test PR $i" 2>/dev/null
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify all processes completed
   for i in $(seq 1 $num_processes); do
@@ -395,9 +399,11 @@ GHEOF
       init_scratchpad
       echo $? > "$exit_codes_dir/process_${i}.exit"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify all processes exited successfully
   for i in $(seq 1 $num_processes); do
@@ -929,6 +935,7 @@ GHEOF
         echo "failed" > "$RITE_TEST_TMPDIR/result_stale_$i"
       fi
     ) &
+    _pids+=($!)
   done
 
   # Monitor for simultaneous overlap while waiters run (10s budget)
@@ -943,7 +950,8 @@ GHEOF
     poll=$((poll + 1))
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Both waiters must have succeeded
   for i in 1 2; do

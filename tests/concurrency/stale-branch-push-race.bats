@@ -141,9 +141,11 @@ wait_at_barrier() {
       cd "$FIXTURE_REPO"
       git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Count successful pushes (exit 0) and rejections (exit non-zero)
   local success_count=0
@@ -205,9 +207,11 @@ wait_at_barrier() {
       echo "$result" > "$exit_codes_dir/process_${i}.exit"
       echo "$output" > "$exit_codes_dir/process_${i}.output"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Count how many succeeded
   local success_count=0
@@ -258,9 +262,11 @@ wait_at_barrier() {
       # Clean up (might fail if not on the branch)
       git checkout main >/dev/null 2>&1 || true
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Count successes
   local success_count=0
@@ -349,9 +355,11 @@ wait_at_barrier() {
       cd "$FIXTURE_REPO"
       git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # At least one should succeed in merging and pushing
   local success_count=0
@@ -430,9 +438,11 @@ wait_at_barrier() {
       cd "$FIXTURE_REPO"
       git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Verify exactly one succeeded without force (>1 would mean force push occurred)
   local success_count=0
