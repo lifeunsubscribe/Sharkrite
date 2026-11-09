@@ -2193,7 +2193,9 @@ docs_reconcile_adr_drift() {
 # Entries for branches other than main are untouched.
 # ---------------------------------------------------------------------------
 docs_reconcile_drift() {
-  # Priority: check for branch=main entries in the new structured store.
+  local _rd_processed=0
+
+  # Priority: branch=main entries in the new structured store.
   local _rd_main_count=0
   if [ -n "${RITE_STATE_DIR:-}" ]; then
     _rd_main_count="$(drift_log_entry_count --branch main || echo 0)"
@@ -2209,35 +2211,36 @@ docs_reconcile_drift() {
       print_info "Processing doc: ${_rd_doc}"
       _docs_main_entries_pass "$_rd_doc" || true
     done 3< <(_docs_list_main_entry_docs || true)
-    # Also reconcile ADR drift observations after the main entry pass
-    docs_reconcile_adr_drift || true
-    return 0
+    _rd_processed=1
+    # Fall through — also process any legacy flat-log entries that coexist.
   fi
 
-  # Fallback: legacy flat drift log (pre-#1425 entries).
+  # Legacy flat drift log (pre-#1425 entries).  Process even when main-store
+  # entries were found — both stores coexist on upgraded installs (#1518).
   local _rd_drift_path
   _rd_drift_path="$(drift_log_path 2>/dev/null || true)"
 
-  if [ -z "$_rd_drift_path" ] || [ ! -f "$_rd_drift_path" ]; then
-    print_info "No drift log found — nothing to reconcile"
-    docs_reconcile_adr_drift || true
-    return 0
+  if [ -n "$_rd_drift_path" ] && [ -f "$_rd_drift_path" ]; then
+    local _rd_count
+    _rd_count="$(drift_log_entry_count "$_rd_drift_path" || echo "0")"
+
+    if [ "$_rd_count" -gt 0 ]; then
+      print_info "Reconciling ${_rd_count} legacy drift entr$([ "$_rd_count" -eq 1 ] && echo 'y' || echo 'ies') from flat log..."
+      docs_map_ensure || true
+      _docs_update_engine "reconcile" ""
+      _rd_processed=1
+    fi
   fi
 
-  local _rd_count
-  _rd_count="$(drift_log_entry_count "$_rd_drift_path" || echo "0")"
-
-  if [ "$_rd_count" -eq 0 ]; then
-    print_info "Drift log is empty — nothing to reconcile"
-    docs_reconcile_adr_drift || true
-    return 0
+  if [ "$_rd_processed" -eq 0 ]; then
+    if [ -z "${_rd_drift_path:-}" ] || [ ! -f "${_rd_drift_path:-/dev/null}" ]; then
+      print_info "No drift log found — nothing to reconcile"
+    else
+      print_info "Drift log is empty — nothing to reconcile"
+    fi
   fi
 
-  print_info "Reconciling ${_rd_count} drift entr$([ "$_rd_count" -eq 1 ] && echo 'y' || echo 'ies') from flat log..."
-  docs_map_ensure || true
-  _docs_update_engine "reconcile" ""
-
-  # Always run ADR drift reconcile after the regular reconcile pass
+  # Always run ADR drift reconcile after the regular reconcile passes.
   docs_reconcile_adr_drift || true
 }
 

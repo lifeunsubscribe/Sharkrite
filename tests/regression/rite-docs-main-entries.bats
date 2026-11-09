@@ -136,6 +136,22 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# Helper: write a legacy flat-log entry to docs/sharkrite-drift-log.md (#1518)
+# ---------------------------------------------------------------------------
+_seed_legacy_entry() {
+  local pr="${1:-99}"
+  local doc="${2:-docs/test-doc.md}"
+  local inaccuracy="${3:-legacy inaccuracy}"
+  local flat_log="${FAKE_PROJECT}/docs/sharkrite-drift-log.md"
+  mkdir -p "$(dirname "$flat_log")"
+  printf '\n<!-- sharkrite-doc-drift pr:%s issue:- recorded:2026-01-01T00:00:00Z -->\n' "$pr" >> "$flat_log"
+  printf '**Changed files**: lib/core/foo.sh\n' >> "$flat_log"
+  printf '**Implicated docs**:\n%s\n' "$doc" >> "$flat_log"
+  printf '**Suspected inaccuracy**: %s\n' "$inaccuracy" >> "$flat_log"
+  printf '<!-- /sharkrite-doc-drift -->\n' >> "$flat_log"
+}
+
+# ---------------------------------------------------------------------------
 # Helper: write a structured branch=main drift entry for a doc
 # ---------------------------------------------------------------------------
 _seed_main_entry() {
@@ -532,4 +548,30 @@ _docs_list_main_entry_docs
 "
   [ "$status" -eq 0 ]
   [[ "$output" == *"docs/test-doc.md"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 16: both stores coexist — legacy entries not silently skipped (#1518)
+# ---------------------------------------------------------------------------
+
+@test "both stores coexist: legacy flat-log entries processed after main-store entries" {
+  # Seed a main-store entry
+  _seed_main_entry "docs/test-doc.md" "main store assertion" "contradiction" "lib/core/foo.sh" 42
+
+  # Seed a legacy flat-log entry
+  _seed_legacy_entry 99 "docs/test-doc.md" "legacy flat-log inaccuracy"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Main-store pass: provider called with doc_update role at least once
+  grep -q "RESOLVE:role=doc_update" "$STUB_CALLS_FILE"
+
+  # Legacy-flat-log pass: output must mention "legacy" reconcile (not silently skipped)
+  [[ "$output" =~ "legacy drift entr" ]]
+
+  # Must NOT print "nothing to reconcile"
+  ! [[ "$output" =~ "nothing to reconcile" ]]
 }
