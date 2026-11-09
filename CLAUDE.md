@@ -671,7 +671,7 @@ Follow-up issues (tech-debt, review follow-ups) follow the structure in `templat
 
 - **Claude Context**: `Files to Read:` from PR changed files; `Files to Modify:` seeded from the finding's `**Location:**` path (explicit note when absent)
 - **Acceptance Criteria**: Finding's `**Suggested Fix:**` text embedded under the checkbox (falls back to title-only when field absent)
-- **Verification Commands**: Finding's `**Verification:**` field when present; location-derived `sed`/`grep` command when only Location is available; explicit "no command" note (not a TODO) when neither field exists
+- **Verification Commands**: Finding's `**Verification:**` field when present; location-derived `sed`/`grep` command when Location is a recognized file path (e.g. `lib/core/foo.sh:42`); `# TODO: add verification command for: <location>` when Location is present but not a recognized file path (unsafe chars, no `/`, prose description); `# TODO: add verification command for this finding` when neither field exists
 - **Done Definition**: Severity-appropriate bounded sentence; MEDIUM/LOW fallback is "Done when the acceptance criteria above pass and the verification command succeeds" (no open-ended deferral language)
 - **Scope Boundary**: Static DO/DO NOT (address findings only)
 - **Time Estimate**: Aggregated from Fix Effort metadata in assessment

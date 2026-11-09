@@ -1277,7 +1277,10 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
             # break the surrounding single-quoted sed/grep command strings and inject
             # arbitrary shell text into the generated verification command.
             # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
-            if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
+            # Also require at least one '/' so prose words like "Multiple" (from "Multiple
+            # locations in the retry loop") do not pass the charset check and become a
+            # confidently-wrong Files to Modify entry (#720/#722 wrong file pointer class).
+            if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && echo "${_loc_path:-}" | grep -qF '/'; then
               _loc_path_safe="$_loc_path"
             fi
           fi
@@ -1292,7 +1295,8 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           fi
 
           # Verification command: prefer the assessor-supplied Verification field; fall
-          # back to a location-derived inspect command; never emit a TODO placeholder.
+          # back to a location-derived command when Location is a file path; emit a
+          # TODO placeholder otherwise so the implementer knows work is needed.
           if [ -n "${ITEM_VERIFICATION:-}" ]; then
             # Allowlist validation: ITEM_VERIFICATION is LLM-derived; block shell
             # injection metacharacters before embedding in generated issue bodies.
@@ -1312,12 +1316,14 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
               _verification_cmd="grep -n '' '${_loc_path_safe}'"
             fi
           elif [ -n "${ITEM_LOCATION:-}" ]; then
-            # Location present but not in a recognizable path form — emit as prose to
-            # avoid injecting unsanitized content into shell command syntax.
-            _verification_cmd="# Inspect: ${ITEM_LOCATION:-}"
+            # Location present but not a recognized file path (no '/', unsafe chars, etc.)
+            # Emit as a TODO with the original location so the implementer can act on it
+            # without us injecting unsanitized content into shell command syntax.
+            _verification_cmd="# TODO: add verification command for: ${ITEM_LOCATION:-}"
           else
-            # Neither Verification nor Location — emit an explicit note, no TODO placeholder.
-            _verification_cmd="# No verification command specified in assessment — confirm fix via acceptance criteria"
+            # Neither Verification nor Location — explicit TODO so the implementer knows
+            # verification needs to be added.
+            _verification_cmd="# TODO: add verification command for this finding"
           fi
 
           # Done Definition: severity-appropriate (reused function from assess-and-resolve.sh)
