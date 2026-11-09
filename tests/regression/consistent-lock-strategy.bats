@@ -43,16 +43,12 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "scratchpad-lock: _SCRATCHPAD_LOCK_STRATEGY is set to 'mkdir' on mkdir path" {
-  # Force the mkdir path by hiding flock from PATH
+  # Force the portable path with the strategy override. Do NOT skip when flock
+  # is installed: a test that only executes on machines without flock runs
+  # nowhere but the macOS CI job, so the gate cannot see it break (#1697).
   run bash -c "
-    export PATH=\"\$(echo \"\$PATH\" | tr ':' '\n' | grep -v 'util-linux' | tr '\n' ':' | sed 's/:$//')\"
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
     source '${RITE_LIB_DIR}/utils/scratchpad-lock.sh'
-
-    # Verify flock is not available in modified PATH (skip test on systems with system flock)
-    if command -v flock >/dev/null 2>&1; then
-      echo 'SKIP: flock is available in system PATH; cannot force mkdir path'
-      exit 0
-    fi
 
     export SCRATCHPAD_FILE='${SCRATCHPAD_FILE}'
     acquire_scratchpad_lock
@@ -67,40 +63,37 @@ teardown() {
     release_scratchpad_lock
   "
   [ "$status" -eq 0 ]
-  # Either we got a PASS or flock was unavoidable — both are acceptable
-  [[ "$output" == *"PASS: strategy is mkdir"* ]] || [[ "$output" == *"SKIP:"* ]]
+  [[ "$output" == *"PASS: strategy is mkdir"* ]]
 }
 
-@test "scratchpad-lock: mkdir path release removes lock directory" {
-  # Acquire via the mkdir path (hide flock) and verify release cleans up the dir
+@test "scratchpad-lock: portable path lock is a PID symlink, removed on release" {
+  # The portable lock is a symlink whose target is the holder's PID (#1651):
+  # atomic to create, and never observable without an owner.
   run bash -c "
-    export PATH=\"\$(echo \"\$PATH\" | tr ':' '\n' | grep -v 'util-linux' | tr '\n' ':' | sed 's/:$//')\"
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
     source '${RITE_LIB_DIR}/utils/scratchpad-lock.sh'
-
-    if command -v flock >/dev/null 2>&1; then
-      echo 'SKIP: flock is available in system PATH; cannot force mkdir path'
-      exit 0
-    fi
 
     export SCRATCHPAD_FILE='${SCRATCHPAD_FILE}'
     _lockfile=\"\${SCRATCHPAD_FILE}.lock\"
 
     acquire_scratchpad_lock
 
-    # Lock directory must exist after acquire
-    [ -d \"\$_lockfile\" ] || { echo 'FAIL: lock dir not created'; exit 1; }
+    # Lock must exist after acquire, as a symlink naming this shell's PID
+    [ -L \"\$_lockfile\" ] || { echo 'FAIL: lock is not a symlink after acquire'; exit 1; }
+    _owner=\$(readlink \"\$_lockfile\")
+    [ \"\$_owner\" = \"\$\$\" ] || { echo \"FAIL: lock owner '\$_owner' is not this shell (\$\$)\"; exit 1; }
 
     release_scratchpad_lock
 
-    # Lock directory must be gone after release
-    if [ -e \"\$_lockfile\" ]; then
-      echo 'FAIL: lock dir still exists after release'
+    # Lock must be gone after release (-L catches a dangling symlink that -e misses)
+    if [ -e \"\$_lockfile\" ] || [ -L \"\$_lockfile\" ]; then
+      echo 'FAIL: lock still exists after release'
       exit 1
     fi
-    echo 'PASS: lock dir removed on release'
+    echo 'PASS: lock removed on release'
   "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PASS: lock dir removed on release"* ]] || [[ "$output" == *"SKIP:"* ]]
+  [[ "$output" == *"PASS: lock removed on release"* ]]
 }
 
 @test "scratchpad-lock: flock path cleans up leftover mkdir-style lock directory" {
@@ -144,15 +137,10 @@ teardown() {
 
 @test "scratchpad-lock: mkdir path cleans up leftover flock-style plain file" {
   # Simulate the reverse: a previous flock run left a plain file.  A new run
-  # on a system without flock (mkdir path) must remove it before mkdir-ing.
+  # on the portable path must remove it before taking the lock.
   run bash -c "
-    export PATH=\"\$(echo \"\$PATH\" | tr ':' '\n' | grep -v 'util-linux' | tr '\n' ':' | sed 's/:$//')\"
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
     source '${RITE_LIB_DIR}/utils/scratchpad-lock.sh'
-
-    if command -v flock >/dev/null 2>&1; then
-      echo 'SKIP: flock is available in system PATH; cannot force mkdir path'
-      exit 0
-    fi
 
     export SCRATCHPAD_FILE='${SCRATCHPAD_FILE}'
     _lockfile=\"\${SCRATCHPAD_FILE}.lock\"
@@ -170,7 +158,7 @@ teardown() {
     fi
   "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PASS: acquired lock despite leftover plain file"* ]] || [[ "$output" == *"SKIP:"* ]]
+  [[ "$output" == *"PASS: acquired lock despite leftover plain file"* ]]
 }
 
 # ---------------------------------------------------------------------------
