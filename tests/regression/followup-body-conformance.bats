@@ -16,7 +16,7 @@
 #   1.  _resolve_done_def: MEDIUM/LOW fallback is now a bounded sentence
 #   2.  _resolve_done_def: CRITICAL sentence unchanged (backward-compat)
 #   3.  _resolve_done_def: HIGH sentence unchanged (backward-compat)
-#   4.  Structural: 'TODO: add verification command' absent from both builders
+#   4.  Structural: 'TODO: add verification command' fallback present in both builders (location-less case)
 #   5.  Structural: 'explicitly deferred with justification' absent
 #   6.  Structural: 'Determine from the finding above' absent
 #   7.  Structural: assess-and-resolve.sh embeds _f_suggested_fix in acceptance criterion
@@ -110,12 +110,16 @@ teardown() {
 
 # ─── Tests 4-6: Placeholder string absence (structural) ───────────────────────
 
-@test "lib/core/: 'TODO: add verification command' placeholder absent from both builders" {
-  run grep -rn 'TODO: add verification command' \
-    "$ASSESS_RESOLVE_SCRIPT" "$ASSESS_REVIEW_SCRIPT"
-  [ "$status" -ne 0 ] || {
-    echo "FAIL: 'TODO: add verification command' still present:"
-    echo "$output"
+@test "lib/core/: 'TODO: add verification command' fallback present in both builders (location-less case)" {
+  # The TODO placeholder is the correct fallback when Location is absent or unrecognized.
+  # Asserting presence documents the contract: implementers see work-needed markers,
+  # not silent omissions (per CLAUDE.md follow-up issue template).
+  grep -q 'TODO: add verification command for this finding' "$ASSESS_RESOLVE_SCRIPT" || {
+    echo "FAIL: location-less TODO fallback missing in $ASSESS_RESOLVE_SCRIPT"
+    false
+  }
+  grep -q 'TODO: add verification command for this finding' "$ASSESS_REVIEW_SCRIPT" || {
+    echo "FAIL: location-less TODO fallback missing in $ASSESS_REVIEW_SCRIPT"
     false
   }
 }

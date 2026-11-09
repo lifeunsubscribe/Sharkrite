@@ -2566,10 +2566,12 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       # break the surrounding single-quoted sed/grep command strings and inject
       # arbitrary shell text into the generated verification command.
       # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
-      # Also require at least one '/' so prose words like "Multiple" (from "Multiple
-      # locations in the retry loop") do not pass the charset check and become a
-      # confidently-wrong Files to Modify entry (#720/#722 wrong file pointer class).
-      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && echo "${_loc_path:-}" | grep -qF '/'; then
+      # Also require at least one '/' (directory path) or '.' (file extension) so prose
+      # words like "Multiple" (from "Multiple locations in the retry loop") do not pass
+      # the charset check and become a confidently-wrong Files to Modify entry
+      # (#720/#722 wrong file pointer class). Root-level files like CLAUDE.md or
+      # README.md have no slash but do have a dot, so '/' OR '.' satisfies the check.
+      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.'; }; then
         _loc_path_safe="$_loc_path"
       fi
     fi
