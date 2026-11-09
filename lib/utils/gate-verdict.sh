@@ -87,9 +87,14 @@ _sanitize_json_value() {
 }
 
 # ---------------------------------------------------------------------------
-# _parse_shellcheck_line — convert shellcheck/make-check output to JSON fragment
-# Input: one output line from make check / shellcheck
+# _parse_lint_line — convert lint/shellcheck output to JSON fragment
+# Input: one output line from make check / shellcheck / sharkrite-lint
 # Output: JSON object {"file":"...","line":"...","rule":"...","message":"..."} or ""
+#
+# Handles three formats:
+#   1. shellcheck gcc (-f gcc): path:LINE:COL: level: message [SCnnnn]
+#   2. custom lint (bracketed):  path:LINE: [RULE] message
+#   3. sharkrite-lint violation: ✗ path:LINE - RULE: message  (ANSI-stripped first)
 # ---------------------------------------------------------------------------
 _parse_lint_line() {
   local raw_line="$1"
@@ -120,6 +125,26 @@ _parse_lint_line() {
     rule=$(echo "$raw_line" | grep -oE '\[[a-zA-Z0-9@_/.-]+\]' | head -1 | tr -d '[]' || true)
     message=$(_sanitize_json_value "$raw_line" || true)
     # JSON-escape file and line the same way as message (same fail-open risk)
+    file=$(printf '%s' "$file" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    line=$(printf '%s' "$line" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
+    printf '{"file":"%s","line":"%s","rule":"%s","message":"%s"}' \
+      "$file" "$line" "${rule:-lint}" "$message"
+    return 0
+  fi
+  # sharkrite-lint violation format (from tools/sharkrite-lint.sh print_violation):
+  #   ✗ path:LINE - RULE: message  (ANSI color codes around ✗ are stripped first)
+  # E.g. after stripping: ✗ lib/core/docs-command.sh:3109 - RAW_MARKER_LITERAL: some message
+  local _pl_stripped
+  _pl_stripped=$(printf '%s' "$raw_line" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' || true)
+  if printf '%s\n' "$_pl_stripped" | grep -qE '^✗ [^:]+:[0-9]+ - [A-Z0-9_]+:'; then
+    local file line rule message
+    # Strip the leading "✗ " then split on ":" to get file and line.
+    file=$(printf '%s\n' "$_pl_stripped" | sed 's/^✗ //' | cut -d: -f1 || true)
+    line=$(printf '%s\n' "$_pl_stripped" | sed 's/^✗ //' | cut -d: -f2 | grep -oE '^[0-9]+' || true)
+    # Rule is the uppercase token between " - " and the following ":".
+    rule=$(printf '%s\n' "$_pl_stripped" | grep -oE ' - [A-Z0-9_]+:' | head -1 \
+      | sed 's/^ - //; s/:$//' || true)
+    message=$(_sanitize_json_value "$raw_line" || true)
     file=$(printf '%s' "$file" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
     line=$(printf '%s' "$line" | sed 's/\\/\\\\/g; s/"/\\"/g' || true)
     printf '{"file":"%s","line":"%s","rule":"%s","message":"%s"}' \
@@ -603,6 +628,15 @@ _gate_build_verdict() {
   local _gbv_overall_exit=0
   if [ "$_gbv_lint_exit" -ne 0 ] || [ "$_gbv_tests_exit" -ne 0 ]; then
     _gbv_overall_exit=1
+  fi
+
+  # When lint fails but produced no parseable violations (and no reason is already
+  # set), name it explicitly as an infrastructure failure. This distinguishes a
+  # crashed/silent lint tool from a genuine rule violation. assess-and-resolve.sh
+  # renders reason= as "gate failure: <reason> (exit_code=N)" rather than the
+  # misleading "no parseable findings" fallback (issue #1492).
+  if [ "$_gbv_lint_exit" -ne 0 ] && [ "$_gbv_lint_count" -eq 0 ] && [ -z "$_gbv_reason" ]; then
+    _gbv_reason="lint_infrastructure_error"
   fi
 
   _gate_write_json "$_gbv_output" "$_gbv_lint_items" "$_gbv_tests_items" \
