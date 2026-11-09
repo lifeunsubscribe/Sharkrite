@@ -142,6 +142,13 @@ half of all failure-event content, and none of them carried the hint.
 
 - **Behavioral fixture tests are the default:** exercise the function and assert
   output/exit codes.
+- **Force the code path, never skip on the local environment.** A test that
+  exits early because the machine differs from CI (`flock` installed, a tool
+  present/absent) executes nowhere but CI, so the gate cannot see it break.
+  Use the code's own override (e.g. `RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir`) to
+  force the path under test; skip only when a required binary is genuinely
+  missing (#1697: three portable-lock tests skipped wherever `flock` existed
+  and one asserted a shape #1651 had removed — red on macOS CI only).
 - **Structural greps** (asserting source text contains/lacks a pattern) only for
   invariants code cannot express — cd-guards, guard placement, wording
   contracts.
