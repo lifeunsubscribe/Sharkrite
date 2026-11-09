@@ -66,9 +66,14 @@ print_error()   { :; }
 
 # ── BEGIN: rerere block from bin/rite ──────────────────────────────────────
 _rerere_current=\$(git -C "\$RITE_PROJECT_ROOT" config --get rerere.enabled 2>/dev/null || true)
+_rerere_autoupdate=\$(git -C "\$RITE_PROJECT_ROOT" config --get rerere.autoupdate 2>/dev/null || true)
 if [ -z "\$_rerere_current" ]; then
-  if git -C "\$RITE_PROJECT_ROOT" config rerere.enabled true \
-     && git -C "\$RITE_PROJECT_ROOT" config rerere.autoupdate true; then
+  _rerere_ok=true
+  git -C "\$RITE_PROJECT_ROOT" config rerere.enabled true || _rerere_ok=false
+  if [ -z "\$_rerere_autoupdate" ]; then
+    git -C "\$RITE_PROJECT_ROOT" config rerere.autoupdate true || _rerere_ok=false
+  fi
+  if [ "\$_rerere_ok" = "true" ]; then
     print_success "Enabled git rerere (conflict-resolution cache)"
   else
     print_info "Could not enable git rerere — set manually: git config rerere.enabled true"
@@ -218,6 +223,34 @@ DRIVER_EOF
   _got=$(git -C "$_repo" config --get rerere.enabled 2>/dev/null || true)
   [ "$_got" = "true" ] || {
     echo "FAIL: rerere.enabled changed from 'true'; got: '${_got}'" >&2
+    return 1
+  }
+}
+
+@test "behavioral: explicit rerere.autoupdate=false is preserved when enabling rerere" {
+  _driver="$BATS_TEST_TMPDIR/rerere-autoupdate-false-driver.sh"
+  _pre='git -C "$RITE_PROJECT_ROOT" config rerere.autoupdate false'
+  _write_rerere_driver "$_driver" "$_pre"
+
+  run bash "$_driver"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: driver exited $status. Output: $output" >&2
+    return 1
+  }
+
+  _repo="$BATS_TEST_TMPDIR/repo"
+
+  _got_autoupdate=$(git -C "$_repo" config --get rerere.autoupdate 2>/dev/null || true)
+  [ "$_got_autoupdate" = "false" ] || {
+    echo "FAIL: rerere.autoupdate changed from 'false'; got: '${_got_autoupdate}'" >&2
+    echo "      An explicit rerere.autoupdate=false must survive --init (operator choice)" >&2
+    return 1
+  }
+
+  _got_enabled=$(git -C "$_repo" config --get rerere.enabled 2>/dev/null || true)
+  [ "$_got_enabled" = "true" ] || {
+    echo "FAIL: rerere.enabled not set to 'true'; got: '${_got_enabled}'" >&2
+    echo "      Block must still enable rerere.enabled when it was unset" >&2
     return 1
   }
 }
