@@ -521,8 +521,13 @@ run_promote() {
   # orphaning worktrees and losing in-flight work.
   # Query shape mirrors repo-status.sh:649: --json number,body,headRefName,baseRefName
   local _inflight_prs_json
-  _inflight_prs_json=$(gh_safe pr list --state open \
-    --json number,body,headRefName,baseRefName --limit 200 2>/dev/null || true)
+  if ! _inflight_prs_json=$(gh_safe pr list --state open \
+    --json number,body,headRefName,baseRefName --limit 200 2>&1); then
+    print_error "Cannot verify in-flight PRs for '${BRANCH}': gh pr list failed."
+    echo "  $_inflight_prs_json" >&2
+    echo "  Refusing to promote — cannot guarantee no in-flight PRs target this branch." >&2
+    exit 1
+  fi
   _inflight_prs_json="${_inflight_prs_json:-[]}"
 
   local _inflight_count=0
