@@ -171,6 +171,30 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
+@test "run_align_docs_switch when mode=sync runs both align-docs passes" {
+  # Verifies the already-enabled path invokes _run_align_docs_passes (restructure
+  # assessment + assertion audit). Uses _RITE_FORCE_TTY=1 to satisfy the TTY guard
+  # inside _run_align_docs_passes when stdin is /dev/null. Stubs are defined after
+  # source so the function-sentinel re-source guard on doc-consent.sh cannot
+  # overwrite them.
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    export RITE_DOC_MODE=sync
+    export _RITE_FORCE_TTY=1
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
+    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
+    run_align_docs_switch
+  " < /dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RESTRUCTURE_RAN"* ]]
+  [[ "$output" == *"AUDIT_RAN"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # TTY y-path: feeding y via stdin records sync
 # ---------------------------------------------------------------------------
