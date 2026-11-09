@@ -148,6 +148,9 @@ wait_at_barrier() {
       source "$RITE_LIB_DIR/utils/session-tracker.sh"
       init_session "unsupervised"
 
+      # Wait for all batches to be initialized before racing
+      wait_at_barrier "init_barrier" "$num_batches" || exit 1
+
       # Simulate completing issues
       for i in $(seq 1 $increments_per_batch); do
         increment_completed
@@ -203,6 +206,8 @@ wait_at_barrier() {
     source "$RITE_LIB_DIR/utils/session-tracker.sh"
     init_session "unsupervised"
 
+    wait_at_barrier "limit_test_init" "2" || exit 1
+
     # Seed cumulative_work_seconds to 2h directly (avoids sleeping in the test).
     # This is the real signal should_save_and_exit reads (get_cumulative_work_seconds).
     _tmp_a=$(mktemp)
@@ -224,6 +229,8 @@ wait_at_barrier() {
     export SESSION_STATE_FILE="/tmp/rite-session-state-${RITE_PROJECT_NAME}-${RITE_BATCH_ID}.json"
     source "$RITE_LIB_DIR/utils/session-tracker.sh"
     init_session "unsupervised"
+
+    wait_at_barrier "limit_test_init" "2" || exit 1
 
     _tmp_b=$(mktemp)
     jq '.cumulative_work_seconds = 180' "$SESSION_STATE_FILE" > "$_tmp_b"
