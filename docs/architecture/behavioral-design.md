@@ -2767,3 +2767,45 @@ requirement"). The contract:
   `load_provider` aliases it as `provider_healthcheck` via the standard dispatch.
 
 **Enforcement:** `tests/regression/provider-trust-preflight.bats`.
+
+## Follow-up Worktree Adoption
+
+A follow-up issue carrying a `sharkrite-parent-pr:N` marker may reuse the parent
+PR's branch and local worktree. The adoption decision is made in one place and
+one place only: **`detect_parent_pr_attachment`** (`lib/utils/pr-detection.sh`).
+
+**Contract:**
+- Parent PR state = `OPEN` → `adopt`: the follow-up's dev session, review, and
+  merge target the parent PR end-to-end (same branch, same worktree if present).
+- Parent PR state = `MERGED` or `CLOSED` → `ignore`: the marker is kept for
+  traceability but the follow-up runs fresh on a new branch from main.
+
+**Single decision point — why it matters:**
+
+Before #1630, `workflow-runner.sh` called `detect_parent_pr_attachment` and
+correctly refused to adopt a MERGED parent, but `claude-workflow.sh`'s
+`find_worktree_for_task` independently fetched the parent PR's `headRefName`
+*without* checking state. When a human merged the parent via `gh pr merge
+--delete-branch` (which removes the remote branch but not the local worktree),
+the lingering local worktree was adopted; the script navigated into it, saw
+"PR #N is MERGED", and exited with "Work already completed" — reporting the
+wrong issue/PR pair and doing no work for the follow-up.
+
+**How the contract is enforced:**
+
+1. `workflow-runner.sh` calls `detect_parent_pr_attachment` and exports
+   `_RITE_PARENT_ATTACHMENT_MODE` / `_RITE_PARENT_PR_BRANCH` before invoking
+   `claude-workflow.sh`, so the verdict travels with the subprocess. The export
+   only happens when `PR_NUMBER` is **unknown** (empty/null) — i.e. no prior PR
+   was found for this follow-up issue, so attachment resolution runs. When
+   `PR_NUMBER` is already known (the follow-up already has its own PR from an
+   earlier run), the block is skipped entirely and neither var is exported; step 2's
+   fallback path in `find_worktree_for_task` applies for standalone invocations.
+2. `find_worktree_for_task` reads those env vars when present (no redundant API
+   call in orchestrated runs) and falls back to calling `detect_parent_pr_attachment`
+   directly when invoked standalone.
+3. The two callers reach the same answer because they both route through the same
+   function — independent re-derivation of "is the parent still live?" is the
+   bug class this design prevents.
+
+**Enforcement:** `tests/regression/followup-merged-parent-worktree.bats`.
