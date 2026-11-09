@@ -25,9 +25,9 @@
 # historical follow-ups with no anchor data).
 #
 # Provider degradation: when a cap/auth error fires, the pass lists remaining
-# candidates in stdout for the batch report and emits the diag with actual
-# counts.  Nothing is closed on the deterministic signal alone (a changed file
-# does not mean a resolved finding).
+# unclassified candidates in stderr (operator warning) and emits the diag with
+# actual partial counts.  Nothing is closed on the deterministic signal alone
+# (a changed file does not mean a resolved finding).
 #
 # Entry point: reconcile_batch_followups()
 # Requires: _batch_followups_created (batch-reporter.sh), gh_safe (gh-retry.sh),
