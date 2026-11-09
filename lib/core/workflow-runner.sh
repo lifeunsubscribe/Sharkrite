@@ -762,6 +762,33 @@ _assert_worktree_alignment() {
     _canonical_handoff=$(cd "$_dev_session_wt" 2>/dev/null && pwd -P 2>/dev/null || echo "$_dev_session_wt")
     _canonical_discovered=$(cd "$WORKTREE_PATH" 2>/dev/null && pwd -P 2>/dev/null || echo "$WORKTREE_PATH")
     if [ "$_canonical_handoff" != "$_canonical_discovered" ]; then
+      # Branch-based re-resolution: the dev session's EMPTY_INIT auto-recovery
+      # deletes the old worktree and creates a new one with a different batch
+      # suffix. Identity is the branch, not the path — look up which worktree
+      # currently has the dev session's branch checked out (#1688).
+      local _rr_branch _rr_wt _rr_count _rr_canonical
+      _rr_branch=$(git worktree list --porcelain 2>/dev/null | awk \
+        -v wt="$_canonical_handoff" '
+        /^worktree / { cur = $2 }
+        /^branch /   { if (cur == wt) { print $2; exit } }
+      ' || true)
+      if [ -n "${_rr_branch:-}" ]; then
+        _rr_wt=$(git worktree list --porcelain 2>/dev/null | awk \
+          -v br="$_rr_branch" '
+          /^worktree / { cur = $2 }
+          /^branch /   { if ($2 == br) print cur }
+        ' || true)
+        _rr_count=$(printf '%s\n' "$_rr_wt" | grep -c '[^[:space:]]' || true)
+        if [ "${_rr_count:-0}" -eq 1 ]; then
+          _rr_canonical=$(cd "$_rr_wt" 2>/dev/null && pwd -P 2>/dev/null || echo "$_rr_wt")
+          if [ "$_rr_canonical" = "$_canonical_handoff" ]; then
+            print_info "Worktree re-resolved by branch after auto-recovery: $_dev_session_wt (was: $WORKTREE_PATH)"
+            _diag "WORKTREE_RERESOLVED issue=${_issue_num} from=$WORKTREE_PATH to=$_dev_session_wt"
+            WORKTREE_PATH="$_dev_session_wt"
+            return 0
+          fi
+        fi
+      fi
       print_error "Worktree path mismatch: dev session and orchestrator found different worktrees"
       print_error "  Dev session used:   $_dev_session_wt"
       print_error "  Orchestrator found: $WORKTREE_PATH"
