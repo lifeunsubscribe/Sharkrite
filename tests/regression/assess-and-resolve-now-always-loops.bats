@@ -23,8 +23,9 @@
 #      (was the print_success message in the removed defer branch)
 #   4. Static: ACTIONABLE_NOW branch reaches fix loop (exit 2) as the
 #      non-retry-cap else arm — confirmed by "Normal loop" comment presence
-#   5. Static: CRITICAL_NOW_COUNT and HIGH_NOW_COUNT vars still computed
-#      (still used by retry-cap branch for CRITICAL follow-up logic)
+#   5. Static: CRITICAL_NOW_COUNT var still computed
+#      (used by retry-cap branch for CRITICAL follow-up logic;
+#       HIGH_NOW_COUNT removed — its reader was deleted in #1691)
 #
 # Verification command:
 #   bats tests/regression/assess-and-resolve-now-always-loops.bats
@@ -106,19 +107,14 @@ teardown() {
 
 # ─── Test 5: ACTIONABLE_NOW count feeds retry-cap CRITICAL check ─────────────
 
-@test "assess-and-resolve: CRITICAL_NOW_COUNT and HIGH_NOW_COUNT still computed" {
-  # These vars are computed in the ACTIONABLE_NOW branch and still used by the
-  # retry-cap arm to decide whether to file a CRITICAL follow-up issue.
-  # Deleting them would silently break the retry-cap CRITICAL logic.
+@test "assess-and-resolve: CRITICAL_NOW_COUNT still computed" {
+  # CRITICAL_NOW_COUNT is computed in the ACTIONABLE_NOW branch and used by the
+  # retry-cap arm to decide whether to block merge and file a CRITICAL follow-up issue.
+  # Deleting it would silently break the retry-cap CRITICAL logic.
+  # HIGH_NOW_COUNT was removed (dead assignment after its reader was deleted in #1691).
   run grep -n "CRITICAL_NOW_COUNT" "$ASSESS_RESOLVE_SCRIPT"
   [ "$status" -eq 0 ] || {
     echo "FAIL: CRITICAL_NOW_COUNT no longer computed in assess-and-resolve.sh"
-    false
-  }
-
-  run grep -n "HIGH_NOW_COUNT" "$ASSESS_RESOLVE_SCRIPT"
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: HIGH_NOW_COUNT no longer computed in assess-and-resolve.sh"
     false
   }
 }

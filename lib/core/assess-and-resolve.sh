@@ -1867,9 +1867,8 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # See: docs/architecture/behavioral-design.md →
       # "Fix-loop policy: NOW means fixed, LATER means deferred".
       #
-      # Severity breakdown — computed once, reused below.
+      # Count CRITICAL items — used by the retry-cap arm to decide whether to block merge.
       CRITICAL_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*CRITICAL" || true)
-      HIGH_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*HIGH" || true)
 
       # Check retry limit for ACTIONABLE_NOW items
       if [ "$RETRY_COUNT" -ge 3 ]; then
@@ -1899,23 +1898,12 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
             CREATE_CRITICAL_FOLLOWUP=true
             FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
           else
-            # Final-retry shoe-horn fix (defect #5): only HIGH findings are worth
-            # filing at retry limit. MEDIUM/LOW findings that the fix loop couldn't
-            # address in 3 cycles are nice-to-haves — filing them clutters the backlog
-            # without adding triage value (they were already low-priority and couldn't
-            # be auto-fixed). Drop them with a log message.
-            if [ "$HIGH_NOW_COUNT" -gt 0 ]; then
-              print_success "No CRITICAL/[GATE] items remain ($HIGH_NOW_COUNT HIGH item(s) — filing tech-debt for HIGH only)"
-              print_status "Creating tech-debt issue for HIGH items (dropping MEDIUM/LOW)..."
-            else
-              print_success "No CRITICAL/HIGH/[GATE] items remain at retry limit — all remaining are MEDIUM/LOW"
-              print_info "Dropping MEDIUM/LOW findings (not worth follow-up backlog space at retry limit)"
-            fi
-            # Treat remaining ACTIONABLE_NOW as ACTIONABLE_LATER at retry limit.
-            # MEDIUM/LOW will be filtered out by the extraction step (DROP_RETRY_MEDIUM_LOW=true).
+            # Retry cap reached: file all unfixed items as tech-debt regardless of severity.
+            # Severity is a complexity/impact rating, not the worth-tracking decision —
+            # that belongs to the assessor's necessity bar (#782).
+            print_success "No CRITICAL/[GATE] items remain at retry limit — filing all $ACTIONABLE_NOW_COUNT unfixed item(s) as tech-debt"
             CREATE_SECURITY_DEBT=true
             FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
-            DROP_RETRY_MEDIUM_LOW=true
           fi
         fi
 
@@ -2324,41 +2312,24 @@ $(_extract_items_by_state "ACTIONABLE_NOW" "Severity:.*LOW")"
     LOW_COUNT=${LOW_COUNT:-0}
 
     print_info "Issue counts: CRITICAL=$CRITICAL_COUNT, HIGH=$HIGH_COUNT, MEDIUM=$MEDIUM_COUNT, LOW=$LOW_COUNT"
-
-    # Drop LOW items — they accumulate noise without justifying issue overhead.
-    # Log them for visibility but exclude from the follow-up issue.
-    if [ "$LOW_COUNT" -gt 0 ]; then
-      print_info "Excluding $LOW_COUNT LOW-severity item(s) from follow-up issue (not worth tracking)"
-    fi
-    LOW_ISSUES=""
-    LOW_COUNT=0
-
-    # Final-retry MEDIUM drop (defect #5): when retry limit was reached with no
-    # CRITICAL items, MEDIUM findings are also dropped. They were already medium-priority
-    # and the fix loop couldn't address them — filing them clutters the backlog.
-    # Only HIGH/CRITICAL findings get a follow-up issue at retry limit.
-    if [ "${DROP_RETRY_MEDIUM_LOW:-false}" = "true" ] && [ "$MEDIUM_COUNT" -gt 0 ]; then
-      print_info "Final-retry: dropping $MEDIUM_COUNT MEDIUM-severity item(s) (not worth follow-up backlog space at retry limit)"
-      MEDIUM_ISSUES=""
-      MEDIUM_COUNT=0
-    fi
   else
     # Fallback: Extract all issues from review using sed (when Claude unavailable)
     CRITICAL_ISSUES=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
     HIGH_ISSUES=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
     MEDIUM_ISSUES=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
-    LOW_ISSUES=""
-    LOW_COUNT=0
+    LOW_ISSUES=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
+    LOW_COUNT=$(echo "$LOW_ISSUES" | grep -c "^### " || true)
+    LOW_COUNT=${LOW_COUNT:-0}
   fi
 
-  # If only LOWs existed and we just filtered them all out, skip issue creation
-  if [ "$CRITICAL_COUNT" -eq 0 ] && [ "$HIGH_COUNT" -eq 0 ] && [ "$MEDIUM_COUNT" -eq 0 ]; then
-    print_info "All remaining items are LOW severity — skipping follow-up issue creation"
+  # Skip issue creation when the assessment produced no actionable items to file
+  if [ "$CRITICAL_COUNT" -eq 0 ] && [ "$HIGH_COUNT" -eq 0 ] && [ "$MEDIUM_COUNT" -eq 0 ] && [ "$LOW_COUNT" -eq 0 ]; then
+    print_info "No actionable items to file — skipping follow-up issue creation"
     CREATE_FOLLOWUP_ISSUES=false
   fi
 fi
 
-# Gate: only proceed if we still have items worth tracking after LOW filtering
+# Gate: only proceed if we still have actionable items to file
 if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   print_header "📝 Creating Per-Finding Follow-up Issues"
 
@@ -2510,21 +2481,12 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _f_verification=$(echo "$_finding_block" | grep -oE '\*\*Verification:\*\*.*' | head -1 | sed 's/\*\*Verification:\*\*[[:space:]]*//' || true)
     _f_verification="${_f_verification:-}"
 
-    # Skip LOW severity items — excluded from follow-up issues (same as per-item path).
-    # This check runs before the cap guard so LOW findings do not consume API budget.
-    if echo "$_f_severity" | grep -qi "LOW"; then
-      print_info "  Skipped (LOW severity): $_clean_title"
-      continue
-    fi
-
     _finding_index=$((_finding_index + 1))
 
     # --- Per-finding cap guard ---
     # RITE_MAX_FINDINGS_PER_RUN (default 20) limits GitHub API calls per assess run.
     # The dedup machinery runs N× (issue list + issue view + pr view + backoff sleeps),
     # so an unbounded loop on a scan-heavy PR can exhaust GitHub secondary rate limits.
-    # Placed after the LOW-severity skip so LOW findings (which make zero API calls)
-    # do not count against the cap — only API-eligible findings are counted.
     # Set to 0 to disable the cap (original unbounded behavior).
     # _findings_cap_validated is set before the loop (numeric-validated, never empty).
     if [ "$_findings_cap_validated" -gt 0 ] && [ "$_finding_index" -gt "$_findings_cap_validated" ]; then
@@ -2913,7 +2875,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
   # (RITE_MAX_FINDINGS_PER_RUN=0) to process all findings.
   if [ "${_findings_skipped_by_cap:-0}" -gt 0 ]; then
     _processed_count=$((_finding_index - _findings_skipped_by_cap))
-    print_warning "Per-finding cap hit: processed ${_processed_count} of ${_finding_index} API-eligible (non-LOW) findings (cap=${_findings_cap_validated}, skipped=${_findings_skipped_by_cap})."
+    print_warning "Per-finding cap hit: processed ${_processed_count} of ${_finding_index} findings (cap=${_findings_cap_validated}, skipped=${_findings_skipped_by_cap})."
     print_info "  Capped findings saved to: ${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
     print_info "  To process all findings: set RITE_MAX_FINDINGS_PER_RUN=0 (or raise the cap) in .rite/config"
     _diag "FOLLOWUP_CAP_HIT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} processed=${_processed_count} skipped=${_findings_skipped_by_cap} cap=${_findings_cap_validated}"
