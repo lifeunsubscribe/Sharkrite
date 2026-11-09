@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/drift-log.sh::drift_log_append|drift_log_entry_count|_drift_entry_path|_drift_kind_valid
+# sharkrite-test-covers: lib/utils/drift-log.sh::drift_log_append|drift_log_entry_count|_drift_entry_path|_drift_kind_valid|drift_log_remove_entry
 
 # Tests for the structured per-doc/per-branch drift entry schema.
 #
@@ -333,7 +333,40 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# 8. Coverage header self-check (MISSING_TEST_COVERAGE_HEADER lint)
+# 8. Trap injection safety: quote-bearing doc paths (#1649)
+# ---------------------------------------------------------------------------
+
+@test "drift_log_append: succeeds when doc path contains a single-quote" {
+  # A single-quote in the doc path would corrupt the trap body in the old
+  # double-quoted form: trap "lock_release '$lock_path'" RETURN
+  # The fixed single-quoted form defers expansion to trap-fire time, so the
+  # quote is never interpreted as shell syntax.
+  local doc="docs/has'quote.md"
+  run drift_log_append "$doc" "main" "101" "-" "some assertion" "addition" "evidence"
+  [ "$status" -eq 0 ]
+  local entry_file
+  entry_file="$(_drift_entry_path "$doc" "main")"
+  [ -f "$entry_file" ]
+}
+
+@test "drift_log_remove_entry: succeeds when doc path contains a single-quote" {
+  local doc="docs/remove'quote.md"
+  drift_log_append "$doc" "main" "102" "-" "some assertion" "addition" "evidence"
+  local entry_file
+  entry_file="$(_drift_entry_path "$doc" "main")"
+  [ -f "$entry_file" ]
+  run drift_log_remove_entry "$doc" "main" "some assertion"
+  [ "$status" -eq 0 ]
+}
+
+@test "drift_log_append: trap uses single-quoted form in source (structural)" {
+  # Verify the fix is in place: the trap body must use single-quote delimiters
+  # so the lock path variable expands at fire-time, not at setup-time.
+  grep -q "trap 'lock_release" "$DRIFT_LOG_LIB"
+}
+
+# ---------------------------------------------------------------------------
+# 9. Coverage header self-check (MISSING_TEST_COVERAGE_HEADER lint)
 # ---------------------------------------------------------------------------
 
 @test "doc-drift-entry-schema.bats: coverage header present on line 2" {
