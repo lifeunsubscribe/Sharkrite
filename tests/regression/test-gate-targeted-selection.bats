@@ -340,7 +340,7 @@ EOF
   local _f
   for _f in "$RITE_REPO_ROOT"/tests/concurrency/*.bats; do
     [ -f "$_f" ] || continue
-    grep -q "sharkrite-gate-serial" "$_f" || _missing="$_missing $(basename "$_f")"
+    _bats_file_is_serial "$_f" || _missing="$_missing $(basename "$_f")"
   done
   [ -z "$_missing" ] \
     || { echo "FAIL: missing sharkrite-gate-serial in:$_missing"; return 1; }
