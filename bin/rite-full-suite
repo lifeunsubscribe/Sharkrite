@@ -14,7 +14,7 @@
 #   bin/rite-full-suite             # Direct invocation (same effect)
 #
 # Exit codes:
-#   0  — all checks and tests passed
+#   0  — all checks and tests passed (also: scheduled skip or deadline abort)
 #   1  — one or more failures (lint or bats)
 #
 # Diag emitted:
@@ -344,6 +344,10 @@ set -e
 
 # Stop the tail -f follower. Any still-running orphaned bats children may
 # continue writing to $_tests_raw, but _tests_exit was already captured above.
+# Brief drain window: bats has closed its write end but tail's read loop may
+# be one iteration behind; sleep 1 lets it flush the final lines to the log
+# before we kill it.
+sleep 1
 kill "$_bats_tail_pid" 2>/dev/null || true
 wait "$_bats_tail_pid" 2>/dev/null || true
 _bats_tail_pid=""
