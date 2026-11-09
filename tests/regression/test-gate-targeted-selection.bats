@@ -53,6 +53,38 @@ EOF
 # sharkrite-test-covers: lib/some/other.sh
 @test "fixture D" { true; }
 EOF
+
+  # Fixture E: header covers lib/core/a.sh; body references lib/utils/b.sh via
+  # a $RITE_LIB_DIR-style path (not in the header).  Used to verify body-reference
+  # selection when lib/utils/b.sh changes (acceptance criterion 1 / issue #1657).
+  cat > "$TEST_REPO/tests/regression/covers-aonly-with-b-body.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/a.sh
+setup() {
+  _B_SH="$RITE_LIB_DIR/utils/b.sh"
+}
+@test "fixture E" { true; }
+EOF
+
+  # Fixture F: same shape as #1635 regression — header declares assess-documentation.sh
+  # but body references lib/providers/claude.sh via a variable assignment.
+  cat > "$TEST_REPO/tests/regression/covers-assess-doc-body-claude.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/assess-documentation.sh, lib/utils/config.sh
+setup() {
+  CLAUDE_SH="$PROJECT_ROOT/lib/providers/claude.sh"
+}
+@test "fixture F" { true; }
+EOF
+
+  # Fixture G: header covers lib/core/a.sh; body mentions lib/utils/b.sh only
+  # in a comment.  Fixed-string match is intentionally comment-inclusive.
+  cat > "$TEST_REPO/tests/regression/covers-aonly-comment-b.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/a.sh
+# This test exercises lib/utils/b.sh indirectly via fixture E above.
+@test "fixture G" { true; }
+EOF
 }
 
 teardown() {
@@ -434,6 +466,83 @@ EOF
 # run against the changed bats file during the post-commit gate.
 # Previously _select_lint_by_changed_paths only emitted bin/lib/tools paths.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Body-reference selection (issue #1657)
+# A bats file is also selected when its TEXT contains the literal path of a
+# changed shell-source file — even if the sharkrite-test-covers header does
+# not declare that path.  This catches tests that source, grep, or reference
+# a changed file without declaring it in the header (the #1635 live miss).
+# ---------------------------------------------------------------------------
+
+@test "_select_tests_by_changed_paths: body reference selects file not covered by header (criterion 1)" {
+  # Fixture E: header = lib/core/a.sh; body references lib/utils/b.sh
+  # Changed path: lib/utils/b.sh (NOT in the header)
+  # Expected: covers-aonly-with-b-body.bats is selected via body reference
+  result=$(_select_tests_by_changed_paths "lib/utils/b.sh" "$TEST_REPO")
+  echo "$result" | grep -q "covers-aonly-with-b-body.bats" || {
+    echo "FAIL: body-reference file not selected; got: $result" >&2
+    return 1
+  }
+  # The fixture for lib/core/a.sh (covers-foo.bats with header lib/core/foo.sh) is not
+  # selected — sanity-check that the body-ref rule does not over-select.
+  ! echo "$result" | grep -q "covers-unrelated.bats" || {
+    echo "FAIL: covers-unrelated.bats should not be selected for lib/utils/b.sh" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: body reference in comment also selects file (fixed-string is intentional)" {
+  # Fixture G: header = lib/core/a.sh; lib/utils/b.sh appears only in a comment.
+  # Fixed-string match is intentionally comment-inclusive: a comment documenting
+  # a dependency IS a dependency signal.  Pin this so nobody "optimizes" it away.
+  result=$(_select_tests_by_changed_paths "lib/utils/b.sh" "$TEST_REPO")
+  echo "$result" | grep -q "covers-aonly-comment-b.bats" || {
+    echo "FAIL: comment-only body reference not selected; got: $result" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: #1635 shape — header assess-doc + body providers/claude selected on claude change" {
+  # Fixture F mirrors the live miss: header declares assess-documentation.sh and
+  # config.sh; body has CLAUDE_SH="$PROJECT_ROOT/lib/providers/claude.sh".
+  # When lib/providers/claude.sh changes, the fixture must be selected via body
+  # reference even though lib/providers/claude.sh is absent from the header.
+  result=$(_select_tests_by_changed_paths "lib/providers/claude.sh" "$TEST_REPO")
+  echo "$result" | grep -q "covers-assess-doc-body-claude.bats" || {
+    echo "FAIL(#1635): body-reference file for providers/claude.sh not selected; got: $result" >&2
+    return 1
+  }
+}
+
+@test "_select_tests_by_changed_paths: body reference does not select for non-shell-source changed paths" {
+  # Body-reference rule applies only to shell sources (lib/**/*.sh, bin/*, tools/**/*.sh).
+  # A changed Makefile or JSON file must NOT trigger body-reference scanning.
+  result=$(_select_tests_by_changed_paths "Makefile" "$TEST_REPO")
+  # Fixture E body has $RITE_LIB_DIR/utils/b.sh — not a Makefile reference.
+  # Selection for Makefile should be empty (no header or body covers Makefile).
+  [ -z "$result" ] || [ "$result" = "FORCE_FULL" ] || {
+    # Only allow selection if a fixture happened to contain "Makefile" — none do.
+    if echo "$result" | grep -q "covers-aonly-with-b-body.bats\|covers-assess-doc-body-claude.bats"; then
+      echo "FAIL: body-reference rule fired for Makefile (non-shell-source); got: $result" >&2
+      return 1
+    fi
+  }
+  true  # empty selection for Makefile is the expected outcome
+}
+
+@test "_select_tests_by_changed_paths: body-reference selections carry by_ref: prefix for diag counting" {
+  # The caller (run_test_gate in test-gate.sh) counts lines with "by_ref:" to populate
+  # the by_ref=N field in the TEST_GATE_SELECTION diag.  Verify the prefix is present
+  # so the counter works correctly.  The caller strips the prefix before passing paths
+  # to bats — that is a test-gate.sh concern, not gate-selection.sh.
+  result=$(_select_tests_by_changed_paths "lib/utils/b.sh" "$TEST_REPO")
+  # At least one of the body-reference fixtures (E or G) must carry the prefix.
+  echo "$result" | grep -q '^by_ref:' || {
+    echo "FAIL: no by_ref: prefix in selection output; diag counting will report 0; got: $result" >&2
+    return 1
+  }
+}
 
 @test "_select_lint_by_changed_paths: changed .bats in tests/ is included in lint scope" {
   # Verifies the fix from issue #921: tests/*.bats and tests/*/*.bats are now

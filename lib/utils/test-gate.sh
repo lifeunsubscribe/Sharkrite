@@ -396,7 +396,7 @@ run_test_gate() {
     # Headerless files are skipped. Selection is always targeted; FORCE_FULL (the
     # whole ~181-file suite) is OPT-IN ONLY (see the dispatch below).
     # See: _select_tests_by_changed_paths above.
-    local _total_bats _selection _selected_count
+    local _total_bats _selection _selected_count _by_ref_count
     _total_bats=$(cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ')
 
     # No-bats-suite guard: if no *.bats files exist (no tests/ dir, or tests/ has
@@ -436,6 +436,12 @@ run_test_gate() {
     else
       _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
     fi
+
+    # Strip "by_ref:" tags emitted by body-reference selection (Rule 2 in
+    # _select_tests_by_changed_paths). Count them first for the diag, then
+    # remove the prefix so the rest of the pipeline sees plain relative paths.
+    _by_ref_count=$(printf '%s\n' "$_selection" | grep -c '^by_ref:' || true)
+    _selection=$(printf '%s\n' "$_selection" | sed 's/^by_ref://' || true)
 
     # --- Verdict persistence (#944): union in previously-failing files -------
     # A prior gate run for this PR that FAILED leaves its failing FILES in a
@@ -691,13 +697,13 @@ run_test_gate() {
       # systematic coverage gaps.
       _selected_count=0
       _gate_status "[test-gate] Selection: targeted (0/${_total_bats} bats files — no covered tests for changed paths, skipping bats)"
-      _diag "TEST_GATE_SELECTION mode=targeted selected=0 total=${_total_bats} pr=${PR_NUMBER:-?}"
+      _diag "TEST_GATE_SELECTION mode=targeted selected=0 total=${_total_bats} by_ref=0 pr=${PR_NUMBER:-?}"
       echo 0 > "$_bats_exit_file"
       : > "$_tests_raw_file"
     else
       _selected_count=$(echo "$_selection" | grep -c '.' || true)
       _gate_status "[test-gate] Selection: targeted (${_selected_count}/${_total_bats} bats files based on changed paths)"
-      _diag "TEST_GATE_SELECTION mode=targeted selected=${_selected_count} total=${_total_bats} pr=${PR_NUMBER:-?}"
+      _diag "TEST_GATE_SELECTION mode=targeted selected=${_selected_count} total=${_total_bats} by_ref=${_by_ref_count:-0} pr=${PR_NUMBER:-?}"
       # Split selected files into parallel and serial groups.
       # Files carrying the sharkrite-gate-serial hint (load-sensitive or subprocess-heavy
       # tests that flake under bats --jobs N) are collected into _serial_files[].
