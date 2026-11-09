@@ -122,8 +122,6 @@ setup() {
 
   _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" "" || true
 
-  [ "${_gbv_lint_count:-0}" = "2" ]
-
   run jq -r '.lint | length' "$_out"
   [ "$output" = "2" ]
 
@@ -163,6 +161,23 @@ setup() {
   run jq -r '.exit_code' "$_out"; [ "$output" = "1" ]
   run jq -r '.lint | length' "$_out"; [ "$output" = "0" ]
   run jq -r '.reason' "$_out"; [ "$output" = "lint_infrastructure_error" ]
+
+  rm -f "$_lint_raw" "$_tests_raw" "$_out"
+}
+
+@test "_gate_build_verdict: lint infrastructure error with head_sha — reason and sha both appear" {
+  # Production path: final verdict writes always carry a SHA (per #986 contract).
+  # The reason+head_sha branch of _gate_write_json must surface both fields.
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  _lint_raw=$(mktemp); _tests_raw=$(mktemp); _out=$(mktemp)
+  printf 'make: *** [lint] Error 1\n' > "$_lint_raw"
+  printf 'TAP version 13\n1..1\nok 1 stub test\n' > "$_tests_raw"
+
+  _rc=0; _gate_build_verdict "$_lint_raw" "$_tests_raw" 1 0 "$_out" "" "abc1234abc1234abc1234abc1234abc1234abc123" || _rc=$?
+  [ "$_rc" -eq 1 ]
+
+  run jq -r '.reason' "$_out"; [ "$output" = "lint_infrastructure_error" ]
+  run jq -r '.head_sha' "$_out"; [ "$output" = "abc1234abc1234abc1234abc1234abc1234abc123" ]
 
   rm -f "$_lint_raw" "$_tests_raw" "$_out"
 }
