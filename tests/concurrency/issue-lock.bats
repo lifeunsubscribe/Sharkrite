@@ -129,7 +129,7 @@ wait_at_barrier() {
 }
 
 @test "acquire_issue_lock reclaims lock without PID file" {
-  # Create a lock directory without PID file (crashed between mkdir and write)
+  # Create a real-directory lock without PID file — simulates a pre-#1701 crashed holder.
   mkdir -p "$RITE_LOCK_DIR/issue-42.lock"
 
   # Should reclaim the broken lock
@@ -139,6 +139,68 @@ wait_at_barrier() {
 
   # Verify lock now has our PID
   [ -f "$RITE_LOCK_DIR/issue-42.lock/pid" ]
+}
+
+@test "two waiters on stale symlink lock — rename-before-remove admits exactly one at a time" {
+  # Plant a stale symlink-style lock with a provably-dead PID.
+  # Both waiters detect dead PID and try _atomic_steal_lock → mv → only one wins.
+  # This is the scratchpad-lock.sh #1651 race pattern applied to issue-lock.sh.
+  local issue_number=911
+  local exit_codes_dir="$RITE_TEST_TMPDIR/steal_exits"
+  local intervals_dir="$RITE_TEST_TMPDIR/steal_intervals"
+  mkdir -p "$exit_codes_dir" "$intervals_dir"
+
+  # Build a symlink-style stale lock (pre-populated temp dir + symlink)
+  local stale_tmp
+  stale_tmp=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  get_dead_pid > "$stale_tmp/pid"
+  ln -s "$stale_tmp" "${RITE_LOCK_DIR}/issue-${issue_number}.lock"
+
+  local num_waiters=4
+  local _pids=()
+  for i in $(seq 1 $num_waiters); do
+    (
+      wait_at_barrier "symlink_steal_test" "$num_waiters" || exit 1
+
+      acquire_issue_lock "$issue_number" >/dev/null 2>&1
+      local result=$?
+      echo "$result" > "$exit_codes_dir/w${i}.exit"
+
+      if [ "$result" -eq 0 ]; then
+        local _acq _rel
+        _acq=$(date +%s.%N)
+        _rel=$(date +%s.%N)
+        release_issue_lock "$issue_number"
+        echo "$_acq $_rel" > "$intervals_dir/w${i}.interval"
+      fi
+    ) &
+    _pids+=($!)
+  done
+
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+
+  # At least one waiter must have succeeded
+  local success_count=0
+  for i in $(seq 1 $num_waiters); do
+    [ -f "$exit_codes_dir/w${i}.exit" ] || continue
+    local ec; ec=$(cat "$exit_codes_dir/w${i}.exit")
+    [ "$ec" -eq 0 ] && success_count=$((success_count + 1))
+  done
+  [ "$success_count" -ge 1 ] || {
+    echo "FAIL: no waiter reclaimed the stale symlink lock (barrier timeout?)"
+    false
+  }
+
+  # CORE ASSERTION: no two hold-windows overlap
+  local prev_rel="0"
+  while IFS=' ' read -r acq rel; do
+    [ -z "$acq" ] && continue
+    awk -v a="$acq" -v p="$prev_rel" 'BEGIN { exit !(a >= p) }' || {
+      echo "FAIL: overlapping hold-windows — mv-based steal did not serialise reclaimers"
+      false
+    }
+    prev_rel="$rel"
+  done < <(cat "$intervals_dir"/*.interval 2>/dev/null | sort -n)
 }
 
 @test "release_issue_lock removes lock directory" {

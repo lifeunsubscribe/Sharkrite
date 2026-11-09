@@ -582,3 +582,65 @@ run_locked_dedup_create_sourced() {
     false
   }
 }
+
+@test "two waiters on stale followup symlink lock — rename-before-remove admits exactly one at a time" {
+  # Plant a stale symlink-style followup lock with a provably-dead PID.
+  # Both waiters detect dead PID and try _atomic_steal_lock → mv → only one wins.
+  local pr_number=911
+  local source_issue=55
+  local lock_key="pr-${pr_number}-src-${source_issue}-followup.lock"
+  local exit_codes_dir="$RITE_TEST_TMPDIR/steal_exits"
+  local intervals_dir="$RITE_TEST_TMPDIR/steal_intervals"
+  mkdir -p "$exit_codes_dir" "$intervals_dir"
+
+  # Build a symlink-style stale lock
+  local stale_tmp
+  stale_tmp=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  get_dead_pid > "$stale_tmp/pid"
+  ln -s "$stale_tmp" "${RITE_LOCK_DIR}/${lock_key}"
+
+  local num_waiters=4
+  local _pids=()
+  for i in $(seq 1 $num_waiters); do
+    (
+      wait_at_barrier "followup_symlink_steal" "$num_waiters" || exit 1
+
+      acquire_pr_followup_lock "$pr_number" "$source_issue" >/dev/null 2>&1
+      local result=$?
+      echo "$result" > "$exit_codes_dir/w${i}.exit"
+
+      if [ "$result" -eq 0 ]; then
+        local _acq _rel
+        _acq=$(date +%s.%N)
+        _rel=$(date +%s.%N)
+        release_pr_followup_lock "$pr_number" "$source_issue"
+        echo "$_acq $_rel" > "$intervals_dir/w${i}.interval"
+      fi
+    ) &
+    _pids+=($!)
+  done
+
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+
+  local success_count=0
+  for i in $(seq 1 $num_waiters); do
+    [ -f "$exit_codes_dir/w${i}.exit" ] || continue
+    local ec; ec=$(cat "$exit_codes_dir/w${i}.exit")
+    [ "$ec" -eq 0 ] && success_count=$((success_count + 1))
+  done
+  [ "$success_count" -ge 1 ] || {
+    echo "FAIL: no waiter reclaimed the stale followup symlink lock (barrier timeout?)"
+    false
+  }
+
+  # CORE ASSERTION: no two hold-windows overlap
+  local prev_rel="0"
+  while IFS=' ' read -r acq rel; do
+    [ -z "$acq" ] && continue
+    awk -v a="$acq" -v p="$prev_rel" 'BEGIN { exit !(a >= p) }' || {
+      echo "FAIL: overlapping hold-windows — mv-based steal did not serialise followup reclaimers"
+      false
+    }
+    prev_rel="$rel"
+  done < <(cat "$intervals_dir"/*.interval 2>/dev/null | sort -n)
+}
