@@ -2185,8 +2185,9 @@ docs_reconcile_adr_drift() {
 # doc-drift/main/).  Groups by doc and runs one bounded pass per doc via
 # _docs_main_entries_pass (doc_update model, narrative+edits validation).
 #
-# Fallback path: legacy flat drift log (docs/sharkrite-drift-log.md) for
-# entries recorded before the new schema (pre-#1425).
+# Legacy path: legacy flat drift log (docs/sharkrite-drift-log.md) for entries
+# recorded before the new schema (pre-#1425).  Always runs after the main-store
+# pass — no early return — so installs with entries in both stores process both.
 #
 # Invoked from the reconcile offers in _docs_run_audit and rite_docs.
 # Zero entries (either store) → prints an info line and exits 0.
@@ -2209,12 +2210,11 @@ docs_reconcile_drift() {
       print_info "Processing doc: ${_rd_doc}"
       _docs_main_entries_pass "$_rd_doc" || true
     done 3< <(_docs_list_main_entry_docs || true)
-    # Also reconcile ADR drift observations after the main entry pass
-    docs_reconcile_adr_drift || true
-    return 0
   fi
 
   # Fallback: legacy flat drift log (pre-#1425 entries).
+  # NOTE: intentional fall-through — no early return above so installs with
+  # entries in both stores process both paths (#1518).
   local _rd_drift_path
   _rd_drift_path="$(drift_log_path 2>/dev/null || true)"
 
