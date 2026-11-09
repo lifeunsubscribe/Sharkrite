@@ -1867,9 +1867,8 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # See: docs/architecture/behavioral-design.md →
       # "Fix-loop policy: NOW means fixed, LATER means deferred".
       #
-      # Severity breakdown — computed once, reused below.
+      # Count CRITICAL items — used by the retry-cap arm to decide whether to block merge.
       CRITICAL_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*CRITICAL" || true)
-      HIGH_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*HIGH" || true)
 
       # Check retry limit for ACTIONABLE_NOW items
       if [ "$RETRY_COUNT" -ge 3 ]; then
