@@ -1413,11 +1413,13 @@ ${_fix_test_runbook_section}
           print_info "Found uncommitted changes - will commit what we have"
           break
         else
-          # No commits: retry once at double budget when below the cap.
-          # Context-heavy fixes (test rewrites, broad refactors) can exhaust their
-          # budget loading context before making a single edit; a doubled budget
-          # recovers these without requiring manual re-runs.
-          if [ "$_fix_attempt" -eq 1 ] && [ "$FIX_TIMEOUT" -lt 1800 ]; then
+          # No commits: retry once at double budget when doubling is real.
+          # Retry only when FIX_TIMEOUT <= 900: 2×900=1800 exactly reaches
+          # the cap, so the retry gets the full doubled time. Above 900 the
+          # doubled budget would be capped at 1800 regardless — a session
+          # already at 15+ minutes without a single edit is stuck, not slow.
+          # Retrying only wastes another slot's worth of wall-clock time.
+          if [ "$_fix_attempt" -eq 1 ] && [ "$FIX_TIMEOUT" -le 900 ]; then
             _retry_budget=$(( FIX_TIMEOUT * 2 ))
             [ "$_retry_budget" -gt 1800 ] && _retry_budget=1800
             _diag "FIX_TIMEOUT_RETRY issue=${ISSUE_NUMBER:-} budget=${_retry_budget}s"
@@ -3543,11 +3545,12 @@ else
         print_warning "Found uncommitted changes - committing before exit"
         break
       else
-        # No commits: retry once at double budget when below the cap.
-        # Context-heavy dev sessions can exhaust their budget loading context
-        # before making a single edit; a doubled budget recovers these without
-        # requiring manual re-runs.
-        if [ "$_dev_attempt" -eq 1 ]; then
+        # No commits: retry once at double budget when doubling is real.
+        # Retry only when CLAUDE_TIMEOUT <= 7200: at 2×7200=14400 the doubled
+        # budget reaches the dev-session cap and the extra time is meaningful.
+        # Above 7200 the session already had 2+ hours without a single edit —
+        # it is stuck, not slow. Retrying wastes another full session slot.
+        if [ "$_dev_attempt" -eq 1 ] && [ "$CLAUDE_TIMEOUT" -le 7200 ]; then
           _retry_budget=$(( CLAUDE_TIMEOUT * 2 ))
           # Cap at 4h (14400s). Note: a 14400s retry session adds up to 4h of
           # issue time, which can silently trip RITE_MAX_ISSUE_HOURS (default 4h)
