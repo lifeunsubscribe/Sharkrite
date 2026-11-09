@@ -1213,9 +1213,14 @@ if [ "$MODE" = "init" ]; then
   # conflict every time. rr-cache lives in the git common dir, so enabling
   # it once here benefits every future worktree automatically.
   _rerere_current=$(git -C "$RITE_PROJECT_ROOT" config --get rerere.enabled 2>/dev/null || true)
+  _rerere_autoupdate=$(git -C "$RITE_PROJECT_ROOT" config --get rerere.autoupdate 2>/dev/null || true)
   if [ -z "$_rerere_current" ]; then
-    if git -C "$RITE_PROJECT_ROOT" config rerere.enabled true \
-       && git -C "$RITE_PROJECT_ROOT" config rerere.autoupdate true; then
+    _rerere_ok=true
+    git -C "$RITE_PROJECT_ROOT" config rerere.enabled true || _rerere_ok=false
+    if [ -z "$_rerere_autoupdate" ]; then
+      git -C "$RITE_PROJECT_ROOT" config rerere.autoupdate true || _rerere_ok=false
+    fi
+    if [ "$_rerere_ok" = "true" ]; then
       print_success "Enabled git rerere (conflict-resolution cache)"
     else
       print_info "Could not enable git rerere — set manually: git config rerere.enabled true"
