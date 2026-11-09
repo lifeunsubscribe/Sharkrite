@@ -51,6 +51,11 @@ export RITE_VERBOSE
 readonly _FULL_SUITE_WINDOW_START=2    # 02:00 (inclusive)
 readonly _FULL_SUITE_WINDOW_END=5      # 05:00 (exclusive)
 
+# Minimum seconds allocated to the bats run when computing the window-end deadline.
+# When less than this many seconds remain until 05:00, the floor is used instead.
+# RITE_FULL_SUITE_MIN_DEADLINE overrides this for testing (default: 1200 = 20 min).
+readonly _FULL_SUITE_MIN_DEADLINE_S="${RITE_FULL_SUITE_MIN_DEADLINE:-1200}"
+
 # Parse flags — --investigate and --scheduled are recognised; unknown flags are
 # silently ignored so callers can pass additional env vars without breaking the script.
 _investigate=false
@@ -159,11 +164,12 @@ fi
 _lint_raw=""
 _lint_raw_stripped=""
 _tests_raw=""
+_bats_exit_file=""
 _serial_results_raw=""
 _invest_dir=""
 _interp_prompt_file=""
 _issue_body_file=""
-trap 'rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
+trap 'rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_bats_exit_file:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
 
 exec > >(tee >(strip_ansi >> "$_LOG_FILE"))
 exec 2>&1
@@ -251,9 +257,20 @@ echo ""
 _tests_exit=0
 _tests_count=0
 
+# Per-test timeout: exported before both this invocation and the investigate
+# serial fallback below. 300 s instead of the gate's 120 s because concurrency
+# files are serial-marked and legitimately run longer. Override via
+# RITE_BATS_TEST_TIMEOUT. A timed-out test shows as "not ok … # timeout after
+# 300 s" and is classified by investigate like any other failure.
+export BATS_TEST_TIMEOUT="${RITE_BATS_TEST_TIMEOUT:-300}"
+
 print_step "Running bats -r tests/ (full suite, no targeted selection)..."
 # _tests_raw is assigned here (was pre-initialized empty for the EXIT trap above)
 _tests_raw=$(mktemp "${TMPDIR:-/tmp}/rite_fs_tests_$$_XXXXXX")
+# _bats_exit_file captures bats' exit code through the tee pipe — the pipe's
+# left-side exit status is unreliable when a deadline watchdog wraps bats inside
+# the compound command, so the exit code is written to a file instead.
+_bats_exit_file=$(mktemp "${TMPDIR:-/tmp}/rite_fs_bats_exit_$$_XXXXXX")
 
 # Detect bats parallelism (mirrors _compute_bats_jobs from test-gate.sh).
 # RITE_BATS_JOBS must be a positive integer; non-integer values (e.g. "auto")
@@ -273,14 +290,59 @@ fi
 _total_bats=$(cd "$_PROJECT_ROOT" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 print_info "Running $_total_bats bats files (parallel jobs: $_bats_jobs)"
 
+# Window-end deadline (--scheduled only): compute remaining seconds to 05:00
+# at bats-start time (after make check), apply floor, wrap bats with timeout.
+# Manual runs are completely unaffected — _bats_deadline_watchdog stays empty.
+_bats_deadline_watchdog=()
+if [ "$_scheduled" = "true" ]; then
+  _now_m_raw=$(date '+%M'); _now_s_raw=$(date '+%S')
+  _now_m=$(( 10#${_now_m_raw} ))
+  _now_s=$(( 10#${_now_s_raw} ))
+  _now_total_secs=$(( _current_hour * 3600 + _now_m * 60 + _now_s ))
+  _window_end_total_secs=$(( _FULL_SUITE_WINDOW_END * 3600 ))
+  _deadline_secs=$(( _window_end_total_secs - _now_total_secs ))
+  if [ "$_deadline_secs" -lt "$_FULL_SUITE_MIN_DEADLINE_S" ]; then
+    _deadline_secs="$_FULL_SUITE_MIN_DEADLINE_S"
+  fi
+  if command -v gtimeout >/dev/null 2>&1; then
+    _bats_deadline_watchdog=(gtimeout -k 30 "$_deadline_secs")
+  elif command -v timeout >/dev/null 2>&1; then
+    _bats_deadline_watchdog=(timeout -k 30 "$_deadline_secs")
+  fi
+fi
+
 set +e
 if [ "${_bats_jobs:-1}" -gt 1 ]; then
-  (cd "$_PROJECT_ROOT" && bats --jobs "$_bats_jobs" -r tests/) 2>&1 | tee "$_tests_raw"
+  { (cd "$_PROJECT_ROOT" && \
+      "${_bats_deadline_watchdog[@]+"${_bats_deadline_watchdog[@]}"}" \
+      bats --jobs "$_bats_jobs" -r tests/) 2>&1; \
+    echo $? > "$_bats_exit_file"; } | tee "$_tests_raw"
 else
-  (cd "$_PROJECT_ROOT" && bats -r tests/) 2>&1 | tee "$_tests_raw"
+  { (cd "$_PROJECT_ROOT" && \
+      "${_bats_deadline_watchdog[@]+"${_bats_deadline_watchdog[@]}"}" \
+      bats -r tests/) 2>&1; \
+    echo $? > "$_bats_exit_file"; } | tee "$_tests_raw"
 fi
-_tests_exit=${PIPESTATUS[0]}
+_tests_exit=$(cat "$_bats_exit_file" 2>/dev/null || echo 1)
+_tests_exit="${_tests_exit:-1}"
 set -e
+rm -f "${_bats_exit_file:-}"
+_bats_exit_file=""
+
+# Deadline abort: gtimeout/timeout exits 124 on SIGTERM kill and 137 on SIGKILL
+# (-k grace). An aborted run is not a verdict — leave the failure flag untouched,
+# skip investigate/remediation, and exit 0 so launchd does not schedule a retry.
+if [ "$_tests_exit" = "124" ] || [ "$_tests_exit" = "137" ]; then
+  _end=$(date +%s)
+  _duration=$(( _end - _start ))
+  {
+    echo "=== Scheduled run ABORTED at window end ==="
+  } >> "$_LOG_FILE"
+  _diag "FULL_SUITE_RUN outcome=aborted reason=window_end duration_s=${_duration}"
+  print_warning "Scheduled run aborted at window end after ${_duration}s — failure flag unchanged"
+  print_info "Run 'rite --full-suite' (manual, no deadline) to get a verdict on the current suite"
+  exit 0
+fi
 
 _tests_count=$(grep -c "^not ok " "$_tests_raw" || true)
 

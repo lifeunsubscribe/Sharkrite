@@ -2,7 +2,7 @@
 # sharkrite-test-covers: bin/rite-full-suite
 # tests/regression/full-suite-scheduled-guards.bats
 #
-# Regression tests for the --scheduled flag guards (#1609).
+# Regression tests for the --scheduled flag guards (#1609, #1658).
 #
 # Tests verify:
 #  1. Window guard: --scheduled outside 02:00-05:00 exits 0 without running.
@@ -13,6 +13,8 @@
 #  6. Skip is RECORDED: diag line and log entry are written on window skip.
 #  7. Skip is RECORDED: diag line and log entry are written on busy skip.
 #  8. FULL_SUITE_RUN diag is NOT emitted on a skip.
+#  9. Deadline guard: --scheduled aborts when bats hangs past window deadline.
+# 10. Deadline guard: aborted run leaves failure flag unchanged, no investigate.
 
 load '../helpers/setup'
 
@@ -511,4 +513,192 @@ _run_full_suite() {
 
   [ "$status" -eq 0 ]
   [ ! -f "$call_log" ] || ! grep -q "make-called\|bats-called" "$call_log"
+}
+
+# ---------------------------------------------------------------------------
+# 12. Deadline guard: --scheduled aborts when bats hangs past window deadline
+# ---------------------------------------------------------------------------
+@test "--scheduled deadline guard: aborts when bats hangs, emits outcome=aborted diag" {
+  # Requires a real timeout command to exercise the watchdog.
+  local _real_timeout_cmd=""
+  if command -v gtimeout >/dev/null 2>&1; then
+    _real_timeout_cmd="$(command -v gtimeout)"
+  elif command -v timeout >/dev/null 2>&1; then
+    _real_timeout_cmd="$(command -v timeout)"
+  else
+    skip "gtimeout or timeout not available — deadline guard requires a timeout command"
+  fi
+
+  _write_lib_stubs
+
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin"
+  mkdir -p "$fake_bin"
+
+  # make stub: succeeds immediately
+  cat > "$fake_bin/make" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$fake_bin/make"
+
+  # bats stub: sleeps long enough to be killed by the 2 s deadline
+  cat > "$fake_bin/bats" << 'STUB'
+#!/bin/bash
+sleep 60
+exit 0
+STUB
+  chmod +x "$fake_bin/bats"
+
+  # Provide gtimeout in the fake PATH (the script checks for gtimeout first).
+  cp "$_real_timeout_cmd" "$fake_bin/gtimeout"
+  chmod +x "$fake_bin/gtimeout"
+
+  # git stub: returns a fake branch name (needed for log header)
+  cat > "$fake_bin/git" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then
+  echo "test-branch"
+  exit 0
+fi
+exec /usr/bin/git "$@"
+STUB
+  chmod +x "$fake_bin/git"
+
+  # Date stub: returns hour=04, min=59, sec=59 so natural deadline = 1 s.
+  # With RITE_FULL_SUITE_MIN_DEADLINE=2, floor=2 s kicks in and bats is killed
+  # after 2 s (gtimeout exits 124).
+  cat > "$fake_bin/date" << 'STUB'
+#!/bin/bash
+case "${1:-}" in
+  '+%H') echo "04" ;;
+  '+%M') echo "59" ;;
+  '+%S') echo "59" ;;
+  '+%Y-%m-%d') echo "2026-01-01" ;;
+  '+%Y%m%d')   echo "20260101" ;;
+  '+%H:%M:%S') echo "04:59:59" ;;
+  *) exec /bin/date "$@" ;;
+esac
+STUB
+  chmod +x "$fake_bin/date"
+
+  mkdir -p "$_FAKE_PROJECT/tests"
+
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    RITE_FULL_SUITE_MIN_DEADLINE=2 \
+    bash "$_FULL_SUITE_SCRIPT" --scheduled
+
+  [ "$status" -eq 0 ]
+
+  # Must have written the diag and abort header to the log
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+  grep -q 'FULL_SUITE_RUN' "$_log"
+  grep -q 'outcome=aborted' "$_log"
+  grep -q 'reason=window_end' "$_log"
+  grep -q 'Scheduled run ABORTED at window end' "$_log"
+
+  # Must NOT contain outcome=passed or outcome=failed (not a verdict)
+  ! grep -q 'outcome=passed\|outcome=failed' "$_log"
+}
+
+# ---------------------------------------------------------------------------
+# 13. Deadline guard: aborted run does not create or delete failure flag
+# ---------------------------------------------------------------------------
+@test "--scheduled deadline guard: aborted run leaves failure flag unchanged" {
+  local _real_timeout_cmd=""
+  if command -v gtimeout >/dev/null 2>&1; then
+    _real_timeout_cmd="$(command -v gtimeout)"
+  elif command -v timeout >/dev/null 2>&1; then
+    _real_timeout_cmd="$(command -v timeout)"
+  else
+    skip "gtimeout or timeout not available — deadline guard requires a timeout command"
+  fi
+
+  _write_lib_stubs
+
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin2"
+  mkdir -p "$fake_bin"
+
+  cat > "$fake_bin/make" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$fake_bin/make"
+
+  cat > "$fake_bin/bats" << 'STUB'
+#!/bin/bash
+sleep 60
+exit 0
+STUB
+  chmod +x "$fake_bin/bats"
+
+  cp "$_real_timeout_cmd" "$fake_bin/gtimeout"
+  chmod +x "$fake_bin/gtimeout"
+
+  cat > "$fake_bin/git" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then
+  echo "test-branch"
+  exit 0
+fi
+exec /usr/bin/git "$@"
+STUB
+  chmod +x "$fake_bin/git"
+
+  cat > "$fake_bin/date" << 'STUB'
+#!/bin/bash
+case "${1:-}" in
+  '+%H') echo "04" ;;
+  '+%M') echo "59" ;;
+  '+%S') echo "59" ;;
+  '+%Y-%m-%d') echo "2026-01-01" ;;
+  '+%Y%m%d')   echo "20260101" ;;
+  '+%H:%M:%S') echo "04:59:59" ;;
+  *) exec /bin/date "$@" ;;
+esac
+STUB
+  chmod +x "$fake_bin/date"
+
+  mkdir -p "$_FAKE_PROJECT/tests"
+
+  local _flag="$_FAKE_PROJECT/.rite/state/full-suite-failure.flag"
+
+  # Case A: flag does not exist before run — must still not exist after abort
+  [ ! -f "$_flag" ]
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    RITE_FULL_SUITE_MIN_DEADLINE=2 \
+    bash "$_FULL_SUITE_SCRIPT" --scheduled
+  [ "$status" -eq 0 ]
+  [ ! -f "$_flag" ]
+
+  # Case B: flag exists before run (prior failure) — must still exist after abort
+  echo "outcome=failed" > "$_flag"
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    RITE_FULL_SUITE_MIN_DEADLINE=2 \
+    bash "$_FULL_SUITE_SCRIPT" --scheduled
+  [ "$status" -eq 0 ]
+  [ -f "$_flag" ]
+  grep -q 'outcome=failed' "$_flag"
+
+  # Must not have called investigate (no "Investigating failures" in output)
+  ! echo "$output" | grep -q "Investigating failures"
 }

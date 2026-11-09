@@ -311,3 +311,26 @@
 # Default: 120 (warn when a single pass exceeds 2 minutes).
 # Set to 0 to silence the suggestion entirely.
 # RITE_DOC_PASS_WARN_SECONDS=120
+
+# =============================================================================
+# Full-Suite Safety Net (rite --full-suite)
+# =============================================================================
+
+# Per-test timeout for the full-suite bats run (seconds).
+# Applied via BATS_TEST_TIMEOUT — a hung test is killed after this many seconds
+# and shows as "not ok … # timeout after N s" in the results. The full-suite
+# uses 300 s (the gate uses 120 s) because serial-marked concurrency files
+# legitimately run longer. Both the full-suite runner and the targeted gate
+# read this same variable, so raising it here also raises the gate timeout.
+# Default: 300. Set to a lower value only if individual test overhead is high
+# and you need faster abort-on-hang feedback in the overnight run.
+# RITE_BATS_TEST_TIMEOUT=300
+
+# Minimum seconds for the window-end deadline floor (--scheduled runs only).
+# The deadline is "seconds remaining until 05:00" computed at bats-start time.
+# When the remaining time is less than this floor, the floor is used instead.
+# Normal deployments should not change this — 1200 s (20 min) ensures the run
+# gets at least 20 minutes of bats time even when launchd fires late.
+# Set to a small value (e.g. 2) only when testing the deadline guard itself.
+# Default: 1200.
+# RITE_FULL_SUITE_MIN_DEADLINE=1200
