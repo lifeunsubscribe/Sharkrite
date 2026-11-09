@@ -36,6 +36,13 @@ setup() {
   export RITE_SHRINKAGE_RATIO_PCT=50
   export RITE_SHRINKAGE_ABS_LINES=500
 
+  # Isolate from the workflow's exported BYPASS_BLOCKERS: phase_create_pr() calls
+  # `export BYPASS_BLOCKERS` before the gate runs, so the variable is in the
+  # inherited env when the gate invokes bats.  Tests that verify "without export,
+  # subprocess cannot see it" (TEST 16 inverse) fail when BYPASS_BLOCKERS is
+  # already exported.  Unset it here so each test starts from a clean slate.
+  unset BYPASS_BLOCKERS
+
   # Provide shims for functions that blocker-rules.sh depends on.
   # gh_safe is the critical one — we override it per-test with a controlled mock.
   gh_safe() { command gh "$@"; }

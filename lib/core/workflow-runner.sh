@@ -762,6 +762,35 @@ _assert_worktree_alignment() {
     _canonical_handoff=$(cd "$_dev_session_wt" 2>/dev/null && pwd -P 2>/dev/null || echo "$_dev_session_wt")
     _canonical_discovered=$(cd "$WORKTREE_PATH" 2>/dev/null && pwd -P 2>/dev/null || echo "$WORKTREE_PATH")
     if [ "$_canonical_handoff" != "$_canonical_discovered" ]; then
+      # Branch-based re-resolution: the dev session's EMPTY_INIT auto-recovery
+      # deletes the old worktree and creates a new one with a different batch
+      # suffix. Identity is the branch, not the path — look up which worktree
+      # currently has the dev session's branch checked out (#1688).
+      # Read the branch from the worktree's HEAD via symbolic-ref (dir names are
+      # transformed — truncated, prefix-abbreviated, batch-suffix-appended — and
+      # never equal the branch; basename would always return zero matches).
+      # The stale WORKTREE_PATH must be absent from the filesystem — its absence
+      # is the canonicalization-proof fingerprint of EMPTY_INIT recovery (the old
+      # worktree was deleted). Genuine crossed-state-files mismatches still hard-fail.
+      local _rr_branch _rr_wt _rr_count _rr_stale_present
+      _rr_branch=$(git -C "$_dev_session_wt" symbolic-ref -q HEAD 2>/dev/null || true)
+      _rr_wt=$(git -C "${RITE_PROJECT_ROOT:-$PWD}" worktree list --porcelain 2>/dev/null | awk \
+        -v br="$_rr_branch" '
+        /^worktree / { cur = substr($0, 10) }
+        /^branch /   { if (substr($0, 8) == br) print cur }
+      ' || true)
+      _rr_count=$(printf '%s\n' "$_rr_wt" | grep -c '[^[:space:]]' || true)
+      _rr_stale_present=$(git -C "${RITE_PROJECT_ROOT:-$PWD}" worktree list --porcelain 2>/dev/null | awk \
+        -v stale="$WORKTREE_PATH" '
+        /^worktree / { if (substr($0, 10) == stale) found=1 }
+        END { print found+0 }
+      ' || true)
+      if [ "${_rr_count:-0}" -eq 1 ] && [ "${_rr_stale_present:-1}" -eq 0 ] && [ ! -d "$WORKTREE_PATH" ]; then
+        print_info "Worktree re-resolved by branch after auto-recovery: $_rr_wt (was: $WORKTREE_PATH)"
+        _diag "WORKTREE_RERESOLVED issue=${_issue_num} from=$WORKTREE_PATH to=$_rr_wt"
+        WORKTREE_PATH="$_rr_wt"
+        return 0
+      fi
       print_error "Worktree path mismatch: dev session and orchestrator found different worktrees"
       print_error "  Dev session used:   $_dev_session_wt"
       print_error "  Orchestrator found: $WORKTREE_PATH"

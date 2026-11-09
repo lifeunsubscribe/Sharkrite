@@ -295,7 +295,17 @@ ERROR:   Dev session used:   /path/to/real/worktree
 ERROR:   Orchestrator found: /path/to/stale/worktree
 ```
 
-**Refusal over guessing.** Automatically choosing the worktree with more changes would work most of the time but masks discovery bugs. The refusal surfaces the mismatch immediately so the underlying discovery issue can be fixed (e.g. stale PR cleanup, matcher regex gap, handoff file write failure).
+**Refusal over guessing — with one structured exception.** Automatically choosing the worktree with more changes would work most of the time but masks discovery bugs. The refusal surfaces the mismatch immediately so the underlying discovery issue can be fixed (e.g. stale PR cleanup, matcher regex gap, handoff file write failure).
+
+**EMPTY_INIT auto-recovery re-resolution (#1688).** When the dev session's branch-health preflight detects an empty branch (EMPTY_INIT), `claude-workflow.sh` exec-restarts itself, which creates a new worktree with the current batch suffix — different from the stale suffix the orchestrator discovered. `_assert_worktree_alignment` performs one structured re-resolution attempt before hard-failing:
+
+1. Read the branch from the dev session's worktree via `git -C "$_dev_session_wt" symbolic-ref -q HEAD`. Dir names are transformations of the branch (truncated, prefix-abbreviated `ft-`/`fx-`, batch-suffix-appended) and are never equal to it — `basename` would always return zero matches.
+2. Look up which registered worktree has that branch (`git -C "$RITE_PROJECT_ROOT" worktree list --porcelain` with `substr($0, 10)` for paths and `substr($0, 8)` for branch names to handle paths containing spaces).
+3. Require exactly one matching worktree, **and** that `WORKTREE_PATH` no longer exists as a directory (`[ ! -d "$WORKTREE_PATH" ]`). The directory's absence is the canonicalization-proof fingerprint of EMPTY_INIT recovery — EMPTY_INIT deletes the old worktree, so the directory disappears regardless of path-spelling differences. If the old directory still exists, this is a genuine crossed-state-files mismatch and the hard error fires normally.
+
+On acceptance, `WORKTREE_PATH` is updated to the re-resolved path and a `WORKTREE_RERESOLVED` diag is emitted. A genuine mismatch (old path still present, branch absent, or multiple matches) still hard-fails with the `Worktree path mismatch` error.
+
+**Regression test:** `tests/regression/dev-session-worktree-reresolve.bats`.
 
 **Live failure (2026-10-25):** Batch run for issues #1342/#1368. Dev session completed with 4 files changed (`AUTO_COMMIT issue=1342 files=4`) and wrote the handoff file pointing to `fx-make-plan-issuessh-end_b1342-1368`. `detect_pr_for_issue` returned the stale PR #1452 (Oct 24 batch) whose content-empty worktree existed locally. `count_changed_files` on that worktree returned 0, triggering "No work was produced" — a 24-minute silent failure that left the real work pushed nowhere.
 
