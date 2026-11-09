@@ -101,7 +101,7 @@ teardown() {
 @test "Rule 10 does not match portable_sed_i wrapper usage" {
   # The wrapper call must NOT contain the literal sed -i ''
   local good_line="  portable_sed_i \"s|foo|bar|\" file.txt"
-  run bash -c "echo '$good_line' | grep -qE \"sed\s+-i\s+''\""
+  run bash -c "echo '$good_line' | grep -qE \"sed[[:space:]]+-i[[:space:]]+''\""
   # Must NOT match
   [ "$status" -ne 0 ]
 }
@@ -126,13 +126,13 @@ teardown() {
 
 @test "Rule 11 pattern matches bare stat -f lines" {
   local bad_line='  MTIME=$(stat -f "%m" file.txt || true)'
-  run bash -c "echo '$bad_line' | grep -qE 'stat\s+-f'"
+  run bash -c "echo '$bad_line' | grep -qE 'stat[[:space:]]+-f'"
   [ "$status" -eq 0 ]
 }
 
 @test "Rule 11 does not match portable_stat_mtime wrapper usage" {
   local good_line='  mtime=$(portable_stat_mtime "$file")'
-  run bash -c "echo '$good_line' | grep -qE 'stat\s+-f'"
+  run bash -c "echo '$good_line' | grep -qE 'stat[[:space:]]+-f'"
   [ "$status" -ne 0 ]
 }
 
@@ -150,14 +150,14 @@ teardown() {
 @test "Rule 12 pattern matches find | xargs without -0" {
   local bad_line='  find . -type f | xargs grep "pattern"'
   # Matches xargs without -0
-  run bash -c "echo '$bad_line' | grep -qE '\bxargs\b' && ! echo '$bad_line' | grep -qE 'xargs\s+(-[a-zA-Z]*0|-0)'"
+  run bash -c "echo '$bad_line' | grep -qE '\bxargs\b' && ! echo '$bad_line' | grep -qE 'xargs[[:space:]]+(-[a-zA-Z]*0|-0)'"
   [ "$status" -eq 0 ]
 }
 
 @test "Rule 12 does not flag -print0 | xargs -0" {
   local good_line='  find . -type f -print0 | xargs -0 grep "pattern"'
   # Must NOT match the unsafe xargs pattern (xargs -0 is safe)
-  run bash -c "echo '$good_line' | grep -qE 'xargs\s+(-[a-zA-Z]*0|-0)'"
+  run bash -c "echo '$good_line' | grep -qE 'xargs[[:space:]]+(-[a-zA-Z]*0|-0)'"
   [ "$status" -eq 0 ]
 }
 

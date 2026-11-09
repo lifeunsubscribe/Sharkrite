@@ -396,7 +396,7 @@ Done when the finding is addressed."
     echo "$output"
     false
   }
-  echo "$output" | grep -qE '^\s*[0-9]+-?\s*continue' || {
+  echo "$output" | grep -qE '^[[:space:]]*[0-9]+-?[[:space:]]*continue' || {
     echo "FAIL: gate skip does not 'continue' — it must skip the finding, not break the loop"
     echo "$output"
     false

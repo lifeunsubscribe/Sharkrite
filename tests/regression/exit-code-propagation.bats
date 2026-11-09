@@ -670,7 +670,7 @@ EOF
 # assess-and-resolve.sh must exit 2 for "loop to fix"
 # ─────────────────────────────────────────────────────────────────────────────
 @test "structural: assess-and-resolve.sh contains exit 2 (loop-to-fix signal)" {
-  _count=$(grep -cE "^\s+exit 2\b" "$RITE_REPO_ROOT/lib/core/assess-and-resolve.sh" || true)
+  _count=$(grep -cE "^[[:space:]]+exit 2\b" "$RITE_REPO_ROOT/lib/core/assess-and-resolve.sh" || true)
   [ "$_count" -ge 1 ]
 }
 
@@ -678,7 +678,7 @@ EOF
 # assess-and-resolve.sh must exit 3 for "review stale"
 # ─────────────────────────────────────────────────────────────────────────────
 @test "structural: assess-and-resolve.sh contains exit 3 (stale-review signal)" {
-  _count=$(grep -cE "^\s+exit 3\b" "$RITE_REPO_ROOT/lib/core/assess-and-resolve.sh" || true)
+  _count=$(grep -cE "^[[:space:]]+exit 3\b" "$RITE_REPO_ROOT/lib/core/assess-and-resolve.sh" || true)
   [ "$_count" -ge 1 ]
 }
 

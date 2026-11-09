@@ -47,7 +47,7 @@ setup() {
       line_num=$((line_num + 1))
 
       # Track function definitions
-      if echo "$line" | grep -qE '"'"'^\s*(function\s+\w+|\w+\s*[(][)])'"'"'; then
+      if echo "$line" | grep -qE '"'"'^[[:space:]]*(function[[:space:]]+[[:alnum:]_]+|[[:alnum:]_]+[[:space:]]*[(][)])'"'"'; then
         in_function=1
       fi
 
@@ -63,8 +63,8 @@ setup() {
       fi
 
       # Flag local outside function (skip comments)
-      if echo "$line" | grep -qE '"'"'^\s*local\s+\w+'"'"' && [ "$in_function" -eq 0 ]; then
-        if ! echo "$line" | grep -qE '"'"'^\s*#'"'"'; then
+      if echo "$line" | grep -qE '"'"'^[[:space:]]*local[[:space:]]+[[:alnum:]_]+'"'"' && [ "$in_function" -eq 0 ]; then
+        if ! echo "$line" | grep -qE '"'"'^[[:space:]]*#'"'"'; then
           violations="${violations}line ${line_num}: ${line}
 "
         fi
@@ -300,7 +300,7 @@ _run_review_loop() {
     while IFS= read -r line; do
       line_num=$((line_num + 1))
 
-      if echo "$line" | grep -qE '"'"'^\s*(function\s+\w+|\w+\s*[(][)])'"'"'; then
+      if echo "$line" | grep -qE '"'"'^[[:space:]]*(function[[:space:]]+[[:alnum:]_]+|[[:alnum:]_]+[[:space:]]*[(][)])'"'"'; then
         in_function=1
       fi
 
@@ -313,8 +313,8 @@ _run_review_loop() {
         in_function=0
       fi
 
-      if echo "$line" | grep -qE '"'"'^\s*local\s+\w+'"'"' && [ "$in_function" -eq 0 ]; then
-        if ! echo "$line" | grep -qE '"'"'^\s*#'"'"'; then
+      if echo "$line" | grep -qE '"'"'^[[:space:]]*local[[:space:]]+[[:alnum:]_]+'"'"' && [ "$in_function" -eq 0 ]; then
+        if ! echo "$line" | grep -qE '"'"'^[[:space:]]*#'"'"'; then
           violations="${violations}line ${line_num}: ${line}
 "
         fi

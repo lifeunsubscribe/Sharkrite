@@ -64,6 +64,127 @@ _cr_error()   { echo "❌ $1" >&2; }
 _cr_status()  { echo "$1" >&2; }
 
 # ===================================================================
+# POST-RESOLUTION VIABILITY GATES (issue #1603)
+# ===================================================================
+
+# _cr_check_resolution_gates FILES
+#
+# Check 3 (syntax) and Check 4 (test-count) on the resolved working-tree files.
+# Called by attempt_claude_merge_resolution after Check 2 (marker scan), before
+# commit_resolved_conflicts.  Both gates are deliberately narrow and
+# deterministic — they catch "unparseable" and "coverage vanished", not
+# "merged wrong".  Full lint/test suites belong in the post-commit gate, not here.
+#
+# Check 3: bash -n on every resolved *.sh file and every file under bin/.
+# Check 4: for every resolved *.bats file, count ^@test lines in the merged
+#          file and in both index parents (stage 2 = ours/HEAD, stage 3 =
+#          theirs/MERGE_HEAD or rebased commit).  Fail when the merged count is
+#          strictly lower than BOTH parents — a count below both sides means the
+#          resolution invented a deletion, which is the #1328 signature.  When
+#          only one parent has the file (e.g. modify/delete conflict), the
+#          comparison is skipped: the missing side is treated as absent, not 0.
+#
+# Returns:
+#   0 — all files passed both gates
+#   1 — at least one file failed; per-file reason reported to stderr
+#
+# A CONFLICT_RESOLVE_GATE diag line is emitted on every call (pass or fail)
+# when _diag is loaded (logging.sh is sourced by callers, not by this file).
+_cr_check_resolution_gates() {
+  local _crg_files="$1"
+  local _crg_failed=false
+  local _crg_n_syntax=0
+  local _crg_n_testcount=0
+  local _crg_f
+  local _crg_syntax_out
+  local _crg_merged_count
+  local _crg_has_ours
+  local _crg_has_theirs
+  local _crg_ours_count
+  local _crg_theirs_count
+  local _crg_fail_testcount
+
+  while IFS= read -r _crg_f; do
+    [ -z "$_crg_f" ] && continue
+
+    # Check 3: Syntax gate — *.sh files and files under bin/ (skip if deleted)
+    case "$_crg_f" in
+      *.sh|bin/*)
+        if [ -f "$_crg_f" ]; then
+          _crg_syntax_out=""
+          if ! _crg_syntax_out=$(bash -n "$_crg_f" 2>&1); then
+            _cr_error "Syntax error in resolved file: $_crg_f"
+            printf '%s\n' "$_crg_syntax_out" >&2
+            _crg_failed=true
+            _crg_n_syntax=$((_crg_n_syntax + 1))
+          fi
+        fi
+        ;;
+    esac
+
+    # Check 4: Test-count gate — *.bats files
+    # A deleted .bats file (not present in working tree) has a merged count of 0,
+    # which is the strongest instance of the coverage-vanished class: if both
+    # parents had tests, a deletion passes the strictly-below-both check.
+    # Strictly-lower-than-both is the signal: a legitimate merge may drop tests
+    # that one side deleted (count falls below the higher parent only), but a
+    # count below BOTH sides means the resolution invented a deletion — the
+    # #1328 signature (four tests silently stopped asserting anything, main red
+    # for a week before #1593 caught it).
+    case "$_crg_f" in
+      *.bats)
+        if [ -f "$_crg_f" ]; then
+          _crg_merged_count=$(grep -c '^@test ' "$_crg_f" || true)
+        else
+          _crg_merged_count=0
+        fi
+        _crg_has_ours=false
+        _crg_has_theirs=false
+        _crg_ours_count=""
+        _crg_theirs_count=""
+
+        # git cat-file -e exits 0 when the object exists in the index at that
+        # stage, non-zero otherwise.  Stage 2 = ours (HEAD), stage 3 = theirs
+        # (MERGE_HEAD or the rebased commit).
+        git cat-file -e ":2:${_crg_f}" 2>/dev/null && _crg_has_ours=true || true
+        git cat-file -e ":3:${_crg_f}" 2>/dev/null && _crg_has_theirs=true || true
+
+        if [ "$_crg_has_ours" = true ]; then
+          _crg_ours_count=$(git show ":2:${_crg_f}" 2>/dev/null | grep -c '^@test ' || true)
+        fi
+        if [ "$_crg_has_theirs" = true ]; then
+          _crg_theirs_count=$(git show ":3:${_crg_f}" 2>/dev/null | grep -c '^@test ' || true)
+        fi
+
+        # Skip when only one parent has the file — it is a new file on that
+        # side, not a deletion, so there is no coverage floor to enforce.
+        _crg_fail_testcount=false
+        if [ "$_crg_has_ours" = true ] && [ "$_crg_has_theirs" = true ]; then
+          if [ "$_crg_merged_count" -lt "$_crg_ours_count" ] \
+             && [ "$_crg_merged_count" -lt "$_crg_theirs_count" ]; then
+            _crg_fail_testcount=true
+          fi
+        fi
+
+        if [ "$_crg_fail_testcount" = true ]; then
+          _cr_error "Test count dropped in resolved file: $_crg_f (merged=${_crg_merged_count} ours=${_crg_ours_count} theirs=${_crg_theirs_count})"
+          _crg_failed=true
+          _crg_n_testcount=$((_crg_n_testcount + 1))
+        fi
+        ;;
+    esac
+  done <<< "$_crg_files"
+
+  if declare -f _diag >/dev/null 2>&1; then
+    local _crg_outcome="passed"
+    [ "$_crg_failed" = true ] && _crg_outcome="failed"
+    _diag "CONFLICT_RESOLVE_GATE outcome=${_crg_outcome} syntax=${_crg_n_syntax} testcount=${_crg_n_testcount}"
+  fi
+
+  [ "$_crg_failed" = false ]
+}
+
+# ===================================================================
 # ADD/ADD OVERWRITE-COLLISION DETECTION (issue #783)
 # ===================================================================
 #
@@ -439,11 +560,95 @@ attempt_claude_merge_resolution() {
     _cr_session_exit=0
   else
 
-  _cr_status "Conflicts to resolve via Claude:" >&2
-  echo "$_cr_llm_files" | sed 's/^/  /' >&2
+  # ── Steps 4-6: Session + verify — bounded retry loop ──
+  #
+  # The session is a probabilistic producer: at large conflict sets it reliably
+  # resolves most files but may leave markers in a few (live: 2026-11-04,
+  # doc-refactor rebase, 8 of 11 files correct on first attempt). A single abort
+  # discards the correct work. This loop re-prompts with ONLY the still-failing
+  # files, up to _CR_MAX_RESOLVE_ATTEMPTS total — matching the pattern used by
+  # the review loop (local-review.sh ~line 637) and the fix loop
+  # (assess-and-resolve.sh, up to 3 retries on ACTIONABLE_NOW findings).
+  #
+  # Timeout budget is shared: each attempt gets (total - elapsed), not a fresh
+  # copy of the full timeout. Worst-case wall-clock stays at one _cr_timeout.
+  #
+  # _CR_MAX_RESOLVE_ATTEMPTS is a module constant, not operator config: the right
+  # number is small and evidence-based (the 2026-11-04 live failure needed only 2
+  # attempts; more than 3 suggests a structural problem in the conflict set, not a
+  # simple marker miss). Rule 36 (UNDOCUMENTED_RITE_VAR) only applies to RITE_*
+  # vars; this underscore-prefixed constant is intentionally internal.
+  local _CR_MAX_RESOLVE_ATTEMPTS=3
+  local _cr_remaining_files="$_cr_llm_files"
+  local _cr_attempt=0
+  local _cr_start_time
+  _cr_start_time=$(date +%s)
+  local _cr_attempt_timeout=0
+  local _cr_still_failing=""
+  local _cr_still_count=0
+  local _cr_remaining_count=0
+  local _cr_retry_ctx=""
+  local _cr_prompt=""
+  local _cr_stderr_file=""
 
-  # ── Step 4: Build prompt ──
-  local _cr_prompt="You are in a git worktree with merge conflicts that need resolution.
+  # Provider setup runs once — healthcheck and preflight are lightweight; running
+  # them once up front avoids paying auth-check cost on every retry attempt.
+  source "$RITE_LIB_DIR/providers/provider-interface.sh"
+  load_provider "${RITE_DEV_PROVIDER:-claude}"
+
+  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+  provider_detect_cli || { git merge --abort 2>/dev/null || true; return 1; }
+  if ! provider_healthcheck; then
+    git merge --abort 2>/dev/null || true
+    return 1
+  fi
+
+  # Publish the pre-session conflict-path list for commit_resolved_conflicts.
+  # Must reflect the FULL conflict set (including deterministically-resolved files)
+  # so commit_resolved_conflicts stages every path. The variable is cleared after use.
+  # Using -A would sweep operator WIP that was stash-popped into the tree before
+  # this call (dirty-worktree → stash → abort → pop → resolve flow in stale-branch.sh).
+  _RITE_RESOLVER_CONFLICT_PATHS="$_cr_conflict_files"
+  export _RITE_RESOLVER_CONFLICT_PATHS
+
+  while [ "$_cr_attempt" -lt "$_CR_MAX_RESOLVE_ATTEMPTS" ]; do
+    _cr_attempt=$((_cr_attempt + 1))
+    _cr_remaining_count=$(printf '%s\n' "$_cr_remaining_files" | grep -c . || true)
+
+    # Per-attempt diagnostic — health-report aggregation tracks attempt count
+    # and how many files still needed LLM resolution going in.
+    if declare -f _diag >/dev/null 2>&1; then
+      _diag "CONFLICT_RESOLVE_ATTEMPT n=${_cr_attempt} remaining=${_cr_remaining_count}"
+    fi
+
+    # Compute remaining time budget for this attempt.
+    # Shared budget: attempt N gets (total - elapsed), not a fresh timeout copy.
+    _cr_elapsed=$(( $(date +%s) - _cr_start_time ))
+    _cr_attempt_timeout=$(( _cr_timeout - _cr_elapsed ))
+    if [ "$_cr_attempt_timeout" -le 0 ]; then
+      _cr_error "Timeout budget (${_cr_timeout}s) exhausted before attempt ${_cr_attempt}"
+      git merge --abort 2>/dev/null || true
+      return 1
+    fi
+
+    # ── Step 4: Build prompt ──
+    # Use _cr_remaining_files so each attempt only asks the session to resolve
+    # files that still have markers — already-resolved files must not be re-touched.
+    _cr_status "Conflicts to resolve via Claude (attempt ${_cr_attempt}/${_CR_MAX_RESOLVE_ATTEMPTS}):" >&2
+    echo "$_cr_remaining_files" | sed 's/^/  /' >&2
+
+    # Retry preamble: injected on attempt 2+ so the session knows exactly why
+    # these files are being re-submitted and which files to leave untouched.
+    _cr_retry_ctx=""
+    if [ "$_cr_attempt" -gt 1 ]; then
+      _cr_retry_ctx="RETRY: This is attempt ${_cr_attempt} of ${_CR_MAX_RESOLVE_ATTEMPTS}. The previous session left conflict markers in the following files — these are the ONLY files that still need resolution. Files not in this list were already resolved correctly and MUST NOT be modified.
+
+Reason per path: conflict markers remain in the working tree.
+
+"
+    fi
+
+    _cr_prompt="${_cr_retry_ctx}You are running inside a Sharkrite (\`rite\`) workflow session in a git worktree with merge conflicts that need resolution.
 
 main is the source of truth. It represents accepted, merged work. This branch is the newcomer.
 Your job: rebase this branch's INTENT onto main's current reality.
@@ -464,19 +669,19 @@ RULES:
 - When unsure which side should win for a specific conflict, prefer main's version — it is
   safer to under-apply the branch than to break accepted work."
 
-  # Append context sections based on what's available
-  if [ -n "$_cr_pr_number" ] && [ -n "$_cr_pr_title" ]; then
-    _cr_prompt+="
+    # Append context sections based on what's available
+    if [ -n "$_cr_pr_number" ] && [ -n "$_cr_pr_title" ]; then
+      _cr_prompt+="
 
 ## This PR (#${_cr_pr_number}): ${_cr_pr_title}
 ${_cr_pr_body:-}"
-  elif [ -n "$_cr_issue_number" ]; then
-    _cr_prompt+="
+    elif [ -n "$_cr_issue_number" ]; then
+      _cr_prompt+="
 
 ## Issue #${_cr_issue_number}: ${_cr_issue_title:-${_cr_issue_desc:-}}"
-  fi
+    fi
 
-  _cr_prompt+="
+    _cr_prompt+="
 
 ## This branch's changes to the conflicting files:
 \`\`\`
@@ -492,68 +697,119 @@ ${_cr_main_diff:-No diff available}
 \`\`\`
 
 ## Conflicting files to resolve:
-${_cr_conflict_files}
+${_cr_remaining_files}
 
 Read each conflicting file now. The files contain conflict markers (<<<<<<< HEAD, =======, >>>>>>>).
 Resolve every conflict by writing the resolved content to each file. The workflow stages and commits
 the resolved files after this session ends."
 
-  # ── Step 5: Load dev provider and run agentic session ──
-  source "$RITE_LIB_DIR/providers/provider-interface.sh"
-  load_provider "${RITE_DEV_PROVIDER:-claude}"
+    # ── Step 5: Run agentic session ──
+    _cr_status "Running Claude conflict resolution session (attempt ${_cr_attempt}/${_CR_MAX_RESOLVE_ATTEMPTS})..." >&2
 
-  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
-  provider_detect_cli || { git merge --abort 2>/dev/null || true; return 1; }
-  if ! provider_healthcheck; then
-    git merge --abort 2>/dev/null || true
-    return 1
-  fi
+    _cr_session_exit=0
+    _cr_stderr_file=$(mktemp)
 
-  # Publish the pre-session conflict-path list for commit_resolved_conflicts.
-  # The resolver SESSION can only WRITE file content (git side effects are
-  # policy-blocked), so staging must happen in the script after the session.
-  # Using -A would sweep any operator WIP that was stash-popped back into the
-  # tree before this call (the dirty-worktree → stash → abort → pop → resolve
-  # flow in stale-branch.sh). Exporting the path list here lets the shared
-  # commit helper stage ONLY the conflict paths — not the whole worktree.
-  # The variable is cleared by commit_resolved_conflicts after use.
-  _RITE_RESOLVER_CONFLICT_PATHS="$_cr_conflict_files"
-  export _RITE_RESOLVER_CONFLICT_PATHS
+    provider_run_agentic_session "$_cr_prompt" "$_cr_attempt_timeout" true "$_cr_stderr_file" || _cr_session_exit=$?
 
-  _cr_status "Running Claude conflict resolution session..." >&2
-
-  # Use a temp file for stderr so we can diagnose failures
-  local _cr_stderr_file
-  _cr_stderr_file=$(mktemp)
-
-  provider_run_agentic_session "$_cr_prompt" "$_cr_timeout" true "$_cr_stderr_file" || _cr_session_exit=$?
-
-  # Check for usage cap — provider_run_agentic_session sets exit 5 for usage cap
-  # (see claude.sh:156-160). provider_detect_error never returns "USAGE_CAP" (only
-  # PROVIDER_BUG|RATE_LIMITED|AUTH_EXPIRED|NETWORK_ERROR|UNKNOWN), so the real signal
-  # is the exit code itself. Check exit code first; also check stderr for belt-and-suspenders.
-  if [ "$_cr_session_exit" -eq 5 ]; then
-    rm -f "$_cr_stderr_file"
-    git merge --abort 2>/dev/null || true
-    _cr_error "Provider usage cap reached during conflict resolution"
-    return 5
-  fi
-
-  if [ "$_cr_session_exit" -ne 0 ]; then
-    _cr_warning "Conflict resolution session exited with code $_cr_session_exit"
-    if [ -s "$_cr_stderr_file" ]; then
-      _cr_info "Session stderr:" >&2
-      head -5 "$_cr_stderr_file" >&2
+    # Cap check: provider_run_agentic_session sets exit 5 for usage cap
+    # (see claude.sh:156-160). provider_detect_error never returns "USAGE_CAP" (only
+    # PROVIDER_BUG|RATE_LIMITED|AUTH_EXPIRED|NETWORK_ERROR|UNKNOWN), so the real signal
+    # is the exit code itself. Check exit code first; stderr is belt-and-suspenders.
+    if [ "$_cr_session_exit" -eq 5 ]; then
+      rm -f "$_cr_stderr_file"
+      git merge --abort 2>/dev/null || true
+      _cr_error "Provider usage cap reached during conflict resolution"
+      return 5
     fi
-  fi
-  if [ "$_cr_session_exit" -eq 124 ]; then
-    _cr_warning "Conflict resolution session timed out"
-  fi
-  rm -f "$_cr_stderr_file"
+
+    if [ "$_cr_session_exit" -ne 0 ]; then
+      _cr_warning "Conflict resolution session exited with code $_cr_session_exit"
+      if [ -s "$_cr_stderr_file" ]; then
+        _cr_info "Session stderr:" >&2
+        head -5 "$_cr_stderr_file" >&2
+      fi
+    fi
+    if [ "$_cr_session_exit" -eq 124 ]; then
+      _cr_warning "Conflict resolution session timed out"
+    fi
+    rm -f "$_cr_stderr_file"
+
+    # ── Inline Verification (Step 6 for LLM path) ──
+
+    # Check 1: No UNEXPECTED unmerged files (not retryable — abort immediately).
+    # A session that introduces a new unmerged path has done something the resolver
+    # cannot safely interpret; aborting is the correct response regardless of attempt count.
+    local _cr_unexpected=""
+    local _cr_u_path
+    while IFS= read -r _cr_u_path; do
+      [ -z "$_cr_u_path" ] && continue
+      if ! printf '%s\n' "$_cr_conflict_files" | grep -qxF "$_cr_u_path"; then
+        _cr_unexpected="${_cr_unexpected}${_cr_u_path}
+"
+      fi
+    done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
+
+    if [ -n "${_cr_unexpected:-}" ]; then
+      _cr_error "Unmerged path(s) the session was never given:"
+      printf '%s' "$_cr_unexpected" | sed 's/^/    /' >&2
+      git merge --abort 2>/dev/null || true
+      return 1
+    fi
+
+    # Check 2: Fence-aware conflict-marker scan on the REMAINING files.
+    # Collect still-failing paths — the loop uses them as the retry target on
+    # the next attempt. The awk program and CR-strip are identical to the outer
+    # Step 6 (CR-strip for CRLF; fence-awareness so documented examples inside
+    # ``` blocks don't fire — see #1221/#533). DO NOT WEAKEN this check.
+    _cr_still_failing=""
+    while IFS= read -r _cr_f; do
+      [ -z "$_cr_f" ] && continue
+      [ -f "$_cr_f" ] || continue
+      if tr -d '\r' < "$_cr_f" 2>/dev/null | awk '
+          /^```/ { fence = !fence; next }
+          !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
+          END { exit(found ? 0 : 1) }
+        '; then
+        _cr_error "Conflict markers remain in: $_cr_f"
+        _cr_still_failing="${_cr_still_failing}${_cr_f}
+"
+      fi
+    done <<< "$_cr_remaining_files"
+
+    _cr_still_failing=$(printf '%s' "$_cr_still_failing" | grep -v '^$' || true)
+    if [ -z "${_cr_still_failing:-}" ]; then
+      # All remaining files resolved on this attempt.
+      _cr_status "All conflicts resolved on attempt ${_cr_attempt}/${_CR_MAX_RESOLVE_ATTEMPTS}" >&2
+      return 0
+    fi
+
+    # Still-failing files remain — decide: retry or abort.
+    _cr_still_count=$(printf '%s\n' "$_cr_still_failing" | grep -c . || true)
+    if [ "$_cr_attempt" -ge "$_CR_MAX_RESOLVE_ATTEMPTS" ]; then
+      _cr_error "Conflict markers remain in ${_cr_still_count} file(s) after ${_cr_attempt} attempt(s):"
+      printf '%s' "$_cr_still_failing" | sed 's/^/    /' >&2
+      _cr_error "Merge was aborted. To resolve manually: re-run the merge, resolve each file listed above, then: git add <files> && git merge --continue"
+      git merge --abort 2>/dev/null || true
+      return 1
+    fi
+
+    _cr_warning "Attempt ${_cr_attempt}: ${_cr_still_count} file(s) still have conflict markers — retrying with remaining files only"
+    _cr_remaining_files="$_cr_still_failing"
+  done
+
+  # Exited without returning (guard against future loop modifications).
+  git merge --abort 2>/dev/null || true
+  return 1
+
   fi
   # ── end of the "some paths need the LLM" branch ──
+  # LLM path returns 0 or 1 from within the retry loop above.
+  # Execution reaches here only when _cr_llm_files was empty (deterministic path).
 
-  # ── Step 6: Verify resolution ──
+  # ── Step 6: Verify resolution (deterministic path only) ──
+  # LLM path: verification runs inline inside the retry loop above and returns
+  # 0 or 1 from there — execution never reaches here on the LLM path.
+  # Deterministic path: runs once here after all append-only conflicts resolved.
 
   # Check 1: No UNEXPECTED unmerged files
   #
@@ -647,6 +903,12 @@ the resolved files after this session ends."
 
   if [ "$_cr_marker_found" = true ]; then
     _cr_error "Conflict markers remain in the working tree after the session"
+    git merge --abort 2>/dev/null || true
+    return 1
+  fi
+
+  # Check 3 (syntax) and Check 4 (test-count): viability gates
+  if ! _cr_check_resolution_gates "$_cr_conflict_files"; then
     git merge --abort 2>/dev/null || true
     return 1
   fi

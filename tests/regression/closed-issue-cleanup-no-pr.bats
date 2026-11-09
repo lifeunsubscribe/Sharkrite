@@ -91,7 +91,7 @@ _get_func_body() {
 
   # --limit 50 must not appear in the function (it was the root cause)
   # Skip comment lines — they may document the old value.
-  _non_comment_lines=$(echo "$_func_body" | grep -v '^\s*#')
+  _non_comment_lines=$(echo "$_func_body" | grep -v '^[[:space:]]*#')
   if echo "$_non_comment_lines" | grep -q "limit 50"; then
     echo "FAIL: --limit 50 still found in handle_closed_issue (non-comment line)" >&2
     echo "      The old narrow window caused PRs to fall off for active repos." >&2
@@ -477,7 +477,7 @@ _get_func_body() {
 
   # 1. Structural check: the bad 'cut -c1-19' pattern must not appear in the
   #    batch-suffix block (allow it in comments).
-  _non_comment=$(grep -v '^\s*#' "$CLAUDE_WORKFLOW" || true)
+  _non_comment=$(grep -v '^[[:space:]]*#' "$CLAUDE_WORKFLOW" || true)
   if echo "$_non_comment" | grep -q 'cut -c1-19'; then
     echo "FAIL: 'cut -c1-19' (mid-digit truncation) still present in claude-workflow.sh" >&2
     echo "      Replace with token-boundary truncation (strip trailing whole issue numbers)." >&2

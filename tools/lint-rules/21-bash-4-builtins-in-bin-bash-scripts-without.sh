@@ -65,19 +65,23 @@ for file in "${SHELL_FILES[@]}"; do
   _non_comment_lines=$(grep -v '^[[:space:]]*#' "$file" 2>/dev/null || true)
   # Shape 1: test-builtin numeric comparison (-lt/-gt/-le/-ge/-eq/-ne)
   # No redirect ambiguity: -lt etc. are unambiguous comparison keywords.
-  if echo "$_non_comment_lines" | grep -qE 'BASH_VERSINFO\[[0-9]+\][^#]*(-lt|-gt|-le|-ge|-eq|-ne)[[:space:]]+[0-9]'; then
+  # Here-strings, not `echo "$whole_file" | grep -q`: under pipefail a multi-KB
+  # producer takes SIGPIPE (rc 141) when grep exits on an early match, which
+  # would read as "no guard" and flag a guarded script (the Rule 36 macOS
+  # false positive, #1633).
+  if grep -qE 'BASH_VERSINFO\[[0-9]+\][^#]*(-lt|-gt|-le|-ge|-eq|-ne)[[:space:]]+[0-9]' <<< "$_non_comment_lines"; then
     continue
   fi
   # Shape 2: arithmetic conditional — anchored to "((" so ">" means comparison,
   # not redirect.  Inside "(( ))", "<" and ">" are always arithmetic operators.
-  if echo "$_non_comment_lines" | grep -qE '\(\([^)]*BASH_VERSINFO\[[0-9]+\][^)]*[<>][=]?[[:space:]]*[0-9]'; then
+  if grep -qE '\(\([^)]*BASH_VERSINFO\[[0-9]+\][^)]*[<>][=]?[[:space:]]*[0-9]' <<< "$_non_comment_lines"; then
     continue
   fi
 
   # Check each line for bash-4+ builtins: mapfile, readarray, declare -A
   while IFS=: read -r line_num line_content; do
     # Skip comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
 
@@ -95,7 +99,7 @@ for file in "${SHELL_FILES[@]}"; do
     fi
 
     # Detect declare -A / declare -gA / declare -Ar / local -A (associative arrays, bash 4+ only)
-    if echo "$line_content" | grep -qE '\bdeclare\s+-[a-zA-Z]*A[a-zA-Z]*\b|\blocal\s+-[a-zA-Z]*A[a-zA-Z]*\b'; then
+    if echo "$line_content" | grep -qE '\bdeclare[[:space:]]+-[a-zA-Z]*A[a-zA-Z]*\b|\blocal[[:space:]]+-[a-zA-Z]*A[a-zA-Z]*\b'; then
       print_violation "$file" "$line_num" "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" \
         "'declare/local -A' (associative array) is bash 4+ only — crashes on macOS system bash 3.2. Add a BASH_VERSINFO re-exec guard (see batch-process-issues.sh:69-77)"
     fi
@@ -109,6 +113,6 @@ for file in "${SHELL_FILES[@]}"; do
       print_violation "$file" "$line_num" "BASH_4_BUILTIN_IN_BIN_BASH_SCRIPT" \
         "bare \$BASHPID is a bash 4+ variable — UNBOUND under set -u on macOS system bash 3.2, which aborts the script. Use \${BASHPID:-\$\$} (or add a BASH_VERSINFO re-exec guard)"
     fi
-  done < <(grep -nE '(mapfile|readarray|declare\s+-[a-zA-Z]*A|local\s+-[a-zA-Z]*A|BASHPID)' "$file" 2>/dev/null || true)
+  done < <(grep -nE '(mapfile|readarray|declare[[:space:]]+-[a-zA-Z]*A|local[[:space:]]+-[a-zA-Z]*A|BASHPID)' "$file" 2>/dev/null || true)
 done
 

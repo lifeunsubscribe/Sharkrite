@@ -37,6 +37,13 @@ source "${DOCS_CMD}"
 # Override external-call functions AFTER source (last definition wins in bash).
 # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs intentionally defined after source to override real implementations
 load_provider() { return 0; }
+# docs-command.sh gained provider_detect_cli + provider_healthcheck in #1534.
+# Unstubbed, the real detect runs `claude` and `|| exit 1` kills the helper, so
+# every audit-path test failed wherever no claude CLI is installed — i.e. on both
+# CI platforms, while passing on a dev box that has one (live: main red
+# 2026-10-27). Same miss as divergence-merge-target-passed-to-resolver.bats.
+provider_detect_cli() { return 0; }
+provider_healthcheck() { return 0; }
 provider_run_prompt_with_timeout() { echo "${DOCS_AUDIT_OUTPUT:-NOTHING_FOUND}"; }
 provider_resolve_model() { echo "claude-sonnet-4-6"; }
 docs_map_build() {
@@ -198,14 +205,12 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# rite_docs dispatch tests — consent flow, audit, directed-update seam
-# All tests run with < /dev/null so prompts take the default-no branch.
+# rite_docs dispatch tests — never-run, audit, directed-update seam
+# All tests run with < /dev/null (no TTY).
 # ---------------------------------------------------------------------------
 
-@test "never-run + non-TTY (consent-no branch) records off" {
-  # Explicitly clear RITE_DOC_MODE: the gate runs bats in a shell that may have
-  # RITE_DOC_MODE=changelog exported (set by ensure_doc_mode in workflow-runner),
-  # which would redirect to the audit path and never call record_doc_mode.
+@test "never-run + no instructions: exits 0 and does NOT record a mode" {
+  # Consent is now owned by 'rite align-docs'; rite docs just reports and exits.
   run env \
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
     RITE_PROJECT_ROOT="$FAKE_PROJECT" \
@@ -214,11 +219,11 @@ teardown() {
     RITE_DOC_MODE= \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]
-  [ -f "$FAKE_PROJECT/.rite/state/recorded-mode.log" ]
-  grep -qx "off" "$FAKE_PROJECT/.rite/state/recorded-mode.log"
+  # No mode should be recorded — the recorded-mode.log should not exist
+  [ ! -f "$FAKE_PROJECT/.rite/state/recorded-mode.log" ]
 }
 
-@test "never-run + non-TTY consent-no branch builds docs map" {
+@test "never-run + no instructions: output references 'rite align-docs'" {
   run env \
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
     RITE_PROJECT_ROOT="$FAKE_PROJECT" \
@@ -227,11 +232,10 @@ teardown() {
     RITE_LOG_AUTO=false \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]
-  [ -f "$FAKE_PROJECT/.rite/state/docs-map-build.calls" ]
-  grep -q "MAP_BUILT" "$FAKE_PROJECT/.rite/state/docs-map-build.calls"
+  echo "$output" | grep -q "align-docs"
 }
 
-@test "never-run + non-TTY consent-no branch does NOT create .rite/doc-sync.md" {
+@test "never-run + no instructions: does NOT create .rite/doc-sync.md" {
   run env \
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
     RITE_PROJECT_ROOT="$FAKE_PROJECT" \
@@ -241,6 +245,19 @@ teardown() {
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]
   [ ! -f "$FAKE_PROJECT/.rite/doc-sync.md" ]
+}
+
+@test "never-run + instructions: routes to directed-update engine (explicit command is consent)" {
+  touch "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE= \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" "update the architecture section" < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Generating doc proposals"
 }
 
 @test "changelog state + no args → audit path (not directed-update)" {
@@ -259,13 +276,12 @@ teardown() {
 }
 
 @test "sync state + no args → audit path reports only (no tail-offer)" {
-  # doc-sync.md present = sync state
-  touch "$FAKE_PROJECT/.rite/doc-sync.md"
   touch "$FAKE_PROJECT/.rite/state/docs-map.tsv"
   run env \
     RITE_LIB_DIR="$PROJECT_ROOT/lib" \
     RITE_PROJECT_ROOT="$FAKE_PROJECT" \
     RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="sync" \
     RITE_LOG_AUTO=false \
     bash "$_DOCS_HELPER" < /dev/null 2>&1
   [ "$status" -eq 0 ]

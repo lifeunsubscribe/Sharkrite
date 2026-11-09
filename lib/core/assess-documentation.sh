@@ -146,9 +146,9 @@ _record_tier1_drift_entries() {
       done <<< "$_t1_enforcing"
 
       if [ -n "$_ta_et" ]; then
-        drift_log_append "$pr_number" "$_t1_issue" \
-          "$_ta_et" \
-          "- ${_t1_docpath}" \
+        drift_log_append "$_t1_docpath" "$_t1_branch" \
+          "$pr_number" "$_t1_issue" \
+          "$_ta_et" "test-scope" \
           "changed: ${_ta_et}; enforces: ${_t1_docpath}" || true
         _t1_any=true
         continue
@@ -188,9 +188,9 @@ _record_tier1_drift_entries() {
       done <<< "$_t1_enforcing"
 
       if [ -n "$_tb_changed" ]; then
-        drift_log_append "$pr_number" "$_t1_issue" \
-          "$_tb_changed" \
-          "- ${_t1_docpath}" \
+        drift_log_append "$_t1_docpath" "$_t1_branch" \
+          "$pr_number" "$_t1_issue" \
+          "$_tb_pat" "test-scope" \
           "changed: ${_tb_changed}; covers: ${_tb_pat}; enforces-via: ${_tb_et}" || true
         _t1_any=true
       fi
@@ -207,9 +207,14 @@ _record_tier1_drift_entries() {
       if [ -n "$_tc_doc" ]; then
         local _tc_first
         _tc_first="$(echo "$changed_files" | head -1 || true)"
-        drift_log_append "$pr_number" "$_t1_issue" \
-          "$_tc_first" \
-          "- ${_tc_doc}" \
+        # Design decision (issue #1509): one drift entry per PR, not one per doc.
+        # pr_head_branch in the suspected_inaccuracy preserves per-PR branch and
+        # changed-file evidence even when multiple PRs declare the same doc path.
+        # Multiple entries for the same doc path are expected and correct when
+        # distinct branches each declare it — they must each be burned down.
+        drift_log_append "$_tc_doc" "$_t1_branch" \
+          "$pr_number" "$_t1_issue" \
+          "" "addition" \
           "branch: ${pr_head_branch}; declared-doc: ${_tc_doc}; changed: ${_tc_first}" || true
         _t1_any=true
       fi

@@ -59,7 +59,7 @@ done
 for file in "${_r24_utils_files[@]}"; do
   while IFS=: read -r line_num line_content; do
     # Skip full-line comments
-    if echo "$line_content" | grep -qE '^\s*#'; then
+    if echo "$line_content" | grep -qE '^[[:space:]]*#'; then
       continue
     fi
 
