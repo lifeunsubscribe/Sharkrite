@@ -2548,6 +2548,12 @@ CAND_EOF
   printf '%s' "$_rp_docs" > "$_rp_tmp"
   while IFS= read -r _rp_doc <&3 || [ -n "${_rp_doc:-}" ]; do
     [ -n "$_rp_doc" ] || continue
+    # ADR docs must never be edited at promote — skip same as the TTY promote path.
+    # Observations land in the ADR namespace (doc-drift-adr/) via the cross-doc pass.
+    if _docs_is_adr_in_map "$_rp_doc" 2>/dev/null; then
+      print_info "  ADR doc ${_rp_doc}: observations in ADR namespace — skipping promote edit pass"
+      continue
+    fi
     echo "" >&2
     print_info "Processing doc: ${_rp_doc}"
     _docs_main_entries_pass "$_rp_doc" "$_rp_file_branch" "main" || _rp_failed=1
@@ -2961,6 +2967,7 @@ docs_run_promote_doc_pass() {
         local _dp_proposal="${RITE_STATE_DIR:-}/doc-proposal-${_dp_safe_branch}.md"
         mkdir -p "$(dirname "$_dp_proposal")" 2>/dev/null || true
         local _dp_write_ok=0
+        local _dp_listed=0
         {
           printf '# Pending doc proposal: %s\n\n' "$_dp_branch"
           printf 'Recorded: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
@@ -2969,16 +2976,25 @@ docs_run_promote_doc_pass() {
           local _dp_d
           while IFS= read -r _dp_d || [ -n "$_dp_d" ]; do
             [ -n "$_dp_d" ] || continue
+            # ADR docs are never edited at promote; exclude from the deferred proposal
+            # so the resume path is no more permissive than the live TTY path.
+            if _docs_is_adr_in_map "$_dp_d" 2>/dev/null; then
+              continue
+            fi
             printf -- '- %s\n' "$_dp_d"
+            _dp_listed=$(( _dp_listed + 1 ))
           done <<DOCS_EOF
 $_dp_docs
 DOCS_EOF
         } > "$_dp_proposal" 2>/dev/null && _dp_write_ok=1 || true
-        if [ "$_dp_write_ok" = "1" ]; then
+        if [ "$_dp_write_ok" != "1" ]; then
+          print_warning "Could not write doc proposal to '${_dp_proposal}' — drift entries remain for manual review" >&2
+        elif [ "$_dp_listed" -eq 0 ]; then
+          rm -f "$_dp_proposal" 2>/dev/null || true
+          print_info "All pending drift entries are ADRs — no deferred proposal needed"
+        else
           print_info "Promote doc proposal saved — review when ready"
           printf '\n  Run: rite docs --resume %s\n' "$_dp_branch" >&2
-        else
-          print_warning "Could not write doc proposal to '${_dp_proposal}' — drift entries remain for manual review" >&2
         fi
       fi
     else

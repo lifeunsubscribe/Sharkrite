@@ -305,6 +305,92 @@ RUNEOF
   [[ "$output" != *"STDIN_SAMPLE:docs/"* ]]
 }
 
+@test "docs_run_promote_doc_pass: non-TTY proposal excludes ADR docs" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  _write_docs_command_stubs "$_lib"
+
+  local _state_dir="$RITE_TEST_TMPDIR/state"
+  mkdir -p "$_state_dir"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_STATE_DIR="$_state_dir"
+source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
+
+drift_log_entry_count() { echo 2; }
+_docs_list_branch_entry_docs() {
+  printf 'docs/architecture/adr-001.md\ndocs/architecture/behavioral-design.md\n'
+}
+# Stub: adr-001.md is classified as ADR; behavioral-design.md is not.
+_docs_is_adr_in_map() {
+  case "\$1" in
+    docs/architecture/adr-001.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+docs_run_promote_doc_pass "my-integration-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" < /dev/null
+  [ "$status" -eq 0 ]
+
+  local _proposal="$_state_dir/doc-proposal-my-integration-branch.md"
+  [ -f "$_proposal" ] || { echo "FAIL: proposal file not found at $_proposal"; return 1; }
+
+  # ADR doc must be absent from the proposal.
+  run grep -q "adr-001.md" "$_proposal"
+  [ "$status" -ne 0 ]
+  # Regular doc must be present in the proposal.
+  grep -q "behavioral-design.md" "$_proposal"
+}
+
+@test "docs_run_promote_doc_pass: all-ADR branch writes no proposal file and prints no --resume hint" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  _write_docs_command_stubs "$_lib"
+
+  local _state_dir="$RITE_TEST_TMPDIR/state"
+  mkdir -p "$_state_dir"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_STATE_DIR="$_state_dir"
+source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
+
+drift_log_entry_count() { echo 1; }
+_docs_list_branch_entry_docs() {
+  printf 'docs/architecture/adr-001.md\n'
+}
+# All docs are ADRs.
+_docs_is_adr_in_map() { return 0; }
+
+docs_run_promote_doc_pass "all-adr-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" < /dev/null
+  [ "$status" -eq 0 ]
+
+  # No proposal file should be written when all docs are ADRs.
+  local _proposal="$_state_dir/doc-proposal-all-adr-branch.md"
+  [ ! -f "$_proposal" ] || { echo "FAIL: proposal file should not exist at $_proposal"; return 1; }
+
+  # The --resume hint must not appear in the output.
+  run grep -q "rite docs --resume" <<< "$output"
+  [ "$status" -ne 0 ]
+}
+
 # ===========================================================================
 # Group 4: Real drift-log.sh store integration
 # ===========================================================================
