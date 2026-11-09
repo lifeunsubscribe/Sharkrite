@@ -1414,11 +1414,11 @@ ${_fix_test_runbook_section}
           break
         else
           # No commits: retry once at double budget when doubling is real.
-          # Retry only when FIX_TIMEOUT <= 900: at 2×900=1800 the doubled budget
-          # reaches the cap and the extra time is meaningful. Above 900 the
-          # doubled budget would be capped at 1800 anyway — a session that already
-          # had 29+ minutes without a single edit is stuck, not slow. Retrying
-          # only wastes another slot's worth of wall-clock time.
+          # Retry only when FIX_TIMEOUT <= 900: 2×900=1800 exactly reaches
+          # the cap, so the retry gets the full doubled time. Above 900 the
+          # doubled budget would be capped at 1800 regardless — a session
+          # already at 15+ minutes without a single edit is stuck, not slow.
+          # Retrying only wastes another slot's worth of wall-clock time.
           if [ "$_fix_attempt" -eq 1 ] && [ "$FIX_TIMEOUT" -le 900 ]; then
             _retry_budget=$(( FIX_TIMEOUT * 2 ))
             [ "$_retry_budget" -gt 1800 ] && _retry_budget=1800
