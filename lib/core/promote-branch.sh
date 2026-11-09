@@ -522,17 +522,22 @@ run_promote() {
   # Query shape mirrors repo-status.sh:649: --json number,body,headRefName,baseRefName
   local _inflight_prs_json
   if ! _inflight_prs_json=$(gh_safe pr list --state open \
-    --json number,body,headRefName,baseRefName --limit 200 2>&1); then
+    --json number,body,headRefName,baseRefName --limit 200); then
     print_error "Cannot verify in-flight PRs for '${BRANCH}': gh pr list failed."
-    echo "  $_inflight_prs_json" >&2
     echo "  Refusing to promote — cannot guarantee no in-flight PRs target this branch." >&2
     exit 1
   fi
   _inflight_prs_json="${_inflight_prs_json:-[]}"
 
   local _inflight_count=0
+  local _jq_exit=0
   _inflight_count=$(printf '%s' "$_inflight_prs_json" | jq --arg b "$BRANCH" \
-    '[.[] | select(.baseRefName == $b)] | length' 2>/dev/null || true)
+    '[.[] | select(.baseRefName == $b)] | length' 2>/dev/null) || _jq_exit=$?
+  if [ "${_jq_exit}" -ne 0 ]; then
+    print_error "Cannot verify in-flight PRs for '${BRANCH}': failed to parse gh pr list output."
+    echo "  Refusing to promote — cannot guarantee no in-flight PRs target this branch." >&2
+    exit 1
+  fi
   _inflight_count="${_inflight_count:-0}"
 
   if [ "${_inflight_count:-0}" -gt 0 ]; then
