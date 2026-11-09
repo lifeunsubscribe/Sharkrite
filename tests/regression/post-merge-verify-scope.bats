@@ -28,7 +28,7 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
   # A bare call (only the worktree_path arg) falls back to HEAD~1, gating the full
   # merge delta from main instead of branch-own files. The grep matches any call
   # whose first quoted arg is immediately followed by ;, end-of-line, or ||.
-  _bare=$(grep -rnE 'verify_post_merge "[^"]+"\s*(;|$|\|\|)' "${RITE_LIB_DIR}" 2>/dev/null || true)
+  _bare=$(grep -rnE 'verify_post_merge "[^"]+"[[:space:]]*(;|$|\|\|)' "${RITE_LIB_DIR}" 2>/dev/null || true)
   [ -z "$_bare" ] || {
     echo "verify_post_merge called without a second arg (target ref) in lib/:" >&2
     echo "$_bare" >&2
