@@ -669,9 +669,10 @@ ANY issue you file — by hand via `gh issue create`, or via `rite plan` — MUS
 
 Follow-up issues (tech-debt, review follow-ups) follow the structure in `templates/issue-template.md`:
 
-- **Claude Context**: Changed files from the PR (auto-populated)
-- **Acceptance Criteria**: Item-specific from assessment (e.g., `[HIGH] Fix input validation`)
-- **Done Definition**: Generated from severity mix
+- **Claude Context**: `Files to Read:` from PR changed files; `Files to Modify:` seeded from the finding's `**Location:**` path (explicit note when absent)
+- **Acceptance Criteria**: Finding's `**Suggested Fix:**` text embedded under the checkbox (falls back to title-only when field absent)
+- **Verification Commands**: Finding's `**Verification:**` field when present; location-derived `sed`/`grep` command when only Location is available; explicit "no command" note (not a TODO) when neither field exists
+- **Done Definition**: Severity-appropriate bounded sentence; MEDIUM/LOW fallback is "Done when the acceptance criteria above pass and the verification command succeeds" (no open-ended deferral language)
 - **Scope Boundary**: Static DO/DO NOT (address findings only)
 - **Time Estimate**: Aggregated from Fix Effort metadata in assessment
 

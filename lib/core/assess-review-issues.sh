@@ -1257,22 +1257,16 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # _resolve_issue_labels is provided by assess-and-resolve.sh, sourced above (line 81-83).
           _item_labels=$(_resolve_issue_labels "tech-debt,from-review" "${ITEM_SEVERITY:-MEDIUM}" "${ITEM_CATEGORY:-}")
 
-          # --- Synthesize runbook-compliant body fields (mirrors assess-and-resolve.sh:1829-1865) ---
+          # --- Synthesize runbook-compliant body fields (mirrors assess-and-resolve.sh per-finding loop) ---
           # The surviving ACTIONABLE_LATER follow-up uses the SAME rich body shape
           # as the per-finding loop: acceptance criterion + concrete verification
           # command derived from Location + severity-appropriate done definition.
-          _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}"
-          if [ -n "${ITEM_VERIFICATION:-}" ]; then
-            # Allowlist validation: ITEM_VERIFICATION is LLM-derived; block shell
-            # injection metacharacters before embedding in generated issue bodies.
-            # Degrade to prose on failure so the finding is never silently lost.
-            # Aligns with _loc_path sanitization below and assess-and-resolve.sh.
-            if printf '%s' "${ITEM_VERIFICATION}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
-              _verification_cmd="${ITEM_VERIFICATION}"
-            else
-              _verification_cmd="# TODO: verify manually — assessor suggested: ${ITEM_VERIFICATION}"
-            fi
-          elif [ -n "${ITEM_LOCATION:-}" ]; then
+
+          # Pre-extract location path so it can be used for both the verification
+          # command and the Files to Modify section.
+          _loc_path_safe=""
+          _loc_line=""
+          if [ -n "${ITEM_LOCATION:-}" ]; then
             # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
             # Strip any trailing description after whitespace; then split on the last colon
             # that is followed only by digits so we handle paths like lib/core/foo.sh:142
@@ -1283,27 +1277,47 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
             # break the surrounding single-quoted sed/grep command strings and inject
             # arbitrary shell text into the generated verification command.
             # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
-            _loc_path_safe=""
             if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
               _loc_path_safe="$_loc_path"
             fi
-            if [ -n "$_loc_line" ] && [ -n "$_loc_path_safe" ]; then
+          fi
+
+          # Acceptance criterion: embed Suggested Fix text when present so the criterion
+          # describes what to change and where, not just a restatement of the title.
+          if [ -n "${ITEM_SUGGESTED_FIX:-}" ]; then
+            _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}
+  **Fix:** ${ITEM_SUGGESTED_FIX}"
+          else
+            _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}"
+          fi
+
+          # Verification command: prefer the assessor-supplied Verification field; fall
+          # back to a location-derived inspect command; never emit a TODO placeholder.
+          if [ -n "${ITEM_VERIFICATION:-}" ]; then
+            # Allowlist validation: ITEM_VERIFICATION is LLM-derived; block shell
+            # injection metacharacters before embedding in generated issue bodies.
+            # Degrade to prose on failure so the finding is never silently lost.
+            # Aligns with _loc_path sanitization above and assess-and-resolve.sh.
+            if printf '%s' "${ITEM_VERIFICATION}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
+              _verification_cmd="${ITEM_VERIFICATION}"
+            else
+              _verification_cmd="# TODO: verify manually — assessor suggested: ${ITEM_VERIFICATION}"
+            fi
+          elif [ -n "$_loc_path_safe" ]; then
+            if [ -n "$_loc_line" ]; then
               # file:line format — emit a valid sed command pointing at that exact line
               _verification_cmd="sed -n '${_loc_line}p' '${_loc_path_safe}'"
-            elif [ -n "$_loc_path_safe" ]; then
+            else
               # Looks like a plain file path (no line number) — use grep to inspect it
               _verification_cmd="grep -n '' '${_loc_path_safe}'"
-            elif echo "${ITEM_LOCATION:-}" | grep -qE '^[a-zA-Z/._-]'; then
-              # Location present but path did not pass sanitization — emit as prose to
-              # avoid injecting unsanitized content into shell command syntax.
-              _verification_cmd="# TODO: add verification command for: ${ITEM_LOCATION:-}"
-            else
-              # Location field present but doesn't look like a path — fall back
-              _verification_cmd="# TODO: add verification command for: ${ITEM_LOCATION:-}"
             fi
+          elif [ -n "${ITEM_LOCATION:-}" ]; then
+            # Location present but not in a recognizable path form — emit as prose to
+            # avoid injecting unsanitized content into shell command syntax.
+            _verification_cmd="# Inspect: ${ITEM_LOCATION:-}"
           else
-            # Generic fallback — reviewer must fill in the concrete command
-            _verification_cmd="# TODO: add verification command for this finding"
+            # Neither Verification nor Location — emit an explicit note, no TODO placeholder.
+            _verification_cmd="# No verification command specified in assessment — confirm fix via acceptance criteria"
           fi
 
           # Done Definition: severity-appropriate (reused function from assess-and-resolve.sh)
@@ -1314,13 +1328,20 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           _time_estimate=$(_resolve_time_estimate "${ITEM_FIX_EFFORT:-}")
 
           # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
-          # For follow-ups all parent-PR changed files are inspection candidates;
-          # leave "Files to Modify:" as a placeholder for the implementer.
+          # Files to Modify is seeded from the finding's Location path; falls back to
+          # an explicit note when no path was provided.
+          if [ -n "$_loc_path_safe" ]; then
+            _files_to_modify="- \`${_loc_path_safe}\`"
+          elif [ -n "${ITEM_LOCATION:-}" ]; then
+            _files_to_modify="- _Location specified in assessment but not in a recognized path form_"
+          else
+            _files_to_modify="- _Location not specified in assessment_"
+          fi
           _claude_context_section="Files to Read:
 ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 
 Files to Modify:
-- _Determine from the finding above_"
+${_files_to_modify}"
 
           # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh per-finding loop) ---
           # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.
