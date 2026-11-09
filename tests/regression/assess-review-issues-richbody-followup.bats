@@ -249,17 +249,17 @@ _nth_body() {
   }
 }
 
-# ─── Test 3: MEDIUM finding (no Location) → # TODO verification fallback ───────
+# ─── Test 3: MEDIUM finding (no Location, no Verification) → prose fallback ─────
 
-@test "richbody: MEDIUM finding without Location yields # TODO verification fallback" {
+@test "richbody: MEDIUM finding without Location yields prose verification fallback" {
   _run_assess
 
   local _med_body
   _med_body=$(_medium_finding_body)
   [ -n "$_med_body" ] || { echo "FAIL: MEDIUM finding body not found"; cat "$CREATE_CAPTURE"; false; }
 
-  echo "$_med_body" | grep -qF "# TODO: add verification command for this finding" || {
-    echo "FAIL: MEDIUM body lacks the # TODO verification fallback"
+  echo "$_med_body" | grep -qF "# no verification field in assessment" || {
+    echo "FAIL: MEDIUM body lacks the prose verification fallback"
     echo "--- MEDIUM body ---"
     echo "$_med_body"
     false
@@ -346,8 +346,8 @@ MOCK_EOF
   [ -n "$_body" ] || { echo "FAIL: no issue body captured"; cat "$CREATE_CAPTURE"; false; }
 
   # Must use the prose fallback (NOT a sed/grep command embedding the quote).
-  echo "$_body" | grep -qF "# TODO: add verification command for:" || {
-    echo "FAIL: single-quote Location did not fall back to # TODO: prose form"
+  echo "$_body" | grep -qF "# verification command not available" || {
+    echo "FAIL: single-quote Location did not fall back to prose form"
     echo "--- body ---"
     echo "$_body"
     false

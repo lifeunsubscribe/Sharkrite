@@ -1261,7 +1261,12 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           # The surviving ACTIONABLE_LATER follow-up uses the SAME rich body shape
           # as the per-finding loop: acceptance criterion + concrete verification
           # command derived from Location + severity-appropriate done definition.
+          # When Suggested Fix is present (#1546 field), embed it so the criterion
+          # names what to change, not just what broke.
           _acceptance_criterion="- [ ] [${ITEM_SEVERITY:-MEDIUM}] ${ITEM_TITLE}"
+          if [ -n "${ITEM_SUGGESTED_FIX:-}" ]; then
+            _acceptance_criterion="${_acceptance_criterion}: ${ITEM_SUGGESTED_FIX}"
+          fi
           if [ -n "${ITEM_VERIFICATION:-}" ]; then
             # Allowlist validation: ITEM_VERIFICATION is LLM-derived; block shell
             # injection metacharacters before embedding in generated issue bodies.
@@ -1294,16 +1299,16 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
               # Looks like a plain file path (no line number) — use grep to inspect it
               _verification_cmd="grep -n '' '${_loc_path_safe}'"
             elif echo "${ITEM_LOCATION:-}" | grep -qE '^[a-zA-Z/._-]'; then
-              # Location present but path did not pass sanitization — emit as prose to
-              # avoid injecting unsanitized content into shell command syntax.
-              _verification_cmd="# TODO: add verification command for: ${ITEM_LOCATION:-}"
+              # Location present but path did not pass sanitization — do not embed
+              # unsanitized content in a shell command string; point to the field instead.
+              _verification_cmd="# verification command not available — see Location field above"
             else
               # Location field present but doesn't look like a path — fall back
-              _verification_cmd="# TODO: add verification command for: ${ITEM_LOCATION:-}"
+              _verification_cmd="# verification command not available — see Location field above"
             fi
           else
-            # Generic fallback — reviewer must fill in the concrete command
-            _verification_cmd="# TODO: add verification command for this finding"
+            # No verification field and no location — point implementer to Description
+            _verification_cmd="# no verification field in assessment — check Description above"
           fi
 
           # Done Definition: severity-appropriate (reused function from assess-and-resolve.sh)
@@ -1314,13 +1319,24 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
           _time_estimate=$(_resolve_time_estimate "${ITEM_FIX_EFFORT:-}")
 
           # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
-          # For follow-ups all parent-PR changed files are inspection candidates;
-          # leave "Files to Modify:" as a placeholder for the implementer.
+          # Seed Files to Modify from the finding's Location path when it is a sanitizable
+          # file path; otherwise state explicitly that the location was not provided.
+          # Computed separately from the verification block so it's available even when
+          # the Verification field was present (which skips the location-parsing branch).
+          _files_to_modify_entry="- _No location field in assessment_"
+          if [ -n "${ITEM_LOCATION:-}" ]; then
+            _ftm_path=$(echo "${ITEM_LOCATION}" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+            if echo "${_ftm_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
+              _files_to_modify_entry="- ${_ftm_path}"
+            else
+              _files_to_modify_entry="- _Location present — see Location field above_"
+            fi
+          fi
           _claude_context_section="Files to Read:
 ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 
 Files to Modify:
-- _Determine from the finding above_"
+${_files_to_modify_entry}"
 
           # --- Build runbook-compliant issue body (mirrors assess-and-resolve.sh per-finding loop) ---
           # Provenance markers: location (omitted when empty — bare-prefix guard) and SHA.

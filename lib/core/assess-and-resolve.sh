@@ -378,7 +378,7 @@ _resolve_done_def() {
   case "${_sev}" in
     CRITICAL) _def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
     HIGH)     _def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
-    *)        _def="Done when the finding is addressed or explicitly deferred with justification." ;;
+    *)        _def="Done when the acceptance criteria above pass and the verification command succeeds." ;;
   esac
   echo "$_def"
 }
@@ -2590,7 +2590,12 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
 
     # --- Build per-finding acceptance criterion and verification command ---
     # Seed from Location (file:line) when available; fall back to the clean title.
+    # When Suggested Fix is present (#1546 field), embed it so the criterion
+    # names what to change, not just what broke.
     _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
+    if [ -n "${_f_suggested_fix:-}" ]; then
+      _acceptance_criterion="${_acceptance_criterion}: ${_f_suggested_fix}"
+    fi
     if [ -n "${_f_verification:-}" ]; then
       # Allowlist validation: _f_verification is LLM-derived; block shell injection
       # metacharacters (backtick, dollar, semicolon, pipe, ampersand, redirections)
@@ -2623,16 +2628,16 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
         # Looks like a plain file path (no line number) — use grep to inspect it
         _verification_cmd="grep -n '' '${_loc_path_safe}'"
       elif echo "$_f_location" | grep -qE '^[a-zA-Z/._-]'; then
-        # Location present but path did not pass sanitization — emit as prose to
-        # avoid injecting unsanitized content into shell command syntax.
-        _verification_cmd="# TODO: add verification command for: ${_f_location}"
+        # Location present but path did not pass sanitization — do not embed
+        # unsanitized content in a shell command string; point to the field instead.
+        _verification_cmd="# verification command not available — see Location field above"
       else
         # Location field present but doesn't look like a path — fall back
-        _verification_cmd="# TODO: add verification command for: ${_f_location}"
+        _verification_cmd="# verification command not available — see Location field above"
       fi
     else
-      # Generic fallback — reviewer must fill in the concrete command
-      _verification_cmd="# TODO: add verification command for this finding"
+      # No verification field and no location — point implementer to Description
+      _verification_cmd="# no verification field in assessment — check Description above"
     fi
 
     # Done Definition: severity-appropriate
@@ -2660,14 +2665,24 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
 
     # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
-    # For follow-ups, all parent-PR changed files are candidates for inspection;
-    # none are guaranteed to require modification, so emit all under "Files to Read:"
-    # and leave "Files to Modify:" as a concrete placeholder for the implementer.
+    # Seed Files to Modify from the finding's Location path when it is a sanitizable
+    # file path; otherwise state explicitly that the location was not provided.
+    # Computed separately from the verification block so it's available even when
+    # the Verification field was present (which skips the location-parsing branch).
+    _files_to_modify_entry="- _No location field in assessment_"
+    if [ -n "${_f_location:-}" ]; then
+      _ftm_path=$(echo "$_f_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+      if echo "${_ftm_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
+        _files_to_modify_entry="- ${_ftm_path}"
+      else
+        _files_to_modify_entry="- _Location present — see Location field above_"
+      fi
+    fi
     _claude_context_section="Files to Read:
 ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 
 Files to Modify:
-- _Determine from the finding above_"
+${_files_to_modify_entry}"
 
     FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
@@ -2694,7 +2709,7 @@ ${_time_estimate:-30min}
 ${_claude_context_section}
 
 ## Acceptance Criteria
-${_acceptance_criterion}: see Description above for details
+${_acceptance_criterion}
 
 ## Verification Commands
 \`\`\`bash
