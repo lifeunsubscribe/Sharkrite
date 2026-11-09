@@ -2219,7 +2219,9 @@ docs_reconcile_drift() {
   _rd_drift_path="$(drift_log_path 2>/dev/null || true)"
 
   if [ -z "$_rd_drift_path" ] || [ ! -f "$_rd_drift_path" ]; then
-    print_info "No drift log found — nothing to reconcile"
+    if [ "$_rd_main_count" -eq 0 ]; then
+      print_info "No drift log found — nothing to reconcile"
+    fi
     docs_reconcile_adr_drift || true
     return 0
   fi
@@ -2228,14 +2230,16 @@ docs_reconcile_drift() {
   _rd_count="$(drift_log_entry_count "$_rd_drift_path" || echo "0")"
 
   if [ "$_rd_count" -eq 0 ]; then
-    print_info "Drift log is empty — nothing to reconcile"
+    if [ "$_rd_main_count" -eq 0 ]; then
+      print_info "Drift log is empty — nothing to reconcile"
+    fi
     docs_reconcile_adr_drift || true
     return 0
   fi
 
   print_info "Reconciling ${_rd_count} drift entr$([ "$_rd_count" -eq 1 ] && echo 'y' || echo 'ies') from flat log..."
   docs_map_ensure || true
-  _docs_update_engine "reconcile" ""
+  _docs_update_engine "reconcile" "" || true
 
   # Always run ADR drift reconcile after the regular reconcile pass
   docs_reconcile_adr_drift || true
