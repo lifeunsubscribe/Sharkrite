@@ -2419,6 +2419,14 @@ fi
 # (Skipped Issues section is now emitted by _batch_print_stats above)
 _batch_print_drift_summary
 
+# Batch-end follow-up reconciliation pass.
+# Opt-out: RITE_BATCH_RECONCILE=false in .rite/config.
+# Must run after all merges so git diff reflects the final target-branch state.
+if [ "${RITE_BATCH_RECONCILE:-true}" != "false" ]; then
+  source "$RITE_LIB_DIR/utils/reconcile-followups.sh"
+  reconcile_batch_followups
+fi
+
 # Build comprehensive Slack summary
 NOTIFICATION_MESSAGE="📊 *Batch Processing Complete*
 
