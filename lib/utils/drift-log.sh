@@ -25,7 +25,7 @@
 # Public API:
 #   drift_log_path          — echo the absolute path to docs/sharkrite-drift-log.md
 #   drift_log_relpath       — repo-relative form of drift_log_path
-#   drift_log_append        — append or accumulate-in-place one structured entry
+#   drift_log_append        — append one structured entry per (doc, assertion, PR) triple
 #   drift_log_entry_count   — count entries (per-doc, per-branch, or total)
 #   drift_log_remove_entry  — remove exactly one (doc, branch, assertion) entry
 #   drift_log_clear_doc     — remove all entries for a doc across all branches
@@ -210,7 +210,7 @@ EOF
 # ---------------------------------------------------------------------------
 # drift_log_append DOC BRANCH PR ISSUE ASSERTION KIND EVIDENCE
 #
-# Append or accumulate-in-place one structured drift entry.
+# Append one structured drift entry per (doc, assertion, PR) combination.
 #
 # Arguments:
 #   $1  DOC       — repo-relative path of the implicated doc
@@ -223,7 +223,7 @@ EOF
 #   $7  EVIDENCE  — changed paths, test names, or grep pattern that fired
 #
 # Entry file: $RITE_STATE_DIR/doc-drift/<branch>/<doc-slug>.log
-# Format: tab-separated key=value, one line per (doc, assertion) pair.
+# Format: tab-separated key=value, one line per (doc, assertion, PR) triple.
 #
 # Idempotent re-record: a repeat hit for the same (pr, doc, assertion) is
 # a no-op — the entry already carries this PR's evidence.  A DIFFERENT PR
@@ -307,10 +307,10 @@ drift_log_append() {
   _dla_tmp="${entry_file}.tmp.$$"
 
   if [ -f "$entry_file" ]; then
-    # Accumulate-in-place: scan the file for a line whose doc= and assertion=
-    # fields match.  awk rewrites the file appending the new PR to that line's
-    # pr= field (skipped when PR already present) and exits 0; exits 1 when no
-    # matching line was found; exits >1 on I/O error (skip to avoid duplicate).
+    # Idempotent re-record: scan the file for a line where the (doc, assertion,
+    # PR) triple is already recorded.  awk exits 0 when the exact triple exists
+    # (no-op); exits 1 when no matching triple exists (new entry appended below);
+    # exits >1 on I/O error (skip to avoid a partial write).
     local _dla_awk_exit=0
     awk -F'\t' 'BEGIN{OFS="\t"; matched=0}
     {
@@ -845,8 +845,8 @@ adr_drift_log_remove_entry() {
 # Idempotent: no-op when legacy-archive.md already exists AND the legacy file
 # is gone.  If the legacy file was re-created (changelog mode re-appends to it
 # via _drift_log_append_legacy), falls through and migrates the new entries —
-# drift_log_append is accumulate-in-place by (doc,assertion), so re-processing
-# already-migrated entries is safe.
+# drift_log_append is idempotent for the same (doc, assertion, PR) triple, so
+# re-processing already-migrated entries is safe.
 # Silent no-op when the legacy file does not exist or RITE_STATE_DIR is unset.
 #
 # Parsing (best-effort):
@@ -874,8 +874,8 @@ migrate_legacy_drift_log() {
   # Idempotence guard: migration already ran AND the legacy file is gone — nothing to do.
   # If the legacy file was re-created (changelog mode re-appends to it via
   # _drift_log_append_legacy), fall through and migrate the new entries.
-  # drift_log_append is accumulate-in-place by (doc,assertion), so re-processing
-  # old entries that already landed is safe — only genuinely new entries are added.
+  # drift_log_append is idempotent for the same (doc, assertion, PR) triple, so
+  # re-processing already-migrated entries is safe — existing triples are no-ops.
   if [ -f "$_mld_archive_path" ] && [ ! -f "$_mld_legacy_path" ]; then
     return 0
   fi

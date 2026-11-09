@@ -2476,9 +2476,10 @@ which is the failure mode this design exists to end.
 
 Entries stay bounded:
 
-- **Accumulate in place.** One entry per (doc, assertion); a repeat hit appends
-  its PR to that entry — the conventions catalog's rule. Volume tracks affected
-  assertions, not merges.
+- **One entry per PR (#1509).** One entry per (doc, assertion, PR) triple; a
+  repeat hit for the same PR is a no-op. A different PR for the same (doc,
+  assertion) appends a new entry — preserving each PR's own provenance. Volume
+  tracks distinct PRs touching an assertion, so no PR's evidence is lost.
 - **Consumed or cleared.** Tier 2 consumes the entries it corrects;
   `align-docs` clears every entry for a doc it audits, because it just
   re-verified that doc against the code.
@@ -2708,7 +2709,7 @@ loaded whole or not seen) is the oversight this corrects. Today's
 
 **Enforcement:** to be pinned per issue as the set lands. Planned:
 `doc-drift-entry-schema.bats` (fields, per-doc/per-branch layout,
-accumulate-in-place), `doc-drift-tier1-deterministic.bats` (no provider call on
+one-entry-per-PR idempotency), `doc-drift-tier1-deterministic.bats` (no provider call on
 the merge path — structural grep plus a stubbed-provider run that must make zero
 calls), `doc-tracking-off-records-nothing.bats`,
 `promote-docs-after-merge.bats` (the code merges before the doc prompt; no TTY
