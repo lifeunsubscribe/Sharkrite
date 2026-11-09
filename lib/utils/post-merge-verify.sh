@@ -128,16 +128,24 @@ verify_post_merge() {
   # branch's own changes touch the SAME files. When they don't overlap, verifying
   # is pure waste. Compute the overlap and skip when empty.
   #
-  # With pre_merge_ref = origin/<target> (#854/#1655), _main_files resolves to
-  # diff($pre_merge_ref, $pre_merge_ref) = empty → this check always falls through
-  # to verification (conservative, no false-skip on integration-branch targets).
-  # Defensive: any git hiccup falls through to verifying — the safe default.
-  # Branch-own files = diff($pre_merge_ref, HEAD, post-merge).
+  # pre_merge_ref = PRE (pre-rebase branch tip SHA, the typical caller case):
+  #   _mb = merge-base(PRE, HEAD) = common ancestor before the branch diverged.
+  #   _main_files = diff(PRE, HEAD) = files the rebase pulled in from the target.
+  #   _branch_files = diff(_mb, PRE) = files the branch changed originally.
+  #   Non-overlapping → safe to skip. Overlapping → must verify.
+  #
+  # pre_merge_ref = origin/<target> (#854/#1655 updated callers):
+  #   _mb = merge-base(origin/main, HEAD) = origin/main (ancestor of rebased HEAD).
+  #   _branch_files = diff(origin/main, origin/main) = empty → condition false →
+  #   always falls through to verification (conservative, no false-skip on
+  #   integration-branch targets).
+  #
+  # Defensive: any git hiccup (_mb empty) falls through to verifying — safe default.
   local _mb _main_files _branch_files _overlap
-  _mb=$(git -C "$worktree_path" merge-base "$pre_merge_ref" "$pre_merge_ref" 2>/dev/null || true)
+  _mb=$(git -C "$worktree_path" merge-base "$pre_merge_ref" HEAD 2>/dev/null || true)
   if [ -n "$_mb" ]; then
-    _main_files=$(git -C "$worktree_path" diff --name-only "$_mb" "$pre_merge_ref" 2>/dev/null | sort -u || true)
-    _branch_files=$(git -C "$worktree_path" diff --name-only "$pre_merge_ref" HEAD 2>/dev/null | sort -u || true)
+    _main_files=$(git -C "$worktree_path" diff --name-only "$pre_merge_ref" HEAD 2>/dev/null | sort -u || true)
+    _branch_files=$(git -C "$worktree_path" diff --name-only "$_mb" "$pre_merge_ref" 2>/dev/null | sort -u || true)
     if [ -n "$_main_files" ] && [ -n "$_branch_files" ]; then
       _overlap=$(comm -12 <(printf '%s\n' "$_main_files") <(printf '%s\n' "$_branch_files") 2>/dev/null || true)
       if [ -z "$_overlap" ]; then
