@@ -6,6 +6,7 @@
 
 
 ## Created
+- behavioral-design.md → Directed-Update Proposal Guards (#1208)
 - behavioral-design.md → Conventions Catalog: Accumulate-in-Place Contract
 - behavioral-design.md → Follow-up Issue Context
 - behavioral-design.md → Worktree Creation No Longer Symlinks node_modules (#844)
@@ -23,6 +24,7 @@
 ## Knob
 - behavioral-design.md → Gate Flake-Retry: One Bounded Serial Re-Run (#938)
 - behavioral-design.md → Gate Per-Test Timeout (`BATS_TEST_TIMEOUT`)
+
 
 
 
