@@ -2218,6 +2218,26 @@ three-way outcome (assessed-with-NOW / assessed-with-nothing / not-assessed),
 the env contract passed to the assessor, and the no-bare-`exit` best-effort
 property of the region.
 
+## Promote Preflight: In-Flight PR Guard (#1641)
+
+`rite --promote <branch>` Phase 7 deletes the integration branch (remote + local) after the squash-merge. GitHub silently closes any open PR whose base branch disappears — orphaning the in-flight worktree and losing the branch pointer for cleanup.
+
+**The guard.** At the end of the Phase 1 preflight, before any gh mutation, `run_promote` calls:
+
+```bash
+gh pr list --state open --json number,body,headRefName,baseRefName --limit 200
+```
+
+(the same query shape `repo-status.sh` uses for its Integration Branches display). It filters the result with jq for entries where `baseRefName == <branch>`. If any exist: emit `PROMOTE_BLOCKED_INFLIGHT branch=<b> open_prs=<n>` to the diag stream, print the PR number, the issue it closes (extracted from the PR body via the standard `Closes #N` pattern), and the exact commands to finish or abandon the in-flight work, then exit 1. If none exist: guard is a no-op.
+
+**No override flag.** There is intentionally no `--force` or `--bypass-inflight` flag. The correct resolution is to finish or undo the in-flight issues — not to skip a guard whose purpose is preventing silent data loss.
+
+**Scope.** This guard applies only to the full-branch promote path (`rite --promote <branch>` with no issue argument). The single-issue cherry-pick path (`rite --promote <branch> <issue>`) does not delete the branch and is therefore unaffected.
+
+**Diag:** `PROMOTE_BLOCKED_INFLIGHT branch=<b> open_prs=<n>` — emitted before `exit 1`; never emitted when the guard passes.
+
+**Regression:** `tests/regression/promote-branch.bats` Group 2 — "open PR targeting the branch blocks promote and names PR, issue, and commands"; "emits PROMOTE_BLOCKED_INFLIGHT diag"; "open PR targeting a different branch does not block promote".
+
 ## The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)
 
 `attempt_claude_merge_resolution` returns 0 for "conflicts resolved **in the
