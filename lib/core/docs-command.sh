@@ -2548,6 +2548,12 @@ CAND_EOF
   printf '%s' "$_rp_docs" > "$_rp_tmp"
   while IFS= read -r _rp_doc <&3 || [ -n "${_rp_doc:-}" ]; do
     [ -n "$_rp_doc" ] || continue
+    # ADR docs must never be edited at promote — skip same as the TTY promote path.
+    # Observations land in the ADR namespace (doc-drift-adr/) via the cross-doc pass.
+    if _docs_is_adr_in_map "$_rp_doc" 2>/dev/null; then
+      print_info "  ADR doc ${_rp_doc}: observations in ADR namespace — skipping promote edit pass"
+      continue
+    fi
     echo "" >&2
     print_info "Processing doc: ${_rp_doc}"
     _docs_main_entries_pass "$_rp_doc" "$_rp_file_branch" "main" || _rp_failed=1
@@ -2969,6 +2975,11 @@ docs_run_promote_doc_pass() {
           local _dp_d
           while IFS= read -r _dp_d || [ -n "$_dp_d" ]; do
             [ -n "$_dp_d" ] || continue
+            # ADR docs are never edited at promote; exclude from the deferred proposal
+            # so the resume path is no more permissive than the live TTY path.
+            if _docs_is_adr_in_map "$_dp_d" 2>/dev/null; then
+              continue
+            fi
             printf -- '- %s\n' "$_dp_d"
           done <<DOCS_EOF
 $_dp_docs

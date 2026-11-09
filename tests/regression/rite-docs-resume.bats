@@ -343,3 +343,61 @@ RUNEOF
   [ "$status" -eq 0 ]
   grep -q "RESUME_CALLED:my-feature-branch" "$_calllog"
 }
+
+# ===========================================================================
+# Test 8: ADR docs in proposal are skipped — never passed to _docs_main_entries_pass
+# ===========================================================================
+
+@test "docs_resume_proposal skips ADR docs and processes non-ADR docs only" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+  _write_docs_command_stubs "$_lib"
+
+  local _state_dir="$RITE_TEST_TMPDIR/state"
+  mkdir -p "$_state_dir"
+
+  # Proposal lists one ADR doc and one regular doc.
+  cat > "$_state_dir/doc-proposal-my-branch.md" << 'PROPEOF'
+# Pending doc proposal: my-branch
+
+Docs with pending entries:
+- docs/architecture/adr-001.md
+- docs/architecture/behavioral-design.md
+
+Drift entries: 2
+PROPEOF
+
+  local _calllog="$RITE_TEST_TMPDIR/calllog.txt"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_STATE_DIR="$_state_dir"
+export _RITE_FORCE_TTY=1
+source "$RITE_REPO_ROOT/lib/core/docs-command.sh"
+# Stub: adr-001.md is an ADR; behavioral-design.md is not.
+_docs_is_adr_in_map() {
+  case "\$1" in
+    docs/architecture/adr-001.md) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+_docs_main_entries_pass() {
+  read -r _unused <&0 2>/dev/null || true
+  printf 'CALLED:%s\n' "\$1" >> "$_calllog"
+  return 0
+}
+docs_resume_proposal "my-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner"
+  [ "$status" -eq 0 ]
+  # Regular doc must be processed.
+  grep -q "CALLED:docs/architecture/behavioral-design.md" "$_calllog"
+  # ADR doc must NOT be passed to _docs_main_entries_pass.
+  ! grep -q "CALLED:docs/architecture/adr-001.md" "$_calllog"
+}
