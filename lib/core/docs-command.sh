@@ -2967,6 +2967,7 @@ docs_run_promote_doc_pass() {
         local _dp_proposal="${RITE_STATE_DIR:-}/doc-proposal-${_dp_safe_branch}.md"
         mkdir -p "$(dirname "$_dp_proposal")" 2>/dev/null || true
         local _dp_write_ok=0
+        local _dp_listed=0
         {
           printf '# Pending doc proposal: %s\n\n' "$_dp_branch"
           printf 'Recorded: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
@@ -2981,11 +2982,15 @@ docs_run_promote_doc_pass() {
               continue
             fi
             printf -- '- %s\n' "$_dp_d"
+            _dp_listed=$(( _dp_listed + 1 ))
           done <<DOCS_EOF
 $_dp_docs
 DOCS_EOF
         } > "$_dp_proposal" 2>/dev/null && _dp_write_ok=1 || true
-        if [ "$_dp_write_ok" = "1" ]; then
+        if [ "$_dp_listed" -eq 0 ]; then
+          rm -f "$_dp_proposal" 2>/dev/null || true
+          print_info "All pending drift entries are ADRs — no deferred proposal needed"
+        elif [ "$_dp_write_ok" = "1" ]; then
           print_info "Promote doc proposal saved — review when ready"
           printf '\n  Run: rite docs --resume %s\n' "$_dp_branch" >&2
         else
