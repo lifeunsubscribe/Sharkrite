@@ -395,3 +395,29 @@ HELPER_EOF
     "$PROJECT_ROOT/lib/core/docs-command.sh" || true)"
   ! printf '%s\n' "$dp_region" | grep -q "adr_drift_log_remove_entry"
 }
+
+# ---------------------------------------------------------------------------
+# Trap injection safety: quote-bearing ADR doc paths (#1649)
+# ---------------------------------------------------------------------------
+
+@test "adr_drift_log_append: succeeds when doc path contains a single-quote" {
+  # A single-quote in the doc path would corrupt the trap body in the old
+  # double-quoted form: trap "lock_release '$_adla_lock_path'" RETURN
+  # The fixed single-quoted form defers expansion to trap-fire time.
+  local doc="docs/architecture/has'quote.md"
+  run adr_drift_log_append "$doc" "201" "-" "some architectural observation" "addition" "evidence"
+  [ "$status" -eq 0 ]
+  local entry_file
+  entry_file="$(_adr_drift_entry_path "$doc")"
+  [ -f "$entry_file" ]
+}
+
+@test "adr_drift_log_remove_entry: succeeds when doc path contains a single-quote" {
+  local doc="docs/architecture/remove'quote.md"
+  adr_drift_log_append "$doc" "202" "-" "some architectural observation" "addition" "evidence"
+  local entry_file
+  entry_file="$(_adr_drift_entry_path "$doc")"
+  [ -f "$entry_file" ]
+  run adr_drift_log_remove_entry "$doc" "some architectural observation"
+  [ "$status" -eq 0 ]
+}

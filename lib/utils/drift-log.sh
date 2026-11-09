@@ -299,8 +299,9 @@ drift_log_append() {
   fi
 
   # Trap ensures lock is released even when the function exits early under set -e.
-  # shellcheck disable=SC2064
-  trap "lock_release '$lock_path'" RETURN
+  # Single-quoted so the variable expands at trap-fire time (within scope), not
+  # at setup time — prevents single-quote injection from doc paths in lock_path.
+  trap 'lock_release "$lock_path"' RETURN
 
   local _dla_found=0
   local _dla_tmp
@@ -495,8 +496,8 @@ drift_log_remove_entry() {
   fi
 
   # Trap ensures lock is released even under set -e.
-  # shellcheck disable=SC2064
-  trap "lock_release '$lock_path'" RETURN
+  # Single-quoted so the variable expands at trap-fire time, not at setup time.
+  trap 'lock_release "$lock_path"' RETURN
 
   local _dlre_tmp="${entry_file}.tmp.$$"
   local _dlre_awk_exit=0
@@ -678,8 +679,8 @@ adr_drift_log_append() {
       "$_adla_entry_file" >&2
     return 0
   fi
-  # shellcheck disable=SC2064
-  trap "lock_release '$_adla_lock_path'" RETURN
+  # Single-quoted so the variable expands at trap-fire time, not at setup time.
+  trap 'lock_release "$_adla_lock_path"' RETURN
 
   local _adla_found=0
   local _adla_tmp="${_adla_entry_file}.tmp.$$"
@@ -801,8 +802,8 @@ adr_drift_log_remove_entry() {
   if ! lock_acquire "$_adlre_lock_path" 30; then
     return 0
   fi
-  # shellcheck disable=SC2064
-  trap "lock_release '$_adlre_lock_path'" RETURN
+  # Single-quoted so the variable expands at trap-fire time, not at setup time.
+  trap 'lock_release "$_adlre_lock_path"' RETURN
 
   local _adlre_tmp="${_adlre_entry_file}.tmp.$$"
   local _adlre_awk_exit=0
