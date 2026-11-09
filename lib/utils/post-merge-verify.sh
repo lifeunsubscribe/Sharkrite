@@ -123,22 +123,21 @@ verify_post_merge() {
   fi
 
   # No-overlap skip: post-merge verification exists to catch SEMANTIC conflicts
-  # where main's rebased-in commits break the branch's work despite a clean
-  # textual merge. That can only happen if main's new commits and the branch's
-  # own changes touch the SAME files. When they don't overlap, verifying is pure
-  # waste — and the wasted minutes let main advance further, so the branch ends
-  # up behind again (the treadmill). Compute the overlap and skip when empty.
+  # where the target's merged-in commits break the branch's work despite a clean
+  # textual merge. That can only happen if the target's new commits and the
+  # branch's own changes touch the SAME files. When they don't overlap, verifying
+  # is pure waste. Compute the overlap and skip when empty.
   #
-  # Defensive: skip ONLY on a confidently-computed empty overlap. Any git hiccup
-  # (bad ref, shallow clone, empty file set) falls through to verifying — the
-  # safe default. merge-base(pre_merge_ref, origin/main) is the divergence point;
-  # main's files = changes from there to origin/main; the branch's files = its
-  # own footprint on top of current main (origin/main..HEAD, post-rebase).
+  # With pre_merge_ref = origin/<target> (#854/#1655), _main_files resolves to
+  # diff($pre_merge_ref, $pre_merge_ref) = empty → this check always falls through
+  # to verification (conservative, no false-skip on integration-branch targets).
+  # Defensive: any git hiccup falls through to verifying — the safe default.
+  # Branch-own files = diff($pre_merge_ref, HEAD, post-merge).
   local _mb _main_files _branch_files _overlap
-  _mb=$(git -C "$worktree_path" merge-base "$pre_merge_ref" origin/main 2>/dev/null || true)
+  _mb=$(git -C "$worktree_path" merge-base "$pre_merge_ref" "$pre_merge_ref" 2>/dev/null || true)
   if [ -n "$_mb" ]; then
-    _main_files=$(git -C "$worktree_path" diff --name-only "$_mb" origin/main 2>/dev/null | sort -u || true)
-    _branch_files=$(git -C "$worktree_path" diff --name-only origin/main HEAD 2>/dev/null | sort -u || true)
+    _main_files=$(git -C "$worktree_path" diff --name-only "$_mb" "$pre_merge_ref" 2>/dev/null | sort -u || true)
+    _branch_files=$(git -C "$worktree_path" diff --name-only "$pre_merge_ref" HEAD 2>/dev/null | sort -u || true)
     if [ -n "$_main_files" ] && [ -n "$_branch_files" ]; then
       _overlap=$(comm -12 <(printf '%s\n' "$_main_files") <(printf '%s\n' "$_branch_files") 2>/dev/null || true)
       if [ -z "$_overlap" ]; then
@@ -174,6 +173,19 @@ verify_post_merge() {
     # re-verifying its full coverage union wastes gate time (#854/#1655).
     # ---------------------------------------------------------------
     echo "Running post-merge verification (targeted gate)..." >&2
+
+    # Fast-forward with no branch-own commits: HEAD already equals pre_merge_ref.
+    # diff($pre_merge_ref, HEAD) is empty → gate-selection returns FORCE_FULL,
+    # triggering the in-workflow full suite this codebase prohibits. Nothing
+    # branch-own exists to verify. Return early instead.
+    local _head_sha _target_sha
+    _head_sha=$(git -C "$worktree_path" rev-parse HEAD 2>/dev/null || true)
+    _target_sha=$(git -C "$worktree_path" rev-parse "$pre_merge_ref" 2>/dev/null || true)
+    if [ -n "$_head_sha" ] && [ -n "$_target_sha" ] && [ "$_head_sha" = "$_target_sha" ]; then
+      echo "Post-merge verification skipped — fast-forward (HEAD equals target tip; no branch-own commits to verify)" >&2
+      _diag "POST_MERGE_VERIFY skip=fast-forward pre_ref=${pre_merge_ref} pr=${PR_NUMBER:-?}"
+      return 0
+    fi
 
     local _pmv_gate_file
     _pmv_gate_file=$(mktemp "/tmp/rite_pmv_gate_$$_XXXXXX")
