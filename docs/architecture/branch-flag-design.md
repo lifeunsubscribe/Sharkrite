@@ -349,15 +349,13 @@ Integration branches accumulate drift as `main` receives new commits. `rite --sy
 
 - **NEVER rebase.** The integration branch is shared and long-lived; other in-flight worktrees fork from it. Rebasing would rewrite SHAs recorded in the integration ledger and invalidate all in-flight branches. Merge-only preserves published history.
 - **NEVER force-push.** A merge adds commits without rewriting history — plain `git push` is correct.
-- **NEVER called automatically.** No workflow phase, batch slot, or `rite --promote` may invoke sync. Only an explicit `rite --sync <branch>` triggers it. This is by design: automatic syncs would cause silent history-rewriting risk if a future refactor accidentally changed the transport.
-- **Conflict path.** If `git merge origin/main` conflicts: `attempt_claude_merge_resolution` is invoked when available; if it fails or is unavailable, `git merge --abort`, remove temp worktree, print manual instructions, exit 1.
+- **Clean merge only from promote.** `rite --promote` may invoke `sync_integration_branch` with `--clean-only` in auto mode only when the merge applies with zero conflicts. Any conflict returns exit code 3 (`conflict_deferred`) without invoking the resolver, and promote blocks with the `rite --sync <branch>` instruction. Only an explicit `rite --sync <branch>` triggers the full conflict-resolution path. No other workflow phase or batch slot may call sync. The original "NEVER automatic" invariant was amended (#1642): the concrete risk (LLM resolver pushing to a shared branch without operator consent) is narrower than a blanket prohibition; a clean merge carries no such risk.
+- **Conflict path.** If `git merge origin/main` conflicts: `attempt_claude_merge_resolution` is invoked when available; if it fails or is unavailable, `git merge --abort`, remove temp worktree, print manual instructions, exit 1. `--clean-only` mode skips the resolver entirely and returns exit 3.
 
 ### 10.3 `rite --promote` integration
 
-`run_promote` checks `origin/<branch>` against `origin/main` at preflight. If behind:
-- **Auto mode:** exit 1 with `rite --sync <branch>` instruction.
-- **Supervised mode:** prompt to run `rite --sync <branch>` now (yes → calls `sync_integration_branch`, re-checks; no → exit 1).
-
-Promote never auto-syncs — the sync decision is always operator-driven.
+`run_promote` checks the in-flight PR guard first (blocks if any open PR targets the branch), then checks `origin/<branch>` against `origin/main`. If behind:
+- **Auto mode:** call `sync_integration_branch <branch> --clean-only`. On exit 0 (clean merge pushed): re-fetch, re-check parity, re-capture `_branch_sha`, continue. On exit 3 (conflict_deferred) or exit 1 (operational error): exit 1 with `rite --sync <branch>` instruction.
+- **Supervised mode:** prompt to run `rite --sync <branch>` now (yes → calls `sync_integration_branch`, re-checks; no → exit 1). Unchanged.
 
 ---

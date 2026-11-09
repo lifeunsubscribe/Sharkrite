@@ -164,6 +164,12 @@ source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
 git_fetch_safe() { return 0; }
 integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gh_safe() {
+  case "\${1:-} \${2:-}" in
+    "pr list") printf '[]\n'; return 0 ;;
+  esac
+  return 0
+}
 run_promote "behind-branch" 2>&1
 RUNEOF
 )
@@ -1194,6 +1200,180 @@ RUNEOF
   _merge_count=$(grep -c "MERGE_PR_CALLED_WITH" "$_call_log" || true)
   [ "$_merge_count" -eq 1 ]
   grep -q "MERGE_PR_CALLED_WITH pr=333" "$_call_log"
+}
+
+# ===========================================================================
+# Group 11: Auto-sync on promote (#1642)
+# ===========================================================================
+
+@test "auto mode: behind main, clean merge → promote auto-syncs and continues" {
+  local _lib="$RITE_TEST_TMPDIR/lib-auto-clean"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/auto_clean.log"
+
+  # State file: tracks whether the first rev-list (behind) has fired.
+  local _git_state="$RITE_TEST_TMPDIR/auto_clean_git_state.txt"
+  printf '0\n' > "$_git_state"
+
+  # integration-sync.sh stub: --clean-only returns 0 (clean merge succeeded)
+  cat > "$_lib/utils/integration-sync.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f sync_integration_branch >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+sync_integration_branch() {
+  # Flip the state file so the subsequent git rev-list call returns 0 (current)
+  printf '1\n' > "${_AUTO_CLEAN_GIT_STATE:-/dev/null}"
+  return 0
+}
+STUB
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-auto-clean"
+  mkdir -p "$_fake_bin"
+  # Stateful git stub: first rev-list returns 1 (behind); after flip returns 0.
+  # rev-parse always returns a fixed SHA.
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+_state="${_AUTO_CLEAN_GIT_STATE:-/dev/null}"
+_n=0
+[ -f "$_state" ] && _n=$(cat "$_state" 2>/dev/null || echo 0)
+for _a in "$@"; do
+  [ "$_a" = "rev-list" ] && {
+    [ "$_n" -eq 0 ] && printf '1\n' || printf '0\n'
+    exit 0
+  }
+done
+case "${1:-}" in
+  rev-parse) printf 'abc-auto-clean-sha\n'; exit 0 ;;
+  ls-remote) echo "abc refs/heads/auto-clean-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-auto-clean"
+export PATH="$_fake_bin:\$PATH"
+export _AUTO_CLEAN_GIT_STATE="$_git_state"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "https://github.com/owner/repo/pull/55"; return 0 ;;
+        view)   return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)
+      printf 'MERGE_API: %s\n' "\$*" >> "$_call_log"
+      echo '{"merged":true}'
+      return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_test_gate() { return 0; }
+run_promote "auto-clean-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  # Must have printed the sync success message
+  echo "$output" | grep -q "Branch synced"
+  # Must have proceeded to Phase 2 (merge API called)
+  grep -q "MERGE_API" "$_call_log"
+}
+
+@test "auto mode: behind main, conflicted merge → exits 1 with sync instruction, no resolver" {
+  local _lib="$RITE_TEST_TMPDIR/lib-auto-conflict"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+
+  # integration-sync.sh stub: --clean-only returns 3 (conflict_deferred)
+  cat > "$_lib/utils/integration-sync.sh" << 'STUB'
+#!/bin/bash
+set -euo pipefail
+if declare -f sync_integration_branch >/dev/null 2>&1; then return 0 2>/dev/null || true; fi
+sync_integration_branch() { return 3; }
+STUB
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-auto-conflict"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "2"; exit 0; }; done
+case "${1:-}" in
+  ls-remote) echo "abc refs/heads/conflict-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gh_safe() {
+  case "\${1:-} \${2:-}" in
+    "pr list") echo ""; return 0 ;;
+  esac
+  return 0
+}
+run_promote "conflict-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 1 ]
+  # Must contain the sync instruction (conflict_deferred → same message as before)
+  echo "$output" | grep -q "rite --sync conflict-branch"
+  # Must NOT mention the conflict resolver
+  ! echo "$output" | grep -qi "resolv"
+}
+
+@test "auto mode: in-flight guard fires before currency check (blocked promote never mutates branch)" {
+  # Structural: verify the in-flight guard block appears before the currency
+  # check block in promote-branch.sh (the #1641 ordering contract).
+  local _src="$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+  [ -f "$_src" ]
+  local _inflight_line _currency_line
+  _inflight_line=$(grep -n "Open-PR inflight guard" "$_src" | head -1 | cut -d: -f1 || true)
+  _currency_line=$(grep -n "Currency check" "$_src" | head -1 | cut -d: -f1 || true)
+  [ -n "$_inflight_line" ]
+  [ -n "$_currency_line" ]
+  [ "$_inflight_line" -lt "$_currency_line" ]
 }
 
 # ===========================================================================

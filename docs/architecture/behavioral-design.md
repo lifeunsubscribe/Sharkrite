@@ -2031,15 +2031,16 @@ Fetches `origin/main` and `origin/<branch>`, checks currency, and if behind: mer
 
 - **Never rebases.** Integration branches are shared and long-lived; live worktrees fork from them, and their SHAs are recorded in the integration ledger. Rebasing would rewrite those SHAs and break in-flight worktrees.
 - **Never force-pushes.** A merge adds commits without rewriting history, so plain `git push` is correct. Force variants are explicitly prohibited.
-- **Never called automatically.** Only an explicit `rite --sync <branch>` triggers this. No workflow phase, batch slot, or other verb may call it.
+- **Clean merge only from promote.** `rite --promote` may invoke `sync_integration_branch` with `--clean-only` in auto mode only when the merge applies with zero conflicts. Exit 3 (`conflict_deferred`) is returned when the merge conflicts — the resolver is never invoked from this path — and promote blocks with the `rite --sync <branch>` instruction. Only an explicit `rite --sync <branch>` triggers the full conflict-resolution path. The original "never called automatically" invariant was amended (#1642): the concrete risk (LLM resolver acting on a shared branch without operator consent) is narrower than the hypothetical stated in the original rationale; a clean merge carries no such risk.
 
 **Conflict path** mirrors `stale-branch.sh`. If `attempt_claude_merge_resolution` is available (guarded with `declare -f`), it is called inside a subshell that `cd`s into the sync worktree — matching the `stale-branch.sh` pattern exactly. On resolution: `commit_resolved_conflicts` → `verify_post_merge` → push. If the resolver is unavailable or fails, `git merge --abort` cleans up, the temp worktree is removed, and manual instructions are printed.
 
 **Exit codes:**
 - `0` — already current (no-op), merge+push succeeded, or conflict resolved and pushed
-- `1` — `main` passed as branch arg (refused), fetch failed, remote branch not found, worktree creation failed, commit of resolved conflicts failed, post-resolution verification failed (`verify_post_merge`), unresolvable conflict, or push failed. See `integration-sync.sh:103` and `tests/regression/sync-integration-branch.bats:69` for the `main`-refusal pin.
+- `1` — `main` passed as branch arg (refused), fetch failed, remote branch not found, worktree creation failed, commit of resolved conflicts failed, post-resolution verification failed (`verify_post_merge`), unresolvable conflict, or push failed. See `integration-sync.sh:sync_integration_branch` and `tests/regression/sync-integration-branch.bats:69` for the `main`-refusal pin.
+- `3` — `--clean-only` mode and merge conflicted; resolver not invoked; temp worktree removed; `outcome=conflict_deferred` emitted. Caller (promote auto mode) interprets this as "block with sync instruction".
 
-**Diagnostic:** `INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|push_failed`
+**Diagnostic:** `INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|conflict_deferred|push_failed`
 
 `push_failed` is a distinct outcome from `conflict`. A push rejection after a successful merge is a network/infrastructure failure, not a merge conflict — the distinction matters for health-report aggregation.
 

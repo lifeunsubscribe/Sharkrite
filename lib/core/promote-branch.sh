@@ -477,48 +477,10 @@ run_promote() {
     exit 1
   fi
 
-  # Currency check: integration branch must not be behind main.
-  # NEVER auto-sync in auto mode — sync is explicit by cluster design.
-  local _behind=0
-  _behind=$(git rev-list --count "origin/${BRANCH}..origin/main" 2>/dev/null || true)
-  _behind="${_behind:-0}"
-
-  if [ "$_behind" -gt 0 ]; then
-    if [ "${RITE_SUPERVISED:-false}" = "true" ]; then
-      print_warning "Branch '$BRANCH' is $_behind commit(s) behind main."
-      echo "" >&2
-      local _sync_answer="n"
-      read -r -p "  Run 'rite --sync $BRANCH' now to sync? (y/n) " _sync_answer 2>&1 || true
-      if [ "${_sync_answer:-n}" = "y" ] || [ "${_sync_answer:-n}" = "Y" ]; then
-        # shellcheck source=/dev/null
-        source "$RITE_LIB_DIR/utils/integration-sync.sh"
-        sync_integration_branch "$BRANCH" || true
-        # Re-fetch and re-check after sync; also re-capture SHA so Phase 6 sees the post-sync tip
-        git_fetch_safe origin "$BRANCH" || true
-        _branch_sha=$(git rev-parse --verify --quiet "origin/$BRANCH" 2>/dev/null || true)
-        _behind=$(git rev-list --count "origin/${BRANCH}..origin/main" 2>/dev/null || true)
-        _behind="${_behind:-0}"
-        if [ "$_behind" -gt 0 ]; then
-          print_error "Branch '$BRANCH' is still $_behind commit(s) behind main after sync."
-          echo "  Manually run: rite --sync $BRANCH" >&2
-          exit 1
-        fi
-        print_success "Branch synced — proceeding with promotion"
-      else
-        print_error "Branch '$BRANCH' is $_behind commit(s) behind main."
-        echo "  Sync it first: rite --sync $BRANCH" >&2
-        exit 1
-      fi
-    else
-      print_error "Branch '$BRANCH' is $_behind commit(s) behind main."
-      echo "  Sync it first: rite --sync $BRANCH" >&2
-      exit 1
-    fi
-  fi
-
   # Open-PR inflight guard: refuse if any open PR targets the integration branch.
   # Phase 7 deletes the branch; GitHub silently closes any PR whose base disappears,
-  # orphaning worktrees and losing in-flight work.
+  # orphaning worktrees and losing in-flight work. Checked before the currency
+  # check so a blocked promote never mutates the branch (#1641 ordering contract).
   # Query shape mirrors repo-status.sh:649: --json number,body,headRefName,baseRefName
   local _inflight_prs_json
   if ! _inflight_prs_json=$(gh_safe pr list --state open \
@@ -568,6 +530,71 @@ run_promote() {
     done < <(printf '%s' "$_inflight_prs_json" | jq -c --arg b "$BRANCH" \
       '[.[] | select(.baseRefName == $b)] | .[]' 2>/dev/null || true)
     exit 1
+  fi
+
+  # Currency check: integration branch must not be behind main.
+  # In auto mode, attempt a clean-only sync when behind: merge origin/main in a
+  # temp worktree without invoking the resolver. Exit 0 = clean merge pushed;
+  # exit 3 = conflict_deferred (block with sync instruction, same as before).
+  local _behind=0
+  _behind=$(git rev-list --count "origin/${BRANCH}..origin/main" 2>/dev/null || true)
+  _behind="${_behind:-0}"
+
+  if [ "$_behind" -gt 0 ]; then
+    if [ "${RITE_SUPERVISED:-false}" = "true" ]; then
+      print_warning "Branch '$BRANCH' is $_behind commit(s) behind main."
+      echo "" >&2
+      local _sync_answer="n"
+      read -r -p "  Run 'rite --sync $BRANCH' now to sync? (y/n) " _sync_answer 2>&1 || true
+      if [ "${_sync_answer:-n}" = "y" ] || [ "${_sync_answer:-n}" = "Y" ]; then
+        # shellcheck source=/dev/null
+        source "$RITE_LIB_DIR/utils/integration-sync.sh"
+        sync_integration_branch "$BRANCH" || true
+        # Re-fetch and re-check after sync; also re-capture SHA so Phase 6 sees the post-sync tip
+        git_fetch_safe origin "$BRANCH" || true
+        _branch_sha=$(git rev-parse --verify --quiet "origin/$BRANCH" 2>/dev/null || true)
+        _behind=$(git rev-list --count "origin/${BRANCH}..origin/main" 2>/dev/null || true)
+        _behind="${_behind:-0}"
+        if [ "$_behind" -gt 0 ]; then
+          print_error "Branch '$BRANCH' is still $_behind commit(s) behind main after sync."
+          echo "  Manually run: rite --sync $BRANCH" >&2
+          exit 1
+        fi
+        print_success "Branch synced — proceeding with promotion"
+      else
+        print_error "Branch '$BRANCH' is $_behind commit(s) behind main."
+        echo "  Sync it first: rite --sync $BRANCH" >&2
+        exit 1
+      fi
+    else
+      # Auto mode: attempt a clean-only sync. The merge runs in a temporary
+      # worktree without invoking the conflict resolver (exit 3 = conflict_deferred).
+      # A clean merge pushes and returns 0; any other result blocks with the
+      # sync instruction.
+      # shellcheck source=/dev/null
+      source "$RITE_LIB_DIR/utils/integration-sync.sh"
+      local _auto_sync_rc=0
+      sync_integration_branch "$BRANCH" --clean-only || _auto_sync_rc=$?
+      if [ "$_auto_sync_rc" -eq 0 ]; then
+        # Re-fetch, re-check parity, re-capture SHA so Phase 6 uses the post-sync tip
+        git_fetch_safe origin "$BRANCH" || true
+        _branch_sha=$(git rev-parse --verify --quiet "origin/$BRANCH" 2>/dev/null || true)
+        _behind=$(git rev-list --count "origin/${BRANCH}..origin/main" 2>/dev/null || true)
+        _behind="${_behind:-0}"
+        if [ "$_behind" -gt 0 ]; then
+          print_error "Branch '$BRANCH' is still $_behind commit(s) behind main after sync."
+          echo "  Manually run: rite --sync $BRANCH" >&2
+          exit 1
+        fi
+        print_success "Branch synced — proceeding with promotion"
+      else
+        # exit 3 = conflict_deferred (merge not clean, resolver not invoked)
+        # exit 1 = operational error (fetch/push/worktree failure)
+        print_error "Branch '$BRANCH' is $_behind commit(s) behind main."
+        echo "  Sync it first: rite --sync $BRANCH" >&2
+        exit 1
+      fi
+    fi
   fi
 
   print_success "Preflight passed — $_unpromoted_count unpromoted ledger entry(ies)"

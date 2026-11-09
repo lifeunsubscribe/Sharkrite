@@ -12,8 +12,12 @@
 #     integration ledger and under in-flight worktrees.
 #   - NEVER force-pushes: a merge adds commits without rewriting history, so
 #     plain `git push` is correct; forced variants are explicitly prohibited.
-#   - NEVER called automatically: only explicit `rite --sync <branch>` triggers
-#     this. No workflow phase, batch slot, or other verb may call it.
+#   - Clean merge only from promote: `rite --promote` may invoke
+#     sync_integration_branch with --clean-only in auto mode when the merge
+#     applies with zero conflicts. Any conflict returns exit 3
+#     (conflict_deferred) without invoking the resolver, and promote blocks with
+#     the `rite --sync <branch>` instruction. Only an explicit
+#     `rite --sync <branch>` triggers the full conflict-resolution path.
 #
 # Conflict path (matches stale-branch.sh pattern):
 #   - Guarded source of conflict-resolver.sh.
@@ -21,10 +25,13 @@
 #     commit_resolved_conflicts, verify_post_merge, push.
 #   - If resolver unavailable or fails: git merge --abort, remove temp worktree,
 #     print manual instructions, exit 1.
+#   - --clean-only mode: skip resolver entirely; git merge --abort, remove temp
+#     worktree, return 3 (conflict_deferred) so promote can block with the sync
+#     instruction rather than attempting resolution on a shared branch.
 #
 # Diagnostic:
 #   Emits one structured diag line via _diag (logging.sh):
-#   INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|push_failed
+#   INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|conflict_deferred|push_failed
 
 set -euo pipefail
 
@@ -83,22 +90,31 @@ if ! declare -f resolve_target_branch >/dev/null 2>&1; then
 fi
 
 # =============================================================================
-# sync_integration_branch <branch>
+# sync_integration_branch <branch> [--clean-only]
 #
 # Fetches origin/main and origin/<branch>, checks currency, and if behind:
 # merges origin/main into <branch> in a temporary detached worktree, then
 # pushes.
 #
 # Arguments:
-#   branch — the integration branch name (must not be "main")
+#   branch      — the integration branch name (must not be "main")
+#   --clean-only — optional; when set, the conflict resolver is never invoked.
+#                  On conflict: git merge --abort, worktree removed, return 3.
+#                  Used by rite --promote auto mode to merge only when safe.
 #
 # Returns:
 #   0 — clean: already current (no-op) or merge+push succeeded
 #   1 — error: fetch failed, remote branch not found, merge conflicted and
 #              could not be resolved, or push failed
+#   3 — conflict_deferred: --clean-only and merge conflicted (resolver not
+#              invoked); no push; temp worktree removed
 # =============================================================================
 sync_integration_branch() {
   local SYNC_BRANCH="${1:?sync_integration_branch: branch argument required}"
+  local _clean_only=false
+  if [ "${2:-}" = "--clean-only" ]; then
+    _clean_only=true
+  fi
 
   # Refuse to sync main into itself — meaningless and potentially destructive.
   if [ "$SYNC_BRANCH" = "main" ]; then
@@ -189,6 +205,18 @@ sync_integration_branch() {
   # ── Step 5: Conflict path ──────────────────────────────────────────────────
 
   print_warning "Merge conflict detected in branch '$SYNC_BRANCH'"
+
+  if [ "$_clean_only" = "true" ]; then
+    # --clean-only mode: do not invoke the resolver. The caller (promote auto
+    # mode) must not run LLM resolution on a shared branch without operator
+    # consent. Abort, clean up, and return 3 so promote blocks with the
+    # `rite --sync <branch>` instruction.
+    git -C "$_sync_wt" merge --abort 2>/dev/null || true
+    _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=conflict_deferred"
+    trap - EXIT
+    git worktree remove --force "$_sync_wt" 2>/dev/null || true
+    return 3
+  fi
 
   # Attempt Claude-assisted resolution if the resolver is available.
   # This exactly mirrors the stale-branch.sh pattern:
