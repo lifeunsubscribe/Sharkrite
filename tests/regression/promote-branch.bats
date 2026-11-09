@@ -333,6 +333,56 @@ RUNEOF
   echo "$output" | grep -q "Cannot verify in-flight PRs"
 }
 
+@test "preflight: gh pr list returns 0 but malformed output fails closed with parse error" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-bin-malformed"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "abc1234567890abc"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/malformed-branch"; exit 0 ;;
+  worktree|push|branch) exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export PATH="$_fake_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        # Returns exit 0 but stdout is not valid JSON — triggers the jq-parse fail-closed branch.
+        list) echo "not-valid-json"; return 0 ;;
+      esac ;;
+  esac
+  return 0
+}
+run_promote "malformed-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "failed to parse gh pr list output"
+}
+
 @test "preflight: open PR targeting a different branch does not block promote" {
   local _lib="$RITE_TEST_TMPDIR/lib"
   _write_promote_stubs_base "$_lib"
@@ -439,7 +489,12 @@ gh_safe() {
   case "\${1:-}" in
     pr)
       case "\${2:-}" in
-        list)   echo "55"; return 0 ;;    # existing PR #55
+        list)
+          # Inflight guard uses --limit 200 and expects JSON; reuse check uses --base main.
+          # Distinguish by presence of --limit: inflight → empty array, reuse → PR number.
+          printf '%s\n' "\$@" | grep -q -- "--limit" \
+            && { echo "[]"; return 0; }
+          echo "55"; return 0 ;;    # existing PR #55 (reuse check)
         edit)   echo "PR_EDIT pr=\${3:-}" >> "$_call_log"; return 0 ;;
         create) echo "PR_CREATE" >> "$_call_log"; echo "99"; return 0 ;;
         view)
