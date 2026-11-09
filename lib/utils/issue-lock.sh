@@ -120,26 +120,40 @@ acquire_issue_lock() {
   # no create→PID-write window for a waiter to exploit.
   local _tmp_dir
   _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
-  echo $$ > "$_tmp_dir/pid"
+  echo $BASHPID > "$_tmp_dir/pid"
   pwd > "$_tmp_dir/cwd" 2>/dev/null || true
 
   local lock_attempts=0
   local max_attempts=30
 
-  # Guard: [ -L "$lock_dir" ] prevents calling ln -s when a symlink exists (ln
-  # would see the resolved directory and place our link INSIDE it rather than AT
-  # it).  [ -d "$lock_dir" ] guards against legacy real-directory locks.
-  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -s "$_tmp_dir" "$lock_dir" 2>/dev/null; do
+  # Guard: [ -L "$lock_dir" ] prevents calling ln -sn when a symlink exists (early-
+  # out optimization — ln -sn would also refuse to dereference, but the guard avoids
+  # the syscall entirely).  [ -d "$lock_dir" ] guards against legacy real-directory locks.
+  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -sn "$_tmp_dir" "$lock_dir" 2>/dev/null; do
     local lock_pid=""
     if [ -L "$lock_dir" ] || [ -d "$lock_dir" ]; then
       lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
     elif [ -e "$lock_dir" ]; then
       # Unexpected non-symlink, non-directory (e.g. plain file) — remove it.
       rm -f "$lock_dir" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
       continue
     else
-      # ln -s failed for a reason other than EEXIST (e.g. parent dir vanished).
+      # ln -sn failed for a reason other than EEXIST (e.g. parent dir vanished).
       mkdir -p "${RITE_LOCK_DIR}" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
       continue
     fi
 
@@ -244,19 +258,36 @@ acquire_batch_lock() {
 
   local _tmp_dir
   _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
-  echo $$ > "$_tmp_dir/pid"
+  echo $BASHPID > "$_tmp_dir/pid"
   printf '%s\n' "$issue_list" > "$_tmp_dir/issues" 2>/dev/null || true
   pwd > "$_tmp_dir/cwd" 2>/dev/null || true
 
-  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -s "$_tmp_dir" "$lock_dir" 2>/dev/null; do
+  local lock_attempts=0
+  local max_attempts=30
+
+  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -sn "$_tmp_dir" "$lock_dir" 2>/dev/null; do
     local lock_pid=""
     if [ -L "$lock_dir" ] || [ -d "$lock_dir" ]; then
       lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
     elif [ -e "$lock_dir" ]; then
       rm -f "$lock_dir" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Batch lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
       continue
     else
       mkdir -p "${RITE_LOCK_DIR}" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        echo "❌ Batch lock timeout after ${max_attempts} seconds" >&2
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
       continue
     fi
 
@@ -389,22 +420,44 @@ acquire_pr_followup_lock() {
 
   local _tmp_dir
   _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
-  echo $$ > "$_tmp_dir/pid"
+  echo $BASHPID > "$_tmp_dir/pid"
 
   local lock_attempts=0
   # Allow up to 60 seconds — the critical section (gh issue list + gh issue create)
   # takes ~5-10s in practice; 60s gives ample room while still failing safely.
   local max_attempts=60
 
-  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -s "$_tmp_dir" "$lock_dir" 2>/dev/null; do
+  while [ -L "$lock_dir" ] || [ -d "$lock_dir" ] || ! ln -sn "$_tmp_dir" "$lock_dir" 2>/dev/null; do
     local lock_pid=""
     if [ -L "$lock_dir" ] || [ -d "$lock_dir" ]; then
       lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || true)
     elif [ -e "$lock_dir" ]; then
       rm -f "$lock_dir" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        if [ -n "$source_issue" ]; then
+          echo "❌ Follow-up lock timeout for PR #${pr_number} / key ${source_issue} after ${max_attempts}s" >&2
+        else
+          echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
+        fi
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
       continue
     else
       mkdir -p "${RITE_LOCK_DIR}" 2>/dev/null || true
+      lock_attempts=$((lock_attempts + 1))
+      if [ $lock_attempts -ge $max_attempts ]; then
+        if [ -n "$source_issue" ]; then
+          echo "❌ Follow-up lock timeout for PR #${pr_number} / key ${source_issue} after ${max_attempts}s" >&2
+        else
+          echo "❌ Follow-up lock timeout for PR #${pr_number} after ${max_attempts}s" >&2
+        fi
+        rm -rf "$_tmp_dir" 2>/dev/null || true
+        return 1
+      fi
+      sleep 1
       continue
     fi
 

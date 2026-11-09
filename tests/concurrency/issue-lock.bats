@@ -156,24 +156,27 @@ wait_at_barrier() {
   get_dead_pid > "$stale_tmp/pid"
   ln -s "$stale_tmp" "${RITE_LOCK_DIR}/issue-${issue_number}.lock"
 
+  # Export wait_at_barrier so it is available inside bash -c subprocesses.
+  export -f wait_at_barrier
+
   local num_waiters=4
   local _pids=()
   for i in $(seq 1 $num_waiters); do
-    (
-      wait_at_barrier "symlink_steal_test" "$num_waiters" || exit 1
-
-      acquire_issue_lock "$issue_number" >/dev/null 2>&1
-      local result=$?
-      echo "$result" > "$exit_codes_dir/w${i}.exit"
-
-      if [ "$result" -eq 0 ]; then
-        local _acq _rel
-        _acq=$(date +%s.%N)
-        _rel=$(date +%s.%N)
-        release_issue_lock "$issue_number"
-        echo "$_acq $_rel" > "$intervals_dir/w${i}.interval"
+    bash -c "
+      export RITE_LOCK_DIR='$RITE_LOCK_DIR'
+      export BARRIER_DIR='$BARRIER_DIR'
+      source '$RITE_LIB_DIR/utils/issue-lock.sh'
+      wait_at_barrier 'symlink_steal_test' '$num_waiters' || exit 1
+      acquire_issue_lock '$issue_number' >/dev/null 2>&1
+      result=\$?
+      echo \"\$result\" > '$exit_codes_dir/w${i}.exit'
+      if [ \"\$result\" -eq 0 ]; then
+        _acq=\$(date +%s.%N)
+        release_issue_lock '$issue_number'
+        _rel=\$(date +%s.%N)
+        echo \"\$_acq \$_rel\" > '$intervals_dir/w${i}.interval'
       fi
-    ) &
+    " &
     _pids+=($!)
   done
 

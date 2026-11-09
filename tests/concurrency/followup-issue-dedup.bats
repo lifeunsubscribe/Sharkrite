@@ -599,24 +599,27 @@ run_locked_dedup_create_sourced() {
   get_dead_pid > "$stale_tmp/pid"
   ln -s "$stale_tmp" "${RITE_LOCK_DIR}/${lock_key}"
 
+  # Export wait_at_barrier so it is available inside bash -c subprocesses.
+  export -f wait_at_barrier
+
   local num_waiters=4
   local _pids=()
   for i in $(seq 1 $num_waiters); do
-    (
-      wait_at_barrier "followup_symlink_steal" "$num_waiters" || exit 1
-
-      acquire_pr_followup_lock "$pr_number" "$source_issue" >/dev/null 2>&1
-      local result=$?
-      echo "$result" > "$exit_codes_dir/w${i}.exit"
-
-      if [ "$result" -eq 0 ]; then
-        local _acq _rel
-        _acq=$(date +%s.%N)
-        _rel=$(date +%s.%N)
-        release_pr_followup_lock "$pr_number" "$source_issue"
-        echo "$_acq $_rel" > "$intervals_dir/w${i}.interval"
+    bash -c "
+      export RITE_LOCK_DIR='$RITE_LOCK_DIR'
+      export BARRIER_DIR='$BARRIER_DIR'
+      source '$RITE_LIB_DIR/utils/issue-lock.sh'
+      wait_at_barrier 'followup_symlink_steal' '$num_waiters' || exit 1
+      acquire_pr_followup_lock '$pr_number' '$source_issue' >/dev/null 2>&1
+      result=\$?
+      echo \"\$result\" > '$exit_codes_dir/w${i}.exit'
+      if [ \"\$result\" -eq 0 ]; then
+        _acq=\$(date +%s.%N)
+        release_pr_followup_lock '$pr_number' '$source_issue'
+        _rel=\$(date +%s.%N)
+        echo \"\$_acq \$_rel\" > '$intervals_dir/w${i}.interval'
       fi
-    ) &
+    " &
     _pids+=($!)
   done
 
