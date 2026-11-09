@@ -43,12 +43,17 @@ setup() {
   export REAL_GIT_PATH
   REAL_GIT_PATH="$(command -v git)"
 
-  # Build a stub git that serves GIT_PORCELAIN_STUB for `git worktree list --porcelain`
-  # and delegates everything else to the real binary.
+  # Build a stub git that serves GIT_PORCELAIN_STUB for `git worktree list --porcelain`.
+  # Strips -C <dir> prefix so the stub also intercepts `git -C <dir> worktree list --porcelain`
+  # (the production form added in #1688 to handle cwd-after-worktree-removal).
   export STUB_DIR="$BATS_TEST_TMPDIR/stubs"
   mkdir -p "$STUB_DIR"
   cat > "$STUB_DIR/git" << 'GITSTUB'
 #!/bin/bash
+# Strip -C <dir> argument if present before dispatch.
+if [ "${1:-}" = "-C" ]; then
+  shift 2
+fi
 if [ "${1:-}" = "worktree" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--porcelain" ]; then
   printf '%s' "${GIT_PORCELAIN_STUB:-}"
 else
@@ -69,105 +74,60 @@ teardown() {
 }
 
 # ============================================================================
-# Helper: run the _assert_worktree_alignment logic in an isolated subshell.
+# Helper: run the real _assert_worktree_alignment in an isolated subshell.
 #
-# Writes the full logic (including the new branch re-resolution path) to a
-# temp script and executes it.  Uses GIT_PORCELAIN_STUB (exported by each test)
-# to control git worktree list --porcelain output.
+# Extracts the function definition from workflow-runner.sh at runtime so that
+# tests exercise the shipped code rather than a re-implementation that can drift.
+# Uses GIT_PORCELAIN_STUB (exported by each test) to control git output.
 #
 # Outputs markers to stdout so callers can assert behaviour:
-#   FINAL_PATH=<path>              — final WORKTREE_PATH value on success
-#   WORKTREE_RERESOLVED from=<old> to=<new>  — re-resolution diag (via _diag stub)
-#   MISMATCH                       — hard-error path taken (exit 1)
-#   DEV_SESSION_USED=<path>        — dev session path printed on hard error
-#   ORCHESTRATOR_FOUND=<path>      — orchestrator path printed on hard error
-#   NO_HANDOFF_WARNING             — missing handoff on clean exit (exit 0)
-#   HANDOFF_DIR_MISSING            — handoff path does not exist (exit 0)
+#   FINAL_PATH=<path>                — final WORKTREE_PATH on return
+#   WORKTREE_RERESOLVED ...          — re-resolution diag (via _diag stub)
+#   MISMATCH                         — hard-error path taken (exit 1)
+#   [INFO] / [ERROR] / [WARN]        — print_* stub output
 # ============================================================================
 
 _run_reresolve_check() {
   local state_dir="$1"
   local issue_number="$2"
   local old_wt="$3"
-  local new_wt="$4"
+  # $4 is new_wt — provided via handoff file by the caller, not injected here
   local wf_exit="${5:-0}"
 
   local _script="$BATS_TEST_TMPDIR/reresolve-check-${issue_number}.sh"
+  local _func_def
+  _func_def=$(awk '
+    /^_assert_worktree_alignment[(][)]/ { in_func=1 }
+    in_func { print }
+    in_func && /^\}$/ { exit }
+  ' "$WORKFLOW_RUNNER")
 
   # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: state_dir, issue_number,
-  # old_wt, and new_wt must expand; inner script variables are protected with \$.
+  # old_wt, and wf_exit must expand; inner script variables are protected with \$.
   cat > "$_script" <<SCRIPT_EOF
 #!/bin/bash
 set -euo pipefail
 
 RITE_STATE_DIR='${state_dir}'
 WORKTREE_PATH='${old_wt}'
-_issue_num='${issue_number}'
-_wf_exit='${wf_exit}'
+RITE_PROJECT_ROOT='${state_dir}'
 
 print_info()    { echo "[INFO] \$*"; }
 print_error()   { echo "[ERROR] \$*"; }
 print_warning() { echo "[WARN] \$*"; }
 _diag()         { echo "[DIAG] \$*"; }
-
-_dev_session_wt=''
-_handoff_file="\${RITE_STATE_DIR}/worktree-handoff-\${_issue_num}.txt"
-if [ -f "\$_handoff_file" ]; then
-  _dev_session_wt=\$(cat "\$_handoff_file" 2>/dev/null || true)
-  rm -f "\$_handoff_file"
-fi
-
-if [ -z "\${_dev_session_wt:-}" ] && [ "\${_wf_exit:-0}" -eq 0 ] && [ -n "\${RITE_STATE_DIR:-}" ]; then
-  echo 'NO_HANDOFF_WARNING'
-fi
-
-if [ -n "\${_dev_session_wt:-}" ] && [ ! -d "\$_dev_session_wt" ]; then
-  echo 'HANDOFF_DIR_MISSING'
-  _dev_session_wt=''
-fi
-
-if [ -n "\${_dev_session_wt:-}" ] && [ -n "\${WORKTREE_PATH:-}" ]; then
-  _canonical_handoff=\$(cd "\$_dev_session_wt" 2>/dev/null && pwd -P 2>/dev/null || echo "\$_dev_session_wt")
-  _canonical_discovered=\$(cd "\$WORKTREE_PATH" 2>/dev/null && pwd -P 2>/dev/null || echo "\$WORKTREE_PATH")
-  if [ "\$_canonical_handoff" != "\$_canonical_discovered" ]; then
-    _rr_branch=\$(git worktree list --porcelain 2>/dev/null | awk \
-      -v wt="\$_canonical_handoff" '
-      /^worktree / { cur = \$2 }
-      /^branch /   { if (cur == wt) { print \$2; exit } }
-    ' || true)
-    if [ -n "\${_rr_branch:-}" ]; then
-      _rr_wt=\$(git worktree list --porcelain 2>/dev/null | awk \
-        -v br="\$_rr_branch" '
-        /^worktree / { cur = \$2 }
-        /^branch /   { if (\$2 == br) print cur }
-      ' || true)
-      _rr_count=\$(printf '%s\n' "\$_rr_wt" | grep -c '[^[:space:]]' || true)
-      if [ "\${_rr_count:-0}" -eq 1 ]; then
-        _rr_canonical=\$(cd "\$_rr_wt" 2>/dev/null && pwd -P 2>/dev/null || echo "\$_rr_wt")
-        if [ "\$_rr_canonical" = "\$_canonical_handoff" ]; then
-          print_info "Worktree re-resolved by branch after auto-recovery: \$_dev_session_wt (was: \$WORKTREE_PATH)"
-          _diag "WORKTREE_RERESOLVED issue=\${_issue_num} from=\$WORKTREE_PATH to=\$_dev_session_wt"
-          WORKTREE_PATH="\$_dev_session_wt"
-          echo "FINAL_PATH=\$WORKTREE_PATH"
-          exit 0
-        fi
-      fi
-    fi
-    print_error 'Worktree path mismatch: dev session and orchestrator found different worktrees'
-    echo "DEV_SESSION_USED=\$_dev_session_wt"
-    echo "ORCHESTRATOR_FOUND=\$WORKTREE_PATH"
-    echo 'MISMATCH'
-    exit 1
-  fi
-fi
-
-if [ -n "\${_dev_session_wt:-}" ]; then
-  WORKTREE_PATH="\$_dev_session_wt"
-fi
-
-echo "FINAL_PATH=\$WORKTREE_PATH"
-exit 0
 SCRIPT_EOF
+
+  printf '%s\n' "$_func_def" >> "$_script"
+
+  cat >> "$_script" <<CALL_EOF
+
+_exit_code=0
+_assert_worktree_alignment '${issue_number}' '${wf_exit}' || _exit_code=\$?
+[ "\$_exit_code" -eq 0 ] || echo 'MISMATCH'
+echo "FINAL_PATH=\$WORKTREE_PATH"
+exit \$_exit_code
+CALL_EOF
 
   bash "$_script"
 }
@@ -275,8 +235,8 @@ SCRIPT_EOF
   run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
 
   [ "$status" -eq 1 ]
-  [[ "$output" == *"DEV_SESSION_USED=$new_wt"* ]]
-  [[ "$output" == *"ORCHESTRATOR_FOUND=$old_wt"* ]]
+  [[ "$output" == *"Dev session used:   $new_wt"* ]]
+  [[ "$output" == *"Orchestrator found: $old_wt"* ]]
 }
 
 # ============================================================================

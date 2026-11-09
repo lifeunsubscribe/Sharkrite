@@ -766,28 +766,29 @@ _assert_worktree_alignment() {
       # deletes the old worktree and creates a new one with a different batch
       # suffix. Identity is the branch, not the path — look up which worktree
       # currently has the dev session's branch checked out (#1688).
-      local _rr_branch _rr_wt _rr_count _rr_canonical
-      _rr_branch=$(git worktree list --porcelain 2>/dev/null | awk \
-        -v wt="$_canonical_handoff" '
-        /^worktree / { cur = $2 }
-        /^branch /   { if (cur == wt) { print $2; exit } }
+      # Use the handoff path's basename (by sharkrite convention, dir == branch)
+      # so path canonicalization differences cannot cause a false lookup failure.
+      # The stale WORKTREE_PATH must be absent from the porcelain — its absence
+      # is the fingerprint of EMPTY_INIT recovery (the old worktree was deleted).
+      # Genuine crossed-state-files mismatches still hard-fail.
+      local _rr_branch _rr_wt _rr_count _rr_stale_present
+      _rr_branch="refs/heads/$(basename "$_dev_session_wt")"
+      _rr_wt=$(git -C "${RITE_PROJECT_ROOT:-$PWD}" worktree list --porcelain 2>/dev/null | awk \
+        -v br="$_rr_branch" '
+        /^worktree / { cur = substr($0, 10) }
+        /^branch /   { if (substr($0, 8) == br) print cur }
       ' || true)
-      if [ -n "${_rr_branch:-}" ]; then
-        _rr_wt=$(git worktree list --porcelain 2>/dev/null | awk \
-          -v br="$_rr_branch" '
-          /^worktree / { cur = $2 }
-          /^branch /   { if ($2 == br) print cur }
-        ' || true)
-        _rr_count=$(printf '%s\n' "$_rr_wt" | grep -c '[^[:space:]]' || true)
-        if [ "${_rr_count:-0}" -eq 1 ]; then
-          _rr_canonical=$(cd "$_rr_wt" 2>/dev/null && pwd -P 2>/dev/null || echo "$_rr_wt")
-          if [ "$_rr_canonical" = "$_canonical_handoff" ]; then
-            print_info "Worktree re-resolved by branch after auto-recovery: $_dev_session_wt (was: $WORKTREE_PATH)"
-            _diag "WORKTREE_RERESOLVED issue=${_issue_num} from=$WORKTREE_PATH to=$_dev_session_wt"
-            WORKTREE_PATH="$_dev_session_wt"
-            return 0
-          fi
-        fi
+      _rr_count=$(printf '%s\n' "$_rr_wt" | grep -c '[^[:space:]]' || true)
+      _rr_stale_present=$(git -C "${RITE_PROJECT_ROOT:-$PWD}" worktree list --porcelain 2>/dev/null | awk \
+        -v stale="$WORKTREE_PATH" '
+        /^worktree / { if (substr($0, 10) == stale) found=1 }
+        END { print found+0 }
+      ' || true)
+      if [ "${_rr_count:-0}" -eq 1 ] && [ "${_rr_stale_present:-1}" -eq 0 ]; then
+        print_info "Worktree re-resolved by branch after auto-recovery: $_rr_wt (was: $WORKTREE_PATH)"
+        _diag "WORKTREE_RERESOLVED issue=${_issue_num} from=$WORKTREE_PATH to=$_rr_wt"
+        WORKTREE_PATH="$_rr_wt"
+        return 0
       fi
       print_error "Worktree path mismatch: dev session and orchestrator found different worktrees"
       print_error "  Dev session used:   $_dev_session_wt"
