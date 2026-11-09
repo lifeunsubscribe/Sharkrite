@@ -280,14 +280,15 @@ teardown() {
   }
 }
 
-@test "selection EXCLUDES tests/concurrency/* (flaky under the parallel gate)" {
-  # Concurrency tests rendezvous at file-based barriers that throw false timeouts
-  # under `bats --jobs`; they must never be selected by the (parallel) gate, even
-  # when a source they cover changes. Real coverage is the serial safety net.
+@test "selection INCLUDES tests/concurrency/* when its header matches" {
+  # Concurrency files are selected by header like any other bats file.
+  # The serial marker (sharkrite-gate-serial) routes them to the serial lane —
+  # it is not an exclusion. Inverted from the pre-#1659 exclusion pin.
   mkdir -p "$TEST_REPO/tests/concurrency"
   cat > "$TEST_REPO/tests/concurrency/race.bats" <<'EOF'
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/foo.sh
+# sharkrite-gate-serial
 @test "race" { true; }
 EOF
   run _select_tests_by_changed_paths "lib/core/foo.sh" "$TEST_REPO"
@@ -295,9 +296,54 @@ EOF
   # The regression test covering foo.sh IS selected...
   echo "$output" | grep -q 'tests/regression/covers-foo.bats' \
     || { echo "FAIL: covers-foo.bats not selected; got: $output"; return 1; }
-  # ...but the concurrency test covering the same source is NOT.
+  # ...and so is the concurrency test covering the same source.
+  echo "$output" | grep -q 'tests/concurrency/race.bats' \
+    || { echo "FAIL: concurrency test missing from selection; got: $output"; return 1; }
+}
+
+@test "selection EXCLUDES tests/concurrency/* when its header does NOT match" {
+  # Targeting still applies — concurrency files are not blanket-included.
+  mkdir -p "$TEST_REPO/tests/concurrency"
+  cat > "$TEST_REPO/tests/concurrency/race.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/foo.sh
+# sharkrite-gate-serial
+@test "race" { true; }
+EOF
+  # Change to a file that the concurrency fixture does NOT cover.
+  run _select_tests_by_changed_paths "lib/utils/unrelated.sh" "$TEST_REPO"
+  [ "$status" -eq 0 ]
   ! echo "$output" | grep -q 'tests/concurrency/race.bats' \
-    || { echo "FAIL: concurrency test leaked into the parallel gate selection"; echo "$output"; return 1; }
+    || { echo "FAIL: concurrency test selected without header match; got: $output"; return 1; }
+}
+
+@test "selected concurrency file is classified as serial by _bats_file_is_serial" {
+  # A concurrency file in the selection carries sharkrite-gate-serial, so run_test_gate
+  # places it in the serial group (not parallel). Verify via the helper it uses.
+  mkdir -p "$TEST_REPO/tests/concurrency"
+  cat > "$TEST_REPO/tests/concurrency/race.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/foo.sh
+# sharkrite-gate-serial
+@test "race" { true; }
+EOF
+  run _bats_file_is_serial "$TEST_REPO/tests/concurrency/race.bats"
+  [ "$status" -eq 0 ] \
+    || { echo "FAIL: concurrency fixture not classified as serial; would fall into parallel group"; return 1; }
+}
+
+@test "every file under tests/concurrency/ carries sharkrite-gate-serial (marker sweep)" {
+  # Safety net: a new concurrency file added without the serial marker would fall
+  # into the parallel job group, triggering barrier-timeout flakes. This pin fails
+  # the gate the moment such a file is merged.
+  local _missing=""
+  local _f
+  for _f in "$RITE_REPO_ROOT"/tests/concurrency/*.bats; do
+    [ -f "$_f" ] || continue
+    grep -q "sharkrite-gate-serial" "$_f" || _missing="$_missing $(basename "$_f")"
+  done
+  [ -z "$_missing" ] \
+    || { echo "FAIL: missing sharkrite-gate-serial in:$_missing"; return 1; }
 }
 
 # ---------------------------------------------------------------------------
