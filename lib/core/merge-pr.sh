@@ -1386,7 +1386,7 @@ EOF
       fi
     fi
   else
-    echo "  None (all items addressed in PR)"
+    echo "  None"
   fi
 
   # ─── Reconcile follow-up issues for the merged PR ──────────────────────────

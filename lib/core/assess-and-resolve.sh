@@ -378,7 +378,7 @@ _resolve_done_def() {
   case "${_sev}" in
     CRITICAL) _def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
     HIGH)     _def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
-    *)        _def="Done when the finding is addressed or explicitly deferred with justification." ;;
+    *)        _def="Done when the acceptance criteria above pass and the verification command succeeds." ;;
   esac
   echo "$_def"
 }
@@ -1867,9 +1867,8 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
       # See: docs/architecture/behavioral-design.md →
       # "Fix-loop policy: NOW means fixed, LATER means deferred".
       #
-      # Severity breakdown — computed once, reused below.
+      # Count CRITICAL items — used by the retry-cap arm to decide whether to block merge.
       CRITICAL_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*CRITICAL" || true)
-      HIGH_NOW_COUNT=$(echo "$ASSESSMENT_RESULT" | grep -A 2 "^### .* - ACTIONABLE_NOW" | grep -ci "Severity:.*HIGH" || true)
 
       # Check retry limit for ACTIONABLE_NOW items
       if [ "$RETRY_COUNT" -ge 3 ]; then
@@ -1899,23 +1898,12 @@ if [ -f "$RITE_LIB_DIR/core/assess-review-issues.sh" ]; then
             CREATE_CRITICAL_FOLLOWUP=true
             FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
           else
-            # Final-retry shoe-horn fix (defect #5): only HIGH findings are worth
-            # filing at retry limit. MEDIUM/LOW findings that the fix loop couldn't
-            # address in 3 cycles are nice-to-haves — filing them clutters the backlog
-            # without adding triage value (they were already low-priority and couldn't
-            # be auto-fixed). Drop them with a log message.
-            if [ "$HIGH_NOW_COUNT" -gt 0 ]; then
-              print_success "No CRITICAL/[GATE] items remain ($HIGH_NOW_COUNT HIGH item(s) — filing tech-debt for HIGH only)"
-              print_status "Creating tech-debt issue for HIGH items (dropping MEDIUM/LOW)..."
-            else
-              print_success "No CRITICAL/HIGH/[GATE] items remain at retry limit — all remaining are MEDIUM/LOW"
-              print_info "Dropping MEDIUM/LOW findings (not worth follow-up backlog space at retry limit)"
-            fi
-            # Treat remaining ACTIONABLE_NOW as ACTIONABLE_LATER at retry limit.
-            # MEDIUM/LOW will be filtered out by the extraction step (DROP_RETRY_MEDIUM_LOW=true).
+            # Retry cap reached: file all unfixed items as tech-debt regardless of severity.
+            # Severity is a complexity/impact rating, not the worth-tracking decision —
+            # that belongs to the assessor's necessity bar (#782).
+            print_success "No CRITICAL/[GATE] items remain at retry limit — filing all $ACTIONABLE_NOW_COUNT unfixed item(s) as tech-debt"
             CREATE_SECURITY_DEBT=true
             FILTERED_ASSESSMENT="$ASSESSMENT_RESULT"
-            DROP_RETRY_MEDIUM_LOW=true
           fi
         fi
 
@@ -2324,41 +2312,24 @@ $(_extract_items_by_state "ACTIONABLE_NOW" "Severity:.*LOW")"
     LOW_COUNT=${LOW_COUNT:-0}
 
     print_info "Issue counts: CRITICAL=$CRITICAL_COUNT, HIGH=$HIGH_COUNT, MEDIUM=$MEDIUM_COUNT, LOW=$LOW_COUNT"
-
-    # Drop LOW items — they accumulate noise without justifying issue overhead.
-    # Log them for visibility but exclude from the follow-up issue.
-    if [ "$LOW_COUNT" -gt 0 ]; then
-      print_info "Excluding $LOW_COUNT LOW-severity item(s) from follow-up issue (not worth tracking)"
-    fi
-    LOW_ISSUES=""
-    LOW_COUNT=0
-
-    # Final-retry MEDIUM drop (defect #5): when retry limit was reached with no
-    # CRITICAL items, MEDIUM findings are also dropped. They were already medium-priority
-    # and the fix loop couldn't address them — filing them clutters the backlog.
-    # Only HIGH/CRITICAL findings get a follow-up issue at retry limit.
-    if [ "${DROP_RETRY_MEDIUM_LOW:-false}" = "true" ] && [ "$MEDIUM_COUNT" -gt 0 ]; then
-      print_info "Final-retry: dropping $MEDIUM_COUNT MEDIUM-severity item(s) (not worth follow-up backlog space at retry limit)"
-      MEDIUM_ISSUES=""
-      MEDIUM_COUNT=0
-    fi
   else
     # Fallback: Extract all issues from review using sed (when Claude unavailable)
     CRITICAL_ISSUES=$(sed -n '/^## .*[Cc]ritical/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
     HIGH_ISSUES=$(sed -n '/^## .*[Hh]igh/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
     MEDIUM_ISSUES=$(sed -n '/^## .*[Mm]edium/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
-    LOW_ISSUES=""
-    LOW_COUNT=0
+    LOW_ISSUES=$(sed -n '/^## .*[Ll]ow/,/^##[^#]/p' "$REVIEW_FILE" || echo "")
+    LOW_COUNT=$(echo "$LOW_ISSUES" | grep -c "^### " || true)
+    LOW_COUNT=${LOW_COUNT:-0}
   fi
 
-  # If only LOWs existed and we just filtered them all out, skip issue creation
-  if [ "$CRITICAL_COUNT" -eq 0 ] && [ "$HIGH_COUNT" -eq 0 ] && [ "$MEDIUM_COUNT" -eq 0 ]; then
-    print_info "All remaining items are LOW severity — skipping follow-up issue creation"
+  # Skip issue creation when the assessment produced no actionable items to file
+  if [ "$CRITICAL_COUNT" -eq 0 ] && [ "$HIGH_COUNT" -eq 0 ] && [ "$MEDIUM_COUNT" -eq 0 ] && [ "$LOW_COUNT" -eq 0 ]; then
+    print_info "No actionable items to file — skipping follow-up issue creation"
     CREATE_FOLLOWUP_ISSUES=false
   fi
 fi
 
-# Gate: only proceed if we still have items worth tracking after LOW filtering
+# Gate: only proceed if we still have actionable items to file
 if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   print_header "📝 Creating Per-Finding Follow-up Issues"
 
@@ -2510,21 +2481,12 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _f_verification=$(echo "$_finding_block" | grep -oE '\*\*Verification:\*\*.*' | head -1 | sed 's/\*\*Verification:\*\*[[:space:]]*//' || true)
     _f_verification="${_f_verification:-}"
 
-    # Skip LOW severity items — excluded from follow-up issues (same as per-item path).
-    # This check runs before the cap guard so LOW findings do not consume API budget.
-    if echo "$_f_severity" | grep -qi "LOW"; then
-      print_info "  Skipped (LOW severity): $_clean_title"
-      continue
-    fi
-
     _finding_index=$((_finding_index + 1))
 
     # --- Per-finding cap guard ---
     # RITE_MAX_FINDINGS_PER_RUN (default 20) limits GitHub API calls per assess run.
     # The dedup machinery runs N× (issue list + issue view + pr view + backoff sleeps),
     # so an unbounded loop on a scan-heavy PR can exhaust GitHub secondary rate limits.
-    # Placed after the LOW-severity skip so LOW findings (which make zero API calls)
-    # do not count against the cap — only API-eligible findings are counted.
     # Set to 0 to disable the cap (original unbounded behavior).
     # _findings_cap_validated is set before the loop (numeric-validated, never empty).
     if [ "$_findings_cap_validated" -gt 0 ] && [ "$_finding_index" -gt "$_findings_cap_validated" ]; then
@@ -2589,50 +2551,81 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _finding_labels=$(_resolve_issue_labels "${_rollup_base_label}" "${_f_severity}" "${_f_category:-}")
 
     # --- Build per-finding acceptance criterion and verification command ---
-    # Seed from Location (file:line) when available; fall back to the clean title.
-    _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
+    # Pre-extract location path so it can be used for both the verification command
+    # and the Files to Modify section — avoids duplicating the extraction logic.
+    _loc_path_safe=""
+    _loc_line=""
+    if [ -n "${_f_location:-}" ]; then
+      # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
+      # Strip any trailing description after whitespace; then split on the last colon
+      # that is followed only by digits so we handle paths like lib/core/foo.sh:142
+      # but not bare paths without a line number.
+      _loc_path=$(echo "${_f_location}" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+      _loc_line=$(echo "${_f_location}" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
+      # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
+      # break the surrounding single-quoted sed/grep command strings and inject
+      # arbitrary shell text into the generated verification command.
+      # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
+      # Also require at least one '/' (directory path), '.' (file extension), or a
+      # filesystem hit so prose words like "Multiple" do not pass the charset check
+      # and become a confidently-wrong Files to Modify entry (#720/#722 wrong file
+      # pointer class). Root-level files like CLAUDE.md or README.md have no slash
+      # but do have a dot; extensionless root files like Makefile have neither, so
+      # the filesystem existence check catches them.
+      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.' || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
+        _loc_path_safe="$_loc_path"
+      fi
+    fi
+
+    # Acceptance criterion: embed Suggested Fix text when present so the criterion
+    # describes what to change and where, not just a restatement of the title.
+    if [ -n "${_f_suggested_fix:-}" ]; then
+      _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}
+  **Fix:** ${_f_suggested_fix}"
+    else
+      _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
+    fi
+
+    # Verification command: prefer the assessor-supplied Verification field; fall
+    # back to a location-derived command when Location is a file path; emit a
+    # TODO placeholder otherwise so the implementer knows work is needed.
     if [ -n "${_f_verification:-}" ]; then
       # Allowlist validation: _f_verification is LLM-derived; block shell injection
       # metacharacters (backtick, dollar, semicolon, pipe, ampersand, redirections)
       # before embedding in generated issue bodies.  Degrade to prose on failure so
-      # the finding is never silently lost.  Aligns with _loc_path sanitization below.
+      # the finding is never silently lost.  Aligns with _loc_path sanitization above.
       if printf '%s' "${_f_verification}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
         _verification_cmd="${_f_verification}"
       else
         _verification_cmd="# TODO: verify manually — assessor suggested: ${_f_verification}"
       fi
-    elif [ -n "$_f_location" ]; then
-      # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
-      # Strip any trailing description after whitespace; then split on the last colon
-      # that is followed only by digits so we handle paths like lib/core/foo.sh:142
-      # but not bare paths without a line number.
-      _loc_path=$(echo "$_f_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
-      _loc_line=$(echo "$_f_location" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
-      # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
-      # break the surrounding single-quoted sed/grep command strings and inject
-      # arbitrary shell text into the generated verification command.
-      # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
-      _loc_path_safe=""
-      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
-        _loc_path_safe="$_loc_path"
-      fi
-      if [ -n "$_loc_line" ] && [ -n "$_loc_path_safe" ]; then
+    elif [ -n "$_loc_path_safe" ]; then
+      if [ -n "$_loc_line" ]; then
         # file:line format — emit a valid sed command pointing at that exact line
         _verification_cmd="sed -n '${_loc_line}p' '${_loc_path_safe}'"
-      elif [ -n "$_loc_path_safe" ]; then
+      else
         # Looks like a plain file path (no line number) — use grep to inspect it
         _verification_cmd="grep -n '' '${_loc_path_safe}'"
-      elif echo "$_f_location" | grep -qE '^[a-zA-Z/._-]'; then
-        # Location present but path did not pass sanitization — emit as prose to
-        # avoid injecting unsanitized content into shell command syntax.
-        _verification_cmd="# TODO: add verification command for: ${_f_location}"
-      else
-        # Location field present but doesn't look like a path — fall back
-        _verification_cmd="# TODO: add verification command for: ${_f_location}"
       fi
+    elif [ -n "${_f_location:-}" ]; then
+      # Location present but not a recognized file path (no '/', unsafe chars, etc.)
+      # Emit as a TODO with the original location so the implementer can act on it
+      # without us injecting unsanitized content into shell command syntax.
+      _verification_cmd="# TODO: add verification command for: ${_f_location}"
     else
-      # Generic fallback — reviewer must fill in the concrete command
+      # Neither Verification nor Location — explicit TODO so the implementer knows
+      # verification needs to be added.
       _verification_cmd="# TODO: add verification command for this finding"
+    fi
+
+    # Files to Modify: seed from the sanitized location path when available;
+    # state explicitly when not so the implementer knows why the section is empty.
+    if [ -n "$_loc_path_safe" ]; then
+      _files_to_modify="- \`${_loc_path_safe}\`"
+    elif [ -n "${_f_location:-}" ]; then
+      _files_to_modify="- _Location specified in assessment but not in a recognized path form_"
+    else
+      _files_to_modify="- _Location not specified in assessment_"
     fi
 
     # Done Definition: severity-appropriate
@@ -2660,14 +2653,13 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
 
     # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
-    # For follow-ups, all parent-PR changed files are candidates for inspection;
-    # none are guaranteed to require modification, so emit all under "Files to Read:"
-    # and leave "Files to Modify:" as a concrete placeholder for the implementer.
+    # Files to Modify is seeded from the finding's Location path; falls back to an
+    # explicit note when no path was provided (_files_to_modify is set above).
     _claude_context_section="Files to Read:
 ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 
 Files to Modify:
-- _Determine from the finding above_"
+${_files_to_modify}"
 
     FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
@@ -2694,7 +2686,7 @@ ${_time_estimate:-30min}
 ${_claude_context_section}
 
 ## Acceptance Criteria
-${_acceptance_criterion}: see Description above for details
+${_acceptance_criterion}
 
 ## Verification Commands
 \`\`\`bash
@@ -2913,7 +2905,7 @@ _Auto-generated follow-up from PR #${PR_NUMBER} review (finding ${_finding_index
   # (RITE_MAX_FINDINGS_PER_RUN=0) to process all findings.
   if [ "${_findings_skipped_by_cap:-0}" -gt 0 ]; then
     _processed_count=$((_finding_index - _findings_skipped_by_cap))
-    print_warning "Per-finding cap hit: processed ${_processed_count} of ${_finding_index} API-eligible (non-LOW) findings (cap=${_findings_cap_validated}, skipped=${_findings_skipped_by_cap})."
+    print_warning "Per-finding cap hit: processed ${_processed_count} of ${_finding_index} findings (cap=${_findings_cap_validated}, skipped=${_findings_skipped_by_cap})."
     print_info "  Capped findings saved to: ${RITE_PROJECT_ROOT:-$PWD}/${RITE_DATA_DIR:-.rite}/orphaned-followup-items.md"
     print_info "  To process all findings: set RITE_MAX_FINDINGS_PER_RUN=0 (or raise the cap) in .rite/config"
     _diag "FOLLOWUP_CAP_HIT issue=${ISSUE_NUMBER:-} pr=${PR_NUMBER} processed=${_processed_count} skipped=${_findings_skipped_by_cap} cap=${_findings_cap_validated}"

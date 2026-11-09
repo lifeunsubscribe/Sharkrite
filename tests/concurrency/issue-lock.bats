@@ -90,15 +90,17 @@ wait_at_barrier() {
 }
 
 @test "acquire_issue_lock succeeds when no lock exists" {
-  run acquire_issue_lock 42
-  [ "$status" -eq 0 ]
+  # Call directly (not via `run`) so ${BASHPID:-$$} written by acquire equals
+  # ${BASHPID:-$$} in the test body — `run` creates a subprocess where $BASHPID
+  # differs from the outer shell's $$.
+  acquire_issue_lock 42
   [ -d "$RITE_LOCK_DIR/issue-42.lock" ]
   [ -f "$RITE_LOCK_DIR/issue-42.lock/pid" ]
 
   # Verify PID is correct
   local lock_pid
   lock_pid=$(cat "$RITE_LOCK_DIR/issue-42.lock/pid")
-  [ "$lock_pid" = "$$" ]
+  [ "$lock_pid" = "${BASHPID:-$$}" ]
 }
 
 @test "acquire_issue_lock fails when lock held by live process" {
@@ -117,19 +119,49 @@ wait_at_barrier() {
   mkdir -p "$RITE_LOCK_DIR/issue-42.lock"
   get_dead_pid > "$RITE_LOCK_DIR/issue-42.lock/pid"
 
-  # Should reclaim the stale lock
-  run acquire_issue_lock 42
-  [ "$status" -eq 0 ]
-  [[ "$output" =~ "Reclaiming stale lock" ]]
+  # Call directly (not via `run`) so ${BASHPID:-$$} written by acquire equals
+  # ${BASHPID:-$$} in the test body. Redirect stderr to capture the reclaim message.
+  acquire_issue_lock 42 2>"$BATS_TEST_TMPDIR/acq_stderr.txt"
+  grep -q "Reclaiming stale lock" "$BATS_TEST_TMPDIR/acq_stderr.txt"
 
   # Verify lock now has our PID
   local lock_pid
   lock_pid=$(cat "$RITE_LOCK_DIR/issue-42.lock/pid")
-  [ "$lock_pid" = "$$" ]
+  [ "$lock_pid" = "${BASHPID:-$$}" ]
+}
+
+@test "ln -sn refuses to dereference an existing symlink lock — no-clobber pin" {
+  # Regression for the double-hold race: without -n, `ln -s new_tmp lock_dir`
+  # on a system where lock_dir is already a symlink would plant new_tmp INSIDE
+  # the holder's directory (ln dereferences the symlink target), giving two
+  # processes a lock with the same directory path and defeating mutual exclusion.
+  # With -n, ln refuses and exits non-zero, so only atomic mv (_atomic_steal_lock)
+  # can displace the holder.
+  local holder_tmp
+  holder_tmp=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  echo "holder-pid" > "$holder_tmp/pid"
+  local lock_dir="$RITE_LOCK_DIR/issue-99.lock"
+  ln -s "$holder_tmp" "$lock_dir"
+
+  # A racing acquirer prepares its own temp dir
+  local racer_tmp
+  racer_tmp=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  echo "racer-pid" > "$racer_tmp/pid"
+
+  # ln -sn must refuse (exit non-zero) because lock_dir already exists as a symlink
+  run ln -sn "$racer_tmp" "$lock_dir"
+  [ "$status" -ne 0 ]
+
+  # Holder's directory must not contain the racer's pid file
+  [ ! -f "$holder_tmp/racer-pid" ]
+  # Specifically: only the holder's own pid file is present
+  [ "$(ls "$holder_tmp")" = "pid" ]
+
+  rm -rf "$holder_tmp" "$racer_tmp" 2>/dev/null || true
 }
 
 @test "acquire_issue_lock reclaims lock without PID file" {
-  # Create a lock directory without PID file (crashed between mkdir and write)
+  # Create a real-directory lock without PID file — simulates a pre-#1701 crashed holder.
   mkdir -p "$RITE_LOCK_DIR/issue-42.lock"
 
   # Should reclaim the broken lock
@@ -139,6 +171,71 @@ wait_at_barrier() {
 
   # Verify lock now has our PID
   [ -f "$RITE_LOCK_DIR/issue-42.lock/pid" ]
+}
+
+@test "two waiters on stale symlink lock — rename-before-remove admits exactly one at a time" {
+  # Plant a stale symlink-style lock with a provably-dead PID.
+  # Both waiters detect dead PID and try _atomic_steal_lock → mv → only one wins.
+  # This is the scratchpad-lock.sh #1651 race pattern applied to issue-lock.sh.
+  local issue_number=911
+  local exit_codes_dir="$RITE_TEST_TMPDIR/steal_exits"
+  local intervals_dir="$RITE_TEST_TMPDIR/steal_intervals"
+  mkdir -p "$exit_codes_dir" "$intervals_dir"
+
+  # Build a symlink-style stale lock (pre-populated temp dir + symlink)
+  local stale_tmp
+  stale_tmp=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  get_dead_pid > "$stale_tmp/pid"
+  ln -s "$stale_tmp" "${RITE_LOCK_DIR}/issue-${issue_number}.lock"
+
+  # Export wait_at_barrier so it is available inside bash -c subprocesses.
+  export -f wait_at_barrier
+
+  local num_waiters=4
+  local _pids=()
+  for i in $(seq 1 $num_waiters); do
+    bash -c "
+      export RITE_LOCK_DIR='$RITE_LOCK_DIR'
+      export BARRIER_DIR='$BARRIER_DIR'
+      source '$RITE_LIB_DIR/utils/issue-lock.sh'
+      wait_at_barrier 'symlink_steal_test' '$num_waiters' || exit 1
+      acquire_issue_lock '$issue_number' >/dev/null 2>&1
+      result=\$?
+      echo \"\$result\" > '$exit_codes_dir/w${i}.exit'
+      if [ \"\$result\" -eq 0 ]; then
+        _acq=\$(date +%s.%N)
+        release_issue_lock '$issue_number'
+        _rel=\$(date +%s.%N)
+        echo \"\$_acq \$_rel\" > '$intervals_dir/w${i}.interval'
+      fi
+    " &
+    _pids+=($!)
+  done
+
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+
+  # At least one waiter must have succeeded
+  local success_count=0
+  for i in $(seq 1 $num_waiters); do
+    [ -f "$exit_codes_dir/w${i}.exit" ] || continue
+    local ec; ec=$(cat "$exit_codes_dir/w${i}.exit")
+    [ "$ec" -eq 0 ] && success_count=$((success_count + 1))
+  done
+  [ "$success_count" -ge 1 ] || {
+    echo "FAIL: no waiter reclaimed the stale symlink lock (barrier timeout?)"
+    false
+  }
+
+  # CORE ASSERTION: no two hold-windows overlap
+  local prev_rel="0"
+  while IFS=' ' read -r acq rel; do
+    [ -z "$acq" ] && continue
+    awk -v a="$acq" -v p="$prev_rel" 'BEGIN { exit !(a >= p) }' || {
+      echo "FAIL: overlapping hold-windows — mv-based steal did not serialise reclaimers"
+      false
+    }
+    prev_rel="$rel"
+  done < <(cat "$intervals_dir"/*.interval 2>/dev/null | sort -n)
 }
 
 @test "release_issue_lock removes lock directory" {
@@ -245,9 +342,11 @@ wait_at_barrier() {
         echo "$_acq $_rel" > "$intervals_dir/process_${i}.interval"
       fi
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Count how many processes got the lock
   local success_count=0
@@ -330,9 +429,11 @@ wait_at_barrier() {
         echo "$_acq $_rel" > "$intervals_dir/process_${i}.interval"
       fi
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # Count successes
   local success_count=0
@@ -390,9 +491,11 @@ wait_at_barrier() {
       # Release
       release_issue_lock "$issue_num"
     ) &
+    _pids+=($!)
   done
 
-  wait
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  _pids=()
 
   # All processes should succeed (different issues = different locks)
   for i in $(seq 1 $num_processes); do

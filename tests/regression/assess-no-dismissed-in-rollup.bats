@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/assess-review-issues.sh
 # Regression test for: DISMISSED items leaking into rollup body (defect #3)
-# Issues: #469-#478-#495
+# Issues: #469-#478-#495, #1691
 #
 # Bug: assess-and-resolve.sh extracted severity buckets using:
 #   grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*HIGH"
@@ -22,6 +22,10 @@
 #   3. Unit:   awk extractor correctly extracts HIGH item even when DISMISSED item follows
 #   4. Unit:   awk extractor handles NOW items without spilling into DISMISSED
 #   5. Static: assess-review-issues.sh adds priority label to per-item issues
+#   6. Unit:   awk extractor extracts LOW ACTIONABLE_LATER item (severity is not a drop criterion)
+#   7. Static: LOW-severity drop block is absent from assess-and-resolve.sh (#1691)
+#   8. Static: DROP_RETRY_MEDIUM_LOW is absent from assess-and-resolve.sh (#1691)
+#   9. Static: "All remaining items are LOW severity" skip gate is absent (#1691)
 
 load '../helpers/setup.bash'
 
@@ -249,6 +253,92 @@ teardown() {
   [ "$status" -eq 0 ] || {
     echo "FAIL: gh issue create does not pass priority label in $ASSESS_REVIEW_SCRIPT"
     echo "Output: $output"
+    false
+  }
+}
+
+# ─── Test 6: Unit — awk extractor includes LOW ACTIONABLE_LATER items ──────────
+
+@test "_extract_items_by_state: LOW ACTIONABLE_LATER item is extracted (severity is not a drop criterion)" {
+  # Issue #1691: the old code dropped LOW items AFTER extraction with an explicit
+  # LOW_ISSUES=""; LOW_COUNT=0 block. That block is now gone — the awk extractor
+  # is the only worth-tracking judge and must surface LOW items for filing.
+  FILTERED_CONTENT="### Fractional-second tolerance not extended to iso_to_epoch BSD branch - ACTIONABLE_LATER
+**Severity:** LOW
+**Category:** Correctness
+**Reasoning:** BSD date(1) on macOS strips sub-second precision; existing test
+only covers the Linux path. If never fixed, the macOS CI path will silently
+pass with a wrong epoch for fractional-second timestamps."
+
+  _extract_items_by_state() {
+    local _state_pattern="$1"
+    local _severity_pattern="$2"
+    echo "$FILTERED_CONTENT" | awk -v states="$_state_pattern" -v sev="$_severity_pattern" '
+      /^### .* - ACTIONABLE_/ {
+        if (length(block) > 0 && block ~ sev) { print block; print "" }
+        in_block = ($0 ~ states)
+        block = in_block ? $0 : ""
+        next
+      }
+      /^### / {
+        if (length(block) > 0 && block ~ sev) { print block; print "" }
+        in_block = 0; block = ""; next
+      }
+      in_block { block = block "\n" $0 }
+      END { if (length(block) > 0 && block ~ sev) { print block; print "" } }
+    ' || true
+  }
+
+  LOW_ISSUES=$(_extract_items_by_state "ACTIONABLE_LATER" "Severity:.*LOW")
+
+  [[ "$LOW_ISSUES" == *"Fractional-second tolerance"* ]] || {
+    echo "FAIL: LOW ACTIONABLE_LATER item not found in LOW_ISSUES:"
+    echo "$LOW_ISSUES"
+    false
+  }
+  [[ "$LOW_ISSUES" == *"Severity:"*"LOW"* ]] || {
+    echo "FAIL: Severity:LOW line not present in extracted item:"
+    echo "$LOW_ISSUES"
+    false
+  }
+}
+
+# ─── Test 7: Static — LOW-severity drop block is absent (#1691) ───────────────
+
+@test "assess-and-resolve.sh: LOW-severity drop block is absent (issue #1691)" {
+  # The old code at lines ~2328-2334 unconditionally set LOW_ISSUES="" LOW_COUNT=0
+  # after extraction, discarding items the assessor judged worth tracking.
+  # This block must be gone so severity is never the worth-tracking criterion.
+  run grep -n 'Excluding .* LOW-severity\|LOW_ISSUES=""[[:space:]]*$' "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: LOW-severity drop block still present in $ASSESS_RESOLVE_SCRIPT:"
+    echo "$output"
+    false
+  }
+}
+
+# ─── Test 8: Static — DROP_RETRY_MEDIUM_LOW is absent (#1691) ─────────────────
+
+@test "assess-and-resolve.sh: DROP_RETRY_MEDIUM_LOW variable is absent (issue #1691)" {
+  # The old code set DROP_RETRY_MEDIUM_LOW=true at the retry cap and then used it
+  # to drop MEDIUM items after extraction. Both assignments must be gone.
+  run grep -n "DROP_RETRY_MEDIUM_LOW" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: DROP_RETRY_MEDIUM_LOW still present in $ASSESS_RESOLVE_SCRIPT:"
+    echo "$output"
+    false
+  }
+}
+
+# ─── Test 9: Static — "All remaining items are LOW severity" gate is absent ────
+
+@test "assess-and-resolve.sh: severity-only skip gate is absent (issue #1691)" {
+  # The old code skipped issue creation when only LOW items remained. That gate
+  # must require ALL four severity counts to be zero — not just MEDIUM/HIGH/CRITICAL.
+  run grep -n "All remaining items are LOW severity" "$ASSESS_RESOLVE_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: severity-only skip gate still present in $ASSESS_RESOLVE_SCRIPT:"
+    echo "$output"
     false
   }
 }

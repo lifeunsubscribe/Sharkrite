@@ -43,16 +43,12 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "scratchpad-lock: _SCRATCHPAD_LOCK_STRATEGY is set to 'mkdir' on mkdir path" {
-  # Force the mkdir path by hiding flock from PATH
+  # Force the portable path with the strategy override. Do NOT skip when flock
+  # is installed: a test that only executes on machines without flock runs
+  # nowhere but the macOS CI job, so the gate cannot see it break (#1697).
   run bash -c "
-    export PATH=\"\$(echo \"\$PATH\" | tr ':' '\n' | grep -v 'util-linux' | tr '\n' ':' | sed 's/:$//')\"
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
     source '${RITE_LIB_DIR}/utils/scratchpad-lock.sh'
-
-    # Verify flock is not available in modified PATH (skip test on systems with system flock)
-    if command -v flock >/dev/null 2>&1; then
-      echo 'SKIP: flock is available in system PATH; cannot force mkdir path'
-      exit 0
-    fi
 
     export SCRATCHPAD_FILE='${SCRATCHPAD_FILE}'
     acquire_scratchpad_lock
@@ -67,40 +63,37 @@ teardown() {
     release_scratchpad_lock
   "
   [ "$status" -eq 0 ]
-  # Either we got a PASS or flock was unavoidable — both are acceptable
-  [[ "$output" == *"PASS: strategy is mkdir"* ]] || [[ "$output" == *"SKIP:"* ]]
+  [[ "$output" == *"PASS: strategy is mkdir"* ]]
 }
 
-@test "scratchpad-lock: mkdir path release removes lock directory" {
-  # Acquire via the mkdir path (hide flock) and verify release cleans up the dir
+@test "scratchpad-lock: portable path lock is a PID symlink, removed on release" {
+  # The portable lock is a symlink whose target is the holder's PID (#1651):
+  # atomic to create, and never observable without an owner.
   run bash -c "
-    export PATH=\"\$(echo \"\$PATH\" | tr ':' '\n' | grep -v 'util-linux' | tr '\n' ':' | sed 's/:$//')\"
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
     source '${RITE_LIB_DIR}/utils/scratchpad-lock.sh'
-
-    if command -v flock >/dev/null 2>&1; then
-      echo 'SKIP: flock is available in system PATH; cannot force mkdir path'
-      exit 0
-    fi
 
     export SCRATCHPAD_FILE='${SCRATCHPAD_FILE}'
     _lockfile=\"\${SCRATCHPAD_FILE}.lock\"
 
     acquire_scratchpad_lock
 
-    # Lock directory must exist after acquire
-    [ -d \"\$_lockfile\" ] || { echo 'FAIL: lock dir not created'; exit 1; }
+    # Lock must exist after acquire, as a symlink naming this shell's PID
+    [ -L \"\$_lockfile\" ] || { echo 'FAIL: lock is not a symlink after acquire'; exit 1; }
+    _owner=\$(readlink \"\$_lockfile\")
+    [ \"\$_owner\" = \"\$\$\" ] || { echo \"FAIL: lock owner '\$_owner' is not this shell (\$\$)\"; exit 1; }
 
     release_scratchpad_lock
 
-    # Lock directory must be gone after release
-    if [ -e \"\$_lockfile\" ]; then
-      echo 'FAIL: lock dir still exists after release'
+    # Lock must be gone after release (-L catches a dangling symlink that -e misses)
+    if [ -e \"\$_lockfile\" ] || [ -L \"\$_lockfile\" ]; then
+      echo 'FAIL: lock still exists after release'
       exit 1
     fi
-    echo 'PASS: lock dir removed on release'
+    echo 'PASS: lock removed on release'
   "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PASS: lock dir removed on release"* ]] || [[ "$output" == *"SKIP:"* ]]
+  [[ "$output" == *"PASS: lock removed on release"* ]]
 }
 
 @test "scratchpad-lock: flock path cleans up leftover mkdir-style lock directory" {
@@ -144,15 +137,10 @@ teardown() {
 
 @test "scratchpad-lock: mkdir path cleans up leftover flock-style plain file" {
   # Simulate the reverse: a previous flock run left a plain file.  A new run
-  # on a system without flock (mkdir path) must remove it before mkdir-ing.
+  # on the portable path must remove it before taking the lock.
   run bash -c "
-    export PATH=\"\$(echo \"\$PATH\" | tr ':' '\n' | grep -v 'util-linux' | tr '\n' ':' | sed 's/:$//')\"
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
     source '${RITE_LIB_DIR}/utils/scratchpad-lock.sh'
-
-    if command -v flock >/dev/null 2>&1; then
-      echo 'SKIP: flock is available in system PATH; cannot force mkdir path'
-      exit 0
-    fi
 
     export SCRATCHPAD_FILE='${SCRATCHPAD_FILE}'
     _lockfile=\"\${SCRATCHPAD_FILE}.lock\"
@@ -170,16 +158,16 @@ teardown() {
     fi
   "
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PASS: acquired lock despite leftover plain file"* ]] || [[ "$output" == *"SKIP:"* ]]
+  [[ "$output" == *"PASS: acquired lock despite leftover plain file"* ]]
 }
 
 # ---------------------------------------------------------------------------
 # issue-lock.sh: PID file is written atomically via mktemp + mv
 # ---------------------------------------------------------------------------
 
-@test "issue-lock: PID file is present immediately after acquire (atomic write)" {
+@test "issue-lock: PID file is present immediately after acquire (symlink-atomic write)" {
   # Verify the PID file exists right after acquire returns — no window where
-  # lock dir exists but has no PID (the old non-atomic echo > file race).
+  # lock dir exists but has no PID.  Also verifies the lock is a symlink (#1701).
   run bash -c "
     export RITE_PROJECT_ROOT='${RITE_TEST_TMPDIR}'
     export RITE_DATA_DIR='.rite'
@@ -190,8 +178,9 @@ teardown() {
 
     _lock_dir=\"\${RITE_LOCK_DIR}/issue-555.lock\"
 
-    # Lock dir must exist
-    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: lock dir not created'; exit 1; }
+    # Lock must be a symlink (new atomic design) — still passes [ -d ] via symlink follow
+    [ -L \"\$_lock_dir\" ] || { echo 'FAIL: lock is not a symlink after acquire'; exit 1; }
+    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: lock symlink does not point to a directory'; exit 1; }
 
     # PID file must exist immediately — no grace period, no polling needed
     [ -f \"\$_lock_dir/pid\" ] || { echo 'FAIL: PID file missing immediately after acquire'; exit 1; }
@@ -201,6 +190,13 @@ teardown() {
     [ \"\$_written_pid\" = \"\$\$\" ] || { echo \"FAIL: PID mismatch: expected \$\$ got \$_written_pid\"; exit 1; }
 
     release_issue_lock 555
+
+    # After release: symlink must be gone (-L catches a dangling symlink -e misses)
+    if [ -e \"\$_lock_dir\" ] || [ -L \"\$_lock_dir\" ]; then
+      echo 'FAIL: lock still exists after release'
+      exit 1
+    fi
+
     echo 'PASS: PID file present immediately after acquire'
   "
   [ "$status" -eq 0 ]
@@ -218,13 +214,22 @@ teardown() {
 
     _lock_dir=\"\${RITE_LOCK_DIR}/pr-101-src-42-followup.lock\"
 
-    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: followup lock dir not created'; exit 1; }
+    # Lock must be a symlink (new atomic design)
+    [ -L \"\$_lock_dir\" ] || { echo 'FAIL: followup lock is not a symlink after acquire'; exit 1; }
+    [ -d \"\$_lock_dir\" ] || { echo 'FAIL: followup lock symlink does not point to a directory'; exit 1; }
+
     [ -f \"\$_lock_dir/pid\" ] || { echo 'FAIL: PID file missing after followup acquire'; exit 1; }
 
     _written_pid=\$(cat \"\$_lock_dir/pid\")
     [ \"\$_written_pid\" = \"\$\$\" ] || { echo \"FAIL: PID mismatch: expected \$\$ got \$_written_pid\"; exit 1; }
 
     release_pr_followup_lock 101 42
+
+    if [ -e \"\$_lock_dir\" ] || [ -L \"\$_lock_dir\" ]; then
+      echo 'FAIL: followup lock still exists after release'
+      exit 1
+    fi
+
     echo 'PASS: followup PID file present immediately after acquire'
   "
   [ "$status" -eq 0 ]

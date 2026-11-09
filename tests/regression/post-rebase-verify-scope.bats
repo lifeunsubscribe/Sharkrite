@@ -23,11 +23,11 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
   grep -q 'verify_post_merge "." "origin/main"' "${RITE_LIB_DIR}/utils/divergence-handler.sh"
 }
 
-@test "structural: stale-branch legacy merge-path call sites keep the HEAD~1 default" {
-  # The supervised legacy merge path in stale-branch.sh (not in scope for the #1655
-  # rebase-ruling extension) still uses no second arg. claude-workflow.sh now
-  # passes origin/${_target} (see post-merge-verify-scope.bats).
-  _merge_sites=$(grep -c 'verify_post_merge "\$worktree_path";' "${RITE_LIB_DIR}/utils/stale-branch.sh" || true)
+@test "structural: stale-branch legacy merge-path call sites pass origin/\$base_branch (#1688)" {
+  # Issue #1688 extended the #1655 target-ref ruling to the supervised legacy merge
+  # path in stale-branch.sh. Those sites now pass "origin/$base_branch" instead of
+  # the bare HEAD~1 default.
+  _merge_sites=$(grep -c 'verify_post_merge "\$worktree_path" "origin/\$base_branch"' "${RITE_LIB_DIR}/utils/stale-branch.sh" || true)
   [ "$_merge_sites" -ge 2 ]
 }
 

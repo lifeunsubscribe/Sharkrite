@@ -481,7 +481,7 @@ compose_promotion_pr_body() {
     grep -oE '[0-9]+' | paste -sd+ - | bc 2>/dev/null || echo 0) || total_diff_lines=0
 
   local sync_conflict_count=0
-  sync_conflict_count=$(grep -c "INTEGRATION_SYNC.*outcome=conflict" "$context_file" 2>/dev/null || true)
+  sync_conflict_count=$(grep -cE "INTEGRATION_SYNC.*outcome=conflict($| )" "$context_file" 2>/dev/null || true)
   sync_conflict_count="${sync_conflict_count:-0}"
 
   # -------------------------------------------------------------------------

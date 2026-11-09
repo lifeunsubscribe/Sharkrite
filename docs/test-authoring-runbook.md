@@ -128,6 +128,14 @@ probes, add `# sharkrite-gate-serial` within the file's first 15 lines so the
 gate keeps it out of parallel batches. Audit: the 6 flaky files caused roughly
 half of all failure-event content, and none of them carried the hint.
 
+Never use a bare `wait` in a test that spawns workers. Under `BATS_TEST_TIMEOUT`
+(the gate sets 120 s, the nightly 300 s) bats keeps a watchdog child in the test
+shell, and a bare `wait` blocks on it until the timeout kills the test — a test
+that passes in 300 ms plainly fails as `# timeout after 120 s` in the gate
+(#1690). Collect `_pids+=($!)` after each spawn and
+`wait "${_pids[@]+"${_pids[@]}"}" || true`; `tests/lint/concurrency-no-bare-wait.bats`
+enforces this for `tests/concurrency/`.
+
 ### 7. Fixture hygiene (prompt-residue)
 
 - Generated-fixture strings must not contain patterns that repo-wide pin tests
@@ -142,6 +150,13 @@ half of all failure-event content, and none of them carried the hint.
 
 - **Behavioral fixture tests are the default:** exercise the function and assert
   output/exit codes.
+- **Force the code path, never skip on the local environment.** A test that
+  exits early because the machine differs from CI (`flock` installed, a tool
+  present/absent) executes nowhere but CI, so the gate cannot see it break.
+  Use the code's own override (e.g. `RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir`) to
+  force the path under test; skip only when a required binary is genuinely
+  missing (#1697: three portable-lock tests skipped wherever `flock` existed
+  and one asserted a shape #1651 had removed — red on macOS CI only).
 - **Structural greps** (asserting source text contains/lacks a pattern) only for
   invariants code cannot express — cd-guards, guard placement, wording
   contracts.

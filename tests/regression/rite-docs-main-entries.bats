@@ -533,3 +533,36 @@ _docs_list_main_entry_docs
   [ "$status" -eq 0 ]
   [[ "$output" == *"docs/test-doc.md"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Test 16: both stores populated — legacy entries processed after main-entries
+# (#1518: docs_reconcile_drift must not return 0 after the main-entries pass)
+# ---------------------------------------------------------------------------
+
+@test "both stores: legacy flat-log entries processed after main-entries pass" {
+  # Seed a main-store entry (triggers the main-entries path, doc_update role)
+  _seed_main_entry "docs/test-doc.md" "Main-store stale assertion" "contradiction" "lib/core/foo.sh"
+
+  # Seed a legacy flat-log entry at docs/sharkrite-drift-log.md
+  local _legacy_log="${FAKE_PROJECT}/docs/sharkrite-drift-log.md"
+  mkdir -p "$(dirname "$_legacy_log")"
+  printf '<!-- sharkrite-doc-drift pr:99 issue:- recorded:2026-01-01T00:00:00Z -->\n' \
+    >> "$_legacy_log"
+  printf '**Changed files**: lib/utils/legacy.sh\n' >> "$_legacy_log"
+  printf '**Implicated docs**:\ndocs/test-doc.md\n' >> "$_legacy_log"
+  printf '**Suspected inaccuracy**: Legacy entry that must not be silently skipped\n' \
+    >> "$_legacy_log"
+  printf '<!-- /sharkrite-doc-drift -->\n' >> "$_legacy_log"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" docs_reconcile_drift </dev/null
+  [ "$status" -eq 0 ]
+
+  # Main-entries path must have called doc_update
+  grep -q "RESOLVE:role=doc_update" "$STUB_CALLS_FILE"
+
+  # Legacy path (_docs_update_engine) must have called doc_assessment —
+  # before the fix this was unreachable when main-store entries existed.
+  grep -q "RESOLVE:role=doc_assessment" "$STUB_CALLS_FILE"
+}

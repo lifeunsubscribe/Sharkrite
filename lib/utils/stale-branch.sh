@@ -1212,7 +1212,7 @@ _stale_merge_main_legacy() {
     fi
 
     # Verify merge didn't introduce silent semantic conflicts (tests pass)
-    if ! verify_post_merge "$worktree_path"; then
+    if ! verify_post_merge "$worktree_path" "origin/$base_branch"; then
       print_warning "Merge succeeded at git level but tests fail — possible semantic conflict"
       git reset --hard HEAD~1 2>/dev/null || true
       if [ "$workflow_mode" = "supervised" ]; then
@@ -1285,7 +1285,7 @@ _stale_merge_main_legacy() {
           return 1
         fi
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
-        if ! verify_post_merge "$worktree_path"; then
+        if ! verify_post_merge "$worktree_path" "origin/$base_branch"; then
           print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
           print_error "Post-resolution verification failed — cannot proceed in auto mode"
           return 1

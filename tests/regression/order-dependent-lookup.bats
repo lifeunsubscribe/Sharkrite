@@ -9,10 +9,10 @@
 #   first-match-wins logic in repo-status.sh worktree lookup would shadow the
 #   correct issue ID with a stale lock from a numerically higher issue number.
 #
-# Bug 2: acquire_issue_lock() no-PID grace period must match scratchpad-lock.sh
-#   and session-tracker.sh (1-second wait before reclaiming).  The old code
-#   reclaimed immediately, creating a window where an in-flight mktemp+mv could
-#   be wrongly treated as a crashed holder.
+# Bug 2: acquire_issue_lock() no-PID legacy-lock reclaim must emit a warning and
+#   succeed.  The symlink design (#1701) makes no-PID impossible for new locks, but
+#   real-directory locks from pre-#1701 code may still be on disk; reclaim is now
+#   immediate (grace period removed — no-PID is unambiguously stale in the new design).
 #
 # Bug 3: _has_in_approval_file() in session-tracker.sh must warn (not silently
 #   return false-negative) when approval-state.json is malformed.
@@ -147,44 +147,39 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Bug 2: Grace period consistency — no-PID lock reclaim must wait 1s
+# Bug 2: Legacy no-PID lock reclaim — reclaim must emit warning and succeed
 # ---------------------------------------------------------------------------
-# NOTE: We cannot directly assert the sleep(1) without real-time testing,
-# but we CAN assert that after writing the PID within ~1s the lock is NOT
-# reclaimed (i.e., the grace period is observed before the reclaim check).
+# No-PID is impossible for new symlink-based locks (#1701), but legacy real-dir
+# locks from pre-#1701 code may still exist on disk.  Reclaim is immediate.
 
-@test "acquire_issue_lock reclaims no-PID lock after grace period (message check)" {
-  # Create lock dir without PID file simulating a crashed holder (pre-atomic path)
+@test "acquire_issue_lock reclaims no-PID lock immediately (message check)" {
+  # Create a real directory lock without PID file — simulates a legacy crashed holder.
+  # With the symlink design (#1701) no-PID is impossible for new locks, but legacy
+  # real-dir locks may still be on disk.  The new code reclaims immediately (no grace period).
   mkdir -p "$RITE_LOCK_DIR/issue-77.lock"
   # No pid file written
 
-  # The new code does: sleep (grace period), then check again.  Since we never
-  # write a pid, after the sleep it should reclaim and acquire.
-  # Use _RITE_LOCK_GRACE_PERIOD_S=0 to avoid a real 1-second sleep in tests.
   run --separate-stderr bash -c "
     export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
-    export _RITE_LOCK_GRACE_PERIOD_S=0
     source '${RITE_REPO_ROOT}/lib/utils/issue-lock.sh'
     acquire_issue_lock 77
   "
   [ "$status" -eq 0 ]
-  # Must have emitted the grace-period reclaim message to stderr (not the old immediate one)
-  [[ "$stderr" =~ "grace period" ]]
+  # Must have emitted the no-PID reclaim message to stderr
+  [[ "$stderr" =~ "no PID file" ]]
 }
 
-@test "acquire_pr_followup_lock reclaims no-PID lock after grace period (message check)" {
+@test "acquire_pr_followup_lock reclaims no-PID lock immediately (message check)" {
   mkdir -p "$RITE_LOCK_DIR/pr-55-src-7-followup.lock"
   # No pid file
 
-  # Use _RITE_LOCK_GRACE_PERIOD_S=0 to avoid a real 1-second sleep in tests.
   run --separate-stderr bash -c "
     export RITE_LOCK_DIR='${RITE_LOCK_DIR}'
-    export _RITE_LOCK_GRACE_PERIOD_S=0
     source '${RITE_REPO_ROOT}/lib/utils/issue-lock.sh'
     acquire_pr_followup_lock 55 7
   "
   [ "$status" -eq 0 ]
-  [[ "$stderr" =~ "grace period" ]]
+  [[ "$stderr" =~ "no PID file" ]]
 }
 
 # ---------------------------------------------------------------------------

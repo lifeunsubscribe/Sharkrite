@@ -295,7 +295,17 @@ ERROR:   Dev session used:   /path/to/real/worktree
 ERROR:   Orchestrator found: /path/to/stale/worktree
 ```
 
-**Refusal over guessing.** Automatically choosing the worktree with more changes would work most of the time but masks discovery bugs. The refusal surfaces the mismatch immediately so the underlying discovery issue can be fixed (e.g. stale PR cleanup, matcher regex gap, handoff file write failure).
+**Refusal over guessing — with one structured exception.** Automatically choosing the worktree with more changes would work most of the time but masks discovery bugs. The refusal surfaces the mismatch immediately so the underlying discovery issue can be fixed (e.g. stale PR cleanup, matcher regex gap, handoff file write failure).
+
+**EMPTY_INIT auto-recovery re-resolution (#1688).** When the dev session's branch-health preflight detects an empty branch (EMPTY_INIT), `claude-workflow.sh` exec-restarts itself, which creates a new worktree with the current batch suffix — different from the stale suffix the orchestrator discovered. `_assert_worktree_alignment` performs one structured re-resolution attempt before hard-failing:
+
+1. Read the branch from the dev session's worktree via `git -C "$_dev_session_wt" symbolic-ref -q HEAD`. Dir names are transformations of the branch (truncated, prefix-abbreviated `ft-`/`fx-`, batch-suffix-appended) and are never equal to it — `basename` would always return zero matches.
+2. Look up which registered worktree has that branch (`git -C "$RITE_PROJECT_ROOT" worktree list --porcelain` with `substr($0, 10)` for paths and `substr($0, 8)` for branch names to handle paths containing spaces).
+3. Require exactly one matching worktree, **and** that `WORKTREE_PATH` no longer exists as a directory (`[ ! -d "$WORKTREE_PATH" ]`). The directory's absence is the canonicalization-proof fingerprint of EMPTY_INIT recovery — EMPTY_INIT deletes the old worktree, so the directory disappears regardless of path-spelling differences. If the old directory still exists, this is a genuine crossed-state-files mismatch and the hard error fires normally.
+
+On acceptance, `WORKTREE_PATH` is updated to the re-resolved path and a `WORKTREE_RERESOLVED` diag is emitted. A genuine mismatch (old path still present, branch absent, or multiple matches) still hard-fails with the `Worktree path mismatch` error.
+
+**Regression test:** `tests/regression/dev-session-worktree-reresolve.bats`.
 
 **Live failure (2026-10-25):** Batch run for issues #1342/#1368. Dev session completed with 4 files changed (`AUTO_COMMIT issue=1342 files=4`) and wrote the handoff file pointing to `fx-make-plan-issuessh-end_b1342-1368`. `detect_pr_for_issue` returned the stale PR #1452 (Oct 24 batch) whose content-empty worktree existed locally. `count_changed_files` on that worktree returned 0, triggering "No work was produced" — a 24-minute silent failure that left the real work pushed nowhere.
 
@@ -424,7 +434,7 @@ The old section argued that having Claude run tests INSIDE the session is defens
 - 6 findings → 300 + 1440 = 1740s (~29 min)
 - 10+ findings → capped at 1800s (30 min)
 - `RITE_FIX_TIMEOUT` env var overrides (operator escape hatch)
-- **Single retry on no-commit timeout (issue #1172):** when a fix session times out with zero commits *and* the budget is below 1800s, the session is retried exactly once at `min(2 × budget, 1800s)`; a `FIX_TIMEOUT_RETRY` diag line is emitted. A second no-commit timeout, a timeout with commits present, and budgets already at 1800s all follow today's behavior unchanged.
+- **Single retry on no-commit timeout (issue #1172):** when a fix session times out with zero commits *and* `FIX_TIMEOUT ≤ 900s`, the session is retried exactly once at `min(2 × budget, 1800s)`; a `FIX_TIMEOUT_RETRY` diag line is emitted. The 900s threshold ensures the doubled budget reaches the 1800s cap (at 2×900=1800) and the retry gets meaningful extra time — above 900s the doubled budget would be capped at 1800s regardless of the original value. A second no-commit timeout, a timeout with commits present, and budgets already above 900s all follow today's behavior unchanged.
 
 **Implementation:** `tests/regression/fix-prompt-no-verification.bats`, `tests/regression/test-gate-parallel.bats`, `tests/regression/fix-timeout-proportional.bats`, `tests/regression/fix-timeout-retry.bats`.
 
@@ -804,7 +814,7 @@ LOW findings only become ACTIONABLE_LATER if they represent a real functional or
 
 ### Follow-up Defer Filter: Necessity Bar
 
-The assessment prompt's old tie-break biased uncertain findings toward `ACTIONABLE_LATER` over `DISMISSED`, which generated nitpick follow-up issues (a recent run produced ~6 follow-ups, several pure cosmetic). The prompt in `lib/core/assess-review-issues.sh` now flips that bias for non-essential findings and adds a necessity bar: `ACTIONABLE_LATER` requires the assessor to state, in one phrase, what concretely breaks or regresses if the work is never done — a real defect, correctness/security risk, or broken contract. If no concrete regression can be stated, the finding is `DISMISSED`, not deferred. Cosmetic/style/naming preferences, speculative "could improve" / "might be nice", redundant-but-harmless code, and nice-to-have test coverage with no concrete regression risk are explicitly DISMISSED.
+The assessment prompt's old tie-break biased uncertain findings toward `ACTIONABLE_LATER` over `DISMISSED`, which generated nitpick follow-up issues (a recent run produced ~6 follow-ups, several pure cosmetic). The prompt in `lib/core/assess-review-issues.sh` now flips that bias for non-essential findings and adds a necessity bar: `ACTIONABLE_LATER` requires the assessor to state, in one phrase, what concretely breaks or regresses if the work is never done — a real defect, correctness/security risk, or broken contract. If no concrete regression can be stated, the finding is `DISMISSED`, not deferred. Cosmetic/style/naming preferences, speculative "could improve" / "might be nice", redundant-but-harmless code, and nice-to-have test coverage with no concrete regression risk are explicitly DISMISSED. **Severity never decides whether a deferred item is filed** — that decision belongs entirely to this necessity bar; `assess-and-resolve.sh` must not post-filter items by severity after the assessor has judged them worth tracking (#1691).
 
 ### Assessment May Not Defer the Issue's Own Acceptance Criteria
 
@@ -1024,7 +1034,7 @@ All three locks share a second race, **distinct from the same-host assumption ab
 - **session-tracker.sh** — lost increments / JSON corruption in the session-completion counter under heavy concurrent load (~5/10 trials).
 
 **Status:**
-- `issue-lock.sh` **fixed inline** (commit `0deefb8`) via `_atomic_steal_stale_lock`: reclaim by renaming (`mv`) the stale dir to a unique per-process path before removing it — only one racer's `mv` succeeds, serialising the steal; the existing `mkdir` gate then admits exactly one acquirer. 0/200 overlaps post-fix.
+- `issue-lock.sh` **fixed in #1701** via symlink-based acquire (same design as scratchpad-lock.sh #1651): `ln -sn "$tmp_dir" "$lock_dir"` is atomic; the `-n` flag prevents dereference so a racing publisher cannot plant its temp dir inside the holder's directory when `lock_dir` is already a symlink. `$tmp_dir` is pre-populated with `pid`/`cwd` before publication so a live lock is never observable without its owner — the `mkdir`-gate TOCTOU window and grace period are both eliminated. Stale reclaim uses rename-before-remove (`_atomic_steal_lock` with `mv`), serialising concurrent reclaimers. Backfill locks (real dirs, `backfill` sentinel, no `pid`) are reclaimed immediately.
 - `scratchpad-lock.sh` **fixed in #1651** via symlink-based acquire: `ln -s "$$" "$lockfile"` is atomic (symlink(2)/POSIX), so the lock carries its owner's PID the instant it exists — there is no create→PID-write window. Stale reclaim uses rename-before-remove (`mv "$lockfile" "$lockfile.stale.$$"`): two concurrent waiters both see a dead PID but only one `mv` wins, serialising the steal. Grace-reclaim branch deleted; the bad state it patched is now unrepresentable.
 - `session-tracker.sh` has the same class and is **fixed by #706** via migration onto `lock.sh` — see Adoption below.
 
@@ -1038,7 +1048,7 @@ Validated: 50-process × 10-round distinct-PID stress → **0 lost / 0 overlaps*
 
 **Platform seam.** `lock.sh` is the single place the OS concurrency model lives (atomic create-exclusive, process liveness, atomic rename — all POSIX, uniform on macOS + Linux; macOS has no `flock(1)`, so the `ln` path carries correctness). A future **Windows** backend swaps exactly the three public functions (`lock_acquire`/`lock_release`/`lock_held_pid`) over `CreateFile CREATE_NEW` / `OpenProcess` / `MoveFileEx` — nothing outside `lock.sh` encodes the assumptions. See the file header for the contract.
 
-**Adoption.** `session-tracker.sh` is migrated onto `lock.sh` (this fixes the named lost-increment bug; `session-state-race.bats` passes under load). `scratchpad-lock.sh` fixed its own race independently in #1651 (symlink acquire + rename-before-remove reclaim — no longer a follow-up adopter; its test suite is updated). `issue-lock.sh` additionally stores `cwd`/`backfill` metadata **inside** its lock dir (read by `repo-status.sh` + `backfill_worktree_locks`), so it needs a metadata-layout migration and keeps its working `_atomic_steal_stale_lock` (#707) until then; it is the remaining follow-up adopter for `lock.sh`.
+**Adoption.** `session-tracker.sh` is migrated onto `lock.sh` (this fixes the named lost-increment bug; `session-state-race.bats` passes under load). `scratchpad-lock.sh` fixed its own race independently in #1651 (symlink acquire + rename-before-remove reclaim). `issue-lock.sh` fixed its own race in #1701 (same symlink design — `ln -s "$tmp_dir" "$lock_dir"` with pre-populated `pid`/`cwd`; `cwd`/`backfill` metadata stays inside the temp dir so the reader contract is unchanged; `_atomic_steal_stale_lock` renamed to `_atomic_steal_lock` and extended to handle both symlink-style and legacy real-directory locks). All three lock subsystems are now race-free; there are no remaining follow-up adopters for `lock.sh`.
 
 ### PR Follow-up Lock: Timing Budget
 
@@ -2031,15 +2041,16 @@ Fetches `origin/main` and `origin/<branch>`, checks currency, and if behind: mer
 
 - **Never rebases.** Integration branches are shared and long-lived; live worktrees fork from them, and their SHAs are recorded in the integration ledger. Rebasing would rewrite those SHAs and break in-flight worktrees.
 - **Never force-pushes.** A merge adds commits without rewriting history, so plain `git push` is correct. Force variants are explicitly prohibited.
-- **Never called automatically.** Only an explicit `rite --sync <branch>` triggers this. No workflow phase, batch slot, or other verb may call it.
+- **Clean merge only from promote.** `rite --promote` may invoke `sync_integration_branch` with `--clean-only` in auto mode only when the merge applies with zero conflicts. Exit 3 (`conflict_deferred`) is returned when the merge conflicts — the resolver is never invoked from this path — and promote blocks with the `rite --sync <branch>` instruction. Only an explicit `rite --sync <branch>` triggers the full conflict-resolution path. The original "never called automatically" invariant was amended (#1642): the concrete risk (LLM resolver acting on a shared branch without operator consent) is narrower than the hypothetical stated in the original rationale; a clean merge carries no such risk.
 
 **Conflict path** mirrors `stale-branch.sh`. If `attempt_claude_merge_resolution` is available (guarded with `declare -f`), it is called inside a subshell that `cd`s into the sync worktree — matching the `stale-branch.sh` pattern exactly. On resolution: `commit_resolved_conflicts` → `verify_post_merge` → push. If the resolver is unavailable or fails, `git merge --abort` cleans up, the temp worktree is removed, and manual instructions are printed.
 
 **Exit codes:**
 - `0` — already current (no-op), merge+push succeeded, or conflict resolved and pushed
-- `1` — `main` passed as branch arg (refused), fetch failed, remote branch not found, worktree creation failed, commit of resolved conflicts failed, post-resolution verification failed (`verify_post_merge`), unresolvable conflict, or push failed. See `integration-sync.sh:103` and `tests/regression/sync-integration-branch.bats:69` for the `main`-refusal pin.
+- `1` — `main` passed as branch arg (refused), fetch failed, remote branch not found, worktree creation failed, commit of resolved conflicts failed, post-resolution verification failed (`verify_post_merge`), unresolvable conflict, or push failed. See `integration-sync.sh:sync_integration_branch` and `tests/regression/sync-integration-branch.bats:69` for the `main`-refusal pin.
+- `3` — `--clean-only` mode and merge conflicted; resolver not invoked; temp worktree removed; `outcome=conflict_deferred` emitted. Caller (promote auto mode) interprets this as "block with sync instruction".
 
-**Diagnostic:** `INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|push_failed`
+**Diagnostic:** `INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|conflict_deferred|push_failed`
 
 `push_failed` is a distinct outcome from `conflict`. A push rejection after a successful merge is a network/infrastructure failure, not a merge conflict — the distinction matters for health-report aggregation.
 

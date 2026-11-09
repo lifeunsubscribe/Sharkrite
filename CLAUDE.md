@@ -65,7 +65,7 @@ lib/utils/gate-verdict.sh        # Gate JSON output, TAP parsing, notrun synthes
    - **The INITIAL pass parallelizes too (#531):** `run_workflow`'s Phase 2 fires the gate in the background concurrent with the first review (bounded wait via the #654 backstop), so the first assessment also sees `[GATE]` findings. Previously the gate ran only inside the fix loop.
    - Gate findings are prepended as `[GATE] ACTIONABLE_NOW` items before LLM categorization
    - **Block-on-any:** the gate blocks/feeds the fix loop on **any** test failure in the targeted selection. `outcome=passed ⟺ zero failures`. This is sound because `main` is kept green (the green-main work, #707) — so any failure in the selection is this change's to fix. Phase 3 deleted the old baseline-diff machinery (re-run failing files at the diff base, suppress pre-existing reds) once it had nothing to tolerate. See `behavioral-design.md` → "Gate Block-on-Any".
-   - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s)
+   - Fix timeout is proportional: `300 + 240 × ACTIONABLE_NOW_COUNT` seconds (capped 1800s); a zero-change timeout retries once at double budget only when the first budget was ≤ 900 s
    - **No full suites inside a workflow (CRITICAL).** Gate runs are always the targeted selection. A full unfiltered `bats -r tests/` belongs ONLY in the overnight `rite --full-suite` pipeline — never in a batch preflight, a phase gate, or any interactive path. Besides costing 10–25 min per invocation, a full run puts the `tests/concurrency/` suites (which spawn competing processes by design) into the `--jobs 8` parallel group where they starve past `BATS_TEST_TIMEOUT` and report a healthy main as red. This retired the green-main preflight (#916, removed 2026-10-13 after it false-halted two batches). If main-greenness needs checking, do it lazily: re-run only the already-failing tests against main and subtract matches. Note: the `Barrier timeout waiting for N processes (got 1)` message can indicate two distinct failure modes — resource starvation from full-suite parallel execution (the reason above), OR a dead worker that never reached the barrier due to a broken setup step (issue #1597: `git worktree add` on a shared branch silently kills workers 2..N before they touch the barrier). The two look identical at the barrier but have different root causes; a barrier timeout in a CI-only run on a lightly-loaded runner is more likely a dead-worker bug than starvation.
    - Fix session uses `bash -n` syntax-check only — no `make check`/`bats`/`pytest` inside the LLM session
 4. **Merge** — Hard gate (CRITICAL findings only), then merge PR
@@ -111,7 +111,7 @@ Each task uses the model that fits its nature. Every role has its own independen
 | Finding assessment | `RITE_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Classifies review findings NOW/LATER/DISMISSED — three-state classification of structured findings, sonnet's job. Own var (#1187): it previously inherited the review model from the review marker, so pinning review to fable silently ran the loop's highest-count LLM call on fable too. |
 | Issue planning | `RITE_PLAN_MODEL` | `claude-opus-4-8` | Generates issues from ADRs — highest-stakes reasoning (must honor ADRs, never hallucinate fixtures). Its own var, decoupled from review so moving review off opus can't silently downgrade planning. Before this role existed, `plan-issues.sh` passed `""` and rode `RITE_REVIEW_MODEL` invisibly. |
 | Doc assessment | `RITE_DOC_ASSESSMENT_MODEL` | `claude-sonnet-4-6` | Structured pattern matching and comparison — sonnet's sweet spot |
-| Doc update (`doc_update`) | `RITE_DOC_UPDATE_MODEL` | `claude-fable-5` | LLM-authored doc edits read by humans as the product's description — quality justifies fable. Independent of `doc_assessment` (tag dedup, diff comparison). Role added; wiring to `docs-command.sh` Tier-2 editing pass is pending (forthcoming in Tier 2 issues). |
+| Doc update (`doc_update`) | `RITE_DOC_UPDATE_MODEL` | `claude-fable-5` | LLM-authored doc edits read by humans as the product's description — quality justifies fable. Independent of `doc_assessment` (tag dedup, diff comparison). |
 | Development | `RITE_CLAUDE_MODEL` | `claude-sonnet-4-6` | General implementation work |
 | Triage / classify | `RITE_TRIAGE_MODEL` | `claude-haiku-4-5` | Narrow binary/bucket classification (trivial-vs-substantive diff; doc categorization) — haiku's job |
 | Health report | `RITE_HEALTH_MODEL` | `claude-sonnet-4-6` | Mostly templating pre-computed stats + fixed-threshold checks; thin interpretive tail. Decoupled from review so the report stops riding opus. A/B (2026-06-15) showed sonnet at coverage parity with opus; opus's only edge was calibration on ambiguous signals (it correctly hedged a phantom-CRITICAL that sonnet over-escalated). If the future chunk-split lands, put the Insights/prioritization tail on opus. |
@@ -120,7 +120,7 @@ Each task uses the model that fits its nature. Every role has its own independen
 
 **Never pass `""` as the model arg** to `provider_run_prompt`, `provider_run_prompt_with_timeout`, or `provider_run_streaming_prompt` and rely on defaults — an empty model silently falls through to `resolve_model "review"` (opus). Pass an explicit role via the provider-agnostic **`provider_resolve_model <role>`** (not the claude-prefixed `claude_provider_resolve_model` — `lib/core`/`lib/utils` must stay provider-agnostic). Both invariants are enforced by lint: `PROVIDER_MODEL_FALLTHROUGH` (Rule 31) rejects the bare `""`, `DIRECT_PROVIDER_CALL` (Rule 32) rejects direct `claude_provider_*` calls. See: `docs/architecture/behavioral-design.md` → "Model Selection Per Task".
 
-**Opt-in fallback when a pinned model is out of credits**: set `RITE_MODEL_FALLBACK=<working-model>` in `.rite/config`. Healthcheck probes each distinct configured model for roles that go through `provider_resolve_model` (dev, review, assessment, doc_assessment, plan, promote, triage, full_suite_report) and substitutes the fallback for any that are capped — per-role independence is preserved (each role's var still controls its default; only an actually-capped model is replaced). Note: `RITE_HEALTH_MODEL` is used directly in `bin/rite-health-report` without routing through `provider_resolve_model`, so it is not probed and not subject to substitution. Emits one `MODEL_FALLBACK` diag and one operator warning per affected role. When the fallback itself is also unavailable, the existing exit-5/cap-resume path fires normally. When unset (default), no probes run and behavior is byte-identical to before.
+**Opt-in fallback when a pinned model is out of credits**: set `RITE_MODEL_FALLBACK=<working-model>` in `.rite/config`. Healthcheck probes each distinct configured model for roles that go through `provider_resolve_model` (dev, review, assessment, doc_assessment, doc_update, plan, promote, triage, full_suite_report) and substitutes the fallback for any that are capped — per-role independence is preserved (each role's var still controls its default; only an actually-capped model is replaced). Note: `RITE_HEALTH_MODEL` is used directly in `bin/rite-health-report` without routing through `provider_resolve_model`, so it is not probed and not subject to substitution. Emits one `MODEL_FALLBACK` diag and one operator warning per affected role. When the fallback itself is also unavailable, the existing exit-5/cap-resume path fires normally. When unset (default), no probes run and behavior is byte-identical to before.
 
 ## Shell Conventions
 
@@ -586,7 +586,7 @@ rite docs --resume <branch> # Resume a saved doc proposal from a terminal-less p
 rite --health-report       # Generate + display operational health report
 rite --health-report --latest  # Show most recent report
 rite --full-suite          # Run unfiltered make check + bats -r tests/ (periodic safety net)
-rite --sync <branch>       # Merge origin/main into an integration branch (explicit, never automatic)
+rite --sync <branch>       # Merge origin/main into an integration branch (explicit; promote runs it only when the merge is clean)
 rite --sync <N> [<N>...]  # Sync issue feature branches: skips rebase when branch merges cleanly with its base (no stale-review on clean paths); on genuine conflict invokes the resolver before the manual fallback
 rite --sync                # Bare sweep: sync all ledger branches + in-flight worktrees
 rite --promote <branch>    # Promote integration branch to main (PR + review + targeted gate +
@@ -646,12 +646,15 @@ Worktrees created before the lock infrastructure (PR #67, commit eb714e6) — or
 
 **One-time cleanup** for pre-existing installs: `rite --backfill-locks`
 
-**Backfill lock format** — distinguished from a live lock by the absence of a `pid` file and the presence of a `backfill` sentinel file:
+**Live lock format** (since #1701) — `issue-N.lock` is a **symlink** pointing to a private temp dir pre-populated with `pid` and `cwd` before publication. The symlink is atomic (`ln -sn tmp lock_dir`) so a live lock is never observable without its PID. Readers that follow symlinks (`[ -d lock_dir ]`, `cat lock_dir/pid`) continue to work without change.
+
+**Backfill lock format** — distinguished from a live lock by being a **real directory** (not a symlink) with `cwd` + `backfill` sentinel but no `pid`:
 ```
 ${RITE_LOCK_DIR}/issue-N.lock/
   cwd          ← worktree path (same as live lock)
   backfill     ← sentinel: identifies this as a backfill, not a live process lock
   # NO pid file — so get_locked_issue_numbers() skips it, acquire_issue_lock can reclaim it
+  # NO symlink — real directory, so [ -L lock_dir ] is false (distinguishes from live lock)
 ```
 
 ## Creating Issues (CRITICAL)
@@ -666,9 +669,10 @@ ANY issue you file — by hand via `gh issue create`, or via `rite plan` — MUS
 
 Follow-up issues (tech-debt, review follow-ups) follow the structure in `templates/issue-template.md`:
 
-- **Claude Context**: Changed files from the PR (auto-populated)
-- **Acceptance Criteria**: Item-specific from assessment (e.g., `[HIGH] Fix input validation`)
-- **Done Definition**: Generated from severity mix
+- **Claude Context**: `Files to Read:` from PR changed files; `Files to Modify:` seeded from the finding's `**Location:**` path (explicit note when absent)
+- **Acceptance Criteria**: Finding's `**Suggested Fix:**` text embedded under the checkbox (falls back to title-only when field absent)
+- **Verification Commands**: Finding's `**Verification:**` field when present; location-derived `sed`/`grep` command when Location is a recognized file path (e.g. `lib/core/foo.sh:42`); `# TODO: add verification command for: <location>` when Location is present but not a recognized file path (unsafe chars, no `/`, prose description); `# TODO: add verification command for this finding` when neither field exists
+- **Done Definition**: Severity-appropriate bounded sentence; MEDIUM/LOW fallback is "Done when the acceptance criteria above pass and the verification command succeeds" (no open-ended deferral language)
 - **Scope Boundary**: Static DO/DO NOT (address findings only)
 - **Time Estimate**: Aggregated from Fix Effort metadata in assessment
 
@@ -1042,6 +1046,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `MERGE_GATE_CI` — CI check conclusion gate in `merge-pr.sh` Check 4; `outcome=blocked|passed|pending failed=<n> pending=<n> total=<n> pr=<n>`. `blocked` = at least one completed-FAILURE/ERROR; `pending` = no failures but pending checks exist; `passed` = all complete and green (or zero checks). Reads conclusions GitHub already computed — runs nothing itself.
 - `GATE_FINDING_RESOLVED` — a prior `[GATE] ACTIONABLE_NOW` item was dropped from the LLM assessment output by `_resolve_prior_gate_findings` (issue #1613); `issue=<N> finding=<first 120 chars of header>`. Emitted once per dropped item. See `behavioral-design.md` → "Gate-Origin Re-raise Policy".
 - `MODEL_FALLBACK` — a role's configured model was detected as unavailable at preflight and substituted with `RITE_MODEL_FALLBACK`; `role=<r> from=<original_model> to=<fallback_model>`. Emitted once per affected role during healthcheck. Only fires when `RITE_MODEL_FALLBACK` is set.
+- `WORKTREE_RERESOLVED` — EMPTY_INIT auto-recovery created a new worktree with a different batch suffix; orchestrator re-resolved by branch and adopted the new path; `issue=N from=<old_path> to=<new_path>`. Emitted once per re-resolution in `_assert_worktree_alignment`. Not emitted when paths already agree (common path, zero overhead).
 - `GATE_ENV` — CI-equivalent environment status for a sharkrite gate run; `gnu=yes|no` (GNU tools prepended to PATH), `claude=masked` (always — shim dir prepended), `flock=yes|no` (flock(1) available, determines whether concurrency tests run), `skipped=N` (bats skip-directive count from TAP), `pr=N`. Emitted once per targeted gate run, sharkrite repos only.
 - `FOLLOWUP_RECONCILED` — batch-end reconciliation pass result; `closed=N annotated=N verified=N skipped=N`. `closed` = issues closed because the finding was resolved (security-labeled issues are never auto-closed and count toward `annotated` instead); `annotated` = issues that received a "partially resolved" or "security guard" comment and remain open; `verified` = issues confirmed still-open (needs-re-triage label removed); `skipped` = issues that were unchanged (deterministic filter), missing markers (pre-#1547), or could not be classified (provider unavailable). Emitted once per batch run by `lib/utils/reconcile-followups.sh`.
 
