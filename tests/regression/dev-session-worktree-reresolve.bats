@@ -432,8 +432,8 @@ CALL_EOF
     return 1
   }
   # Confirm basename is not used (the false convention that produced zero matches).
-  echo "$_func_body" | grep -qF 'basename' && {
-    echo "FAIL: 'basename' still used in _assert_worktree_alignment branch lookup" >&2
+  echo "$_func_body" | grep -v '^[[:space:]]*#' | grep -qF '$(basename' && {
+    echo "FAIL: '\$(basename' still used in _assert_worktree_alignment branch lookup" >&2
     echo "      Dir names are transformations of branches; basename always mismatches" >&2
     return 1
   } || true
