@@ -378,7 +378,7 @@ _resolve_done_def() {
   case "${_sev}" in
     CRITICAL) _def="Done when the CRITICAL finding is resolved, verified, and confirmed by tests." ;;
     HIGH)     _def="Done when the HIGH finding is resolved and verified with a targeted test or manual check." ;;
-    *)        _def="Done when the finding is addressed or explicitly deferred with justification." ;;
+    *)        _def="Done when the acceptance criteria above pass and the verification command succeeds." ;;
   esac
   echo "$_def"
 }
@@ -2551,50 +2551,81 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _finding_labels=$(_resolve_issue_labels "${_rollup_base_label}" "${_f_severity}" "${_f_category:-}")
 
     # --- Build per-finding acceptance criterion and verification command ---
-    # Seed from Location (file:line) when available; fall back to the clean title.
-    _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
+    # Pre-extract location path so it can be used for both the verification command
+    # and the Files to Modify section — avoids duplicating the extraction logic.
+    _loc_path_safe=""
+    _loc_line=""
+    if [ -n "${_f_location:-}" ]; then
+      # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
+      # Strip any trailing description after whitespace; then split on the last colon
+      # that is followed only by digits so we handle paths like lib/core/foo.sh:142
+      # but not bare paths without a line number.
+      _loc_path=$(echo "${_f_location}" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+      _loc_line=$(echo "${_f_location}" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
+      # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
+      # break the surrounding single-quoted sed/grep command strings and inject
+      # arbitrary shell text into the generated verification command.
+      # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
+      # Also require at least one '/' (directory path), '.' (file extension), or a
+      # filesystem hit so prose words like "Multiple" do not pass the charset check
+      # and become a confidently-wrong Files to Modify entry (#720/#722 wrong file
+      # pointer class). Root-level files like CLAUDE.md or README.md have no slash
+      # but do have a dot; extensionless root files like Makefile have neither, so
+      # the filesystem existence check catches them.
+      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.' || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
+        _loc_path_safe="$_loc_path"
+      fi
+    fi
+
+    # Acceptance criterion: embed Suggested Fix text when present so the criterion
+    # describes what to change and where, not just a restatement of the title.
+    if [ -n "${_f_suggested_fix:-}" ]; then
+      _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}
+  **Fix:** ${_f_suggested_fix}"
+    else
+      _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
+    fi
+
+    # Verification command: prefer the assessor-supplied Verification field; fall
+    # back to a location-derived command when Location is a file path; emit a
+    # TODO placeholder otherwise so the implementer knows work is needed.
     if [ -n "${_f_verification:-}" ]; then
       # Allowlist validation: _f_verification is LLM-derived; block shell injection
       # metacharacters (backtick, dollar, semicolon, pipe, ampersand, redirections)
       # before embedding in generated issue bodies.  Degrade to prose on failure so
-      # the finding is never silently lost.  Aligns with _loc_path sanitization below.
+      # the finding is never silently lost.  Aligns with _loc_path sanitization above.
       if printf '%s' "${_f_verification}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
         _verification_cmd="${_f_verification}"
       else
         _verification_cmd="# TODO: verify manually — assessor suggested: ${_f_verification}"
       fi
-    elif [ -n "$_f_location" ]; then
-      # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
-      # Strip any trailing description after whitespace; then split on the last colon
-      # that is followed only by digits so we handle paths like lib/core/foo.sh:142
-      # but not bare paths without a line number.
-      _loc_path=$(echo "$_f_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
-      _loc_line=$(echo "$_f_location" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
-      # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
-      # break the surrounding single-quoted sed/grep command strings and inject
-      # arbitrary shell text into the generated verification command.
-      # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
-      _loc_path_safe=""
-      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
-        _loc_path_safe="$_loc_path"
-      fi
-      if [ -n "$_loc_line" ] && [ -n "$_loc_path_safe" ]; then
+    elif [ -n "$_loc_path_safe" ]; then
+      if [ -n "$_loc_line" ]; then
         # file:line format — emit a valid sed command pointing at that exact line
         _verification_cmd="sed -n '${_loc_line}p' '${_loc_path_safe}'"
-      elif [ -n "$_loc_path_safe" ]; then
+      else
         # Looks like a plain file path (no line number) — use grep to inspect it
         _verification_cmd="grep -n '' '${_loc_path_safe}'"
-      elif echo "$_f_location" | grep -qE '^[a-zA-Z/._-]'; then
-        # Location present but path did not pass sanitization — emit as prose to
-        # avoid injecting unsanitized content into shell command syntax.
-        _verification_cmd="# TODO: add verification command for: ${_f_location}"
-      else
-        # Location field present but doesn't look like a path — fall back
-        _verification_cmd="# TODO: add verification command for: ${_f_location}"
       fi
+    elif [ -n "${_f_location:-}" ]; then
+      # Location present but not a recognized file path (no '/', unsafe chars, etc.)
+      # Emit as a TODO with the original location so the implementer can act on it
+      # without us injecting unsanitized content into shell command syntax.
+      _verification_cmd="# TODO: add verification command for: ${_f_location}"
     else
-      # Generic fallback — reviewer must fill in the concrete command
+      # Neither Verification nor Location — explicit TODO so the implementer knows
+      # verification needs to be added.
       _verification_cmd="# TODO: add verification command for this finding"
+    fi
+
+    # Files to Modify: seed from the sanitized location path when available;
+    # state explicitly when not so the implementer knows why the section is empty.
+    if [ -n "$_loc_path_safe" ]; then
+      _files_to_modify="- \`${_loc_path_safe}\`"
+    elif [ -n "${_f_location:-}" ]; then
+      _files_to_modify="- _Location specified in assessment but not in a recognized path form_"
+    else
+      _files_to_modify="- _Location not specified in assessment_"
     fi
 
     # Done Definition: severity-appropriate
@@ -2622,14 +2653,13 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     [ -n "${_assessment_head_sha:-}" ] && _finding_sha_marker="<!-- ${RITE_MARKER_FINDING_SHA}:${_assessment_head_sha} -->"
 
     # Claude Context: runbook §5 splits into Files to Read / Files to Modify.
-    # For follow-ups, all parent-PR changed files are candidates for inspection;
-    # none are guaranteed to require modification, so emit all under "Files to Read:"
-    # and leave "Files to Modify:" as a concrete placeholder for the implementer.
+    # Files to Modify is seeded from the finding's Location path; falls back to an
+    # explicit note when no path was provided (_files_to_modify is set above).
     _claude_context_section="Files to Read:
 ${CLAUDE_CONTEXT:-_See changed files in PR #${PR_NUMBER}_}
 
 Files to Modify:
-- _Determine from the finding above_"
+${_files_to_modify}"
 
     FOLLOWUP_BODY="${SOURCE_ISSUE_MARKER}<!-- ${RITE_MARKER_PARENT_PR}:${PR_NUMBER} -->${_finding_location_marker}${_finding_sha_marker}
 ## Description
@@ -2656,7 +2686,7 @@ ${_time_estimate:-30min}
 ${_claude_context_section}
 
 ## Acceptance Criteria
-${_acceptance_criterion}: see Description above for details
+${_acceptance_criterion}
 
 ## Verification Commands
 \`\`\`bash
