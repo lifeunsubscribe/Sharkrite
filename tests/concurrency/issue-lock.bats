@@ -90,15 +90,17 @@ wait_at_barrier() {
 }
 
 @test "acquire_issue_lock succeeds when no lock exists" {
-  run acquire_issue_lock 42
-  [ "$status" -eq 0 ]
+  # Call directly (not via `run`) so ${BASHPID:-$$} written by acquire equals
+  # ${BASHPID:-$$} in the test body — `run` creates a subprocess where $BASHPID
+  # differs from the outer shell's $$.
+  acquire_issue_lock 42
   [ -d "$RITE_LOCK_DIR/issue-42.lock" ]
   [ -f "$RITE_LOCK_DIR/issue-42.lock/pid" ]
 
   # Verify PID is correct
   local lock_pid
   lock_pid=$(cat "$RITE_LOCK_DIR/issue-42.lock/pid")
-  [ "$lock_pid" = "$$" ]
+  [ "$lock_pid" = "${BASHPID:-$$}" ]
 }
 
 @test "acquire_issue_lock fails when lock held by live process" {
@@ -117,15 +119,45 @@ wait_at_barrier() {
   mkdir -p "$RITE_LOCK_DIR/issue-42.lock"
   get_dead_pid > "$RITE_LOCK_DIR/issue-42.lock/pid"
 
-  # Should reclaim the stale lock
-  run acquire_issue_lock 42
-  [ "$status" -eq 0 ]
-  [[ "$output" =~ "Reclaiming stale lock" ]]
+  # Call directly (not via `run`) so ${BASHPID:-$$} written by acquire equals
+  # ${BASHPID:-$$} in the test body. Redirect stderr to capture the reclaim message.
+  acquire_issue_lock 42 2>"$BATS_TEST_TMPDIR/acq_stderr.txt"
+  grep -q "Reclaiming stale lock" "$BATS_TEST_TMPDIR/acq_stderr.txt"
 
   # Verify lock now has our PID
   local lock_pid
   lock_pid=$(cat "$RITE_LOCK_DIR/issue-42.lock/pid")
-  [ "$lock_pid" = "$$" ]
+  [ "$lock_pid" = "${BASHPID:-$$}" ]
+}
+
+@test "ln -sn refuses to dereference an existing symlink lock — no-clobber pin" {
+  # Regression for the double-hold race: without -n, `ln -s new_tmp lock_dir`
+  # on a system where lock_dir is already a symlink would plant new_tmp INSIDE
+  # the holder's directory (ln dereferences the symlink target), giving two
+  # processes a lock with the same directory path and defeating mutual exclusion.
+  # With -n, ln refuses and exits non-zero, so only atomic mv (_atomic_steal_lock)
+  # can displace the holder.
+  local holder_tmp
+  holder_tmp=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  echo "holder-pid" > "$holder_tmp/pid"
+  local lock_dir="$RITE_LOCK_DIR/issue-99.lock"
+  ln -s "$holder_tmp" "$lock_dir"
+
+  # A racing acquirer prepares its own temp dir
+  local racer_tmp
+  racer_tmp=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
+  echo "racer-pid" > "$racer_tmp/pid"
+
+  # ln -sn must refuse (exit non-zero) because lock_dir already exists as a symlink
+  run ln -sn "$racer_tmp" "$lock_dir"
+  [ "$status" -ne 0 ]
+
+  # Holder's directory must not contain the racer's pid file
+  [ ! -f "$holder_tmp/racer-pid" ]
+  # Specifically: only the holder's own pid file is present
+  [ "$(ls "$holder_tmp")" = "pid" ]
+
+  rm -rf "$holder_tmp" "$racer_tmp" 2>/dev/null || true
 }
 
 @test "acquire_issue_lock reclaims lock without PID file" {

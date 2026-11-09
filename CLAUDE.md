@@ -646,7 +646,7 @@ Worktrees created before the lock infrastructure (PR #67, commit eb714e6) — or
 
 **One-time cleanup** for pre-existing installs: `rite --backfill-locks`
 
-**Live lock format** (since #1701) — `issue-N.lock` is a **symlink** pointing to a private temp dir pre-populated with `pid` and `cwd` before publication. The symlink is atomic (`ln -s tmp lock_dir`) so a live lock is never observable without its PID. Readers that follow symlinks (`[ -d lock_dir ]`, `cat lock_dir/pid`) continue to work without change.
+**Live lock format** (since #1701) — `issue-N.lock` is a **symlink** pointing to a private temp dir pre-populated with `pid` and `cwd` before publication. The symlink is atomic (`ln -sn tmp lock_dir`) so a live lock is never observable without its PID. Readers that follow symlinks (`[ -d lock_dir ]`, `cat lock_dir/pid`) continue to work without change.
 
 **Backfill lock format** — distinguished from a live lock by being a **real directory** (not a symlink) with `cwd` + `backfill` sentinel but no `pid`:
 ```

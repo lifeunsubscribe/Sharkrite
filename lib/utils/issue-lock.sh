@@ -120,7 +120,7 @@ acquire_issue_lock() {
   # no create→PID-write window for a waiter to exploit.
   local _tmp_dir
   _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
-  echo $BASHPID > "$_tmp_dir/pid"
+  echo ${BASHPID:-$$} > "$_tmp_dir/pid"
   pwd > "$_tmp_dir/cwd" 2>/dev/null || true
 
   local lock_attempts=0
@@ -177,7 +177,7 @@ acquire_issue_lock() {
       # the process image without firing EXIT traps, so the previous incarnation's
       # release never ran; the re-exec'd process has the same $$ and finds its own
       # live lock).  Live failure: issue #343 batch run 2026-06-06.
-      if [ "$lock_pid" = "$$" ]; then
+      if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
         echo "⚠️  Reclaiming self-held lock (post-exec restart) for issue #${issue_number}" >&2
         _atomic_steal_lock "$lock_dir"
         continue
@@ -218,7 +218,7 @@ release_issue_lock() {
   local lock_pid=""
   if [ -L "$lock_dir" ]; then
     lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-    if [ "$lock_pid" = "$$" ]; then
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
       local _target; _target=$(readlink "$lock_dir" 2>/dev/null || true)
       rm -f "$lock_dir" 2>/dev/null || true
       [ -n "$_target" ] && rm -rf "$_target" 2>/dev/null || true
@@ -226,7 +226,7 @@ release_issue_lock() {
   elif [ -d "$lock_dir" ]; then
     # Legacy real-directory lock.
     lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-    if [ "$lock_pid" = "$$" ]; then
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
       rm -rf "$lock_dir" 2>/dev/null || true
     fi
   fi
@@ -258,7 +258,7 @@ acquire_batch_lock() {
 
   local _tmp_dir
   _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
-  echo $BASHPID > "$_tmp_dir/pid"
+  echo ${BASHPID:-$$} > "$_tmp_dir/pid"
   printf '%s\n' "$issue_list" > "$_tmp_dir/issues" 2>/dev/null || true
   pwd > "$_tmp_dir/cwd" 2>/dev/null || true
 
@@ -299,7 +299,7 @@ acquire_batch_lock() {
         continue
       fi
 
-      if [ "$lock_pid" = "$$" ]; then
+      if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
         echo "⚠️  Reclaiming self-held batch lock (post-exec restart)" >&2
         _atomic_steal_lock "$lock_dir"
         continue
@@ -330,14 +330,14 @@ release_batch_lock() {
 
   if [ -L "$lock_dir" ]; then
     local lock_pid; lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-    if [ "$lock_pid" = "$$" ]; then
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
       local _target; _target=$(readlink "$lock_dir" 2>/dev/null || true)
       rm -f "$lock_dir" 2>/dev/null || true
       [ -n "$_target" ] && rm -rf "$_target" 2>/dev/null || true
     fi
   elif [ -d "$lock_dir" ]; then
     local lock_pid; lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-    if [ "$lock_pid" = "$$" ]; then
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
       rm -rf "$lock_dir" 2>/dev/null || true
     fi
   fi
@@ -420,7 +420,7 @@ acquire_pr_followup_lock() {
 
   local _tmp_dir
   _tmp_dir=$(mktemp -d "${RITE_LOCK_DIR}/.lock-XXXXXX")
-  echo $BASHPID > "$_tmp_dir/pid"
+  echo ${BASHPID:-$$} > "$_tmp_dir/pid"
 
   local lock_attempts=0
   # Allow up to 60 seconds — the critical section (gh issue list + gh issue create)
@@ -522,14 +522,14 @@ release_pr_followup_lock() {
   local lock_pid=""
   if [ -L "$lock_dir" ]; then
     lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-    if [ "$lock_pid" = "$$" ]; then
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
       local _target; _target=$(readlink "$lock_dir" 2>/dev/null || true)
       rm -f "$lock_dir" 2>/dev/null || true
       [ -n "$_target" ] && rm -rf "$_target" 2>/dev/null || true
     fi
   elif [ -d "$lock_dir" ]; then
     lock_pid=$(cat "$lock_dir/pid" 2>/dev/null || echo "")
-    if [ "$lock_pid" = "$$" ]; then
+    if [ "$lock_pid" = "${BASHPID:-$$}" ]; then
       rm -rf "$lock_dir" 2>/dev/null || true
     fi
   fi

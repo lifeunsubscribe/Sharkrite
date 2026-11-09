@@ -189,13 +189,15 @@ run_locked_dedup_create() {
   mkdir "$lock_dir"
   get_dead_pid > "$lock_dir/pid"
 
-  run acquire_pr_followup_lock 77
-  [ "$status" -eq 0 ]
+  # Call directly (not via `run`) so ${BASHPID:-$$} written by acquire equals
+  # ${BASHPID:-$$} in the test body — `run` creates a subprocess where $BASHPID
+  # differs from the outer shell's $$.
+  acquire_pr_followup_lock 77 2>/dev/null
   [ -d "$lock_dir" ]
 
   local lock_pid
   lock_pid=$(cat "$lock_dir/pid")
-  [ "$lock_pid" = "$$" ]
+  [ "$lock_pid" = "${BASHPID:-$$}" ]
 }
 
 @test "locks for different PR numbers are independent" {
