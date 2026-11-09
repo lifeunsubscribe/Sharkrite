@@ -1404,10 +1404,19 @@ GHEOF
 #
 # A legacy pre-#1651 directory-style lock whose recorded holder PID is dead
 # must be reclaimed by the symlink-path acquire, allowing the caller to
-# succeed within 5 seconds.  This exercises the while-loop directory-reclaim
-# branch (the [ -d "$lockfile" ] guard in the while condition and the
-# mv-before-remove path in the loop body) added for backward compatibility
-# with lock files from old installations.
+# succeed within 5 seconds.  This exercises the portable-path PREFLIGHT
+# dead-dir reclaim (scratchpad-lock.sh lines 177-199): the preflight detects
+# the dead-PID directory, renames it aside (rename-before-remove), verifies
+# the renamed path is still the same dead-PID directory, then removes it —
+# so the while loop finds no lockfile and acquires with its first ln -s.
+#
+# NOTE: This test does NOT exercise the while-loop directory-reclaim branch
+# (the [ -d "$lockfile" ] guard in the while condition and the mv-before-remove
+# path in the loop body, lines 249-268 of scratchpad-lock.sh).  The preflight
+# absorbs the dead-dir scenario before the loop starts.  Exercising the loop
+# path would require a directory holder that persists past the preflight check
+# but is reclaimed from within the loop — a race window that cannot be
+# deterministically manufactured without cooperative processes.
 #
 # Acceptance criteria:
 #   (a) acquire_scratchpad_lock returns 0 and sets _SCRATCHPAD_LOCK_HELD=true
