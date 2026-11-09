@@ -141,11 +141,28 @@ teardown() {
 }
 
 @test "iso_to_local_display handles epoch 0" {
-  result=$(iso_to_local_display "1970-01-01T00:00:00Z")
+  # Pinned to UTC: in any zone west of Greenwich epoch 0 is Dec 31, 1969 local,
+  # so a bare "contains 1970" check only passes when UTC is mislabeled as local.
+  result=$(TZ=UTC iso_to_local_display "1970-01-01T00:00:00Z")
+  [ "$result" = "Jan 01, 1970 - 12:00 AM UTC" ]
+}
 
-  # Should format, not return raw ISO
-  [ "$result" != "1970-01-01T00:00:00Z" ]
-  [[ "$result" =~ 1970 ]]
+# Zone-pinned: the UTC input must be CONVERTED to the local zone, not relabeled.
+# The BSD branch used to parse the UTC components as local time and stamp them
+# with the local zone name, so 04:10Z rendered as "4:10 AM MST" (issue #1685).
+@test "iso_to_local_display converts UTC to the local zone (standard time)" {
+  result=$(TZ=America/Denver iso_to_local_display "2026-11-09T04:10:00Z")
+  [ "$result" = "Nov 08, 2026 - 9:10 PM MST" ]
+}
+
+@test "iso_to_local_display converts UTC to the local zone (daylight time)" {
+  result=$(TZ=America/Denver iso_to_local_display "2026-07-01T04:10:00Z")
+  [ "$result" = "Jun 30, 2026 - 10:10 PM MDT" ]
+}
+
+@test "iso_to_local_display tolerates fractional seconds" {
+  result=$(TZ=America/Denver iso_to_local_display "2026-11-09T04:10:00.123Z")
+  [ "$result" = "Nov 08, 2026 - 9:10 PM MST" ]
 }
 
 # =============================================================================
