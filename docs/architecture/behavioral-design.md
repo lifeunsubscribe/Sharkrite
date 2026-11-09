@@ -2037,7 +2037,7 @@ Fetches `origin/main` and `origin/<branch>`, checks currency, and if behind: mer
 
 **Exit codes:**
 - `0` — already current (no-op), merge+push succeeded, or conflict resolved and pushed
-- `1` — `main` passed as branch arg (refused), fetch failed, remote branch not found, worktree creation failed, commit of resolved conflicts failed, post-resolution verification failed (`verify_post_merge`), unresolvable conflict, or push failed. See `integration-sync.sh:103` and `tests/regression/sync-integration-branch.bats:69` for the `main`-refusal pin.
+- `1` — `main` passed as branch arg (refused), fetch failed, remote branch not found, worktree creation failed, commit of resolved conflicts failed, post-resolution verification failed (`verify_post_merge`), unresolvable conflict, or push failed. See `integration-sync.sh:sync_integration_branch` and `tests/regression/sync-integration-branch.bats:69` for the `main`-refusal pin.
 - `3` — `--clean-only` mode and merge conflicted; resolver not invoked; temp worktree removed; `outcome=conflict_deferred` emitted. Caller (promote auto mode) interprets this as "block with sync instruction".
 
 **Diagnostic:** `INTEGRATION_SYNC branch=<b> outcome=current|merged|resolved|conflict|conflict_deferred|push_failed`

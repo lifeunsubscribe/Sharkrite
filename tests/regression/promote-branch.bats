@@ -164,6 +164,12 @@ source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
 set +u; set +o pipefail
 git_fetch_safe() { return 0; }
 integration_ledger_entries() { printf '%s\n' "$_entry"; }
+gh_safe() {
+  case "\${1:-} \${2:-}" in
+    "pr list") printf '[]\n'; return 0 ;;
+  esac
+  return 0
+}
 run_promote "behind-branch" 2>&1
 RUNEOF
 )

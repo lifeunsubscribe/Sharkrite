@@ -499,10 +499,14 @@ _run_rite() {
 @test "sync_integration_branch --clean-only block precedes resolver invocation" {
   local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
   [ -f "$_lib" ]
-  # The clean-only early-return must appear before attempt_claude_merge_resolution
+  # Scope both greps to the sync_integration_branch function body only,
+  # excluding comment lines, so file-header comments are not matched.
+  # Rule 39H: use [[:space:]] not \s.
+  local _func_body
+  _func_body=$(sed -n '/^sync_integration_branch()/,/^}/p' "$_lib" | grep -v '^[[:space:]]*#')
   local _clean_line _resolver_line
-  _clean_line=$(grep -n '_clean_only.*true' "$_lib" | grep 'if\|=.*true' | head -1 | cut -d: -f1 || true)
-  _resolver_line=$(grep -n 'attempt_claude_merge_resolution' "$_lib" | head -1 | cut -d: -f1 || true)
+  _clean_line=$(printf '%s\n' "$_func_body" | grep -n '_clean_only.*true' | grep 'if\|=.*true' | head -1 | cut -d: -f1 || true)
+  _resolver_line=$(printf '%s\n' "$_func_body" | grep -n 'attempt_claude_merge_resolution' | head -1 | cut -d: -f1 || true)
   [ -n "$_clean_line" ]
   [ -n "$_resolver_line" ]
   [ "$_clean_line" -lt "$_resolver_line" ]
@@ -513,48 +517,54 @@ _run_rite() {
 #          and emits conflict_deferred when git merge fails.
 # ---------------------------------------------------------------------------
 @test "sync_integration_branch --clean-only returns 3 when merge conflicts" {
-  # Stub all dep functions
-  print_header()  { true; }
-  print_info()    { true; }
-  print_step()    { true; }
-  print_success() { true; }
-  print_warning() { true; }
-  print_error()   { true; }
-  print_status()  { true; }
-  git_fetch_safe()   { return 0; }
-  verify_post_merge() { return 0; }
-  _diag() {
-    # Capture the diag line into a file for assertion
-    printf '%s\n' "$*" >> "${_CLEAN_ONLY_DIAG_FILE:-/dev/null}"
-  }
+  # sync_integration_branch calls `trap - EXIT` on the conflict_deferred path,
+  # which would clear bats' own EXIT trap and produce a plan/executed mismatch
+  # when run in-process. Run in a child process to isolate the trap reset.
 
-  # Use a PATH-stub git that makes `git merge` fail (non-zero exit) while
-  # merge --abort and other git commands succeed.
-  local _stub_bin="$RITE_TEST_TMPDIR/stub-git-clean-only"
-  local _real_git
-  _real_git=$(command -v git)
+  local _stub_bin="$RITE_TEST_TMPDIR/stub-git-co"
   mkdir -p "$_stub_bin"
-  printf '#!/bin/bash\nif [ "${1:-}" = "-C" ]; then\n  shift 2\nfi\nif [ "${1:-}" = "merge" ] && [ "${2:-}" != "--abort" ] && [ "${2:-}" != "-base" ] && [ "${2:-}" != "base" ]; then\n  exit 1\nfi\nexec "%s" "$@"\n' "$_real_git" > "$_stub_bin/git"
+  # Git stub: merge-base exits 1 (branch not current); worktree add creates the
+  # dir and exits 0; merge <not --abort> exits 1 (conflict); everything else 0.
+  # Rule 39H: [[:space:]] not \s.
+  cat > "$_stub_bin/git" << 'GITSTUB'
+#!/bin/bash
+if [ "${1:-}" = "-C" ]; then shift 2; fi
+case "${1:-}" in
+  merge-base) exit 1 ;;
+  merge)
+    if [ "${2:-}" = "--abort" ]; then exit 0; fi
+    exit 1 ;;
+  worktree)
+    if [ "${2:-}" = "add" ]; then
+      mkdir -p "${4:-}" 2>/dev/null || true
+      exit 0
+    fi
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+GITSTUB
   chmod +x "$_stub_bin/git"
 
-  export PATH="$_stub_bin:$PATH"
-  export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
-  export RITE_LOCK_DIR="$RITE_TEST_TMPDIR/locks-co"
-  export RITE_STATE_DIR="$RITE_TEST_TMPDIR/state-co"
-  mkdir -p "$RITE_LOCK_DIR" "$RITE_STATE_DIR"
-
   local _diag_file="$RITE_TEST_TMPDIR/clean_only_diag.txt"
-  export _CLEAN_ONLY_DIAG_FILE="$_diag_file"
+  touch "$_diag_file"
+  local _runner="$RITE_TEST_TMPDIR/clean_only_runner.sh"
+  cat > "$_runner" << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
+export RITE_LOG_FILE="$_diag_file"
+export PATH="$_stub_bin:\$PATH"
+source "$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+_rc=0
+sync_integration_branch "test-integ-branch" "--clean-only" || _rc=\$?
+exit \$_rc
+RUNEOF
+  chmod +x "$_runner"
 
-  source "$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
-  set +u; set +o pipefail
-
-  # Call with --clean-only; expect exit 3
-  local _rc=0
-  sync_integration_branch "test-integ-branch" "--clean-only" || _rc=$?
-
-  [ "$_rc" -eq 3 ]
-  # conflict_deferred diag must have been emitted
+  run bash "$_runner"
+  [ "$status" -eq 3 ]
   grep -q 'conflict_deferred' "$_diag_file"
 }
 
