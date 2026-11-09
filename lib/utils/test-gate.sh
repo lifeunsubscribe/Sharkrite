@@ -437,7 +437,7 @@ run_test_gate() {
       _selection=$(_select_tests_by_changed_paths "$_changed_files" "$project_root")
     fi
 
-    # Strip "by_ref:" tags emitted by body-reference selection (Rule 2 in
+    # Strip "by_ref:" tags emitted by body-reference selection (Rule 3 in
     # _select_tests_by_changed_paths). Count them first for the diag, then
     # remove the prefix so the rest of the pipeline sees plain relative paths.
     _by_ref_count=$(printf '%s\n' "$_selection" | grep -c '^by_ref:' || true)

@@ -85,6 +85,15 @@ EOF
 # This test exercises lib/utils/b.sh indirectly via fixture E above.
 @test "fixture G" { true; }
 EOF
+
+  # Fixture H: body references bin/rite-full-suite (not bin/rite standalone).
+  # Pins Rule 1 whole-token boundary: bin/rite must NOT match bin/rite-full-suite.
+  cat > "$TEST_REPO/tests/regression/body-rite-full-suite.bats" <<'EOF'
+#!/usr/bin/env bats
+# sharkrite-test-covers: lib/core/a.sh
+setup() { FULL_SUITE="$PROJECT_ROOT/bin/rite-full-suite"; }
+@test "fixture H" { true; }
+EOF
 }
 
 teardown() {
@@ -562,6 +571,42 @@ EOF
     echo "FAIL: covers-foo.bats has by_ref: prefix but it was selected via header — by_ref diag will be overcounted; got: $result" >&2
     return 1
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Whole-token boundary for body-reference Rule 1 (issue #1651)
+# bin/rite appeared as a prefix of bin/rite-full-suite, producing 6 measured
+# false-positive selections.  The trailing anchor ([^-_./a-zA-Z0-9]|$) in
+# the Rule 1 grep prevents bin/rite from matching bin/rite-full-suite.
+# ---------------------------------------------------------------------------
+
+@test "_bats_file_has_body_reference: bin/rite does NOT match bin/rite-full-suite (whole-token boundary)" {
+  # Fixture H body has bin/rite-full-suite — bin/rite must not match it.
+  # Pre-fix: grep -qF matched the substring. Post-fix: trailing anchor rejects it.
+  run _bats_file_has_body_reference \
+    "$TEST_REPO/tests/regression/body-rite-full-suite.bats" \
+    "bin/rite"
+  [ "$status" -eq 1 ] || {
+    echo "FAIL: bin/rite matched bin/rite-full-suite body (substring boundary broken)" >&2
+    return 1
+  }
+}
+
+@test "_bats_file_has_body_reference: exact bin/rite match works (no false negative at token boundary)" {
+  # Positive case: a file containing bin/rite as a whole token (quote-terminated)
+  # must still be selected — the whole-token anchor must not introduce false negatives.
+  local _bats_exact="$TEST_REPO/tests/regression/body-rite-exact.bats"
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/core/a.sh'
+    echo 'setup() { R="/some/path/bin/rite"; }'
+    echo '@test "x" { true; }'
+  } > "$_bats_exact"
+  run _bats_file_has_body_reference "$_bats_exact" "bin/rite"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: bin/rite not matched in a file that contains it as a whole token" >&2
+    return 1
+  }
 }
 
 @test "_select_lint_by_changed_paths: changed .bats in tests/ is included in lint scope" {

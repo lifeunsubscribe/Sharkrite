@@ -468,15 +468,19 @@ _bats_file_matches_changed() {
 _bats_file_has_body_reference() {
   local bats_file="$1"
   local changed_files="$2"
-  local _changed _suffix
+  local _changed _suffix _changed_re
   while IFS= read -r _changed; do
     [ -z "$_changed" ] && continue
     case "$_changed" in
       lib/*.sh|bin/*|tools/*.sh) ;;
       *) continue ;;
     esac
-    # Rule 1: full relative path as a fixed-string substring
-    if grep -qF -- "$_changed" "$bats_file" 2>/dev/null; then
+    # Rule 1: full relative path, whole-token match
+    # Escape regex metacharacters in the path (only '.' in .sh extensions
+    # matters in practice). Trailing anchor prevents bin/rite from matching
+    # bin/rite-full-suite: the char after the path must not be in [-_./a-zA-Z0-9].
+    _changed_re=$(printf '%s' "$_changed" | sed 's/\./\\./g' || true)
+    if grep -qE -- "${_changed_re}([^-_./a-zA-Z0-9]|$)" "$bats_file" 2>/dev/null; then
       return 0
     fi
     # Rule 2: strip the leading path component and anchor with /
