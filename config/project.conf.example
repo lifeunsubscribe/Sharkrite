@@ -191,21 +191,6 @@
 # still present and activates if a baseline JSON is supplied by other means.
 # RITE_ACCEPT_RED_MAIN=0
 
-# CI preflight (batch only; no config variable — override is a CLI flag only).
-# Before processing any issue, a batch reads the latest completed workflow run
-# on the target branch via one gh api call. If the conclusion is failure or
-# timed_out, the batch halts with the failing workflow name, URL, and remediation
-# instructions — before any slot starts.
-#
-# This is an API read, NOT a test run. It is not the retired #916 full-suite
-# green-main check. Gate block-on-any soundness depends on a green base; this
-# preflight catches the case cheaply at batch start.
-#
-# Override: pass --allow-red-main on the rite command line. There is no env-var
-# escape hatch (RITE_ALLOW_RED_MAIN is set only by the --allow-red-main flag and
-# is not a user-configurable option). Use the flag when fixing main is blocked
-# but work must proceed (e.g. a planned main-repair window).
-
 # =============================================================================
 # Plan Command (rite plan)
 # =============================================================================
