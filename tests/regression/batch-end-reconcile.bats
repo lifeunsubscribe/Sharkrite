@@ -28,6 +28,9 @@ setup() {
   # Restore flags after sourcing (libs set -euo pipefail)
   set +u; set +o pipefail
 
+  # Ensure diag.log exists so grep -c on it never fails with "file not found"
+  touch "${BATS_TEST_TMPDIR}/diag.log"
+
   # Stub _diag so diag calls don't crash
   _diag() { echo "[diag] $*" >> "${BATS_TEST_TMPDIR}/diag.log"; }
 
@@ -59,7 +62,8 @@ _make_body() {
 # Path 1: Unchanged file — deterministic skip, zero LLM calls.
 # ---------------------------------------------------------------------------
 @test "unchanged file: issue is skipped, no gh calls, no LLM call" {
-  _classify_calls=0
+  local _classify_file="${BATS_TEST_TMPDIR}/classify_calls"
+  echo 0 > "$_classify_file"
 
   _batch_followups_created() { printf '42\n'; }
   gh_safe() {
@@ -74,17 +78,22 @@ _make_body() {
     fi
   }
   git() {
-    if [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
+    if [ "$1" = "-C" ] && [ "$3" = "cat-file" ]; then
+      return 0  # SHA is reachable
+    elif [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
       # Return empty diff — file unchanged
       printf ''
     fi
   }
   provider_resolve_model() { printf 'claude-haiku-4-5'; }
-  provider_run_prompt() { _classify_calls=$(( _classify_calls + 1 )); echo '{"verdict":"resolved","reason":"fixed"}'; }
+  provider_run_prompt() {
+    echo $(( $(cat "$_classify_file") + 1 )) > "$_classify_file"
+    echo '{"verdict":"resolved","reason":"fixed"}'
+  }
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]
-  [ "$_classify_calls" -eq 0 ]  # zero LLM calls
+  [ "$(cat "$_classify_file")" -eq 0 ]  # zero LLM calls
 
   local _diag_line
   _diag_line=$(grep 'FOLLOWUP_RECONCILED' "${BATS_TEST_TMPDIR}/diag.log" | tail -1 || true)
@@ -96,25 +105,28 @@ _make_body() {
 # Path 2: Changed file, verdict = resolved → issue closed.
 # ---------------------------------------------------------------------------
 @test "resolved finding: issue is closed with a comment" {
-  _close_called=0
-  _comment_called=0
+  local _close_file="${BATS_TEST_TMPDIR}/close_called"
+  local _comment_file="${BATS_TEST_TMPDIR}/comment_called"
+  echo 0 > "$_close_file"
+  echo 0 > "$_comment_file"
 
   _batch_followups_created() { printf '43\n'; }
   gh_safe() {
-    local _cmd="$*"
     if [ "$1" = "issue" ] && [ "$2" = "view" ]; then
       local _body
       _body=$(_make_body "abc1234" "lib/core/foo.sh:10")
       printf '{"body":"%s","labels":[]}\n' \
         "$(echo "$_body" | sed 's/"/\\"/g; s/$/\\n/g' | tr -d '\n')"
     elif [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
-      _comment_called=$(( _comment_called + 1 ))
+      echo $(( $(cat "$_comment_file") + 1 )) > "$_comment_file"
     elif [ "$1" = "issue" ] && [ "$2" = "close" ]; then
-      _close_called=$(( _close_called + 1 ))
+      echo $(( $(cat "$_close_file") + 1 )) > "$_close_file"
     fi
   }
   git() {
-    if [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
+    if [ "$1" = "-C" ] && [ "$3" = "cat-file" ]; then
+      return 0
+    elif [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
       printf 'lib/core/foo.sh\n'  # file changed
     fi
   }
@@ -123,8 +135,8 @@ _make_body() {
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]
-  [ "$_comment_called" -ge 1 ]
-  [ "$_close_called" -eq 1 ]
+  [ "$(cat "$_comment_file")" -ge 1 ]
+  [ "$(cat "$_close_file")" -eq 1 ]
 
   local _diag_line
   _diag_line=$(grep 'FOLLOWUP_RECONCILED' "${BATS_TEST_TMPDIR}/diag.log" | tail -1 || true)
@@ -136,8 +148,10 @@ _make_body() {
 # Path 3: Changed file, verdict = partially-resolved → annotate, leave open.
 # ---------------------------------------------------------------------------
 @test "partially-resolved finding: comment posted, issue NOT closed" {
-  _comment_called=0
-  _close_called=0
+  local _comment_file="${BATS_TEST_TMPDIR}/comment_called"
+  local _close_file="${BATS_TEST_TMPDIR}/close_called"
+  echo 0 > "$_comment_file"
+  echo 0 > "$_close_file"
 
   _batch_followups_created() { printf '44\n'; }
   gh_safe() {
@@ -147,13 +161,15 @@ _make_body() {
       printf '{"body":"%s","labels":[]}\n' \
         "$(echo "$_body" | sed 's/"/\\"/g; s/$/\\n/g' | tr -d '\n')"
     elif [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
-      _comment_called=$(( _comment_called + 1 ))
+      echo $(( $(cat "$_comment_file") + 1 )) > "$_comment_file"
     elif [ "$1" = "issue" ] && [ "$2" = "close" ]; then
-      _close_called=$(( _close_called + 1 ))
+      echo $(( $(cat "$_close_file") + 1 )) > "$_close_file"
     fi
   }
   git() {
-    if [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
+    if [ "$1" = "-C" ] && [ "$3" = "cat-file" ]; then
+      return 0
+    elif [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
       printf 'lib/core/foo.sh\n'
     fi
   }
@@ -162,8 +178,8 @@ _make_body() {
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]
-  [ "$_comment_called" -eq 1 ]
-  [ "$_close_called" -eq 0 ]
+  [ "$(cat "$_comment_file")" -eq 1 ]
+  [ "$(cat "$_close_file")" -eq 0 ]
 
   local _diag_line
   _diag_line=$(grep 'FOLLOWUP_RECONCILED' "${BATS_TEST_TMPDIR}/diag.log" | tail -1 || true)
@@ -175,8 +191,10 @@ _make_body() {
 # Path 4: Security-labeled issue — resolved verdict posts comment only.
 # ---------------------------------------------------------------------------
 @test "security label: resolved verdict posts comment but does NOT close" {
-  _comment_called=0
-  _close_called=0
+  local _comment_file="${BATS_TEST_TMPDIR}/comment_called"
+  local _close_file="${BATS_TEST_TMPDIR}/close_called"
+  echo 0 > "$_comment_file"
+  echo 0 > "$_close_file"
 
   _batch_followups_created() { printf '45\n'; }
   gh_safe() {
@@ -187,13 +205,15 @@ _make_body() {
       printf '{"body":"%s","labels":["security","review-follow-up"]}\n' \
         "$(echo "$_body" | sed 's/"/\\"/g; s/$/\\n/g' | tr -d '\n')"
     elif [ "$1" = "issue" ] && [ "$2" = "comment" ]; then
-      _comment_called=$(( _comment_called + 1 ))
+      echo $(( $(cat "$_comment_file") + 1 )) > "$_comment_file"
     elif [ "$1" = "issue" ] && [ "$2" = "close" ]; then
-      _close_called=$(( _close_called + 1 ))
+      echo $(( $(cat "$_close_file") + 1 )) > "$_close_file"
     fi
   }
   git() {
-    if [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
+    if [ "$1" = "-C" ] && [ "$3" = "cat-file" ]; then
+      return 0
+    elif [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
       printf 'lib/core/auth.sh\n'
     fi
   }
@@ -202,8 +222,8 @@ _make_body() {
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]
-  [ "$_comment_called" -eq 1 ]  # comment posted
-  [ "$_close_called" -eq 0 ]    # NEVER closed
+  [ "$(cat "$_comment_file")" -eq 1 ]  # comment posted
+  [ "$(cat "$_close_file")" -eq 0 ]    # NEVER closed
 
   local _diag_line
   _diag_line=$(grep 'FOLLOWUP_RECONCILED' "${BATS_TEST_TMPDIR}/diag.log" | tail -1 || true)
@@ -216,7 +236,8 @@ _make_body() {
 # Pre-#1547: missing markers → silently skipped.
 # ---------------------------------------------------------------------------
 @test "missing markers: issue silently skipped, zero LLM calls" {
-  _classify_calls=0
+  local _classify_file="${BATS_TEST_TMPDIR}/classify_calls"
+  echo 0 > "$_classify_file"
 
   _batch_followups_created() { printf '46\n'; }
   gh_safe() {
@@ -227,11 +248,14 @@ _make_body() {
   }
   git() { printf ''; }
   provider_resolve_model() { printf 'claude-haiku-4-5'; }
-  provider_run_prompt() { _classify_calls=$(( _classify_calls + 1 )); echo '{}'; }
+  provider_run_prompt() {
+    echo $(( $(cat "$_classify_file") + 1 )) > "$_classify_file"
+    echo '{}'
+  }
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]
-  [ "$_classify_calls" -eq 0 ]
+  [ "$(cat "$_classify_file")" -eq 0 ]
 
   local _diag_line
   _diag_line=$(grep 'FOLLOWUP_RECONCILED' "${BATS_TEST_TMPDIR}/diag.log" | tail -1 || true)
@@ -242,7 +266,8 @@ _make_body() {
 # Provider unavailable: list candidates, emit diag, nothing closed.
 # ---------------------------------------------------------------------------
 @test "provider unavailable (exit 5): candidates listed, nothing closed" {
-  _close_called=0
+  local _close_file="${BATS_TEST_TMPDIR}/close_called"
+  echo 0 > "$_close_file"
 
   _batch_followups_created() { printf '47\n'; }
   gh_safe() {
@@ -252,11 +277,13 @@ _make_body() {
       printf '{"body":"%s","labels":[]}\n' \
         "$(echo "$_body" | sed 's/"/\\"/g; s/$/\\n/g' | tr -d '\n')"
     elif [ "$1" = "issue" ] && [ "$2" = "close" ]; then
-      _close_called=$(( _close_called + 1 ))
+      echo $(( $(cat "$_close_file") + 1 )) > "$_close_file"
     fi
   }
   git() {
-    if [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
+    if [ "$1" = "-C" ] && [ "$3" = "cat-file" ]; then
+      return 0
+    elif [ "$1" = "-C" ] && [ "$3" = "diff" ]; then
       printf 'lib/core/foo.sh\n'  # file changed → would go to classification
     fi
   }
@@ -266,7 +293,7 @@ _make_body() {
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]
-  [ "$_close_called" -eq 0 ]
+  [ "$(cat "$_close_file")" -eq 0 ]
 
   local _diag_line
   _diag_line=$(grep 'FOLLOWUP_RECONCILED' "${BATS_TEST_TMPDIR}/diag.log" | tail -1 || true)
@@ -279,13 +306,14 @@ _make_body() {
 # ---------------------------------------------------------------------------
 @test "RITE_BATCH_RECONCILE=false: pass skipped entirely" {
   export RITE_BATCH_RECONCILE="false"
-  _gh_called=0
+  local _gh_file="${BATS_TEST_TMPDIR}/gh_called"
+  echo 0 > "$_gh_file"
   _batch_followups_created() { printf '48\n'; }
-  gh_safe() { _gh_called=$(( _gh_called + 1 )); }
+  gh_safe() { echo $(( $(cat "$_gh_file") + 1 )) > "$_gh_file"; }
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]
-  [ "$_gh_called" -eq 0 ]
+  [ "$(cat "$_gh_file")" -eq 0 ]
   # No diag emitted
   local _diag_count
   _diag_count=$(grep -c 'FOLLOWUP_RECONCILED' "${BATS_TEST_TMPDIR}/diag.log" || true)

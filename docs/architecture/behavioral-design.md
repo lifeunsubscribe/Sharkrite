@@ -2791,7 +2791,7 @@ from other batches or other repos are out of scope.
 The v1 `needs-re-triage` label remains the in-batch breadcrumb for such issues.
 
 **Provider degradation:** When a cap or auth error fires (`provider_run_prompt`
-exits 5 or 18), the pass lists remaining unclassified candidates in stdout and
+exits 5 or 18), the pass lists remaining unclassified candidates in stderr (operator warning) and
 emits the diag with the actual partial counts. Nothing is auto-closed on the
 deterministic signal alone — a changed file is not proof of resolution (orrery
 #13 is the proof).

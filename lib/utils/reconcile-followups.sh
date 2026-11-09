@@ -151,7 +151,7 @@ _do_close_or_comment() {
   local _labels="$2"
   local _range="$3"
 
-  if echo "${_labels:-}" | grep -qw "security"; then
+  if echo "${_labels:-}" | tr ' ' '\n' | grep -qx "security"; then
     local _body_text
     _body_text="**Reconciliation note (auto):** Triage classifier assessed this finding as resolved by commits in range \`${_range}\`. The \`security\` label prevents auto-close — please review the commit range and close manually if satisfied."
     local _rc=0
@@ -244,7 +244,13 @@ reconcile_batch_followups() {
 
   # Resolve the triage model once — never pass "" (Rule 31).
   local _triage_model=""
-  _triage_model=$(provider_resolve_model "triage")
+  _triage_model=$(provider_resolve_model "triage") || _triage_model=""
+  if [ -z "${_triage_model:-}" ]; then
+    print_warning "reconcile: provider_resolve_model failed — skipping classification pass"
+    declare -f _diag >/dev/null 2>&1 && \
+      _diag "FOLLOWUP_RECONCILED closed=0 annotated=0 verified=0 skipped=${_candidate_count}"
+    return 0
+  fi
 
   # Provider availability flag: set to false on cap/auth error.
   local _provider_ok=true
@@ -314,12 +320,20 @@ reconcile_batch_followups() {
       continue
     fi
 
+    # Validate SHA is reachable before diffing — an unreachable SHA silently
+    # returns empty diff (same as "unchanged"), causing permanent invisible skip.
+    if ! git -C "$RITE_PROJECT_ROOT" cat-file -e "${_finding_sha}^{commit}" 2>/dev/null; then
+      print_warning "reconcile: SHA ${_finding_sha} unreachable in repo — skipping #${_fu_num}"
+      _skipped=$(( _skipped + 1 ))
+      continue
+    fi
+
     # Compute changed files between finding-sha and current target ref
     local _changed_files=""
     _changed_files=$(git -C "$RITE_PROJECT_ROOT" diff --name-only \
       "${_finding_sha}..${_target_ref}" -- 2>/dev/null || true)
 
-    if ! echo "${_changed_files:-}" | grep -qF "$_finding_file"; then
+    if ! echo "${_changed_files:-}" | grep -qxF "$_finding_file"; then
       # Finding location unchanged — leave alone, zero LLM calls
       _skipped=$(( _skipped + 1 ))
       continue
@@ -353,7 +367,7 @@ reconcile_batch_followups() {
     case "${_verdict:-}" in
       resolved)
         _do_close_or_comment "$_fu_num" "$_issue_labels" "$_commit_range"
-        if echo "${_issue_labels:-}" | grep -qw "security"; then
+        if echo "${_issue_labels:-}" | tr ' ' '\n' | grep -qx "security"; then
           _annotated=$(( _annotated + 1 ))
         else
           _closed=$(( _closed + 1 ))

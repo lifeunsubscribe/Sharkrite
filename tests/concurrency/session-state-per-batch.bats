@@ -59,18 +59,19 @@ wait_at_barrier() {
   touch "$pid_file"
 
   local count=0
-  local timeout=0
-  # 100 iterations × 0.1s = 10s. Bumped from 5s to give bash 4+ subshells
-  # enough headroom on a loaded macOS dev machine.
-  while [ "$count" -lt "$expected_count" ] && [ "$timeout" -lt 100 ]; do
+  # Wall-clock deadline (30s): avoids false BATS_TEST_TIMEOUT on loaded machines
+  # where `sleep 0.1` can take >1s per iteration, turning 100 iterations into
+  # 120s and hitting the per-test watchdog before the barrier resolves.
+  local deadline
+  deadline=$(( $(date +%s) + 30 ))
+  while [ "$count" -lt "$expected_count" ] && [ "$(date +%s)" -lt "$deadline" ]; do
     count=$(find "$BARRIER_DIR" -name "${barrier_name}.*" 2>/dev/null | wc -l | tr -d ' ')
     if [ "$count" -lt "$expected_count" ]; then
       sleep 0.1
-      timeout=$((timeout + 1))
     fi
   done
 
-  if [ "$timeout" -ge 100 ]; then
+  if [ "$count" -lt "$expected_count" ]; then
     echo "ERROR: Barrier '${barrier_name}' timeout (got $count, wanted $expected_count)" >&2
     return 1
   fi
