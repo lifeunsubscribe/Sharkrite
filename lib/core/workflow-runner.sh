@@ -766,13 +766,14 @@ _assert_worktree_alignment() {
       # deletes the old worktree and creates a new one with a different batch
       # suffix. Identity is the branch, not the path — look up which worktree
       # currently has the dev session's branch checked out (#1688).
-      # Use the handoff path's basename (by sharkrite convention, dir == branch)
-      # so path canonicalization differences cannot cause a false lookup failure.
-      # The stale WORKTREE_PATH must be absent from the porcelain — its absence
-      # is the fingerprint of EMPTY_INIT recovery (the old worktree was deleted).
-      # Genuine crossed-state-files mismatches still hard-fail.
+      # Read the branch from the worktree's HEAD via symbolic-ref (dir names are
+      # transformed — truncated, prefix-abbreviated, batch-suffix-appended — and
+      # never equal the branch; basename would always return zero matches).
+      # The stale WORKTREE_PATH must be absent from the filesystem — its absence
+      # is the canonicalization-proof fingerprint of EMPTY_INIT recovery (the old
+      # worktree was deleted). Genuine crossed-state-files mismatches still hard-fail.
       local _rr_branch _rr_wt _rr_count _rr_stale_present
-      _rr_branch="refs/heads/$(basename "$_dev_session_wt")"
+      _rr_branch=$(git -C "$_dev_session_wt" symbolic-ref -q HEAD 2>/dev/null || true)
       _rr_wt=$(git -C "${RITE_PROJECT_ROOT:-$PWD}" worktree list --porcelain 2>/dev/null | awk \
         -v br="$_rr_branch" '
         /^worktree / { cur = substr($0, 10) }
@@ -784,7 +785,7 @@ _assert_worktree_alignment() {
         /^worktree / { if (substr($0, 10) == stale) found=1 }
         END { print found+0 }
       ' || true)
-      if [ "${_rr_count:-0}" -eq 1 ] && [ "${_rr_stale_present:-1}" -eq 0 ]; then
+      if [ "${_rr_count:-0}" -eq 1 ] && [ "${_rr_stale_present:-1}" -eq 0 ] && [ ! -d "$WORKTREE_PATH" ]; then
         print_info "Worktree re-resolved by branch after auto-recovery: $_rr_wt (was: $WORKTREE_PATH)"
         _diag "WORKTREE_RERESOLVED issue=${_issue_num} from=$WORKTREE_PATH to=$_rr_wt"
         WORKTREE_PATH="$_rr_wt"

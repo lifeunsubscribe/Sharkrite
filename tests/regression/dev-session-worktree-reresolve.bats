@@ -43,9 +43,12 @@ setup() {
   export REAL_GIT_PATH
   REAL_GIT_PATH="$(command -v git)"
 
-  # Build a stub git that serves GIT_PORCELAIN_STUB for `git worktree list --porcelain`.
-  # Strips -C <dir> prefix so the stub also intercepts `git -C <dir> worktree list --porcelain`
-  # (the production form added in #1688 to handle cwd-after-worktree-removal).
+  # Build a stub git that serves GIT_PORCELAIN_STUB for `git worktree list --porcelain`
+  # and GIT_SYMBOLIC_REF_STUB for `git -C <dir> symbolic-ref -q HEAD`.
+  # Strips -C <dir> prefix so the stub also intercepts the production form
+  # `git -C <dir> worktree list --porcelain` (added in #1688 to handle
+  # cwd-after-worktree-removal) and `git -C <dir> symbolic-ref -q HEAD` (added
+  # for branch re-resolution — dir names != branch names in production).
   export STUB_DIR="$BATS_TEST_TMPDIR/stubs"
   mkdir -p "$STUB_DIR"
   cat > "$STUB_DIR/git" << 'GITSTUB'
@@ -56,6 +59,8 @@ if [ "${1:-}" = "-C" ]; then
 fi
 if [ "${1:-}" = "worktree" ] && [ "${2:-}" = "list" ] && [ "${3:-}" = "--porcelain" ]; then
   printf '%s' "${GIT_PORCELAIN_STUB:-}"
+elif [ "${1:-}" = "symbolic-ref" ] && [ "${2:-}" = "-q" ] && [ "${3:-}" = "HEAD" ]; then
+  printf '%s\n' "${GIT_SYMBOLIC_REF_STUB:-}"
 else
   exec "${REAL_GIT_PATH}" "$@"
 fi
@@ -140,14 +145,18 @@ CALL_EOF
 
 @test "reresolve: exactly one branch match equal to dev session path → adopts, returns 0" {
   local issue_number="1518"
-  local old_wt="$RITE_TEST_TMPDIR/wt/ft-issue-1518_b1492-1464-1527"
-  local new_wt="$RITE_TEST_TMPDIR/wt/ft-issue-1518_b1542-1531-1518"
-  mkdir -p "$old_wt" "$new_wt"
+  # Production-shaped names: dir is truncated/prefixed/batch-suffixed; branch is the real ref.
+  local old_wt="$RITE_TEST_TMPDIR/wt/ft-resolve-wt-by-branch_b1492-1464-1527"
+  local new_wt="$RITE_TEST_TMPDIR/wt/ft-resolve-wt-by-branch_b1542-1531-1518"
+  # Only new_wt exists — old_wt was deleted by EMPTY_INIT recovery (the [ ! -d ] guard).
+  mkdir -p "$new_wt"
 
   echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
 
+  # symbolic-ref returns the full branch ref (not the dir basename).
+  export GIT_SYMBOLIC_REF_STUB="refs/heads/feat/resolve-worktree-by-branch-after-dev-auto-recovery"
   export GIT_PORCELAIN_STUB
-  GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD abc123\nbranch refs/heads/ft-issue-1518_b1542-1531-1518\n\n' "$new_wt")"
+  GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD abc123\nbranch refs/heads/feat/resolve-worktree-by-branch-after-dev-auto-recovery\n\n' "$new_wt")"
 
   run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
 
@@ -161,12 +170,14 @@ CALL_EOF
   local issue_number="1518"
   local old_wt="$RITE_TEST_TMPDIR/wt/ft-old_b1492"
   local new_wt="$RITE_TEST_TMPDIR/wt/ft-new_b1542"
-  mkdir -p "$old_wt" "$new_wt"
+  # old_wt deleted by EMPTY_INIT; only new_wt exists.
+  mkdir -p "$new_wt"
 
   echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
 
+  export GIT_SYMBOLIC_REF_STUB="refs/heads/feat/some-feature-branch"
   export GIT_PORCELAIN_STUB
-  GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD def456\nbranch refs/heads/ft-new_b1542\n\n' "$new_wt")"
+  GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD def456\nbranch refs/heads/feat/some-feature-branch\n\n' "$new_wt")"
 
   run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
 
@@ -178,12 +189,14 @@ CALL_EOF
   local issue_number="42"
   local old_wt="$RITE_TEST_TMPDIR/wt/ft-old_b99"
   local new_wt="$RITE_TEST_TMPDIR/wt/ft-new_b100"
-  mkdir -p "$old_wt" "$new_wt"
+  # old_wt deleted by EMPTY_INIT; only new_wt exists.
+  mkdir -p "$new_wt"
 
   echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
 
+  export GIT_SYMBOLIC_REF_STUB="refs/heads/feat/diag-test-branch"
   export GIT_PORCELAIN_STUB
-  GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD abc\nbranch refs/heads/ft-new_b100\n\n' "$new_wt")"
+  GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD abc\nbranch refs/heads/feat/diag-test-branch\n\n' "$new_wt")"
 
   run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
 
@@ -206,10 +219,11 @@ CALL_EOF
 
   echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
 
-  # Both new_wt and third_wt share the same branch → count = 2 → hard error
+  # symbolic-ref returns the branch; both new_wt and third_wt register it → count = 2 → hard error.
+  export GIT_SYMBOLIC_REF_STUB="refs/heads/feat/shared-branch"
   export GIT_PORCELAIN_STUB
   GIT_PORCELAIN_STUB="$(printf \
-    'worktree %s\nHEAD abc\nbranch refs/heads/ft-shared_b77\n\nworktree %s\nHEAD def\nbranch refs/heads/ft-shared_b77\n\n' \
+    'worktree %s\nHEAD abc\nbranch refs/heads/feat/shared-branch\n\nworktree %s\nHEAD def\nbranch refs/heads/feat/shared-branch\n\n' \
     "$new_wt" "$third_wt")"
 
   run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
@@ -227,9 +241,10 @@ CALL_EOF
 
   echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
 
+  export GIT_SYMBOLIC_REF_STUB="refs/heads/feat/another-shared"
   export GIT_PORCELAIN_STUB
   GIT_PORCELAIN_STUB="$(printf \
-    'worktree %s\nHEAD a\nbranch refs/heads/ft-shared\n\nworktree %s\nHEAD b\nbranch refs/heads/ft-shared\n\n' \
+    'worktree %s\nHEAD a\nbranch refs/heads/feat/another-shared\n\nworktree %s\nHEAD b\nbranch refs/heads/feat/another-shared\n\n' \
     "$new_wt" "$third_wt")"
 
   run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
@@ -252,7 +267,9 @@ CALL_EOF
 
   echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
 
-  # Porcelain shows new_wt in detached state — no branch line
+  # symbolic-ref returns empty (detached HEAD exits non-zero; stub returns "").
+  export GIT_SYMBOLIC_REF_STUB=""
+  # Porcelain shows new_wt in detached state — no branch line.
   export GIT_PORCELAIN_STUB
   GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD abc123\ndetached\n\n' "$new_wt")"
 
@@ -270,7 +287,41 @@ CALL_EOF
 
   echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
 
+  export GIT_SYMBOLIC_REF_STUB="refs/heads/feat/no-match-branch"
   export GIT_PORCELAIN_STUB=""
+
+  run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"MISMATCH"* ]]
+}
+
+# ============================================================================
+# 2b. Hard error: stale path still exists as a directory (genuine mismatch —
+#     NOT an EMPTY_INIT recovery) → [ ! -d "$WORKTREE_PATH" ] guard fires.
+#
+# The dir-existence guard protects against path-canonicalization skew in
+# _rr_stale_present: if the stale path exists under a different spelling,
+# _rr_stale_present could return 0 (false negative), allowing adoption of a
+# genuine crossed-state-files mismatch. [ ! -d "$WORKTREE_PATH" ] is
+# canonicalization-proof and blocks this.
+# ============================================================================
+
+@test "reresolve: stale path still exists as directory → hard error even with one branch match" {
+  local issue_number="44"
+  local old_wt="$RITE_TEST_TMPDIR/wt/ft-old_b44"
+  local new_wt="$RITE_TEST_TMPDIR/wt/ft-new_b44"
+  # Both directories exist — this is NOT an EMPTY_INIT recovery.
+  mkdir -p "$old_wt" "$new_wt"
+
+  echo "$new_wt" > "${RITE_STATE_DIR}/worktree-handoff-${issue_number}.txt"
+
+  # One branch match (count=1) and stale path absent from porcelain (_rr_stale_present=0)
+  # would satisfy the old condition — but old_wt still exists on disk, so the
+  # [ ! -d "$WORKTREE_PATH" ] guard blocks adoption and hard-fails.
+  export GIT_SYMBOLIC_REF_STUB="refs/heads/feat/genuine-mismatch"
+  export GIT_PORCELAIN_STUB
+  GIT_PORCELAIN_STUB="$(printf 'worktree %s\nHEAD abc\nbranch refs/heads/feat/genuine-mismatch\n\n' "$new_wt")"
 
   run _run_reresolve_check "$RITE_STATE_DIR" "$issue_number" "$old_wt" "$new_wt"
 
@@ -362,4 +413,28 @@ CALL_EOF
     echo "      The hard-error path from #1630 must be preserved" >&2
     return 1
   }
+}
+
+@test "structural: symbolic-ref used for branch lookup (not basename)" {
+  [ -f "$WORKFLOW_RUNNER" ] || {
+    echo "FATAL: $WORKFLOW_RUNNER not found" >&2
+    return 1
+  }
+  _func_body=$(awk '
+    /^_assert_worktree_alignment[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print }
+  ' "$WORKFLOW_RUNNER")
+
+  echo "$_func_body" | grep -qF 'symbolic-ref' || {
+    echo "FAIL: 'symbolic-ref' not found in _assert_worktree_alignment" >&2
+    echo "      Branch must be read from worktree HEAD, not from dir basename (#1688)" >&2
+    return 1
+  }
+  # Confirm basename is not used (the false convention that produced zero matches).
+  echo "$_func_body" | grep -qF 'basename' && {
+    echo "FAIL: 'basename' still used in _assert_worktree_alignment branch lookup" >&2
+    echo "      Dir names are transformations of branches; basename always mismatches" >&2
+    return 1
+  } || true
 }
