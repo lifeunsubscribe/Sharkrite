@@ -2987,14 +2987,14 @@ docs_run_promote_doc_pass() {
 $_dp_docs
 DOCS_EOF
         } > "$_dp_proposal" 2>/dev/null && _dp_write_ok=1 || true
-        if [ "$_dp_listed" -eq 0 ]; then
+        if [ "$_dp_write_ok" != "1" ]; then
+          print_warning "Could not write doc proposal to '${_dp_proposal}' — drift entries remain for manual review" >&2
+        elif [ "$_dp_listed" -eq 0 ]; then
           rm -f "$_dp_proposal" 2>/dev/null || true
           print_info "All pending drift entries are ADRs — no deferred proposal needed"
-        elif [ "$_dp_write_ok" = "1" ]; then
+        else
           print_info "Promote doc proposal saved — review when ready"
           printf '\n  Run: rite docs --resume %s\n' "$_dp_branch" >&2
-        else
-          print_warning "Could not write doc proposal to '${_dp_proposal}' — drift entries remain for manual review" >&2
         fi
       fi
     else
