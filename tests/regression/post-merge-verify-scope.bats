@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/claude-workflow.sh, lib/utils/post-merge-verify.sh
+# sharkrite-test-covers: lib/core/claude-workflow.sh, lib/utils/post-merge-verify.sh, lib/utils/stale-branch.sh
 # tests/regression/post-merge-verify-scope.bats — post-merge (behind-target) gate
 # is scoped to branch-own changes on resume (#1655).
 #
@@ -22,6 +22,18 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
   }
   grep -qF 'verify_post_merge "." "origin/${_target}"' \
     "${RITE_LIB_DIR}/core/claude-workflow.sh"
+}
+
+@test "structural: no bare verify_post_merge call in lib/ — every caller passes a second arg (#1655/#1687)" {
+  # A bare call (only the worktree_path arg) falls back to HEAD~1, gating the full
+  # merge delta from main instead of branch-own files. The grep matches any call
+  # whose first quoted arg is immediately followed by ;, end-of-line, or ||.
+  _bare=$(grep -rnE 'verify_post_merge "[^"]+"[[:space:]]*(;|$|\|\|)' "${RITE_LIB_DIR}" 2>/dev/null || true)
+  [ -z "$_bare" ] || {
+    echo "verify_post_merge called without a second arg (target ref) in lib/:" >&2
+    echo "$_bare" >&2
+    return 1
+  }
 }
 
 @test "behavioral: verify_post_merge forwards the target ref to RITE_TEST_GATE_DIFF_BASE" {
