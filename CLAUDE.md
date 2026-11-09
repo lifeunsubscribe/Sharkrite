@@ -661,7 +661,7 @@ ANY issue you file — by hand via `gh issue create`, or via `rite plan` — MUS
 
 Follow-up issues (tech-debt, review follow-ups) follow the structure in `templates/issue-template.md`:
 
-- **Claude Context**: Files to Read = changed files from the PR (auto-populated); Files to Modify = seeded from the finding's `**Location:**` path when present and sanitizable, otherwise states explicitly that no location was provided
+- **Claude Context**: Files to Read = changed files from the PR (auto-populated); Files to Modify = seeded from the finding's `**Location:**` path when present and sanitizable; `_Location present — see Location field above_` when present but unsanitizable; `_No location field in assessment_` when absent
 - **Acceptance Criteria**: Item-specific from assessment — embeds the finding's `**Suggested Fix:**` text when present (e.g., `[HIGH] Fix input validation: add length check in lib/core/foo.sh:42`), otherwise uses the finding title
 - **Verification Commands**: The finding's `**Verification:**` field when present; falls back to a path-derived `sed`/`grep` command from `**Location:**`; states that no verification command is available rather than emitting `# TODO` placeholders
 - **Done Definition**: Generated from severity — CRITICAL/HIGH get targeted sentences; MEDIUM/LOW use "Done when the acceptance criteria above pass and the verification command succeeds"

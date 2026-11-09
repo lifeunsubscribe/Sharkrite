@@ -1480,6 +1480,8 @@ _Parent PR: #${PR_NUMBER}_"
     in_later && /^\*\*Reasoning:\*\*/ { print $0 }
     in_later && /^\*\*Context:\*\*/ { print $0 }
     in_later && /^\*\*Location:\*\*/ { print $0 }
+    in_later && /^\*\*Suggested Fix:\*\*/ { print $0 }
+    in_later && /^\*\*Verification:\*\*/ { print $0 }
     in_later && /^\*\*Defer Reason:\*\*/ { print $0 }
     in_later && /^\*\*Fix Effort:\*\*/ { print $0 }
     END { if (in_later) print "---END---" }

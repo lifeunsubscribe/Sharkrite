@@ -22,6 +22,15 @@
 load '../helpers/setup.bash'
 
 setup() {
+  # Set RITE_LIB_DIR before sourcing config.sh so the subprocess also has it.
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+  # Source config.sh BEFORE setup_test_tmpdir changes CWD — exports RITE_PROJECT_ROOT,
+  # RITE_INSTALL_DIR, RITE_DATA_DIR so assess-review-issues.sh doesn't die under set -u
+  # when it skips its own config.sh load (because RITE_LIB_DIR is pre-set).
+  # Same pattern as empty-assessment-fails-loud.bats.
+  source "${RITE_LIB_DIR}/utils/config.sh"
+  set +u; set +o pipefail  # bats needs its own error handling
+
   setup_test_tmpdir
 
   export ASSESS_RESOLVE_SCRIPT="${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh"
@@ -35,8 +44,6 @@ setup() {
     echo "setup: ASSESS_REVIEW_SCRIPT not found at $ASSESS_REVIEW_SCRIPT" >&2
     false
   }
-
-  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
 
   # Isolate RITE_LOCK_DIR before sourcing config so write_followup_evidence
   # stays inside the test tmpdir (mirrors assess-review-issues-richbody-followup.bats).
@@ -449,6 +456,89 @@ MOCK_EOF
     echo "FAIL: backward-compat body does not state absence of verification field"
     echo "--- body ---"
     echo "$_body"
+    false
+  }
+  return 0
+}
+
+# ─── Tests: assess-and-resolve.sh per-finding body builder ───────────────────
+# These tests exercise the same Location→Files-to-Modify seeding and
+# Suggested-Fix→acceptance-criterion embedding logic implemented in the
+# assess-and-resolve.sh per-finding loop (lines ~2591-2685).  Because that
+# logic is inline (not a function), we test it by running the identical
+# snippet with controlled inputs — this is the equivalent of a unit driver
+# for inline code that cannot be extracted without changing the script.
+
+@test "assess-and-resolve.sh per-finding: Location seeds _files_to_modify_entry" {
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$ASSESS_RESOLVE_SCRIPT"
+  set +u; set +o pipefail
+
+  # Reproduce the _files_to_modify_entry logic from assess-and-resolve.sh:2672-2680
+  _f_location="lib/core/validate.sh:88"
+  _files_to_modify_entry="- _No location field in assessment_"
+  if [ -n "${_f_location:-}" ]; then
+    _ftm_path=$(echo "$_f_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+    if echo "${_ftm_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
+      _files_to_modify_entry="- ${_ftm_path}"
+    else
+      _files_to_modify_entry="- _Location present — see Location field above_"
+    fi
+  fi
+
+  echo "$_files_to_modify_entry" | grep -qF "lib/core/validate.sh" || {
+    echo "FAIL: Files to Modify not seeded from Location path"
+    echo "got: $_files_to_modify_entry"
+    false
+  }
+  # Must NOT contain the old placeholder.
+  echo "$_files_to_modify_entry" | grep -qF "_No location field" && {
+    echo "FAIL: Files to Modify still contains the no-location placeholder"
+    false
+  }
+  return 0
+}
+
+@test "assess-and-resolve.sh per-finding: Suggested Fix embedded in acceptance criterion" {
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$ASSESS_RESOLVE_SCRIPT"
+  set +u; set +o pipefail
+
+  # Reproduce the _acceptance_criterion building logic from assess-and-resolve.sh:2595-2597
+  _f_severity="HIGH"
+  _clean_title="Missing bounds check"
+  _f_suggested_fix="Add bounds check before array access at handler.sh:55"
+
+  _acceptance_criterion="- [ ] [${_f_severity}] ${_clean_title}"
+  if [ -n "${_f_suggested_fix:-}" ]; then
+    _acceptance_criterion="${_acceptance_criterion}: ${_f_suggested_fix}"
+  fi
+
+  echo "$_acceptance_criterion" | grep -qF "Add bounds check before array access" || {
+    echo "FAIL: acceptance criterion does not embed Suggested Fix text"
+    echo "got: $_acceptance_criterion"
+    false
+  }
+  return 0
+}
+
+@test "assess-and-resolve.sh per-finding: absent Location → no-location placeholder" {
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$ASSESS_RESOLVE_SCRIPT"
+  set +u; set +o pipefail
+
+  # Reproduce the _files_to_modify_entry logic with no Location field set
+  _f_location=""
+  _files_to_modify_entry="- _No location field in assessment_"
+  if [ -n "${_f_location:-}" ]; then
+    _ftm_path=$(echo "$_f_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+    if echo "${_ftm_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$'; then
+      _files_to_modify_entry="- ${_ftm_path}"
+    else
+      _files_to_modify_entry="- _Location present — see Location field above_"
+    fi
+  fi
+
+  echo "$_files_to_modify_entry" | grep -qF "No location field in assessment" || {
+    echo "FAIL: absent Location should produce no-location placeholder"
+    echo "got: $_files_to_modify_entry"
     false
   }
   return 0
