@@ -1398,3 +1398,159 @@ GHEOF
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test 12: Dead-PID legacy directory lock is reclaimed — acquire succeeds
+#
+# A legacy pre-#1651 directory-style lock whose recorded holder PID is dead
+# must be reclaimed by the symlink-path acquire, allowing the caller to
+# succeed within 5 seconds.  This exercises the while-loop directory-reclaim
+# branch (the [ -d "$lockfile" ] guard in the while condition and the
+# mv-before-remove path in the loop body) added for backward compatibility
+# with lock files from old installations.
+#
+# Acceptance criteria:
+#   (a) acquire_scratchpad_lock returns 0 and sets _SCRATCHPAD_LOCK_HELD=true
+#   (b) The lock is now a symlink (portable path), not a directory
+#   (c) release_scratchpad_lock removes the symlink
+# ---------------------------------------------------------------------------
+@test "dead-PID legacy directory lock is reclaimed — acquire succeeds" {
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+  source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+
+  # Spawn and immediately kill a subshell to get a reliably dead PID.
+  local dead_pid
+  bash -c 'exit 0' &
+  dead_pid=$!
+  wait "$dead_pid" 2>/dev/null || true
+
+  # If the PID was recycled before we got here, skip gracefully.
+  if kill -0 "$dead_pid" 2>/dev/null; then
+    skip "PID $dead_pid was reused — cannot safely test with a known dead PID"
+  fi
+
+  # Simulate a pre-#1651 directory-style lock left by a dead process.
+  mkdir "$lockfile"
+  echo "$dead_pid" > "$lockfile/pid"
+
+  local start_time
+  start_time=$(date +%s)
+
+  # Acquire must succeed by reclaiming the dead directory.
+  acquire_scratchpad_lock
+
+  local end_time
+  end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+
+  # (a) Lock must be held
+  [ "${_SCRATCHPAD_LOCK_HELD}" = "true" ] || {
+    echo "FAIL: acquire did not set _SCRATCHPAD_LOCK_HELD=true after reclaiming dead-PID dir" >&2
+    return 1
+  }
+  [ "${_SCRATCHPAD_LOCK_STRATEGY}" = "mkdir" ] || {
+    echo "FAIL: expected mkdir strategy, got '${_SCRATCHPAD_LOCK_STRATEGY}'" >&2
+    release_scratchpad_lock
+    return 1
+  }
+
+  [ "$elapsed" -le 5 ] || {
+    echo "FAIL: reclaim took ${elapsed}s (expected <= 5s)" >&2
+    release_scratchpad_lock
+    return 1
+  }
+
+  # (b) Lock must now be a symlink (portable path), not a directory
+  [ -L "$lockfile" ] || {
+    echo "FAIL: expected symlink at $lockfile after acquire; got: $(ls -la "$lockfile" 2>/dev/null || echo 'missing')" >&2
+    release_scratchpad_lock
+    return 1
+  }
+
+  release_scratchpad_lock
+
+  # (c) Symlink must be gone after release
+  [ ! -L "$lockfile" ] || {
+    echo "FAIL: symlink still present after release" >&2
+    return 1
+  }
+
+  unset RITE_SCRATCHPAD_LOCK_STRATEGY
+}
+
+# ---------------------------------------------------------------------------
+# Test 13: Live-PID legacy directory lock causes bounded soft-fail
+#
+# A legacy pre-#1651 directory-style lock whose recorded holder PID is alive
+# must NOT be reclaimed.  acquire_scratchpad_lock must time out and return 1
+# (bounded soft-fail) without proceeding or holding the lock.  This pins the
+# [ -d "$lockfile" ] guard in the while condition: without it, ln -s would
+# succeed by placing a symlink INSIDE the directory (POSIX ln behavior),
+# making acquire_scratchpad_lock return 0 falsely — the root cause of the
+# three degrade-test failures (2026-11-08).
+#
+# Acceptance criteria:
+#   (a) acquire_scratchpad_lock returns 1
+#   (b) _SCRATCHPAD_LOCK_HELD is false afterward
+#   (c) Returns within 2× the configured timeout (10 seconds for timeout=2)
+# ---------------------------------------------------------------------------
+@test "live-PID legacy directory lock causes bounded soft-fail — returns 1 not 0" {
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+
+  export RITE_SCRATCHPAD_LOCK_STRATEGY="mkdir"
+  source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+
+  # Create a live holder: background sleep with a verifiable PID.
+  sleep 60 3>&- &
+  local live_pid=$!
+
+  mkdir "$lockfile"
+  echo "$live_pid" > "$lockfile/pid"
+
+  kill -0 "$live_pid" 2>/dev/null || {
+    echo "FAIL: live holder PID $live_pid not alive before test" >&2
+    kill "$live_pid" 2>/dev/null || true
+    rm -rf "$lockfile" 2>/dev/null || true
+    return 1
+  }
+
+  local start_time
+  start_time=$(date +%s)
+
+  export RITE_SCRATCHPAD_LOCK_TIMEOUT=2
+  local rc=0
+  acquire_scratchpad_lock || rc=$?
+
+  local end_time
+  end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+
+  kill "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
+  rm -rf "$lockfile" 2>/dev/null || true
+
+  # (a) Must return 1 (timeout)
+  [ "$rc" -eq 1 ] || {
+    echo "FAIL: expected acquire to return 1 (timeout), got rc=$rc" >&2
+    echo "      Without the [ -d ] while-condition guard, ln -s creates a symlink" >&2
+    echo "      INSIDE the directory and returns 0, falsely admitting the caller." >&2
+    return 1
+  }
+
+  # (b) Lock must NOT be held
+  [ "${_SCRATCHPAD_LOCK_HELD}" = "false" ] || {
+    echo "FAIL: _SCRATCHPAD_LOCK_HELD should be false after soft-fail, got '${_SCRATCHPAD_LOCK_HELD}'" >&2
+    return 1
+  }
+
+  # (c) Must complete within 2× timeout (10 seconds)
+  [ "$elapsed" -le 10 ] || {
+    echo "FAIL: soft-fail took ${elapsed}s (expected <= 10s with timeout=2)" >&2
+    return 1
+  }
+
+  unset RITE_SCRATCHPAD_LOCK_TIMEOUT
+  unset RITE_SCRATCHPAD_LOCK_STRATEGY
+}
