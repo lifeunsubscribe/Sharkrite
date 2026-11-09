@@ -7,7 +7,7 @@
 #   1. Per-doc/per-branch entry file layout, including release/1.2-style branch names.
 #   2. drift_log_append writes all eight fields correctly.
 #   3. kind validation: invalid value → non-zero + stderr; all valid values accepted.
-#   4. Accumulate-in-place: same (doc, assertion) appends PR to existing entry.
+#   4. One-entry-per-PR: different PR for same (doc, assertion) creates separate entry (#1509).
 #   5. Different assertion → new entry line in the same file.
 #   6. drift_log_entry_count --branch, --doc, --doc --branch, total (no args).
 #   7. drift_log_entry_count FILE_PATH: legacy flat-log mode kept working.
@@ -160,10 +160,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Accumulate-in-place: same (doc, assertion) appends PR, no duplicate
+# 4. One-entry-per-PR: different PR for same (doc, assertion) creates new entry (#1509)
 # ---------------------------------------------------------------------------
 
-@test "drift_log_append: repeat (doc, assertion) appends PR to existing entry" {
+@test "drift_log_append: different PR for same (doc, assertion) creates separate entry" {
   drift_log_append "docs/architecture/behavioral-design.md" "main" \
     "97" "42" "Gate Block-on-Any" "addition" "lib/utils/test-gate.sh"
   drift_log_append "docs/architecture/behavioral-design.md" "main" \
@@ -172,13 +172,29 @@ teardown() {
   local entry_file
   entry_file="$(_drift_entry_path "docs/architecture/behavioral-design.md" "main")"
 
-  # Only ONE entry line (not two)
+  # TWO entries — one per PR, not one with comma-joined pr= field (#1509)
+  local line_count
+  line_count="$(grep -c 'doc=' "$entry_file" || true)"
+  [ "$line_count" -eq 2 ]
+
+  # Each entry carries its own PR number (no comma-joined pr= field)
+  grep -q "pr=97" "$entry_file"
+  grep -q "pr=98" "$entry_file"
+}
+
+@test "drift_log_append: same PR twice for same (doc, assertion) is idempotent" {
+  drift_log_append "docs/architecture/behavioral-design.md" "main" \
+    "97" "42" "Gate Block-on-Any" "addition" "lib/utils/test-gate.sh"
+  drift_log_append "docs/architecture/behavioral-design.md" "main" \
+    "97" "42" "Gate Block-on-Any" "addition" "lib/utils/test-gate.sh"
+
+  local entry_file
+  entry_file="$(_drift_entry_path "docs/architecture/behavioral-design.md" "main")"
+
+  # Still ONE entry — same (doc, assertion, PR) triple is a no-op
   local line_count
   line_count="$(grep -c 'doc=' "$entry_file" || true)"
   [ "$line_count" -eq 1 ]
-
-  # Both PR numbers present in the pr= field
-  grep -q "pr=97,98" "$entry_file"
 }
 
 @test "drift_log_append: different assertion creates a second entry" {

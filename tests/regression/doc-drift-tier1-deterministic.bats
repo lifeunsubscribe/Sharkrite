@@ -311,8 +311,6 @@ teardown() {
 # (pr=201,202) and keeps only the first branch's evidence — see #1618.
 # Remove the skip when #1618 lands; do not delete the test.
 @test "Trigger C: two distinct PRs declaring the same doc produce two entries" {
-  skip "blocked by #1618 — entries coalesce per doc, dropping the second PR's evidence"
-
   printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-first.txt"
   printf 'docs/feature.md' > "$RITE_STATE_DIR/declared-doc-feat-second.txt"
 
