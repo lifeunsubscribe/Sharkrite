@@ -931,14 +931,15 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 
 **What it writes:**
 - Full transcript to `.rite/logs/full-suite-YYYYMMDD.log` (header with date/host/branch; one log per day, appended)
-- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
+- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed|aborted lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
-**`--scheduled` flag (used by the scheduled plist):** Enables two guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour or lock state.
+**`--scheduled` flag (used by the scheduled plist):** Enables three guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour, lock state, or deadline.
 
 - **Window guard:** A run starting outside 02:00–05:00 local time exits 0 immediately without running anything, appends a skip line to the daily log, and emits `[diag] FULL_SUITE_SKIPPED reason=outside_window hour=<H>`. A catch-up firing at 09:00 (launchd sleep catch-up) is therefore a no-op. Skipping the night IS the desired behavior — deferring into working hours is the bug being fixed.
 - **Busy guard:** A run exits 0 immediately when any live rite lock exists (issue or batch lock with a valid PID that answers `kill -0`). Backfill locks (no pid file) and dead-pid locks do NOT count as busy. Emits `[diag] FULL_SUITE_SKIPPED reason=batch_active hour=<H>`.
-- **Health-report aggregation:** A skipped night emits `FULL_SUITE_SKIPPED`, not `FULL_SUITE_RUN` — health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is treated as neither pass nor failure (no green tick, no WARNING entry).
+- **Deadline guard:** Computes remaining seconds until 05:00 at bats-start time (after make check), applies a floor of `_FULL_SUITE_MIN_DEADLINE_S` (default: 1200 s / 20 min), and wraps the bats run with `gtimeout`/`timeout`. On kill (exit 124/137): appends `=== Scheduled run ABORTED at window end ===` to the daily log, emits `[diag] FULL_SUITE_RUN outcome=aborted reason=window_end duration_s=N`, leaves `full-suite-failure.flag` untouched (an abort is not a verdict), skips investigate/remediation, and exits 0. If neither `gtimeout` nor `timeout` is available, the deadline is silently skipped. Override the floor via `RITE_FULL_SUITE_MIN_DEADLINE` (useful for testing).
+- **Health-report aggregation:** A skipped night emits `FULL_SUITE_SKIPPED`, not `FULL_SUITE_RUN` — health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is treated as neither pass nor failure. An aborted run emits `FULL_SUITE_RUN outcome=aborted`, which is counted in `FSR_TOTAL` but not in `FSR_PASSED` or `FSR_FAILED` — the same neither-pass-nor-fail treatment.
 
 A skip line in the daily log looks like:
 ```
@@ -975,6 +976,8 @@ systemctl --user list-timers | grep sharkrite
 
 **Configuration:**
 - `RITE_BATS_JOBS=N` — parallelism override (auto-detects via GNU parallel by default)
+- `RITE_BATS_TEST_TIMEOUT=N` — per-test ceiling in seconds (default: 300 for full-suite; the gate uses 120 — both override via this same var)
+- `RITE_FULL_SUITE_MIN_DEADLINE=N` — floor for the window-end deadline in seconds (default: 1200; set to a small value in tests to exercise the deadline guard without waiting 20 min)
 - `RITE_FULL_SUITE_REPORT_MODEL` — model for the investigation report interpretation (default: `claude-sonnet-4-6`)
 - Parallelism: auto-detected (uses `nproc`/`sysctl hw.ncpu` when GNU parallel is installed)
 
@@ -1029,7 +1032,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `FOLLOWUP_CREATED` — a follow-up issue was filed (source issue, PR, new issue number). Emitted by BOTH per-issue creation sites (`assess-and-resolve.sh` rollup, `assess-review-issues.sh` ACTIONABLE_LATER per-item); the batch reporter harvests these for its `Issues Created` line. The promote path has its own `PROMOTE_FOLLOWUP_CREATED` / `PROMOTE_ASSESSED_FOLLOWUP_CREATED` and is deliberately excluded from a batch's total.
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
-- `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`)
+- `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`); `outcome=passed|failed|aborted` (`aborted` = killed by deadline guard before a verdict, neither pass nor fail)
 - `FULL_SUITE_SKIPPED` — scheduled run skipped without running the suite; `reason=outside_window` (clock outside 02:00–05:00) or `reason=batch_active` (live rite lock detected); `hour=<H>`. Health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is neither a pass nor a failure — a missing nightly report is explainable, not an alarm.
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
 - `DOC_PASS` — every doc model pass: `kind=promote|docs|align doc=<path|-> duration_s=N input_bytes=N outcome=accepted|rejected|feedback`; when `duration_s > RITE_DOC_PASS_WARN_SECONDS` (default 120) an info-level suggestion to run `rite align-docs` is also printed (per-doc passes only; aggregate passes with `doc=-` never print the suggestion)
