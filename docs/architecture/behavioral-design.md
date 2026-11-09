@@ -2795,7 +2795,10 @@ wrong issue/PR pair and doing no work for the follow-up.
 
 1. `workflow-runner.sh` calls `detect_parent_pr_attachment` and exports
    `_RITE_PARENT_ATTACHMENT_MODE` / `_RITE_PARENT_PR_BRANCH` before invoking
-   `claude-workflow.sh`, so the verdict travels with the subprocess.
+   `claude-workflow.sh`, so the verdict travels with the subprocess. The export
+   only happens when `PR_NUMBER` is known (i.e. a parent PR was resolved); when
+   `PR_NUMBER` is unknown (standalone `claude-workflow.sh` invocation), neither
+   var is set and step 2's fallback path applies.
 2. `find_worktree_for_task` reads those env vars when present (no redundant API
    call in orchestrated runs) and falls back to calling `detect_parent_pr_attachment`
    directly when invoked standalone.

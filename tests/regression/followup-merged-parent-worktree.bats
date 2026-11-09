@@ -78,7 +78,7 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
   done
   echo "Error: bash 4+ required" >&2; exit 1
 fi
-set -uo pipefail
+set -euo pipefail
 RITE_MARKER_PARENT_PR="sharkrite-parent-pr"
 CLOSING_ISSUE_JQ_REGEX="(close[sd]?|fix(e[sd])?|resolve[sd]?) #"
 HEADER
