@@ -821,7 +821,7 @@ _RITE_CAPPED_MODELS="${_RITE_CAPPED_MODELS:-}"
 # Canonical ordered role list used by _claude_model_fallback_preflight.
 # Single authoritative definition: both the probe loop and the announce loop
 # reference this variable so adding a new role updates both automatically.
-_CLAUDE_PROVIDER_ROLES="dev review assessment doc_assessment plan promote triage full_suite_report"
+_CLAUDE_PROVIDER_ROLES="dev review assessment doc_assessment doc_update plan promote triage full_suite_report"
 
 # _claude_provider_resolve_model_raw <role>
 #
