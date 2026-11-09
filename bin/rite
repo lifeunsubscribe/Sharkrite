@@ -1206,6 +1206,32 @@ if [ "$MODE" = "init" ]; then
   fi
 
   # ─────────────────────────────────────────────────────────────────
+  # Git rerere: enable once; shared rr-cache serves every worktree
+  # ─────────────────────────────────────────────────────────────────
+  # Sharkrite rebases feature branches repeatedly (--sync, mid-run drift,
+  # stale-branch resume). Without rerere the LLM resolver pays for the same
+  # conflict every time. rr-cache lives in the git common dir, so enabling
+  # it once here benefits every future worktree automatically.
+  _rerere_current=$(git -C "$RITE_PROJECT_ROOT" config --get rerere.enabled 2>/dev/null || true)
+  _rerere_autoupdate=$(git -C "$RITE_PROJECT_ROOT" config --get rerere.autoupdate 2>/dev/null || true)
+  if [ -z "$_rerere_current" ]; then
+    _rerere_ok=true
+    git -C "$RITE_PROJECT_ROOT" config rerere.enabled true || _rerere_ok=false
+    if [ -z "$_rerere_autoupdate" ]; then
+      git -C "$RITE_PROJECT_ROOT" config rerere.autoupdate true || _rerere_ok=false
+    fi
+    if [ "$_rerere_ok" = "true" ]; then
+      print_success "Enabled git rerere (conflict-resolution cache)"
+    else
+      print_info "Could not enable git rerere — set manually: git config rerere.enabled true"
+    fi
+  elif [ "$_rerere_current" = "true" ]; then
+    print_info "git rerere already enabled"
+  else
+    print_info "git rerere is explicitly disabled (rerere.enabled=${_rerere_current}); leaving as-is"
+  fi
+
+  # ─────────────────────────────────────────────────────────────────
   # Doc drift mode: report current state; consent is owned by `rite align-docs`
   # ─────────────────────────────────────────────────────────────────
   _config_file_for_doc_mode="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/config"

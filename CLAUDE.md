@@ -544,6 +544,11 @@ Or set it per-project in `.rite/config`. See `config/project.conf.example` for t
 Individual workflow phases can be run standalone via flags. All default to auto/unsupervised mode.
 
 ```bash
+rite --init                # Initialize .rite/ in current project; also enables git rerere
+                           # (rerere.enabled + rerere.autoupdate) when unset — rr-cache is
+                           # shared across all worktrees, so one cached resolution covers
+                           # every repeated rebase (--sync, mid-run drift, stale-branch resume).
+                           # An explicit rerere.enabled=false is left intact.
 rite 42                    # Full lifecycle (phases 1-5)
 rite 42 --status           # Read-only: show workflow state overview for issue
 rite --status              # Repo-wide: worktrees, open issues with phases, recently closed
