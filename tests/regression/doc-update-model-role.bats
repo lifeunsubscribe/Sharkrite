@@ -96,3 +96,12 @@ teardown() {
   run grep -E '^[[:space:]]*doc_update\)[[:space:]]+echo[[:space:]]+"\$\{RITE_DOC_UPDATE_MODEL:-claude-fable-5\}"' "$CLAUDE_SH"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 6: Probe coverage -- doc_update included in _CLAUDE_PROVIDER_ROLES
+# ---------------------------------------------------------------------------
+
+@test "claude.sh: doc_update is in _CLAUDE_PROVIDER_ROLES probe list" {
+  run grep -E '^_CLAUDE_PROVIDER_ROLES=.*doc_update' "$CLAUDE_SH"
+  [ "$status" -eq 0 ]
+}
