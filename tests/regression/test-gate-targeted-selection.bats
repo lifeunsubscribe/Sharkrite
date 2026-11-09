@@ -544,6 +544,26 @@ EOF
   }
 }
 
+@test "_select_tests_by_changed_paths: header-only match does not carry by_ref: prefix" {
+  # Regression guard for the by_ref overcounting bug: before the fix, the body
+  # grep ran BEFORE the header check, so every file whose header declares a
+  # changed path (the header line contains the path string) was emitted as
+  # "by_ref:" even though a header match selected it.
+  #
+  # Fixture A: header = lib/core/foo.sh; body has no other lib/core/foo.sh reference.
+  # When lib/core/foo.sh changes the file must be selected via header (bare filename),
+  # NOT body reference (by_ref: prefix) — header takes priority.
+  result=$(_select_tests_by_changed_paths "lib/core/foo.sh" "$TEST_REPO")
+  echo "$result" | grep -q "covers-foo.bats" || {
+    echo "FAIL: covers-foo.bats not selected at all; got: $result" >&2
+    return 1
+  }
+  if echo "$result" | grep "covers-foo.bats" | grep -q '^by_ref:'; then
+    echo "FAIL: covers-foo.bats has by_ref: prefix but it was selected via header — by_ref diag will be overcounted; got: $result" >&2
+    return 1
+  fi
+}
+
 @test "_select_lint_by_changed_paths: changed .bats in tests/ is included in lint scope" {
   # Verifies the fix from issue #921: tests/*.bats and tests/*/*.bats are now
   # eligible paths for lint (so Rules 34/35 can run against them).

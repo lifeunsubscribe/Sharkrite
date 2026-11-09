@@ -406,7 +406,7 @@ run_test_gate() {
     local _bats_skip=false
     if [ "${_total_bats:-0}" -eq 0 ]; then
       echo "[test-gate] bats: skipped (no bats suite)" >&2
-      _diag "TEST_GATE_SELECTION mode=targeted selected=0 total=0 pr=${PR_NUMBER:-?}"
+      _diag "TEST_GATE_SELECTION mode=targeted selected=0 total=0 by_ref=0 pr=${PR_NUMBER:-?}"
       _diag "TEST_GATE_BATS outcome=skipped reason=no_bats_suite pr=${PR_NUMBER:-?}"
       echo 0 > "$_bats_exit_file"
       : > "$_tests_raw_file"
@@ -671,7 +671,7 @@ run_test_gate() {
     if [ "$_selection" = "FORCE_FULL" ]; then
       _selected_count="$_total_bats"
       _gate_status "[test-gate] Selection: full suite (${_total_bats} bats files — RITE_GATE_FORCE_FULL opt-in)"
-      _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} pr=${PR_NUMBER:-?}"
+      _diag "TEST_GATE_SELECTION mode=full selected=${_total_bats} total=${_total_bats} by_ref=0 pr=${PR_NUMBER:-?}"
       _gate_status "[test-gate] Running bats -r tests/..."
       if [ "$_bats_use_pretty" = "true" ]; then
         # tee into _bats_pretty_capture (not-run detection, #804) while still

@@ -480,10 +480,19 @@ _bats_file_has_body_reference() {
       return 0
     fi
     # Rule 2: strip the leading path component and anchor with /
+    # Only apply when the suffix still contains a directory separator — a bare
+    # name (e.g. "rite" from "bin/rite") would match /rite-full-suite and
+    # similar substrings in 20%+ of bats files, recreating full-suite conditions.
+    # Paths that need this rule (e.g. $RITE_LIB_DIR/providers/claude.sh) always
+    # have at least one '/' in the stripped suffix.
     _suffix="${_changed#*/}"
-    if grep -qF -- "/$_suffix" "$bats_file" 2>/dev/null; then
-      return 0
-    fi
+    case "$_suffix" in
+      */*)
+        if grep -qF -- "/$_suffix" "$bats_file" 2>/dev/null; then
+          return 0
+        fi
+        ;;
+    esac
   done <<< "$changed_files"
   return 1
 }
@@ -521,27 +530,31 @@ _select_tests_by_changed_paths() {
   # the selection would come back empty, and the edited file's own tests
   # would never run for the very change that touched them.
   #
-  # Rule 2 (body reference): select the file if its text contains any changed
+  # Rule 2 (header match): comma-separated declared paths, glob-capable.
+  # Runs before the body-reference check so that header-matched files are
+  # emitted bare (no prefix) and only body-only rescues carry "by_ref:".
+  # Without this ordering every header declares the path as a string literal,
+  # so the body grep fires first and overcounts by_ref in the diag.
+  #
+  # Rule 3 (body reference): select the file if its text contains any changed
   # shell-source path (lib/**/*.sh, bin/*, tools/**/*.sh) as a fixed-string.
   # This catches tests that source, grep, or reference a changed file without
-  # declaring it in the sharkrite-test-covers header. Runs before the header
+  # declaring it in the sharkrite-test-covers header. Runs AFTER the header
   # check; output is prefixed "by_ref:" so the caller can count them separately
   # for the TEST_GATE_SELECTION diag. Comments documenting a dependency are a
   # dependency — the fixed-string match is intentionally comment-inclusive.
-  #
-  # Rule 3 (header match): comma-separated declared paths, glob-capable.
   (cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null) \
     | while IFS= read -r _rel; do
         if echo "$changed_files" | grep -Fxq "$_rel"; then
           echo "$_rel"
           continue
         fi
-        if _bats_file_has_body_reference "$project_root/$_rel" "$changed_files"; then
-          echo "by_ref:$_rel"
-          continue
-        fi
         if _bats_file_matches_changed "$project_root/$_rel" "$changed_files" "$project_root"; then
           echo "$_rel"
+          continue
+        fi
+        if _bats_file_has_body_reference "$project_root/$_rel" "$changed_files"; then
+          echo "by_ref:$_rel"
         fi
       done
 }
