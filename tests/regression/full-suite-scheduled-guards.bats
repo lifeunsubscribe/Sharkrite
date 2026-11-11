@@ -702,3 +702,173 @@ STUB
   # Must not have called investigate (no "Investigating failures" in output)
   ! echo "$output" | grep -q "Investigating failures"
 }
+
+# ---------------------------------------------------------------------------
+# 14. Investigate deadline guard: serial reruns aborted near window end
+# ---------------------------------------------------------------------------
+@test "--investigate --scheduled: serial rerun loop aborts near window end, emits FULL_SUITE_INVESTIGATE_ABORTED diag" {
+  _write_lib_stubs
+
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin-investdeadline"
+  mkdir -p "$fake_bin"
+  local call_count_file="$RITE_TEST_TMPDIR/bats-inv-call-count"
+
+  # make: passes
+  cat > "$fake_bin/make" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$fake_bin/make"
+
+  # bats: first call (main run) fails with one test; subsequent calls (serial rerun)
+  # should never be reached because the deadline guard fires first.
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: call_count_file path must expand
+  cat > "$fake_bin/bats" << STUB
+#!/bin/bash
+_c=0; [ -f "${call_count_file}" ] && _c=\$(cat "${call_count_file}")
+_c=\$(( _c + 1 ))
+printf '%s' "\$_c" > "${call_count_file}"
+if [ "\$_c" -eq 1 ]; then
+  printf '1..1\nnot ok 1 fake test\n'
+  exit 1
+fi
+# Should not reach here — serial rerun blocked by deadline guard
+printf '1..1\nok 1 fake test\n'
+exit 0
+STUB
+  chmod +x "$fake_bin/bats"
+
+  cat > "$fake_bin/git" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then echo "test-branch"; exit 0; fi
+exec /usr/bin/git "$@"
+STUB
+  chmod +x "$fake_bin/git"
+
+  # H=04, M=59, S=00 → 60s remaining until 05:00; 60 ≤ BATS_TEST_TIMEOUT(300) → abort
+  cat > "$fake_bin/date" << 'STUB'
+#!/bin/bash
+case "${1:-}" in
+  '+%H') echo "04" ;;
+  '+%M') echo "59" ;;
+  '+%S') echo "00" ;;
+  '+%Y-%m-%d') echo "2026-01-01" ;;
+  '+%Y%m%d')   echo "20260101" ;;
+  '+%H:%M:%S') echo "04:59:00" ;;
+  *) exec /bin/date "$@" ;;
+esac
+STUB
+  chmod +x "$fake_bin/date"
+
+  # Fake .bats file so grep finds "fake test" for the serial rerun mapping
+  mkdir -p "$_FAKE_PROJECT/tests"
+  printf '#!/usr/bin/env bats\n@test "fake test" { true; }\n' > "$_FAKE_PROJECT/tests/fake.bats"
+
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    RITE_FULL_SUITE_MIN_DEADLINE=2 \
+    BATS_TEST_TIMEOUT=300 \
+    bash "$_FULL_SUITE_SCRIPT" --investigate --scheduled
+
+  # Overall outcome is 1 (bats failed — investigate does not change exit code)
+  [ "$status" -eq 1 ]
+
+  # Bats should have been called exactly once (main run); serial rerun never started
+  [ -f "$call_count_file" ]
+  [ "$(cat "$call_count_file")" -eq 1 ]
+
+  # FULL_SUITE_INVESTIGATE_ABORTED diag must be in the log
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+  grep -q 'FULL_SUITE_INVESTIGATE_ABORTED' "$_log"
+  grep -q 'reason=window_end' "$_log"
+  grep -q 'Investigate serial re-run ABORTED' "$_log"
+}
+
+# ---------------------------------------------------------------------------
+# 15. Investigate deadline guard: manual runs are unaffected
+# ---------------------------------------------------------------------------
+@test "--investigate without --scheduled: serial reruns run regardless of hour" {
+  _write_lib_stubs
+
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin-investmanual"
+  mkdir -p "$fake_bin"
+  local call_count_file="$RITE_TEST_TMPDIR/bats-man-call-count"
+
+  cat > "$fake_bin/make" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$fake_bin/make"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: call_count_file path must expand
+  cat > "$fake_bin/bats" << STUB
+#!/bin/bash
+_c=0; [ -f "${call_count_file}" ] && _c=\$(cat "${call_count_file}")
+_c=\$(( _c + 1 ))
+printf '%s' "\$_c" > "${call_count_file}"
+if [ "\$_c" -eq 1 ]; then
+  printf '1..1\nnot ok 1 fake test\n'
+  exit 1
+fi
+# Serial rerun: should be called (manual run ignores deadline)
+printf '1..1\nok 1 fake test\n'
+exit 0
+STUB
+  chmod +x "$fake_bin/bats"
+
+  cat > "$fake_bin/git" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then echo "test-branch"; exit 0; fi
+exec /usr/bin/git "$@"
+STUB
+  chmod +x "$fake_bin/git"
+
+  # Date returns H=04 M=59 — would abort in --scheduled mode
+  cat > "$fake_bin/date" << 'STUB'
+#!/bin/bash
+case "${1:-}" in
+  '+%H') echo "04" ;;
+  '+%M') echo "59" ;;
+  '+%S') echo "00" ;;
+  '+%Y-%m-%d') echo "2026-01-01" ;;
+  '+%Y%m%d')   echo "20260101" ;;
+  '+%H:%M:%S') echo "04:59:00" ;;
+  *) exec /bin/date "$@" ;;
+esac
+STUB
+  chmod +x "$fake_bin/date"
+
+  mkdir -p "$_FAKE_PROJECT/tests"
+  printf '#!/usr/bin/env bats\n@test "fake test" { true; }\n' > "$_FAKE_PROJECT/tests/fake.bats"
+
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    BATS_TEST_TIMEOUT=300 \
+    bash "$_FULL_SUITE_SCRIPT" --investigate
+  # Note: no --scheduled flag
+
+  # Overall outcome is 1 (bats failed)
+  [ "$status" -eq 1 ]
+
+  # Bats must have been called more than once (serial rerun proceeded)
+  [ -f "$call_count_file" ]
+  [ "$(cat "$call_count_file")" -gt 1 ]
+
+  # FULL_SUITE_INVESTIGATE_ABORTED must NOT appear (manual run, no deadline check)
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+  ! grep -q 'FULL_SUITE_INVESTIGATE_ABORTED' "$_log"
+}

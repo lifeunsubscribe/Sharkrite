@@ -334,6 +334,9 @@
 # uses 300 s (the gate uses 120 s) because serial-marked concurrency files
 # legitimately run longer. Both the full-suite runner and the targeted gate
 # read this same variable, so raising it here also raises the gate timeout.
+# Also used as the per-file deadline floor for the --investigate serial re-run
+# loop in --scheduled mode: a file is not started when less than BATS_TEST_TIMEOUT
+# seconds remain until the 05:00 window end (FULL_SUITE_INVESTIGATE_ABORTED diag).
 # Default: 300. Set to a lower value only if individual test overhead is high
 # and you need faster abort-on-hang feedback in the overnight run.
 # RITE_BATS_TEST_TIMEOUT=300
