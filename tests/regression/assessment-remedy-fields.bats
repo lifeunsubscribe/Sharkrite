@@ -178,8 +178,8 @@ _run_extract_remedy_field() {
     echo "FAIL: subshell exited non-zero ($status): $output"
     false
   }
-  [[ "$output" == *"grep"*"validate_input"* ]] || {
-    echo "FAIL: Expected extracted verification command containing 'grep' and 'validate_input', got: '$output'"
+  [ "$output" = "grep -n validate_input lib/core/foo.sh" ] || {
+    echo "FAIL: Expected exact verification command 'grep -n validate_input lib/core/foo.sh' (prefix stripped), got: '$output'"
     false
   }
 }
@@ -198,7 +198,7 @@ _run_extract_remedy_field() {
     '**Location:** lib/core/foo.sh:42' \
     '**Fix Effort:** <1hr' \
     '**Defer Reason:** Needs separate focused PR' \
-    '**Suggested Fix:** Add an early return when the argument is empty or non-numeric.' \
+    '**Suggested Fix:** Add an early return when the **argument** is empty or non-numeric.' \
     '**Verification:** grep -n validate_input lib/core/foo.sh' \
     > "$_fixture"
   _run_extract_remedy_field "$_fixture" "Suggested Fix"
@@ -206,8 +206,8 @@ _run_extract_remedy_field() {
     echo "FAIL: subshell exited non-zero ($status): $output"
     false
   }
-  [[ "$output" == *"early return"* ]] || {
-    echo "FAIL: Expected extracted suggested fix containing 'early return', got: '$output'"
+  [ "$output" = "Add an early return when the **argument** is empty or non-numeric." ] || {
+    echo "FAIL: Expected exact suggested fix 'Add an early return when the **argument** is empty or non-numeric.' (prefix stripped, inner asterisks preserved), got: '$output'"
     false
   }
 }
