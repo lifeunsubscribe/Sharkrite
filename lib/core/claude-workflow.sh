@@ -3660,7 +3660,7 @@ else
       # the check would flag every changed file because no path can match a
       # prose-only DO. Emit a diag line so the skip is visible in the log.
       if ! scope_boundary_is_enforceable "${ISSUE_BODY:-}"; then
-        print_info "[diag] scope-check skipped: no path-shaped DO bullets — scope not enforceable"
+        print_info "[diag] scope-check skipped: no path-shaped DO bullets or Files to Modify paths — scope not enforceable"
         _scope_violations=""
       else
         _scope_violations=""

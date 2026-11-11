@@ -648,10 +648,23 @@ scope_boundary_is_enforceable() {
   # allowed set.  check_scope_boundary unions FtM into _do_patterns before the
   # prose-only skip, so if FtM has at least one strong path token the check is
   # meaningful and should run.
-  local _ftm_path
+  local _ftm_path _ftm_tok
   while IFS= read -r _ftm_path; do
     [ -z "$_ftm_path" ] && continue
-    if _is_strong_path_token "$_ftm_path"; then return 0; fi
+    # Strip leading/trailing backtick decorators (parse_files_to_modify emits
+    # raw bullet content; some issues format paths as `lib/core/foo.sh`).
+    _ftm_path="${_ftm_path#\`}"
+    _ftm_path="${_ftm_path%\`}"
+    [ -z "$_ftm_path" ] && continue
+    if [[ "$_ftm_path" == *" "* ]]; then
+      # Multi-word entry: check each whitespace-separated token (consistent
+      # with the DO-bullet strength loop above).
+      for _ftm_tok in $_ftm_path; do
+        if _is_strong_path_token "$_ftm_tok"; then return 0; fi
+      done
+    else
+      if _is_strong_path_token "$_ftm_path"; then return 0; fi
+    fi
   done <<< "$(parse_files_to_modify "$issue_body")"
 
   return 1

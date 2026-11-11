@@ -16,8 +16,8 @@
 #   Bare filenames in prose do not qualify.
 #
 # Acceptance criteria this file covers:
-#   1. Issue #823's verbatim body → scope_boundary_is_enforceable returns 1
-#      (non-enforceable), zero violations for its three Files-to-Modify.
+#   1. Issue #823's verbatim body → scope_boundary_is_enforceable returns 0
+#      (enforceable via FtM), zero violations for its three Files-to-Modify.
 #   2. Both section formats (**Scope Boundary**: and ## Scope Boundary) parse
 #      identically — twin fixtures for the same DO content.
 #   3. Files-to-Modify from Claude Context are unioned into the allowed set
@@ -74,19 +74,22 @@ teardown() {
 }
 
 # =============================================================================
-# 1. Enforceability: issue #823 body → non-enforceable (prose-only DO)
+# 1. Enforceability: prose-only DO + FtM paths → enforceable via FtM
 #
 # Issue #823 "Halt batch on repeated identical gate failures":
 #   Files-to-Modify: lib/core/batch-process-issues.sh,
 #                    tests/regression/batch-gate-circuit-breaker.bats,
 #                    docs/architecture/exit-codes.md
 #   Scope Boundary DO: pure prose, no path with slash.
+#   → scope_boundary_is_enforceable returns 0 (enforceable via FtM fallback).
 #
 # Issue #833 "Add repo-level batch mutex" (the direct trigger of the bug):
 #   DO bullet: "reusing issue-lock.sh's mkdir/pid/kill-0 pattern"
 #   "issue-lock.sh" has a .sh extension → old _is_path_shaped returned true →
 #   scope_boundary_is_enforceable wrongly returned 0 (enforceable) → every
 #   file not matching that bare filename was flagged as a violation.
+#   After the fix: "issue-lock.sh" is not strong (no slash); FtM has three
+#   slash-bearing paths → returns 0 (enforceable via FtM fallback).
 # =============================================================================
 
 @test "issue-823 body (prose DO + FtM paths): scope_boundary_is_enforceable returns enforceable via FtM" {
@@ -147,11 +150,11 @@ EOF
   [ "$status" -eq 0 ]
 }
 
-@test "issue-833 body (bare .sh in prose DO): scope_boundary_is_enforceable returns non-enforceable" {
-  # Verbatim Scope Boundary from issue #833 — the direct trigger of the bug.
-  # "issue-lock.sh" has a .sh extension, which old _is_path_shaped matched,
-  # incorrectly making the scope "enforceable" and flagging every file not
-  # matching that bare filename.
+@test "issue-833 body (bare .sh in prose DO): scope_boundary_is_enforceable returns enforceable via FtM" {
+  # Verbatim issue #833 body — the direct trigger of the original bug.
+  # "issue-lock.sh" is a bare filename (no slash) → NOT a strong path token,
+  # so DO bullets alone are prose-only.  But Files to Modify has three
+  # slash-bearing paths, so the FtM fallback makes the scope enforceable.
   local body_file="${BATS_TEST_TMPDIR}/issue-833.txt"
   cat > "$body_file" <<'EOF'
 ## Description
@@ -197,9 +200,9 @@ EOF
     scope_boundary_is_enforceable \"\$BODY\"
   "
 
-  # "issue-lock.sh" is a bare filename (no slash) → NOT a strong path token →
-  # scope_boundary_is_enforceable must return 1 (NOT enforceable)
-  [ "$status" -eq 1 ]
+  # FtM has lib/core/batch-process-issues.sh, lib/utils/issue-lock.sh,
+  # docs/architecture/exit-codes.md → all slash-bearing → enforceable via FtM.
+  [ "$status" -eq 0 ]
 }
 
 @test "issue-823 body: zero scope violations for its three declared files" {

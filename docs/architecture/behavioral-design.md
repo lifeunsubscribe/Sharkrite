@@ -2887,8 +2887,10 @@ wrong issue/PR pair and doing no work for the follow-up.
 `scope_boundary_is_enforceable` returns 0 (enforceable) when the issue body
 contains at least one strong path token (path-shaped + contains a slash) in
 either the DO bullets OR the `Files to Modify` list from Claude Context.  It
-returns 1 (not enforceable) only when both sources are absent or contain only
-prose with no slash-bearing path tokens.
+returns 1 (not enforceable) only when DO patterns are present but every token
+in both sources is prose — no slash-bearing path token in DO bullets or in
+Files to Modify.  When no DO patterns are present at all (no Scope Boundary
+section), it returns 0 vacuously (nothing to enforce).
 
 The allowed set used by `check_scope_boundary` is **DO path tokens ∪ Files to
 Modify paths**.  The FtM union is applied before the prose-only enforceability
