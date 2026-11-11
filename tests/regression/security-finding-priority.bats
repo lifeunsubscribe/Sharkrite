@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/assess-review-issues.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/assess-review-issues.sh, lib/core/promote-branch.sh
 #
 # Regression tests for #1548: security findings routed to priority-high
+# Extended by #1562: promote-path follow-up issues also route through _resolve_issue_labels
 #
 # Category=Security forces priority-high (floor) and adds the "security" label
 # regardless of the raw severity. MEDIUM/LOW Security findings are elevated;
@@ -17,6 +18,8 @@
 #   7. Unit: compound category "Security / Input Validation" fires security floor
 #   8. Static: assess-review-issues.sh calls _resolve_issue_labels for the per-item path
 #   9. Static: assess-and-resolve.sh calls _resolve_issue_labels for the rollup path
+#  10. Static: promote-branch.sh NOW aggregate path routes through _resolve_issue_labels
+#  11. Static: promote-branch.sh fallback unassessed path routes through _resolve_issue_labels
 
 load '../helpers/setup.bash'
 
@@ -24,6 +27,7 @@ setup() {
   setup_test_tmpdir
   export ASSESS_RESOLVE_SCRIPT="${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh"
   export ASSESS_REVIEW_SCRIPT="${RITE_REPO_ROOT}/lib/core/assess-review-issues.sh"
+  export PROMOTE_SCRIPT="${RITE_REPO_ROOT}/lib/core/promote-branch.sh"
 }
 
 teardown() {
@@ -177,6 +181,35 @@ _run_resolve() {
   [ "$status" -eq 0 ] || {
     echo "FAIL: _finding_labels=\$(_resolve_issue_labels ...) not found in $ASSESS_RESOLVE_SCRIPT"
     echo "Expected: _finding_labels=\$(_resolve_issue_labels ...)"
+    false
+  }
+}
+
+# ─── Test 11: Static — promote-branch.sh NOW path uses _resolve_issue_labels ──
+
+@test "promote-branch.sh: assessed NOW aggregate path routes through _resolve_issue_labels" {
+  # Structural pin: the NOW aggregate issue creation must derive labels via
+  # _resolve_issue_labels (not hardcoded "from-review" + "tech-debt" strings).
+  # This guards against regression where security findings in a promotion review
+  # would be filed without the security label and priority-high (#1562).
+  run grep -n -E '_promo_now_labels=\$\(_resolve_issue_labels' "$PROMOTE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: _promo_now_labels=\$(_resolve_issue_labels ...) not found in $PROMOTE_SCRIPT"
+    echo "Expected: _promo_now_labels=\$(_resolve_issue_labels ...)"
+    false
+  }
+}
+
+# ─── Test 12: Static — promote-branch.sh fallback path uses _resolve_issue_labels ─
+
+@test "promote-branch.sh: fallback unassessed path routes through _resolve_issue_labels" {
+  # Structural pin: the fallback (unassessed) issue creation must derive labels via
+  # _resolve_issue_labels so security findings in the raw review body still reach
+  # priority-high + security label even when the assessor was unavailable (#1562).
+  run grep -n -E '_promo_fb_labels=\$\(_resolve_issue_labels' "$PROMOTE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: _promo_fb_labels=\$(_resolve_issue_labels ...) not found in $PROMOTE_SCRIPT"
+    echo "Expected: _promo_fb_labels=\$(_resolve_issue_labels ...)"
     false
   }
 }
