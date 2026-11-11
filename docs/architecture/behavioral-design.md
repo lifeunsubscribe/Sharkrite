@@ -2879,3 +2879,25 @@ wrong issue/PR pair and doing no work for the follow-up.
    bug class this design prevents.
 
 **Enforcement:** `tests/regression/followup-merged-parent-worktree.bats`.
+
+---
+
+## Scope Boundary Enforceability
+
+`scope_boundary_is_enforceable` returns 0 (enforceable) when the issue body
+contains at least one strong path token (path-shaped + contains a slash) in
+either the DO bullets OR the `Files to Modify` list from Claude Context.  It
+returns 1 (not enforceable) only when both sources are absent or contain only
+prose with no slash-bearing path tokens.
+
+The allowed set used by `check_scope_boundary` is **DO path tokens ∪ Files to
+Modify paths**.  The FtM union is applied before the prose-only enforceability
+guard, so a prose-DO issue with a path-shaped FtM list is scope-checked against
+FtM — not silently skipped.  The skip condition fires only when neither source
+supplies a usable path: prose-only DO AND no path-shaped FtM entries.
+
+**Consequence for issue authors:** when DO bullets are written as prose
+(the runbook-sanctioned style), the `Files to Modify` list is the sole source
+of enforceable paths.  It must therefore be complete; an omitted file will be
+flagged as a scope violation during the dev session even if it was implicitly
+intended to be in scope.

@@ -77,6 +77,7 @@ Generate well-structured GitHub issues that Claude Code can execute efficiently 
    - DO NOT: refactor the auth middleware (separate issue)
    - DO NOT: add OAuth support (Phase 3)
    ```
+   DO bullets may be prose; the enforcer's allowed set is DO path tokens ∪ `Files to Modify`, so `Files to Modify` must be complete when DO bullets carry no path tokens.
 
 10. **Dependencies**: Issue ordering within the plan
     - `After: #N` — should be done after issue N

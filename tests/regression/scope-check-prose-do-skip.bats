@@ -89,9 +89,13 @@ teardown() {
 #   file not matching that bare filename was flagged as a violation.
 # =============================================================================
 
-@test "issue-823 body (prose DO): scope_boundary_is_enforceable returns non-enforceable" {
-  # Verbatim Scope Boundary from issue #823 (bold-label format).
-  # DO bullet is pure prose — no token with a slash.
+@test "issue-823 body (prose DO + FtM paths): scope_boundary_is_enforceable returns enforceable via FtM" {
+  # Verbatim issue #823 body (bold-label format).  DO bullet is pure prose — no
+  # token with a slash.  But Files to Modify contains three slash-bearing paths.
+  # After the fix, scope_boundary_is_enforceable consults parse_files_to_modify
+  # and returns 0 (enforceable), so the check runs against FtM paths rather than
+  # being skipped.  Test name updated from "non-enforceable" because #823's FtM
+  # supplies the allowed set that makes the check meaningful.
   local body_file="${BATS_TEST_TMPDIR}/issue-823.txt"
   cat > "$body_file" <<'EOF'
 ## Description
@@ -138,8 +142,9 @@ EOF
     scope_boundary_is_enforceable \"\$BODY\"
   "
 
-  # DO bullet is pure prose (no slash-bearing token) → non-enforceable
-  [ "$status" -eq 1 ]
+  # DO bullet is prose-only but FtM has three slash-bearing paths →
+  # scope_boundary_is_enforceable returns 0 (enforceable via FtM fallback).
+  [ "$status" -eq 0 ]
 }
 
 @test "issue-833 body (bare .sh in prose DO): scope_boundary_is_enforceable returns non-enforceable" {
@@ -521,4 +526,106 @@ EOF
   "
   [ "$status" -eq 0 ]
   [[ "$output" == *"none_strong"* ]]
+}
+
+# =============================================================================
+# 8. Freshup #508 body shape: prose DO + path-shaped Files to Modify
+#    (the class of issue that triggered the original bug report)
+# =============================================================================
+
+@test "prose-DO + FtM paths: check_scope_boundary reports violation for file outside FtM and test whitelist" {
+  # Scenario (freshup #508 shape): issue has prose-only DO bullets and a
+  # complete Files to Modify list.  One changed file is IN FtM; one changed
+  # file is NOT in FtM and NOT a test file.  After the fix the check runs
+  # (scope is enforceable via FtM) and flags the out-of-scope file.
+  local _repo="${BATS_TEST_TMPDIR}/violation-repo"
+  mkdir -p "$_repo/lib/core" "$_repo/lib/utils"
+  git -C "$_repo" init -q
+  git -C "$_repo" config user.email "t@t.com"
+  git -C "$_repo" config user.name "T"
+
+  printf "# in-scope stub\n" > "$_repo/lib/core/target.sh"
+  printf "# out-of-scope stub\n" > "$_repo/lib/utils/unrelated.sh"
+  git -C "$_repo" add -A
+  git -C "$_repo" commit -q -m "baseline"
+
+  _cur=$(git -C "$_repo" branch --show-current 2>/dev/null || git -C "$_repo" rev-parse --abbrev-ref HEAD || true)
+  if [ "$_cur" != "main" ]; then
+    git -C "$_repo" branch -m "$_cur" main 2>/dev/null || true
+  fi
+  git -C "$_repo" update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  git -C "$_repo" checkout -q -b feature
+  printf "# modified in-scope\n" > "$_repo/lib/core/target.sh"
+  printf "# modified out-of-scope\n" > "$_repo/lib/utils/unrelated.sh"
+  git -C "$_repo" add -A
+  git -C "$_repo" commit -q -m "feature changes"
+  git -C "$_repo" update-ref refs/remotes/origin/main "$(git -C "$_repo" rev-parse main)" 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/prose-do-ftm-violation.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/target.sh
+
+Files to Modify:
+- lib/core/target.sh
+
+## Scope Boundary
+
+- DO: implement the target feature with the new helper
+- DO NOT: touch unrelated helpers
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$_repo\"
+  "
+
+  # lib/utils/unrelated.sh is changed but NOT in FtM and NOT a test path → VIOLATION
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"VIOLATION:"*"lib/utils/unrelated.sh"* ]]
+  # lib/core/target.sh is in FtM → matched by FtM union → no violation
+  [[ "$output" != *"VIOLATION:"*"lib/core/target.sh"* ]] || false
+}
+
+@test "prose-DO + FtM paths: check_scope_boundary reports no violations for FtM-listed and whitelisted test files" {
+  # Scenario (freshup #508 shape): prose-only DO bullets + path-shaped FtM.
+  # All changed files in TEST_REPO_DIR (from setup) are either listed in FtM
+  # or are newly-added test files (implicitly whitelisted).  Verifies that the
+  # FtM union + enforceability fix produces zero violations, not a skip.
+  #
+  # Changed files in TEST_REPO_DIR (feature/issue-823-test branch):
+  #   lib/core/batch-process-issues.sh       (modified) → in FtM
+  #   docs/architecture/exit-codes.md         (modified) → in FtM
+  #   tests/regression/batch-gate-circuit-breaker.bats (added) → test-path whitelist
+  local body_file="${BATS_TEST_TMPDIR}/freshup-508-shape.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- lib/core/batch-process-issues.sh
+- docs/architecture/exit-codes.md
+
+## Scope Boundary
+
+- DO: implement the circuit breaker with signature extraction
+- DO: add exit code doc entry
+- DO NOT: change single-issue mode failure behavior
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # All changed files are either in FtM or are added test files → no violations
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
 }
