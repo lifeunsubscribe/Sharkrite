@@ -507,3 +507,61 @@ _assert_diag() {
   # Provider was called at least twice — UNKNOWN triggered a retry, not an abort
   [ "$PROVIDER_CALL_COUNT" -ge 2 ]
 }
+
+# ===========================================================================
+# SHARED HELPER (_cr_file_has_conflict_markers)
+# These tests exercise the extracted helper directly to confirm the shared
+# implementation is correct (dedup of in-loop and Step 6 — issue #1621).
+# ===========================================================================
+
+@test "shared helper: _cr_file_has_conflict_markers returns 0 when markers present" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  local tmpf="$BATS_TEST_TMPDIR/marked.txt"
+  printf '<<<<<<< HEAD\nbranch content\n=======\nmain content\n>>>>>>> origin/main\n' > "$tmpf"
+
+  # _cr_file_has_conflict_markers returns 0 (found) when markers are present
+  _cr_file_has_conflict_markers "$tmpf"
+}
+
+@test "shared helper: _cr_file_has_conflict_markers returns 1 when file is clean" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  local tmpf="$BATS_TEST_TMPDIR/clean.txt"
+  printf 'resolved content\n' > "$tmpf"
+
+  # _cr_file_has_conflict_markers returns 1 (not found) for a clean file
+  local rc=0
+  _cr_file_has_conflict_markers "$tmpf" || rc=$?
+  [ "$rc" -eq 1 ]
+}
+
+@test "shared helper: _cr_file_has_conflict_markers skips markers inside a fenced block (#1221)" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  # A file with markers ONLY inside a ``` fence block should be treated as clean.
+  # This is the #1221 regression: behavioral-design.md contains a literal conflict-marker
+  # example inside a code block; a plain grep would fire on it.
+  local tmpf="$BATS_TEST_TMPDIR/fenced.txt"
+  printf '# Normal heading\n\nHere is a documented example:\n\n```\n<<<<<<< HEAD\nsome code\n=======\nother code\n>>>>>>> origin/main\n```\n\nEnd of file.\n' > "$tmpf"
+
+  # Must return 1 (clean) — markers are inside the fence and must be ignored
+  local rc=0
+  _cr_file_has_conflict_markers "$tmpf" || rc=$?
+  [ "$rc" -eq 1 ]
+}
+
+@test "shared helper: _cr_file_has_conflict_markers detects markers OUTSIDE a fenced block" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  # A file where a real marker appears AFTER the fence closes must still be detected.
+  local tmpf="$BATS_TEST_TMPDIR/after-fence.txt"
+  printf '```\ndocumented example\n```\n\n<<<<<<< HEAD\nbranch\n=======\nmain\n>>>>>>> origin/main\n' > "$tmpf"
+
+  # Must return 0 (markers found) — the marker is outside the fence
+  _cr_file_has_conflict_markers "$tmpf"
+}

@@ -64,6 +64,81 @@ _cr_error()   { echo "❌ $1" >&2; }
 _cr_status()  { echo "$1" >&2; }
 
 # ===================================================================
+# SHARED CHECK HELPERS
+# ===================================================================
+
+# _cr_file_has_conflict_markers FILE
+#
+# Fence-aware, CR-stripped conflict-marker scan for a single file.
+# Returns 0 when conflict markers are found (caller's "if" branch fires),
+#         1 when the file is clean.
+#
+# Regex anchors each marker precisely to avoid false positives:
+#   <<<<<<<[[:space:]] — open-marker always followed by a space + branch name
+#   =======$           — separator is exactly 7 '=' alone on the line;
+#                        avoids false-positives from markdown setext underlines
+#                        ("========") or doc separators ("=======foo")
+#   >>>>>>>[[:space:]] — close-marker always followed by a space + branch name
+#   |||||||[[:space:]] — diff3/zdiff3 base-version marker; always has a space;
+#                        produced by merge.conflictstyle=diff3 or zdiff3
+#
+# CR-strip (tr -d '\r'): a CRLF-line-ending file ends the separator with
+# "=======\r", which the anchored "=======$" misses — a bad resolution would
+# be silently accepted (#533).  Stripping CR is portable (unlike '\r?' which
+# GNU grep -E treats as a literal 'r').
+#
+# FENCE-AWARE: lines inside a ``` block are documentation, not markers.
+# docs/architecture/behavioral-design.md documents this very conflict shape
+# with a literal example at column 0 inside a fenced block (added by #1319).
+# A plain grep matched it, so EVERY conflict touching that file became
+# permanently unresolvable.  Live: #1221, where the resolver session itself
+# reported "the remaining <<<<<<< at line 2225 is inside a documentation code
+# block, not an actual conflict marker" and the old inline check overrode it.
+#
+# Tradeoff, stated deliberately: a REAL conflict region that opens inside an
+# already-open fence is skipped by this scan.  That is the safer direction —
+# failing closed on documented examples blocks real work every time, while the
+# skipped case needs a conflict to begin mid-fence AND to survive Check 1.
+#
+# DO NOT WEAKEN: see #1221/#533 for the exact shapes this check guards.
+_cr_file_has_conflict_markers() {
+  local _cff_file="$1"
+  tr -d '\r' < "$_cff_file" 2>/dev/null | awk '
+      /^```/ { fence = !fence; next }
+      !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
+      END { exit(found ? 0 : 1) }
+    '
+}
+
+# _cr_check_no_unexpected_unmerged KNOWN_FILES
+#
+# Check 1: abort if any currently-unmerged path is NOT in the original conflict
+# set.  Called from both the in-loop verification and the outer Step 6 so the
+# invariant is enforced identically in both code paths.
+# On violation: prints the unexpected paths, calls git merge --abort, returns 1.
+# On success: returns 0.
+_cr_check_no_unexpected_unmerged() {
+  local _cnuu_known_files="$1"
+  local _cnuu_unexpected=""
+  local _cnuu_u_path
+  while IFS= read -r _cnuu_u_path; do
+    [ -z "$_cnuu_u_path" ] && continue
+    if ! printf '%s\n' "$_cnuu_known_files" | grep -qxF "$_cnuu_u_path"; then
+      _cnuu_unexpected="${_cnuu_unexpected}${_cnuu_u_path}
+"
+    fi
+  done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
+
+  if [ -n "${_cnuu_unexpected:-}" ]; then
+    _cr_error "Unmerged path(s) the session was never given:"
+    printf '%s' "$_cnuu_unexpected" | sed 's/^/    /' >&2
+    git merge --abort 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# ===================================================================
 # POST-RESOLUTION VIABILITY GATES (issue #1603)
 # ===================================================================
 
@@ -763,37 +838,18 @@ the resolved files after this session ends."
     # Check 1: No UNEXPECTED unmerged files (not retryable — abort immediately).
     # A session that introduces a new unmerged path has done something the resolver
     # cannot safely interpret; aborting is the correct response regardless of attempt count.
-    local _cr_unexpected=""
-    local _cr_u_path
-    while IFS= read -r _cr_u_path; do
-      [ -z "$_cr_u_path" ] && continue
-      if ! printf '%s\n' "$_cr_conflict_files" | grep -qxF "$_cr_u_path"; then
-        _cr_unexpected="${_cr_unexpected}${_cr_u_path}
-"
-      fi
-    done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
-
-    if [ -n "${_cr_unexpected:-}" ]; then
-      _cr_error "Unmerged path(s) the session was never given:"
-      printf '%s' "$_cr_unexpected" | sed 's/^/    /' >&2
-      git merge --abort 2>/dev/null || true
-      return 1
-    fi
+    _cr_check_no_unexpected_unmerged "$_cr_conflict_files" || return 1
 
     # Check 2: Fence-aware conflict-marker scan on the REMAINING files.
     # Collect still-failing paths — the loop uses them as the retry target on
-    # the next attempt. The awk program and CR-strip are identical to the outer
-    # Step 6 (CR-strip for CRLF; fence-awareness so documented examples inside
-    # ``` blocks don't fire — see #1221/#533). DO NOT WEAKEN this check.
+    # the next attempt. See _cr_file_has_conflict_markers for the full rationale
+    # (CR-strip for CRLF; fence-awareness for documented examples — #1221/#533).
+    # DO NOT WEAKEN this check.
     _cr_still_failing=""
     while IFS= read -r _cr_f; do
       [ -z "$_cr_f" ] && continue
       [ -f "$_cr_f" ] || continue
-      if tr -d '\r' < "$_cr_f" 2>/dev/null | awk '
-          /^```/ { fence = !fence; next }
-          !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
-          END { exit(found ? 0 : 1) }
-        '; then
+      if _cr_file_has_conflict_markers "$_cr_f"; then
         _cr_error "Conflict markers remain in: $_cr_f"
         _cr_still_failing="${_cr_still_failing}${_cr_f}
 "
@@ -859,67 +915,19 @@ the resolved files after this session ends."
   # known paths is Check 2's job (conflict markers in the working tree), and
   # the two together are the real contract: every unmerged path is a known
   # conflict path, and every known conflict path is marker-free.
-  local _cr_unexpected=""
-  local _cr_u_path
-  while IFS= read -r _cr_u_path; do
-    [ -z "$_cr_u_path" ] && continue
-    if ! printf '%s\n' "$_cr_conflict_files" | grep -qxF "$_cr_u_path"; then
-      _cr_unexpected="${_cr_unexpected}${_cr_u_path}
-"
-    fi
-  done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
-
-  if [ -n "${_cr_unexpected:-}" ]; then
-    _cr_error "Unmerged path(s) the session was never given:"
-    printf '%s' "$_cr_unexpected" | sed 's/^/    /' >&2
-    git merge --abort 2>/dev/null || true
-    return 1
-  fi
+  _cr_check_no_unexpected_unmerged "$_cr_conflict_files" || return 1
 
   # Check 2: No literal conflict markers in resolved files (belt-and-suspenders)
   #
-  # Regex anchors each marker precisely to avoid false positives:
-  #   <<<<<<<[[:space:]] — conflict open-marker always followed by a space + branch name
-  #   =======$           — conflict separator is exactly 7 '=' alone on the line;
-  #                        avoids false-positives from markdown setext underlines
-  #                        (e.g. "========") or doc separators (e.g. "=======foo")
-  #   >>>>>>>[[:space:]] — conflict close-marker always followed by a space + branch name
-  #   |||||||[[:space:]] — diff3/zdiff3 base-version marker always followed by a space;
-  #                        produced by merge.conflictstyle=diff3 or zdiff3
-  #
-  # CR-strip (tr -d '\r') before matching: a CRLF-line-ending file ends the
-  # separator line with "=======\r", which the anchored "=======$" misses, so a
-  # Windows-line-ending conflict file would slip the check and a bad resolution
-  # would be accepted (#533). Stripping CR keeps the regex exactly as documented
-  # (no relaxed anchor → no trailing-space false positives) and is portable —
-  # unlike '\r?', which GNU grep -E treats as a literal 'r'.
-  # FENCE-AWARE: a line inside a ``` block is documentation, not a marker.
-  #
-  # docs/architecture/behavioral-design.md documents this very conflict shape
-  # with a literal example at column 0 inside a fenced block (added by #1319).
-  # A plain grep matches it, so EVERY conflict touching that file became
-  # permanently unresolvable — and it is the most frequently conflicted file in
-  # the repo. Live: #1221, where the resolver session itself reported "the
-  # remaining <<<<<<< at line 2225 is inside a documentation code block, not an
-  # actual conflict marker" and this check overrode it, failing the rebase.
-  #
-  # Tradeoff, stated deliberately: a REAL conflict region that opens inside an
-  # already-open fence is skipped by this scan. That is the safer direction of
-  # the two. Index-level truth is Check 1's job (it compares unmerged paths
-  # against the conflict list), and `git merge`'s own exit status gates entry
-  # here at all; this scan exists only to catch a resolution that left markers
-  # behind in a file git now considers resolved. Failing closed on documented
-  # examples blocks real work every time, while the skipped case needs a
-  # conflict to begin mid-fence AND to survive Check 1.
+  # Regex anchors each marker precisely to avoid false positives — see
+  # _cr_file_has_conflict_markers for the full rationale (CR-strip for CRLF,
+  # fence-awareness for documented examples in ``` blocks — #1221/#533).
+  # DO NOT WEAKEN this check.
   local _cr_marker_found=false
   while IFS= read -r _cr_f; do
     [ -z "$_cr_f" ] && continue
     [ -f "$_cr_f" ] || continue
-    if tr -d '\r' < "$_cr_f" 2>/dev/null | awk '
-        /^```/ { fence = !fence; next }
-        !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
-        END { exit(found ? 0 : 1) }
-      '; then
+    if _cr_file_has_conflict_markers "$_cr_f"; then
       _cr_error "Conflict markers remain in: $_cr_f"
       _cr_marker_found=true
     fi

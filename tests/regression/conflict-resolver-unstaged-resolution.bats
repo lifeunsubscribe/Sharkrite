@@ -38,11 +38,13 @@ setup() {
   ) >/dev/null 2>&1
 }
 
-# Step-6 Check 1, lifted from the source so the test tracks the real logic.
+# Step-6 Check 1 — calls the extracted helper directly so the test tracks the
+# real logic without duplicating the implementation.
 _run_check1() {
   local _cr_conflict_files="$1"
-  eval "$(sed -n '/# Check 1: No UNEXPECTED unmerged files/,/^  fi$/p' "$SUT" \
-    | sed 's/_cr_error/echo/; s/ >&2//; s/git merge --abort.*//; s/return 1/return 1/')"
+  eval "$(sed -n '/^_cr_check_no_unexpected_unmerged()/,/^}/p' "$SUT" \
+    | sed 's/_cr_error/echo/; s/ >&2//; s/git merge --abort.*//')"
+  _cr_check_no_unexpected_unmerged "$_cr_conflict_files"
 }
 
 @test "Step 6 accepts a resolution written to the working tree but not staged" {
