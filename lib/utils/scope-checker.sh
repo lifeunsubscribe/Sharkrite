@@ -574,6 +574,7 @@ parse_files_to_modify() {
            sub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
            sub(/[[:space:]]*#.*$/, "", line)
            sub(/[[:space:]]+$/, "", line)
+           gsub(/`/, "", line)
            print line
            next
          }

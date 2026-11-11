@@ -594,6 +594,140 @@ EOF
   [[ "$output" != *"VIOLATION:"*"lib/core/target.sh"* ]] || false
 }
 
+# =============================================================================
+# 9. Backtick-formatted and annotated FtM entries
+#    (the class of issue that triggered the false positive in this PR)
+# =============================================================================
+
+@test "backtick FtM entry: parse_files_to_modify strips backticks" {
+  # Issues often format FtM paths as `lib/core/foo.sh` (backtick code spans).
+  # parse_files_to_modify must strip the backticks so callers receive the bare
+  # path and _file_matches_pattern can compare it against changed-file paths.
+  local body_file="${BATS_TEST_TMPDIR}/backtick-ftm-parse.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/foo.sh
+
+Files to Modify:
+- `lib/core/batch-process-issues.sh`
+- `docs/architecture/exit-codes.md`
+
+Related Issues: None
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    parse_files_to_modify \"\$BODY\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Backticks must be stripped — bare paths only
+  [[ "$output" == *"lib/core/batch-process-issues.sh"* ]]
+  [[ "$output" == *"docs/architecture/exit-codes.md"* ]]
+  # Confirm no residual backticks in output
+  [[ "$output" != *"\`"* ]] || false
+}
+
+@test "backtick FtM entry: declared file is not a violation (false-positive regression)" {
+  # Core regression guard: a file declared in FtM with backtick formatting must
+  # not produce a VIOLATION.  Before the parse_files_to_modify fix, the raw
+  # backtick-bearing entry was added to _do_patterns and _file_matches_pattern
+  # failed to match the undecorated changed path, producing a false VIOLATION.
+  local body_file="${BATS_TEST_TMPDIR}/backtick-ftm-no-violation.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- `lib/core/batch-process-issues.sh`
+- `docs/architecture/exit-codes.md`
+
+## Scope Boundary
+
+- DO: implement the circuit breaker with signature extraction
+- DO NOT: change single-issue mode failure behavior
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # lib/core/batch-process-issues.sh declared in FtM with backticks → no violation
+  # docs/architecture/exit-codes.md declared in FtM with backticks → no violation
+  # tests/regression/batch-gate-circuit-breaker.bats is added → test-path whitelist
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+@test "annotated FtM entry: inline comment stripped, path matched correctly" {
+  # FtM entries like "lib/core/foo.sh  # the main orchestrator" must resolve to
+  # just the path.  The awk block's comment-stripping sub() handles this, but
+  # the fix session adds an explicit regression test so it stays covered.
+  local body_file="${BATS_TEST_TMPDIR}/annotated-ftm.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- lib/core/batch-process-issues.sh  # the batch orchestrator
+- docs/architecture/exit-codes.md   # add exit 16 entry
+
+Related Issues: None
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    parse_files_to_modify \"\$BODY\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Comments must be stripped — bare paths only
+  [[ "$output" == *"lib/core/batch-process-issues.sh"* ]]
+  [[ "$output" == *"docs/architecture/exit-codes.md"* ]]
+  # No comment fragments in output
+  [[ "$output" != *"# the batch"* ]] || false
+  [[ "$output" != *"# add exit"* ]] || false
+}
+
+@test "annotated FtM entry: declared file with inline comment is not a violation" {
+  local body_file="${BATS_TEST_TMPDIR}/annotated-ftm-no-violation.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- lib/core/batch-process-issues.sh  # the batch orchestrator
+- docs/architecture/exit-codes.md   # add exit 16 entry
+
+## Scope Boundary
+
+- DO: implement the circuit breaker
+- DO NOT: change single-issue mode failure behavior
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # Both annotated FtM files must be allowed (comment stripped → path matches)
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
 @test "prose-DO + FtM paths: check_scope_boundary reports no violations for FtM-listed and whitelisted test files" {
   # Scenario (freshup #508 shape): prose-only DO bullets + path-shaped FtM.
   # All changed files in TEST_REPO_DIR (from setup) are either listed in FtM
