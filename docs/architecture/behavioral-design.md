@@ -1086,7 +1086,7 @@ Validated: 50-process × 10-round distinct-PID stress → **0 lost / 0 overlaps*
 3. If the holder releases or the PID goes dead, reclaim any residual stale symlink and proceed to `exec`.
 4. If the symlink is still live after `max_attempts` seconds, **soft-fail** (`return 1`) — same behavior as the symlink path's timeout.
 
-**Invariant**: a process on either strategy can hold the lock at a time. No `exec` is called while `$lockfile` is a live symlink with a reachable PID.
+**Invariant**: only one process, on either strategy, can hold the lock at a time. No `exec` is called while `$lockfile` is a live symlink with a reachable PID.
 
 **Tests**: `tests/concurrency/scratchpad-lock.bats` — Test 14 (flock waits for symlink holder then acquires) and Test 15 (flock times out on persistent symlink holder, returns 1). Both skip if `flock(1)` is unavailable.
 

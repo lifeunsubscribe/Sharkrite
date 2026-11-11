@@ -1758,3 +1758,147 @@ GHEOF
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Test 16: Flock path reclaims stale symlink from SIGKILL'd holder during wait loop
+#
+# Regression test for the dead-PID reclaim path inside the flock-path wait loop
+# (scratchpad-lock.sh rename-before-verify-remove branch added for the
+# live-lock-steal race fix). Tests 14 and 15 test clean release and persistent
+# holder; this test covers the third branch: the symlink-strategy holder is
+# SIGKILL'd while the flock-path waiter is already polling inside the wait loop.
+#
+# Acceptance criteria:
+#   (a) After the holder is kill -9'd, the flock-path waiter acquires the lock
+#       and returns 0 within 10 seconds.
+#   (b) The flock-path waiter emits a "reclaiming stale symlink" diagnostic to
+#       stderr, confirming the wait-loop dead-PID branch was exercised (not just
+#       a fast pre-exec reclaim or a lock that was already released).
+# ---------------------------------------------------------------------------
+@test "flock path reclaims stale symlink from SIGKILL'd holder mid-wait-loop" {
+  command -v flock >/dev/null 2>&1 || skip "flock(1) not available on this system"
+
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+  local lock_acquired_file="$RITE_TEST_TMPDIR/symlink_holder_acquired16"
+  local holder_pid_file="$RITE_TEST_TMPDIR/symlink_holder_pid16"
+  local flock_result_file="$RITE_TEST_TMPDIR/flock_result16"
+  local flock_stderr_file="$RITE_TEST_TMPDIR/flock_stderr16"
+
+  # Spawn a symlink-strategy holder that acquires and holds indefinitely (until killed).
+  # Must be a real child process (not a subshell) so its $$ equals its actual PID,
+  # matching the PID stored in the lock symlink target — same idiom as Tests 8 and 14.
+  "${BASH}" -c '
+    set -uo pipefail
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    acquire_scratchpad_lock
+    echo $$ > "'"$holder_pid_file"'"
+    touch "'"$lock_acquired_file"'"
+    sleep 60
+  ' &
+  local holder_bgpid=$!
+
+  # Wait up to 5s for the holder to acquire.
+  local wait_count=0
+  while [ ! -f "$lock_acquired_file" ] && [ "$wait_count" -lt 50 ]; do
+    sleep 0.1
+    wait_count=$((wait_count + 1))
+  done
+  [ -f "$lock_acquired_file" ] || {
+    echo "FAIL: symlink-strategy holder never acquired the lock" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  local holder_pid
+  holder_pid=$(cat "$holder_pid_file")
+
+  # Precondition: lockfile is a live symlink pointing to a live PID.
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lockfile is not a symlink after holder acquired" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+  kill -0 "$holder_pid" 2>/dev/null || {
+    echo "FAIL: holder PID $holder_pid is not alive" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  # Start the flock-path waiter in the background.
+  # It will immediately see the live symlink, print "waiting...", and enter the poll loop.
+  local start_time
+  start_time=$(date +%s)
+  (
+    unset RITE_SCRATCHPAD_LOCK_STRATEGY
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=15
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    if acquire_scratchpad_lock; then
+      echo "success" > "$flock_result_file"
+      release_scratchpad_lock
+    else
+      echo "failure" > "$flock_result_file"
+    fi
+  ) 2>"$flock_stderr_file" &
+  local waiter_bgpid=$!
+
+  # Give the waiter ~2s to enter the wait loop (it polls every 1s, so after 2s
+  # it has completed at least one full poll iteration with the holder alive).
+  sleep 2
+
+  # SIGKILL the holder — the stale symlink persists (no kernel cleanup on the
+  # symlink path, unlike flock where the kernel releases the lock on process death).
+  kill -KILL "$holder_pid" 2>/dev/null || true
+  wait "$holder_bgpid" 2>/dev/null || true
+
+  # Confirm the stale symlink is still present immediately after SIGKILL.
+  # This ensures the waiter must go through the wait-loop dead-PID branch.
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lock symlink disappeared immediately after SIGKILL — symlink path not in use" >&2
+    kill "$waiter_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  # Poll for the flock-path waiter result with a 10-second hard timeout.
+  local poll_count=0
+  while [ ! -f "$flock_result_file" ] && [ "$poll_count" -lt 100 ]; do
+    sleep 0.1
+    poll_count=$((poll_count + 1))
+  done
+
+  if [ ! -f "$flock_result_file" ]; then
+    kill "$waiter_bgpid" 2>/dev/null || true
+    wait "$waiter_bgpid" 2>/dev/null || true
+    echo "FAIL: flock-path waiter did not complete within 10s — wait-loop reclaim may be broken" >&2
+    return 1
+  fi
+
+  wait "$waiter_bgpid" 2>/dev/null || true
+
+  local end_time
+  end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+
+  # (a) Waiter must have succeeded.
+  local result
+  result=$(cat "$flock_result_file")
+  [ "$result" = "success" ] || {
+    echo "FAIL: flock-path waiter failed to acquire lock after holder was SIGKILL'd mid-wait" >&2
+    echo "      stderr: $(cat "$flock_stderr_file" 2>/dev/null || echo '(empty)')" >&2
+    return 1
+  }
+
+  # Must acquire within 10s (waiter enters loop, holder killed after ~2s, reclaim is near-instant).
+  [ "$elapsed" -le 10 ] || {
+    echo "FAIL: flock-path waiter took ${elapsed}s (expected <= 10s)" >&2
+    return 1
+  }
+
+  # (b) Diagnostic message confirming the wait-loop dead-PID reclaim branch was exercised.
+  grep -qi "reclaiming stale symlink" "$flock_stderr_file" || {
+    echo "FAIL: 'reclaiming stale symlink' message not found in flock-path waiter stderr" >&2
+    echo "      stderr was: $(cat "$flock_stderr_file")" >&2
+    echo "      The wait-loop dead-PID reclaim code path was not exercised." >&2
+    return 1
+  }
+}
