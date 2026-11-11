@@ -988,6 +988,15 @@ ${_promo_now_items}"
 
         # Derive label set from the assessed output: scan for the highest severity
         # and any Security category so security findings reach priority-high + security.
+        # Scope to ACTIONABLE_NOW blocks only — DISMISSED/LATER findings must not
+        # contaminate the aggregate labels (a dismissed security finding would cause
+        # security-label routing, and security-labeled issues are never auto-closed).
+        local _promo_now_only
+        _promo_now_only=$(echo "$_promo_assess_out" | awk '
+          /^### .* - ACTIONABLE_NOW/ { in_now=1; next }
+          /^### / { in_now=0 }
+          in_now { print }
+        ' || true)
         local _promo_now_max_sev="MEDIUM"
         local _promo_now_sec_cat=""
         local _sv_line _sv
@@ -997,8 +1006,8 @@ ${_promo_now_items}"
             CRITICAL) _promo_now_max_sev="CRITICAL" ;;
             HIGH) [ "$_promo_now_max_sev" = "CRITICAL" ] || _promo_now_max_sev="HIGH" ;;
           esac
-        done < <(echo "$_promo_assess_out" | grep "^\*\*Severity:\*\*" || true)
-        _promo_now_sec_cat=$(echo "$_promo_assess_out" \
+        done < <(echo "$_promo_now_only" | grep "^\*\*Severity:\*\*" || true)
+        _promo_now_sec_cat=$(echo "$_promo_now_only" \
           | grep -iE "^\*\*Category:\*\*.*[Ss]ecurity" | head -1 \
           | sed 's/\*\*Category:\*\* *//' || true)
         local _promo_now_labels="tech-debt,from-review"
@@ -1114,6 +1123,13 @@ ${_promo_review_body}"
     local _promo_fb_labels="from-review,needs-re-triage"
     if declare -f _resolve_issue_labels >/dev/null 2>&1; then
       _promo_fb_labels=$(_resolve_issue_labels "from-review,needs-re-triage" "$_promo_fb_sev" "$_promo_fb_sec_cat")
+    fi
+    if ! declare -f ensure_labels_exist >/dev/null 2>&1; then
+      # shellcheck source=/dev/null
+      source "$RITE_LIB_DIR/utils/labels.sh" 2>/dev/null || true
+    fi
+    if declare -f ensure_labels_exist >/dev/null 2>&1; then
+      ensure_labels_exist "$_promo_fb_labels" 2>/dev/null || true
     fi
     local _promo_issue_url
     if _promo_issue_url=$(gh_safe issue create \
