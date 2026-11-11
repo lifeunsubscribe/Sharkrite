@@ -38,6 +38,9 @@ setup() {
   export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
   export RITE_DATA_DIR=".rite"
   export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+  # These tests pin the individual-issue path; the deferred-findings pool
+  # (default on, 2026-11-11) would otherwise absorb the fixtures' LATER items.
+  export RITE_FOLLOWUP_POOL=false
   mkdir -p "$RITE_PROJECT_ROOT/$RITE_DATA_DIR"
 
   # The scratchpad file path (matches default in scratchpad-manager.sh)
