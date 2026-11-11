@@ -39,6 +39,10 @@ setup() {
   grep -q 'completed-FAILURE' "$PROJECT_ROOT/CLAUDE.md"
 }
 
+@test "Check 4 StatusContext .state filter is wired in merge-pr.sh" {
+  grep -q 'state == "FAILURE"' "$PROJECT_ROOT/lib/core/merge-pr.sh"
+}
+
 # ---------------------------------------------------------------------------
 # jq logic unit tests — pure transforms, no subprocess stubs needed
 # ---------------------------------------------------------------------------
@@ -112,7 +116,8 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# StatusContext (legacy commit status API) — state field, conclusion always null
+# StatusContext (legacy commit status API) — state field, conclusion always null;
+# in-progress CheckRuns use conclusion="" (not null) — both treated as "no conclusion"
 # ---------------------------------------------------------------------------
 
 @test "jq: StatusContext state=FAILURE is counted as failed (not pending)" {
@@ -153,10 +158,19 @@ setup() {
 
 @test "jq: mixed CheckRun pending + StatusContext FAILURE — FAILURE blocks, pending stays advisory" {
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
-  CHECKS='[{"name":"Actions","conclusion":null,"state":null},{"context":"jenkins/build","state":"FAILURE","conclusion":null}]'
-  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
-  PENDING=$(echo "$CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  CHECKS='[{"name":"Actions","conclusion":"","state":null},{"context":"jenkins/build","state":"FAILURE","conclusion":null}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or ((.conclusion == null or .conclusion == "") and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING=$(echo "$CHECKS" | jq '[.[] | select(((.conclusion == null or .conclusion == "") and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
   [ "$FAILED" = "1" ]
+  [ "$PENDING" = "1" ]
+}
+
+@test "jq: empty-string conclusion is pending, not failed (in-progress CheckRun)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  CHECKS='[{"name":"Actions","conclusion":"","state":null}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or ((.conclusion == null or .conclusion == "") and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING=$(echo "$CHECKS" | jq '[.[] | select(((.conclusion == null or .conclusion == "") and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  [ "$FAILED" = "0" ]
   [ "$PENDING" = "1" ]
 }
 

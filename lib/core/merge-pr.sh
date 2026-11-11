@@ -905,8 +905,8 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
 
   # Only completed-FAILURE/ERROR checks block; pending is advisory.
   # StatusContext objects (legacy commit status API) use .state instead of .conclusion (conclusion is always null).
-  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
-  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or ((.conclusion == null or .conclusion == "") and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(((.conclusion == null or .conclusion == "") and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
 
   if [ "$FAILED_CHECKS" -gt 0 ]; then
     print_error "$FAILED_CHECKS CI check(s) completed with failure"
