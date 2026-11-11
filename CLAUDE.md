@@ -497,7 +497,7 @@ Path-based detectors (infrastructure, migrations, auth, docs, expensive services
 Only content-aware and practical conditions block merges:
 
 - **CRITICAL review findings** — requires fix or approval
-- **CI check failures** — any check in `statusCheckRollup` whose `conclusion` is `FAILURE` or `ERROR` blocks the merge (`MERGE_GATE_CI`). Pending checks (`conclusion == null`) are advisory only — no polling, no sleep, zero added latency. The gate reads conclusions GitHub already computed; it runs no tests itself. Replaces the inert `isRequired` filter (a GitHub paid-plan feature unavailable here). Implemented in `lib/core/merge-pr.sh` Check 4.
+- **CI check failures** — any check in `statusCheckRollup` whose `conclusion` is `FAILURE` or `ERROR` blocks the merge (`MERGE_GATE_CI`). Pending checks (status not `COMPLETED`, or `conclusion` null / `""` / `PENDING` — gh serialises an in-progress CheckRun's missing conclusion as the empty string, not null) are advisory only — no polling, no sleep, zero added latency. The gate reads conclusions GitHub already computed; it runs no tests itself. Replaces the inert `isRequired` filter (a GitHub paid-plan feature unavailable here). Implemented in `lib/core/merge-pr.sh` Check 4.
 - **Test/build failures** — non-zero exit from test suite
 - **Session limits** — dual-cap model (issue #283):
   - **Per-issue cap** (`RITE_MAX_ISSUE_HOURS`, default 4h): fires when a single issue runs too long (fix-loop / yak-shave protection)

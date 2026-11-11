@@ -893,7 +893,10 @@ ALL_CI_CHECKS_COUNT=$(echo "$ALL_CI_CHECKS" | jq 'length')
 if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   echo "  Total: $ALL_CI_CHECKS_COUNT"
 
-  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name): \(.conclusion // .status // "PENDING")"' | while read -r line; do
+  # An in-progress CheckRun arrives from gh with conclusion "" (empty string,
+  # not null) and status IN_PROGRESS/QUEUED — `//` treats "" as present, so
+  # fall back on the status explicitly.
+  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name): \(if (.conclusion // "") == "" then (.status // "PENDING") else .conclusion end)"' | while read -r line; do
     if echo "$line" | grep -q "SUCCESS"; then
       echo -e "  ${GREEN}✓${NC} $(echo "$line" | sed 's/: SUCCESS//')"
     elif echo "$line" | grep -q "FAILURE\|ERROR"; then
@@ -904,15 +907,19 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   done
 
   # Only completed-FAILURE/ERROR checks block; pending is advisory.
+  # Pending = not COMPLETED, or no conclusion yet. gh serialises a missing
+  # conclusion as "" for CheckRun (GraphQL null → Go zero value), so `== null`
+  # alone misses every in-progress run — live: freshup 2026-11-11, a check
+  # stuck IN_PROGRESS on every PR was reported as `outcome=passed pending=0`.
   FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
-  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == null or .conclusion == "PENDING")] | length')
+  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(((.status // "COMPLETED") != "COMPLETED") or .conclusion == null or .conclusion == "" or .conclusion == "PENDING")] | length')
 
   if [ "$FAILED_CHECKS" -gt 0 ]; then
     print_error "$FAILED_CHECKS CI check(s) completed with failure"
     VALIDATION_FAILED=true
     _diag "MERGE_GATE_CI outcome=blocked failed=$FAILED_CHECKS pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   elif [ "$PENDING_CHECKS" -gt 0 ]; then
-    print_warning "$PENDING_CHECKS CI check(s) still pending (not blocking)"
+    print_warning "$PENDING_CHECKS CI check(s) still pending (not blocking) — no CI verdict backs this merge"
     _diag "MERGE_GATE_CI outcome=pending failed=0 pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   else
     print_success "All CI checks passed"

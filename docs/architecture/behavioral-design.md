@@ -48,6 +48,14 @@ When sharkrite detects pytest as the test runner:
 
 Applied in both `run_test_gate()` (claude-workflow.sh) and `verify_post_merge()` (post-merge-verify.sh).
 
+### Pytest Interpreter Resolution (2026-11-11)
+
+**Live failure (freshup batch 2026-11-11):** all 16 `TEST_GATE` runs recorded `outcome=skipped reason=missing_deps`. `_provision_pytest_testmon` had correctly resolved the project venv (falling back to `$RITE_PROJECT_ROOT/.venv` because worktrees carry no venv) and installed testmon into it — then the gate ran a bare `python3 -m pytest`. Homebrew's python3 has no pytest, `_classify_pytest_outcome` called that an environmental skip, and two red PRs merged (#529: 6 failing tests; #534: two Alembic heads). The loud-skip below was working as designed; the interpreter choice above it was the bug.
+
+**Contract:** the gate never runs `python3 -m pytest` directly. `gate-runners.sh::_resolve_pytest_python <root>` picks the interpreter in this order: `_RITE_PYTEST_VENV_PYTHON` (set by the provisioner this run) → `<root>/.venv|venv|env/bin/python` → `$RITE_PROJECT_ROOT/.venv/bin/python` → `python3` → `python`. Both `test-gate.sh` (post-commit gate) and `post-merge-verify.sh` call it, so a worktree and the primary checkout pick the same interpreter. `skipped:missing_deps` is now reachable only when no venv exists anywhere — a genuine environment gap, not a resolution gap.
+
+**Related merge-gate fix, same incident:** `MERGE_GATE_CI` reported `outcome=passed pending=0` while the only check on every PR was stuck `IN_PROGRESS`. gh serialises a CheckRun's missing conclusion as `""` (GraphQL null → Go zero value), so `select(.conclusion == null)` matched nothing. Pending is now `status != COMPLETED or conclusion in (null, "", "PENDING")`. Pending remains advisory (no polling, no waiting on CI — operator rule), but it is reported as pending, and the warning says plainly that no CI verdict backs the merge.
+
 ### Pytest Loud-Skip on Missing Dependencies (#744)
 
 **2026-06-27.** When `pytest` is the test runner and the environment is missing the runner itself (or a direct project dependency), the gate previously silently passed with `outcome=skipped`. This masked genuine env issues in worktrees with stale venvs — the fix loop never fired because the gate never reported a problem.

@@ -607,6 +607,36 @@ _node_workspace_patterns() {
 # --testmon into the gate invocation.
 _RITE_PYTEST_VENV_PYTHON=""
 
+# _resolve_pytest_python PROJECT_ROOT
+#
+# Print the interpreter the gate must use for `-m pytest`. Order:
+#   1. _RITE_PYTEST_VENV_PYTHON (set by _provision_pytest_testmon this run)
+#   2. <root>/.venv, <root>/venv, <root>/env  — bin/python
+#   3. $RITE_PROJECT_ROOT/.venv/bin/python     — worktrees have no venv of
+#      their own; the primary checkout's venv is the project's test env
+#   4. python3, then python                    — last resort only
+#
+# Live failure (freshup batch 2026-11-11): the gate resolved the project venv,
+# installed testmon into it, then ran bare `python3 -m pytest`. Homebrew's
+# python3 has no pytest, so all 16 gate runs were `skipped:missing_deps` and
+# two red PRs merged. A venv found two lines earlier must be the interpreter.
+# ---------------------------------------------------------------------------
+_resolve_pytest_python() {
+  local _pr="${1:-.}"
+  local _cand
+  if [ -n "${_RITE_PYTEST_VENV_PYTHON:-}" ] && [ -x "$_RITE_PYTEST_VENV_PYTHON" ]; then
+    echo "$_RITE_PYTEST_VENV_PYTHON"; return 0
+  fi
+  for _cand in "$_pr/.venv/bin/python" "$_pr/venv/bin/python" "$_pr/env/bin/python"; do
+    if [ -x "$_cand" ]; then echo "$_cand"; return 0; fi
+  done
+  if [ -n "${RITE_PROJECT_ROOT:-}" ] && [ -x "$RITE_PROJECT_ROOT/.venv/bin/python" ]; then
+    echo "$RITE_PROJECT_ROOT/.venv/bin/python"; return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then echo "python3"; return 0; fi
+  echo "python"
+}
+
 # _provision_pytest_testmon — ensure pytest-testmon is installed in the repo
 # venv for per-cycle scoped gating (#1127 / #975).
 # Args: $1=project_root  $2=sink (log file, default /dev/null)

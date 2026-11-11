@@ -57,11 +57,48 @@ setup() {
   [ "$FAILED" = "1" ]
 }
 
+# The jq expressions below mirror lib/core/merge-pr.sh Check 4 verbatim; the
+# structural test "Check 4 pending filter handles the empty-string conclusion"
+# pins the source so the two cannot drift apart silently.
+PENDING_JQ='[.[] | select(((.status // "COMPLETED") != "COMPLETED") or .conclusion == null or .conclusion == "" or .conclusion == "PENDING")] | length'
+
+@test "Check 4 pending filter handles the empty-string conclusion (live IN_PROGRESS shape)" {
+  grep -qF '.conclusion == ""' "$PROJECT_ROOT/lib/core/merge-pr.sh"
+  grep -qF '!= "COMPLETED"' "$PROJECT_ROOT/lib/core/merge-pr.sh"
+}
+
+@test "jq: IN_PROGRESS CheckRun with conclusion \"\" is pending, not passed (freshup 2026-11-11)" {
+  # Verbatim shape from `gh pr view --json statusCheckRollup` on a running job.
+  CHECKS='[{"__typename":"CheckRun","completedAt":"0001-01-01T00:00:00Z","conclusion":"","name":"Run tests","status":"IN_PROGRESS","workflowName":"CI"}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
+  PENDING=$(echo "$CHECKS" | jq "$PENDING_JQ")
+  [ "$FAILED" = "0" ]
+  [ "$PENDING" = "1" ]
+}
+
+@test "jq: QUEUED CheckRun is pending" {
+  CHECKS='[{"conclusion":"","name":"Run tests","status":"QUEUED"}]'
+  PENDING=$(echo "$CHECKS" | jq "$PENDING_JQ")
+  [ "$PENDING" = "1" ]
+}
+
+@test "jq: COMPLETED SUCCESS CheckRun is not pending" {
+  CHECKS='[{"conclusion":"SUCCESS","name":"Run tests","status":"COMPLETED"}]'
+  PENDING=$(echo "$CHECKS" | jq "$PENDING_JQ")
+  [ "$PENDING" = "0" ]
+}
+
+@test "jq: display line shows status when conclusion is empty" {
+  CHECKS='[{"conclusion":"","name":"Run tests","status":"IN_PROGRESS"}]'
+  LINE=$(echo "$CHECKS" | jq -r '.[] | "  - \(.name): \(if (.conclusion // "") == "" then (.status // "PENDING") else .conclusion end)"')
+  [ "$LINE" = "  - Run tests: IN_PROGRESS" ]
+}
+
 @test "jq: null conclusion is pending, not failed" {
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
   CHECKS='[{"name":"Lint","conclusion":null}]'
   FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
-  PENDING=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == null or .conclusion == "PENDING")] | length')
+  PENDING=$(echo "$CHECKS" | jq "$PENDING_JQ")
   [ "$FAILED" = "0" ]
   [ "$PENDING" = "1" ]
 }
@@ -70,7 +107,7 @@ setup() {
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
   CHECKS='[{"name":"Lint","conclusion":"SUCCESS"}]'
   FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
-  PENDING=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == null or .conclusion == "PENDING")] | length')
+  PENDING=$(echo "$CHECKS" | jq "$PENDING_JQ")
   [ "$FAILED" = "0" ]
   [ "$PENDING" = "0" ]
 }
@@ -86,7 +123,7 @@ setup() {
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
   CHECKS='[{"name":"Lint","conclusion":"FAILURE"},{"name":"Test","conclusion":null}]'
   FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
-  PENDING=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == null or .conclusion == "PENDING")] | length')
+  PENDING=$(echo "$CHECKS" | jq "$PENDING_JQ")
   [ "$FAILED" = "1" ]
   [ "$PENDING" = "1" ]
 }
