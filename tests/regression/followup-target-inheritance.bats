@@ -258,7 +258,7 @@ setup() {
   # the explicit target differs from the recorded state-file value. This escapes
   # both --base main (primary scenario) and --base B when state file holds A (non-main loop).
   _base_handler=$(awk '
-    /--base[)]/ { in_handler=1 }
+    /^[[:space:]]+--base[)]$/ { in_handler=1 }
     in_handler { print; count++ }
     in_handler && /;;$/ { exit }
     count > 40 { exit }
@@ -272,9 +272,9 @@ setup() {
   }
 
   # The guard must compare the explicit target against the recorded value (not just == main).
-  # Look for the pattern that reads the state file and does a != comparison.
-  echo "$_base_handler" | grep -qE '_base_recorded|cat.*_base_state_file' || {
-    echo "FAIL: --base handler does not read the recorded state-file value for comparison" >&2
+  # Look for the pattern that reads the state file AND does a != comparison on the same line.
+  echo "$_base_handler" | grep -qE '!=.*_base_recorded|_base_recorded.*!=' || {
+    echo "FAIL: --base handler does not perform a != comparison against the recorded state-file value" >&2
     echo "      The guard must clear when RITE_TARGET_BRANCH != recorded, not only when == main" >&2
     echo "      (The non-main-to-non-main loop case is unbreakable with the old == main guard)" >&2
     return 1

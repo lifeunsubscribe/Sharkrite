@@ -3861,7 +3861,7 @@ main() {
           local _base_state_file="${RITE_STATE_DIR}/target-branch-${issue_number}.txt"
           local _base_recorded
           _base_recorded=$(cat "$_base_state_file" 2>/dev/null || true)
-          if [ -n "$_base_recorded" ] && [ "${RITE_TARGET_BRANCH}" != "$_base_recorded" ]; then
+          if [ -n "$_base_recorded" ] && [ "${RITE_TARGET_BRANCH}" != "$_base_recorded" ] || [ -z "$_base_recorded" ]; then
             rm -f "$_base_state_file" 2>/dev/null || true
           fi
         fi
