@@ -18,7 +18,7 @@
 #   1  — one or more failures (lint or bats)
 #
 # Diag emitted:
-#   [diag] FULL_SUITE_RUN outcome=passed|failed|aborted lint_count=N test_count=N duration_s=N
+#   [diag] FULL_SUITE_RUN outcome=passed|failed|aborted lint_count=N test_count=N skipped=N duration_s=N
 #
 # State written on failure:
 #   .rite/state/full-suite-failure.flag  (deleted on next successful run)
@@ -371,6 +371,7 @@ if [ "$_deadline_armed" = "true" ] && { [ "$_tests_exit" = "124" ] || [ "$_tests
 fi
 
 _tests_count=$(grep -c "^not ok " "$_tests_raw" || true)
+_tests_skipped=$(grep -ciE "^ok .*# skip" "$_tests_raw" || true)
 
 if [ "$_tests_exit" -ne 0 ]; then
   print_warning "Test suite failed ($_tests_count test failure(s))"
@@ -394,7 +395,7 @@ fi
 
 # Emit structured diag for health-report aggregation.
 # Writes directly to RITE_LOG_FILE (two-channel convention — not via stdout).
-_diag "FULL_SUITE_RUN outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration}"
+_diag "FULL_SUITE_RUN outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} skipped=${_tests_skipped} duration_s=${_duration}"
 
 # ---------------------------------------------------------------------------
 # Manage failure flag
