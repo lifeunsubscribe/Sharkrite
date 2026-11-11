@@ -535,6 +535,27 @@ _resolve_time_estimate() {
 }
 
 # ---------------------------------------------------------------------------
+# _extract_remedy_field — extract a single-line remedy field from a finding block
+#
+# Args: $1 = finding block text
+#       $2 = field label as it appears in the **Label:** syntax
+#             (e.g. "Suggested Fix" or "Verification")
+# Output: extracted value stripped of the **Label:** prefix, echoed to stdout.
+#         Empty string when field is absent — caller guards with ${VAR:-}.
+#
+# Used for Suggested Fix and Verification fields — these are free-text / shell-command
+# values that must NOT have asterisks stripped (unlike Location, Category, etc.).
+#
+# Extracted from the per-finding loop so tests can source this file with
+# RITE_SOURCE_FUNCTIONS_ONLY=1 and call this function directly, ensuring
+# any change to the extraction pipeline is caught by regression tests.
+# ---------------------------------------------------------------------------
+_extract_remedy_field() {
+  local _block="$1" _label="$2"
+  echo "$_block" | grep -oE "\*\*${_label}:\*\*.*" | head -1 | sed "s/\*\*${_label}:\*\*[[:space:]]*//" || true
+}
+
+# ---------------------------------------------------------------------------
 # _build_gate_prepend_items — build GATE_PREPEND_ITEMS from gate findings JSON
 #
 # Reads the gate findings file (from RITE_GATE_FINDINGS env var, or the
@@ -961,9 +982,9 @@ _resolve_prior_gate_findings() {
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above (_followup_dedup_check,
 # _resolve_priority_label, _resolve_done_def, _resolve_time_estimate,
-# _build_gate_prepend_items, _resolve_prior_gate_findings) without executing
-# the script body (which parses args, sets up exec redirects, installs traps,
-# and makes live gh/claude calls).
+# _extract_remedy_field, _build_gate_prepend_items, _resolve_prior_gate_findings)
+# without executing the script body (which parses args, sets up exec redirects,
+# installs traps, and makes live gh/claude calls).
 # ---------------------------------------------------------------------------
 if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
   return 0 2>/dev/null || true
@@ -2476,9 +2497,9 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       in_field { print }
     ' | sed 's/[[:space:]]*$//' | awk 'NF || in_content { in_content=1; print }' || true)
     _f_context="${_f_context:-}"
-    _f_suggested_fix=$(echo "$_finding_block" | grep -oE '\*\*Suggested Fix:\*\*.*' | head -1 | sed 's/\*\*Suggested Fix:\*\*[[:space:]]*//' || true)
+    _f_suggested_fix=$(_extract_remedy_field "$_finding_block" "Suggested Fix")
     _f_suggested_fix="${_f_suggested_fix:-}"
-    _f_verification=$(echo "$_finding_block" | grep -oE '\*\*Verification:\*\*.*' | head -1 | sed 's/\*\*Verification:\*\*[[:space:]]*//' || true)
+    _f_verification=$(_extract_remedy_field "$_finding_block" "Verification")
     _f_verification="${_f_verification:-}"
 
     _finding_index=$((_finding_index + 1))
