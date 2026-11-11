@@ -519,17 +519,26 @@ fi
 echo ""
 
 # Trigger local Sharkrite review
+# Capture the exit code instead of `|| exit 1`: the review runner emits exit 5
+# (usage cap) and exit 18 (auth failure), and workflow-runner.sh aborts the
+# whole batch on those. Collapsing them to 1 here made the batch mark the
+# issue failed and move on — 20 issues burned dev sessions with no review
+# while the review model sat on a cap (live: batch 20261111-010111).
+# sharkrite-extract: local-review-trigger-start
+_review_rc=0
 if [ "$AUTO_MODE" = true ]; then
-  trigger_local_review "$PR_NUMBER" --auto || {
-    print_error "Local review failed"
-    exit 1
-  }
+  trigger_local_review "$PR_NUMBER" --auto || _review_rc=$?
 else
-  trigger_local_review "$PR_NUMBER" || {
-    print_error "Local review failed"
-    exit 1
-  }
+  trigger_local_review "$PR_NUMBER" || _review_rc=$?
 fi
+if [ "$_review_rc" -ne 0 ]; then
+  print_error "Local review failed"
+  case "$_review_rc" in
+    5|18) exit "$_review_rc" ;;
+    *) exit 1 ;;
+  esac
+fi
+# sharkrite-extract: local-review-trigger-end
 
 if [ -n "${ISSUE_NUMBER:-}" ]; then
   print_success "Review posted for issue #$ISSUE_NUMBER"

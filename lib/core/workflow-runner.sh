@@ -1424,6 +1424,9 @@ phase_create_pr() {
   elif [ $create_pr_exit -eq 5 ]; then
     # Usage cap reached — propagate exit 5 so batch can abort cleanly
     return 5
+  elif [ $create_pr_exit -eq 18 ]; then
+    # Provider auth failure — propagate exit 18 so batch halts (skipped:auth)
+    return 18
   elif [ $create_pr_exit -ne 0 ]; then
     print_error "create-pr.sh failed with exit code: $create_pr_exit"
     return 1
@@ -1796,6 +1799,10 @@ phase_assess_and_resolve() {
         print_warning "Usage cap reached during fix-loop review regeneration — aborting batch"
         return 5
       fi
+      if [ $_loop_create_pr_rc -eq 18 ]; then
+        print_warning "Provider auth failure during fix-loop review regeneration — aborting batch"
+        return 18
+      fi
       print_error "Failed to push fixes and regenerate review"
       return 1
     fi
@@ -1863,6 +1870,10 @@ phase_assess_and_resolve() {
       if [ $_reroute_create_pr_rc -eq 5 ]; then
         print_warning "Usage cap reached during stale-reroute review regeneration — aborting batch"
         return 5
+      fi
+      if [ $_reroute_create_pr_rc -eq 18 ]; then
+        print_warning "Provider auth failure during stale-reroute review regeneration — aborting batch"
+        return 18
       fi
       print_error "Failed to regenerate review during stale reroute"
       return 1
@@ -3610,6 +3621,10 @@ run_workflow() {
       if [ $_create_pr_rc -eq 5 ]; then
         print_warning "Usage cap reached during PR phase — aborting batch"
         return 5
+      fi
+      if [ $_create_pr_rc -eq 18 ]; then
+        print_warning "Provider auth failure during PR phase — aborting batch"
+        return 18
       fi
       print_error "PR phase failed"
       return 1
