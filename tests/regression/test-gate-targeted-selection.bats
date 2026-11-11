@@ -627,3 +627,67 @@ EOF
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# Multi-path combined-pattern correctness (#1676)
+# _bats_file_has_body_reference builds a combined ERE pattern from ALL changed
+# shell-source paths before grepping (O(files) passes instead of O(files×paths)).
+# These tests pin that the combined pattern matches when ANY changed path is
+# present in the bats file, and rejects when NONE are.
+# ---------------------------------------------------------------------------
+
+@test "_bats_file_has_body_reference: multi-path — matches when second path present, first absent" {
+  # Two changed paths: only the second appears in the bats body.
+  # Combined Rule 1 pattern must still fire on the second path.
+  local _bats_multi="$TEST_REPO/tests/regression/body-second-only.bats"
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/core/a.sh'
+    echo 'setup() { source "$RITE_LIB_DIR/utils/config.sh"; }'
+    echo '@test "y" { true; }'
+  } > "$_bats_multi"
+  local _changed
+  _changed=$(printf 'lib/core/absent.sh\nlib/utils/config.sh\n')
+  run _bats_file_has_body_reference "$_bats_multi" "$_changed"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: second changed path not matched with combined pattern; got status $status" >&2
+    return 1
+  }
+}
+
+@test "_bats_file_has_body_reference: multi-path — rejects when no changed path present" {
+  # Two changed paths, neither present in the bats body — must return 1.
+  local _bats_none="$TEST_REPO/tests/regression/body-none-match.bats"
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/core/a.sh'
+    echo 'setup() { source "$RITE_LIB_DIR/utils/other.sh"; }'
+    echo '@test "z" { true; }'
+  } > "$_bats_none"
+  local _changed
+  _changed=$(printf 'lib/core/absent.sh\nlib/utils/config.sh\n')
+  run _bats_file_has_body_reference "$_bats_none" "$_changed"
+  [ "$status" -eq 1 ] || {
+    echo "FAIL: should not match when no changed path is in the body; got status $status" >&2
+    return 1
+  }
+}
+
+@test "_bats_file_has_body_reference: multi-path Rule 2 — matches RITE_LIB_DIR-style ref when second path has subdir" {
+  # Two changed paths: only the second uses a RITE_LIB_DIR-style reference,
+  # which Rule 2 catches via a /$_suffix match.
+  local _bats_rule2="$TEST_REPO/tests/regression/body-rule2-multi.bats"
+  {
+    echo '#!/usr/bin/env bats'
+    echo '# sharkrite-test-covers: lib/core/a.sh'
+    echo 'setup() { source "$RITE_LIB_DIR/providers/claude.sh"; }'
+    echo '@test "r2" { true; }'
+  } > "$_bats_rule2"
+  local _changed
+  _changed=$(printf 'lib/core/absent.sh\nlib/providers/claude.sh\n')
+  run _bats_file_has_body_reference "$_bats_rule2" "$_changed"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: Rule 2 combined pattern did not match RITE_LIB_DIR-style ref; got status $status" >&2
+    return 1
+  }
+}
