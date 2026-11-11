@@ -384,3 +384,75 @@ _assert_diag() {
   # Provider called only once — no retry on cap
   [ "$PROVIDER_CALL_COUNT" -eq 1 ]
 }
+
+# ===========================================================================
+# AUTH EXPIRED (exit 18): aborts immediately — no retry on non-retryable error.
+# ===========================================================================
+
+@test "retry: auth expired (exit 18) aborts immediately without retrying" {
+  _setup_multi_file_conflict
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  PROVIDER_CALL_COUNT=0
+
+  provider_run_agentic_session() {
+    PROVIDER_CALL_COUNT=$(( PROVIDER_CALL_COUNT + 1 ))
+    return 18
+  }
+  load_provider()        { return 0; }
+  provider_detect_cli()  { return 0; }
+  provider_healthcheck() { return 0; }
+
+  local result=0
+  attempt_claude_merge_resolution \
+    --branch-name "$BRANCH_NAME" \
+    --merge-target "origin/main" 2>/dev/null || result=$?
+
+  # Must propagate exit 18
+  [ "$result" -eq 18 ]
+
+  # Provider called only once — no retry on auth failure
+  [ "$PROVIDER_CALL_COUNT" -eq 1 ]
+}
+
+# ===========================================================================
+# AUTH EXPIRED (via stderr classification): aborts immediately — no retry.
+# Covers providers that emit auth-failure text in stderr without exit 18.
+# ===========================================================================
+
+@test "retry: auth expired via stderr classification aborts immediately without retrying" {
+  _setup_multi_file_conflict
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  PROVIDER_CALL_COUNT=0
+
+  # Return a generic non-zero exit so the stderr branch fires.
+  # Write an auth-failure-like string to the stderr file (arg 4).
+  provider_run_agentic_session() {
+    PROVIDER_CALL_COUNT=$(( PROVIDER_CALL_COUNT + 1 ))
+    local _stderr_file="$4"
+    printf 'Error: 401 unauthorized\n' > "$_stderr_file"
+    return 1
+  }
+  load_provider()        { return 0; }
+  provider_detect_cli()  { return 0; }
+  provider_healthcheck() { return 0; }
+  # provider_detect_error is called with the file contents; stub returns AUTH_EXPIRED
+  # for the "401 unauthorized" string the stub above wrote.
+  provider_detect_error() { echo "AUTH_EXPIRED"; return 0; }
+
+  local result=0
+  attempt_claude_merge_resolution \
+    --branch-name "$BRANCH_NAME" \
+    --merge-target "origin/main" 2>/dev/null || result=$?
+
+  # Must propagate exit 18 (auth failure canonical code)
+  [ "$result" -eq 18 ]
+
+  # Provider called only once — no retry on auth failure
+  [ "$PROVIDER_CALL_COUNT" -eq 1 ]
+}
