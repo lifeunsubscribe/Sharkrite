@@ -134,7 +134,7 @@ if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "develop" || "$CURRENT
     # Find worktree with this issue number
     TARGET_WORKTREE=$(git worktree list --porcelain | grep -E "^worktree $RITE_WORKTREE_DIR" | sed 's/^worktree //' | while read -r wt_path; do
       wt_branch=$(git -C "$wt_path" branch --show-current 2>/dev/null || echo "")
-      if echo "$wt_branch" | grep -qE "issue-?$ISSUE_NUMBER"; then
+      if grep -qE "issue-?$ISSUE_NUMBER" <<< "$wt_branch"; then
         echo "$wt_path"
         break
       fi
@@ -267,11 +267,11 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
   EXISTING_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' || true)
 
   MISSING_CLOSE_REF=false
-  if [ -n "${ISSUE_NUMBER:-}" ] && ! echo "$EXISTING_BODY" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+'; then
+  if [ -n "${ISSUE_NUMBER:-}" ] && ! grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' <<< "$EXISTING_BODY"; then
     MISSING_CLOSE_REF=true
   fi
 
-  if [ "$PUSHED_NEW_COMMITS" = true ] || ! echo "$EXISTING_BODY" | grep -qF "$SUMMARY_START" || [ "$MISSING_CLOSE_REF" = true ]; then
+  if [ "$PUSHED_NEW_COMMITS" = true ] || ! grep -qF "$SUMMARY_START" <<< "$EXISTING_BODY" || [ "$MISSING_CLOSE_REF" = true ]; then
     print_status "Updating PR description..."
     FRESH_SUMMARY=$(build_changes_summary "$BASE_BRANCH")
 

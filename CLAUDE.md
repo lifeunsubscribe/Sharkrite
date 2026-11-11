@@ -283,6 +283,30 @@ SHARKRITE_STASH_MARKER="${SHARKRITE_STASH_MARKER:-sharkrite-stash:}"
 
 **Enforcement:** Lint rules `MISSING_RESOURCE_GUARD` (Rule 16) and `UNGUARDED_READONLY` (Rule 17) in `tools/sharkrite-lint.sh` (invoked by `make check`). Regression test in `tests/regression/lib-resource-safety.bats` sources every lib file twice and asserts both sources exit 0.
 
+### producer | grep -q under pipefail (CRITICAL)
+
+Under `set -o pipefail`, `grep -q` exits on the first match without consuming the rest of its stdin. The kernel sends SIGPIPE to the still-writing producer. On Linux the producer typically absorbs a 64 KB write atomically, so SIGPIPE never fires; on macOS pipes deliver large writes in pieces, the producer is descheduled mid-write and receives SIGPIPE, turning a successful match into exit 141 — read as "no match".
+
+```bash
+# BAD: under pipefail on macOS, a large $VAR causes grep to exit early,
+# SIGPIPE kills the echo process, and the pipeline exits 141 ("no match")
+if echo "$REVIEW_BODY" | grep -q "### ❌ CRITICAL"; then ...
+
+# GOOD: here-string — grep reads from a file descriptor, no producer process,
+# no SIGPIPE possible
+if grep -q "### ❌ CRITICAL" <<< "$REVIEW_BODY"; then ...
+
+# ALSO GOOD for printf form
+if printf '%s\n' "$REVIEW_BODY" | grep -q "PAT"; then ...   # BAD
+if grep -q "PAT" <<< "$REVIEW_BODY"; then ...               # GOOD
+```
+
+**Live failure:** Rule 36 linter false-positived on macOS CI in 5 runs (#1605, PR #1625, main run 42505835752, PR #1636 ×2); reproduced locally at 1/7500 under CPU contention (rc 141, var `RITE_CLAUDE_TIMEOUT_PROMPT`). Root cause confirmed in #1633, fixed in `tools/` by PR #1634, fixed in `lib/core/` by PR #1639.
+
+**Rule:** Any `echo "$X" | grep -q` or `printf '%s\n' "$X" | grep -q` where `$X` is a single variable must be rewritten as `grep -q PAT <<< "$X"`. The `<<<` here-string supplies input from a file descriptor; there is no producer process to receive SIGPIPE.
+
+**Scope:** `tools/` — fixed in PR #1634. `lib/core/` — fixed in PR #1639. `lib/utils/`/`lib/providers/`/`bin/` — follow-up issue. The enforcement lint rule that makes this class unrepresentable lands with the follow-up sweep.
+
 ### grep -c pattern (CRITICAL)
 
 `grep -c`, `wc -l`, and `awk` with an `END` block always output a count or value even when the input is empty or the upstream pipeline fails under `pipefail`. Pairing them with `|| echo "0"` produces a double zero: the command already printed its output, then `|| echo "0"` appends another "0".

@@ -140,7 +140,7 @@ validate_diff_not_empty() {
     GH_CHANGED_FILES="${GH_CHANGED_FILES:-0}"
     # Sanitize: strip whitespace and ensure it's numeric; default to 0 on error.
     GH_CHANGED_FILES=$(echo "$GH_CHANGED_FILES" | tr -d '[:space:]')
-    if ! echo "$GH_CHANGED_FILES" | grep -qE '^[0-9]+$'; then
+    if ! grep -qE '^[0-9]+$' <<< "$GH_CHANGED_FILES"; then
       GH_CHANGED_FILES=0
     fi
 
@@ -555,7 +555,7 @@ ${SENSITIVITY_HINTS}"
     print_status "Sensitivity areas detected — review will apply extra focus"
 
     # If auth sensitivity detected and project has a security guide, inject it
-    if echo "$SENSITIVITY_HINTS" | grep -q "Authentication" && \
+    if grep -q "Authentication" <<< "$SENSITIVITY_HINTS" && \
        [ -f "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md" ]; then
       SECURITY_GUIDE=$(cat "$RITE_PROJECT_ROOT/docs/security/DEVELOPMENT-GUIDE.md")
       SENSITIVITY_SECTION="${SENSITIVITY_SECTION}
@@ -675,9 +675,9 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
     # "1529 tokens" cannot match (format-anchor convention).
     # Scan both channels: claude --print delivers cap/API errors on stdout.
     _review_overloaded=false
-    if echo "$CLAUDE_ERROR" | grep -qiE '(^|[^0-9])529([^0-9]|$)|overloaded_error'; then
+    if grep -qiE '(^|[^0-9])529([^0-9]|$)|overloaded_error' <<< "$CLAUDE_ERROR"; then
       _review_overloaded=true
-    elif echo "$REVIEW_OUTPUT" | grep -qiE '(^|[^0-9])529([^0-9]|$)|overloaded_error'; then
+    elif grep -qiE '(^|[^0-9])529([^0-9]|$)|overloaded_error' <<< "$REVIEW_OUTPUT"; then
       _review_overloaded=true
     fi
 

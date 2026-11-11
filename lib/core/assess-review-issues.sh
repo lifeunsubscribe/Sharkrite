@@ -1104,7 +1104,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
       ---END---)
         # Severity gate: LOW findings are logged but do not justify issue overhead.
         # They accumulate noise in the tracker and rarely get addressed.
-        if echo "$ITEM_SEVERITY" | grep -qi "LOW"; then
+        if grep -qi "LOW" <<< "$ITEM_SEVERITY"; then
           print_info "  Skipped (LOW severity): $ITEM_TITLE" >&2
           continue
         fi
@@ -1128,7 +1128,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             EXISTING_WORDS=$(echo "$issue_title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ')
             MATCH_COUNT=0
             for word in $TITLE_WORDS; do
-              if [ ${#word} -gt 3 ] && echo "$EXISTING_WORDS" | grep -qw "$word"; then
+              if [ ${#word} -gt 3 ] && grep -qw "$word" <<< "$EXISTING_WORDS"; then
                 MATCH_COUNT=$((MATCH_COUNT + 1))
               fi
             done
@@ -1164,7 +1164,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             if [ -n "$_dup_candidate" ] && [ -n "${RITE_ISSUE_NUMBER:-}" ]; then
               _dup_body=$(gh_safe issue view "$_dup_candidate" --json body --jq '.body' || true)
               _dup_body="${_dup_body:-}"
-              if echo "$_dup_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+              if grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)" <<< "$_dup_body"; then
                 DUPLICATE_ISSUE="$_dup_candidate"
               fi
             elif [ -n "$_dup_candidate" ]; then
@@ -1178,7 +1178,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           EXISTING_BODY=$(gh_safe issue view "$DUPLICATE_ISSUE" --json body --jq '.body' || true)
           EXISTING_BODY="${EXISTING_BODY:-}"
           REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60 || true)
-          if echo "$EXISTING_BODY" | grep -qF "$REASONING_SIGNATURE" 2>/dev/null; then
+          if grep -qF "$REASONING_SIGNATURE" <<< "$EXISTING_BODY" 2>/dev/null; then
             print_info "  Already tracked in #$DUPLICATE_ISSUE (skipping): $ITEM_TITLE"
             # Passback: write issue number so assess-and-resolve.sh can skip consolidated rollup.
             if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
@@ -1283,7 +1283,7 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
             # wrong file pointer class). Root-level files like CLAUDE.md or README.md
             # have no slash but do have a dot; extensionless root files like Makefile
             # have neither, so the filesystem existence check catches them.
-            if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.' || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
+            if grep -qE '^[A-Za-z0-9/._-]+$' <<< "${_loc_path:-}" && { grep -qF '/' <<< "${_loc_path:-}" || grep -qF '.' <<< "${_loc_path:-}" || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
               _loc_path_safe="$_loc_path"
             fi
           fi
@@ -1514,7 +1514,7 @@ _Parent PR: #${PR_NUMBER}_"
     CURRENT_BODY="${CURRENT_BODY:-}"
 
     # Check if follow-up section already exists
-    if echo "$CURRENT_BODY" | grep -q "## Follow-up Issues"; then
+    if grep -q "## Follow-up Issues" <<< "$CURRENT_BODY"; then
       # Append to existing section
       NEW_ISSUES_LINE=""
       [ -n "$CREATED_ISSUES" ] && NEW_ISSUES_LINE="Created: ${CREATED_ISSUES}"

@@ -896,12 +896,12 @@ _run_dev_test_gate() {
   fi
 
   # Optimize pytest: parallelize, suppress noise, offer xdist install
-  if echo "$_test_cmd" | grep -q "pytest"; then
+  if grep -q "pytest" <<< "$_test_cmd"; then
     local _python_bin
     _python_bin=$(echo "$_test_cmd" | sed 's/ -m pytest.*//' || true)
 
     # Parallel execution via xdist (use if already installed, never auto-install)
-    if ! echo "$_test_cmd" | grep -qE "\-n "; then
+    if ! grep -qE "\-n " <<< "$_test_cmd"; then
       if $_python_bin -c "import xdist" 2>/dev/null; then
         _test_cmd="$_test_cmd -n auto"
       fi
@@ -1223,7 +1223,7 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
 
     # Strip the assessment header metadata (everything before the --- separator)
     # to give Claude just the assessment items
-    if [ -n "$REVIEW_CONTENT" ] && echo "$REVIEW_CONTENT" | grep -q "^---$"; then
+    if [ -n "$REVIEW_CONTENT" ] && grep -q "^---$" <<< "$REVIEW_CONTENT"; then
       REVIEW_CONTENT=$(echo "$REVIEW_CONTENT" | sed -n '/^---$/,$p' | tail -n +2 || true)
     fi
   else
@@ -1274,7 +1274,7 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   else
     _fix_branch_has_tests=""
   fi
-  if echo "$ACTIONABLE_NOW_ITEMS" | grep -qE 'tests/|\.bats' || [ "$_fix_branch_has_tests" = "yes" ]; then
+  if grep -qE 'tests/|\.bats' <<< "$ACTIONABLE_NOW_ITEMS" || [ "$_fix_branch_has_tests" = "yes" ]; then
     _fix_test_runbook_section=$(provider_load_test_authoring_runbook || true)
   fi
 
@@ -1590,7 +1590,7 @@ find_worktree_for_task() {
     # the marker format (e.g. "sharkrite-parent-pr:N" as an example) trigger the
     # inner extraction, which returns empty, which under set -e + pipefail kills
     # the script silently. Same bug fixed in batch-process-issues.sh (commit 206f2be).
-    if echo "$issue_body" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then
+    if grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+" <<< "$issue_body"; then
       # Single decision point for follow-up attachment: detect_parent_pr_attachment
       # (pr-detection.sh). Using it here prevents the two code paths (workflow-runner.sh
       # and find_worktree_for_task) from reaching different answers — the bug in #1630
@@ -1753,7 +1753,7 @@ build_relevant_prior_art() {
   local _marker_name="${RITE_MARKER_ISSUE_TAGS:-}"
   local _open_marker="<!-- ${_marker_name} -->"
   local _close_marker="<!-- /${_marker_name} -->"
-  if [ -n "$_marker_name" ] && [ -n "$issue_body" ] && echo "$issue_body" | grep -qF "$_open_marker"; then
+  if [ -n "$_marker_name" ] && [ -n "$issue_body" ] && grep -qF "$_open_marker" <<< "$issue_body"; then
     local _raw_tags
     # sharkrite-lint disable GNU_ONLY_IDIOM - Reason: \|...|p is the POSIX-standard address delimiter form (not GNU BRE alternation); rule cannot yet distinguish address-delimiter \| from BRE alternation \| at authoring time
     _raw_tags=$(echo "$issue_body" \
@@ -1835,7 +1835,7 @@ ${issue_body}"
       [ -z "$_heading" ] && continue
       _heading_lc=$(echo "$_heading" | tr '[:upper:]' '[:lower:]')
       _heading_escaped=$(printf '%s' "$_heading_lc" | sed 's/[.[\*^$()+?{|]/\\&/g' || true)
-      if echo "$_grep_input_lc" | grep -qE "(^|[^a-z0-9_])${_heading_escaped}([^a-z0-9_]|$)" 2>/dev/null; then
+      if grep -qE "(^|[^a-z0-9_])${_heading_escaped}([^a-z0-9_]|$)" <<< "$_grep_input_lc" 2>/dev/null; then
         if [ -z "$_keyword_tags" ]; then
           _keyword_tags="$_heading"
         else
@@ -2488,7 +2488,7 @@ If the changes are unrelated work, answer UNRELATED."
     # numbers until BATCH_SUFFIX (_b + inner) is <= 20 chars, i.e. inner <= 18.
     if [ ${#BATCH_SUFFIX} -gt 20 ]; then
       _suffix_inner=$(echo "$BATCH_ISSUE_LIST" | tr ' ' '-')
-      while [ ${#_suffix_inner} -gt 18 ] && echo "$_suffix_inner" | grep -q '-'; do
+      while [ ${#_suffix_inner} -gt 18 ] && grep -q '-' <<< "$_suffix_inner"; do
         _suffix_inner="${_suffix_inner%-*}"
       done
       BATCH_SUFFIX="_b${_suffix_inner}"
@@ -3170,7 +3170,7 @@ else
         echo "$line" | sed "s/ set up to track /\n	set up to track /"
       fi
     done
-  elif echo "$push_output" | grep -qE "non-fast-forward|fetch first|\(non-fast-forward\)|\(fetch first\)"; then
+  elif grep -qE "non-fast-forward|fetch first|\(non-fast-forward\)|\(fetch first\)" <<< "$push_output"; then
     # Non-fast-forward: remote branch diverged (e.g., undo reset it to main).
     # Force push instead of delete+recreate — delete closes any linked PR.
     #
@@ -3700,7 +3700,7 @@ else
             # Append scope warning to PR body — but only if not already present
             # (guards against duplicate blocks on retry/resume runs)
             _current_pr_body=$(gh_safe pr view "$_pr_for_scope" --json body --jq '.body' || true)
-            if echo "$_current_pr_body" | grep -q "<!-- ${RITE_MARKER_SCOPE_WARNING} -->" 2>/dev/null; then
+            if grep -q "<!-- ${RITE_MARKER_SCOPE_WARNING} -->" <<< "$_current_pr_body" 2>/dev/null; then
               print_info "Scope warning already present for issue #${ISSUE_NUMBER:-?} — skipping duplicate append"
             else
               _scope_warn_text=$(format_scope_warning "$_scope_violations")
@@ -3844,7 +3844,7 @@ if [[ "$BRANCH_NAME" =~ ^(fix|feat|docs|test|refactor|chore)/ ]]; then
 fi
 
 COMMIT_SOURCE="${NORMALIZED_SUBJECT:-$ISSUE_DESC}"
-if echo "$COMMIT_SOURCE" | grep -qE "^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:"; then
+if grep -qE "^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:" <<< "$COMMIT_SOURCE"; then
   # Title already has a prefix (e.g., from older issues) — use as-is
   COMMIT_SUBJECT="$COMMIT_SOURCE"
 else

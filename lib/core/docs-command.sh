@@ -764,7 +764,7 @@ DOC_UPDATE_EOF
       return 0
     fi
 
-    if printf '%s\n' "$_ue_proposals_raw" | grep -q "^NO_PROPOSALS_NEEDED"; then
+    if grep -q "^NO_PROPOSALS_NEEDED" <<< "$_ue_proposals_raw"; then
       print_info "Doc assessment: no changes needed"
       _diag "DOC_PASS kind=docs doc=- duration_s=${_ue_llm_elapsed_s} input_bytes=${_ue_input_bytes} outcome=rejected"
       _docs_warn_doc_pass_threshold "-" "$_ue_llm_elapsed_s"
@@ -834,8 +834,8 @@ DOC_UPDATE_EOF
 
     if [ "$_ue_prop_count" -eq 0 ]; then
       rm -rf "$_ue_props_dir"
-      if printf '%s\n' "$_ue_proposals_raw" | grep -q "^---PROPOSAL---$" && \
-         ! printf '%s\n' "$_ue_proposals_raw" | grep -qF -- "${_ue_end_token}"; then
+      if grep -q "^---PROPOSAL---$" <<< "$_ue_proposals_raw" && \
+         ! grep -qF -- "${_ue_end_token}" <<< "$_ue_proposals_raw"; then
         # Model sent PROPOSAL markers but the correct end token never appeared —
         # inject corrective feedback and retry via the loop instead of discarding.
         # Guard: only fires when _ue_end_token is absent. If the correct token IS
@@ -965,7 +965,7 @@ ${_ue_token_fb}"
           case "$_ue_ref" in
             pr:[0-9]*)
               # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_DOC_DRIFT is an internal marker constant (defined in markers.sh), not a user config var; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention for all marker constants; ledger is frozen per 2026-07-14 rule
-              if printf '%s\n' "$_ue_drift_content" | grep -qF "<!-- ${RITE_MARKER_DOC_DRIFT} ${_ue_ref} " 2>/dev/null; then
+              if grep -qF "<!-- ${RITE_MARKER_DOC_DRIFT} ${_ue_ref} " <<< "$_ue_drift_content" 2>/dev/null; then
                 _ue_any_real=1
                 break
               fi
@@ -1368,7 +1368,7 @@ ${_bcd_sec}
       [ -f "$_bcd_adr_abs" ] || continue
       local _bcd_links
       _bcd_links="$(docs_map_adr_links "$_bcd_a_fp" 2>/dev/null || true)"
-      printf '%s\n' "$_bcd_links" | grep -qxF "$_bcd_doc" 2>/dev/null || continue
+      grep -qxF "$_bcd_doc" <<< "$_bcd_links" 2>/dev/null || continue
       local _bcd_adr_excerpt
       _bcd_adr_excerpt="$(head -c 3000 "$_bcd_adr_abs" 2>/dev/null || true)"
       local _bcd_adr_entry
@@ -1602,7 +1602,7 @@ DOC_MAIN_EOF
       return 0
     fi
 
-    if printf '%s\n' "$_mp_raw" | grep -q "^NO_PROPOSALS_NEEDED"; then
+    if grep -q "^NO_PROPOSALS_NEEDED" <<< "$_mp_raw"; then
       print_info "Doc pass: no changes needed for ${_mp_doc}"
       _diag "DOC_PASS kind=${_mp_kind} doc=${_mp_doc} duration_s=${_mp_llm_elapsed_s} input_bytes=${_mp_input_bytes} outcome=rejected"
       _docs_warn_doc_pass_threshold "$_mp_doc" "$_mp_llm_elapsed_s"
@@ -1611,8 +1611,8 @@ DOC_MAIN_EOF
 
     # Validate: response must contain both a narrative and at least one proposal
     local _mp_has_narrative=0 _mp_has_proposal=0
-    printf '%s\n' "$_mp_raw" | grep -q "^---NARRATIVE---" && _mp_has_narrative=1 || true
-    printf '%s\n' "$_mp_raw" | grep -q "^---PROPOSAL---" && _mp_has_proposal=1 || true
+    grep -q "^---NARRATIVE---" <<< "$_mp_raw" && _mp_has_narrative=1 || true
+    grep -q "^---PROPOSAL---" <<< "$_mp_raw" && _mp_has_proposal=1 || true
 
     if [ "$_mp_has_narrative" -eq 0 ] || [ "$_mp_has_proposal" -eq 0 ]; then
       local _mp_missing=""
@@ -1716,7 +1716,7 @@ EOF_NAR
     rm -f "$_mp_raw_file"
 
     if [ "$_mp_prop_count" -eq 0 ]; then
-      if printf '%s\n' "$_mp_raw" | grep -q "^---PROPOSAL---$"; then
+      if grep -q "^---PROPOSAL---$" <<< "$_mp_raw"; then
         print_warning "Model output contained '---PROPOSAL---' markers but zero complete proposals were parsed — model may have used the wrong end token '${_mp_end_token}'; re-run to generate a new unique end token" >&2
       fi
       print_info "No actionable proposals for ${_mp_doc}"
@@ -2383,7 +2383,7 @@ AUDIT_EOF
     return 1
   fi
 
-  if echo "$_audit_output" | grep -q "^NOTHING_FOUND"; then
+  if grep -q "^NOTHING_FOUND" <<< "$_audit_output"; then
     print_info "Audit complete — no drift detected"
     return 0
   fi
@@ -2714,7 +2714,7 @@ _docs_cross_doc_just_in_case_pass() {
     [ -n "$_ji_doc" ] || continue
 
     # Skip declared docs — already handled by the main pass
-    if printf '%s\n' "${_ji_declared_docs:-}" | grep -qxF "$_ji_doc"; then
+    if grep -qxF "$_ji_doc" <<< "${_ji_declared_docs:-}"; then
       continue
     fi
 
@@ -3444,7 +3444,7 @@ RESTRUCTURE_PROMPT_EOF
       continue
     fi
 
-    if printf '%s\n' "$_rra_raw" | grep -q "^NO_RESTRUCTURE_NEEDED"; then
+    if grep -q "^NO_RESTRUCTURE_NEEDED" <<< "$_rra_raw"; then
       print_info "Restructure assessment: no restructuring needed for ${_rra_doc}"
       _docs_restructure_record_decision \
         "$_rra_doc" \
@@ -3538,7 +3538,7 @@ QUESTION_PARSE_EOF
 
     if [ "$_rra_prop_count" -eq 0 ]; then
       rm -rf "$_rra_props_dir"
-      if printf '%s\n' "$_rra_raw" | grep -q "^---PROPOSAL---"; then
+      if grep -q "^---PROPOSAL---" <<< "$_rra_raw"; then
         # Proposals were started but the end token never matched — transient parse
         # error, not a genuine "no restructuring needed". Don't record a decision;
         # the proposal will re-raise on the next run.
@@ -3840,7 +3840,7 @@ ${_aau_ref_excerpt}
       local _aau_feat
       while IFS= read -r _aau_feat <&5 || [ -n "$_aau_feat" ]; do
         [ -n "$_aau_feat" ] || continue
-        if ! printf '%s\n' "$_aau_linked" | grep -qxF "$_aau_feat" 2>/dev/null; then
+        if ! grep -qxF "$_aau_feat" <<< "$_aau_linked" 2>/dev/null; then
           _aau_missing="${_aau_missing}  - ${_aau_feat}"$'\n'
         fi
       done 5<<FEAT_LOOP_EOF
