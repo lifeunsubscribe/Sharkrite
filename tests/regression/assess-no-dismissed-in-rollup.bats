@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/assess-review-issues.sh
 # Regression test for: DISMISSED items leaking into rollup body (defect #3)
-# Issues: #469-#478-#495, #1691
+# Issues: #469-#478-#495, #1691, #1695
 #
 # Bug: assess-and-resolve.sh extracted severity buckets using:
 #   grep -A 20 "^### .* - ACTIONABLE_LATER" | grep -B 2 "Severity:.*HIGH"
@@ -26,6 +26,7 @@
 #   7. Static: LOW-severity drop block is absent from assess-and-resolve.sh (#1691)
 #   8. Static: DROP_RETRY_MEDIUM_LOW is absent from assess-and-resolve.sh (#1691)
 #   9. Static: "All remaining items are LOW severity" skip gate is absent (#1691)
+#  10. Static: per-item LOW skip block is absent from assess-review-issues.sh (#1695)
 
 load '../helpers/setup.bash'
 
@@ -338,6 +339,20 @@ pass with a wrong epoch for fractional-second timestamps."
   run grep -n "All remaining items are LOW severity" "$ASSESS_RESOLVE_SCRIPT"
   [ "$status" -ne 0 ] || {
     echo "FAIL: severity-only skip gate still present in $ASSESS_RESOLVE_SCRIPT:"
+    echo "$output"
+    false
+  }
+}
+
+# ─── Test 10: Static — per-item LOW skip block absent from assess-review-issues.sh (#1695) ──
+
+@test "assess-review-issues.sh: per-item LOW severity skip block is absent (issue #1695)" {
+  # The twin of the #1691 fix: assess-review-issues.sh had an identical
+  # LOW skip on the ACTIONABLE_LATER per-item creation path at ~line 1107.
+  # Severity must not decide whether the assessor's deferred item is filed.
+  run grep -n 'grep -qi.*LOW\|Skipped.*LOW severity\|Severity gate.*LOW' "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: per-item LOW severity skip block still present in $ASSESS_REVIEW_SCRIPT:"
     echo "$output"
     false
   }
