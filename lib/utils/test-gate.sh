@@ -1568,7 +1568,10 @@ run_test_gate() {
     || _overall_exit=$?
   _lint_count=$_gbv_lint_count
 
-  rm -f "${_lint_raw_file:-}" "${_tests_raw_file:-}" "${_bats_pretty_capture:-}"
+  # NOTE: _tests_raw_file is still needed by the #944 verdict-persistence block
+  # below (it maps TAP failure names to files). It is removed after that block;
+  # deleting it here made the persistence a silent no-op (found 2026-11-11).
+  rm -f "${_lint_raw_file:-}" "${_bats_pretty_capture:-}"
   rm -f "${_gate_census_file:-}"
   trap - EXIT
 
@@ -1622,6 +1625,8 @@ run_test_gate() {
       fi
     fi
   fi
+
+  rm -f "${_tests_raw_file:-}"
 
   _diag "TEST_GATE outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration} pr=${PR_NUMBER:-?}"
 

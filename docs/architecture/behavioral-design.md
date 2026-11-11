@@ -1709,6 +1709,16 @@ and the no-diff full-suite fallback exploited by the main-broken check is untouc
 Rejected: keeping the union behind an opt-in (no known consumer; revisit if a
 main-side interaction ever escapes branch coverage).
 
+## Post-Rebase Verification: Serial Re-run Before "Semantic Conflict" (2026-11-11)
+
+**Live failure (rite 1737, 2026-11-11):** the stale-branch path rebased a 9-behind branch and ran post-rebase verification: 86 bats files under `--jobs 8` while a batch ran on the same machine. The gate took 2h21m and failed 4 tests (`lib-resource-safety`, three PIPESTATUS-propagation tests) that pass on main and on the branch when run alone. `verify_post_merge` returned 1, the stale-branch caller classified it as a rebase-introduced semantic conflict, **closed the PR, deleted the branch and its worktree, and restarted development from scratch**. A complete, tested implementation was discarded on load flake; the only recovery was `git fetch origin pull/N/head`.
+
+**Contract:** a red post-rebase gate is not a verdict until the failing files have been re-run serially. `_pmv_serial_rerun_clears` (in `post-merge-verify.sh`) maps the gate's failing bats test names to their files, re-runs those files with no `--jobs` in the CI-equivalent environment (claude masked, GNU tools preferred, `BATS_TEST_TIMEOUT` 300s — the same classification the overnight investigate pass uses), and `verify_post_merge` passes only if every one is green. It declines to re-run (keeps the failure) when the gate failed on lint, when a failing name cannot be mapped to a file, or when more than 8 files failed — none of those is a flake profile. Diags: `POST_MERGE_VERIFY_FLAKE_CLEARED files=N list=…` and `POST_MERGE_VERIFY_FLAKE_PERSISTENT reason=still_failing|too_many_files`.
+
+**Why not make close-and-restart require confirmation instead:** the restart is correct for a genuine semantic conflict, and nothing upstream of `verify_post_merge` has the information to tell the two apart. The distinction belongs where the failure is observed.
+
+**Collateral fix:** the #944 failing-file persistence in `run_test_gate` (`gate-prior-failing-pr<N>.list`, which unions prior failures into the next run's selection) ran *after* `_tests_raw_file` had already been deleted, so it never wrote anything. The raw file is now removed after that block.
+
 ## Undo Never Closes the Issue Being Undone (#887)
 
 **2026-07-04.** `rite --undo N` exists to put issue N back in a

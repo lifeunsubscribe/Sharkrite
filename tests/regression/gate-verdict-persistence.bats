@@ -149,3 +149,15 @@ DRIVER_EOF
   [ "$status" -eq 0 ]
   [ "$output" -ge 1 ]
 }
+
+@test "structural: the TAP raw file outlives the #944 persistence block (was deleted before it — silent no-op)" {
+  # The persistence block reads _tests_raw_file to map failing names to files,
+  # so no rm of that file may sit between verdict assembly and the block.
+  assembly_line=$(grep -n '_lint_count=$_gbv_lint_count' "$GATE" | head -1 | cut -d: -f1)
+  persist_line=$(grep -n 'elif \[ "$_outcome" = "failed" \] && \[ -f "${_tests_raw_file:-/nonexistent}" \]' "$GATE" | head -1 | cut -d: -f1)
+  [ -n "$assembly_line" ] && [ -n "$persist_line" ] && [ "$assembly_line" -lt "$persist_line" ]
+  ! sed -n "${assembly_line},${persist_line}p" "$GATE" | grep -q 'rm -f.*"${_tests_raw_file:-}"'
+  # and it IS removed afterwards (no temp-file leak)
+  after=$(sed -n "${persist_line},\$p" "$GATE" | grep -c 'rm -f "${_tests_raw_file:-}"' || true)
+  [ "$after" -ge 1 ]
+}

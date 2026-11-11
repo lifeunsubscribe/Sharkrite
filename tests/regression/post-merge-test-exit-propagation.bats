@@ -678,3 +678,93 @@ STUB
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# Serial re-run before "semantic conflict" (2026-11-11, rite 1737 incident)
+# ---------------------------------------------------------------------------
+
+_pmv_sharkrite_fixture() {
+  cat > "$TEST_WORKTREE/Makefile" <<'MF_EOF'
+shellcheck:
+	@true
+lint:
+	@true
+MF_EOF
+  mkdir -p "$TEST_WORKTREE/tests"
+  # printf, not heredocs: bats preprocesses every source line that starts with
+  # @test — including heredoc bodies — so a heredoc fixture would contain the
+  # rewritten bats_test_function form and the test name would not be greppable.
+  printf '#!/usr/bin/env bats\n@test "flaky under load" { true; }\n' > "$TEST_WORKTREE/tests/flaky.bats"
+  printf '#!/usr/bin/env bats\n@test "genuinely broken" { false; }\n' > "$TEST_WORKTREE/tests/broken.bats"
+  source "$RITE_LIB_DIR/utils/post-merge-verify.sh"
+  export PMV_DIAG="$BATS_TEST_TMPDIR/pmv.diag"; : > "$PMV_DIAG"
+  _diag() { echo "$*" >> "$PMV_DIAG"; }; export -f _diag
+  git() { [[ "$*" == *"worktree add"* ]] && return 1; command git "$@"; }; export -f git
+}
+
+@test "serial re-run: gate failure whose tests pass alone is cleared (returns 0, FLAKE_CLEARED diag)" {
+  _pmv_sharkrite_fixture
+  run_test_gate() {
+    printf '{"lint":[],"tests":[{"file":"bats","test_name":"flaky under load","reason":"assertion failed"}],"exit_code":1}' > "$1"
+    return 1
+  }
+  export -f run_test_gate
+  run verify_post_merge "$TEST_WORKTREE"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"re-running serially"* ]]
+  [[ "$output" == *"load flake"* ]]
+  grep -q "POST_MERGE_VERIFY_FLAKE_CLEARED files=1" "$PMV_DIAG"
+  grep -q "list=tests/flaky.bats" "$PMV_DIAG"
+}
+
+@test "serial re-run: gate failure that still fails alone stays a failure (returns 1, PERSISTENT diag)" {
+  _pmv_sharkrite_fixture
+  run_test_gate() {
+    printf '{"lint":[],"tests":[{"file":"bats","test_name":"genuinely broken","reason":"assertion failed"}],"exit_code":1}' > "$1"
+    return 1
+  }
+  export -f run_test_gate
+  run verify_post_merge "$TEST_WORKTREE"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Post-merge verification FAILED"* ]]
+  grep -q "POST_MERGE_VERIFY_FLAKE_PERSISTENT reason=still_failing" "$PMV_DIAG"
+}
+
+@test "serial re-run: lint failures are never re-run (not a flake profile)" {
+  _pmv_sharkrite_fixture
+  run_test_gate() {
+    printf '{"lint":[{"file":"lib/x.sh","line":"1","rule":"SC2086","message":"m"}],"tests":[],"exit_code":1}' > "$1"
+    return 1
+  }
+  export -f run_test_gate
+  run verify_post_merge "$TEST_WORKTREE"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"re-running serially"* ]]
+}
+
+@test "serial re-run: an unmappable failing test name keeps the failure" {
+  _pmv_sharkrite_fixture
+  run_test_gate() {
+    printf '{"lint":[],"tests":[{"file":"bats","test_name":"no such test anywhere","reason":"assertion failed"}],"exit_code":1}' > "$1"
+    return 1
+  }
+  export -f run_test_gate
+  run verify_post_merge "$TEST_WORKTREE"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"re-running serially"* ]]
+}
+
+@test "serial re-run: more than 8 failing files is not re-run (too_many_files)" {
+  _pmv_sharkrite_fixture
+  local i tests=""
+  for i in 1 2 3 4 5 6 7 8 9; do
+    printf '#!/usr/bin/env bats\n@test "many %s" { true; }\n' "$i" > "$TEST_WORKTREE/tests/many$i.bats"
+    tests="${tests}{\"file\":\"bats\",\"test_name\":\"many $i\",\"reason\":\"x\"},"
+  done
+  export PMV_TESTS_JSON="[${tests%,}]"
+  run_test_gate() { printf '{"lint":[],"tests":%s,"exit_code":1}' "$PMV_TESTS_JSON" > "$1"; return 1; }
+  export -f run_test_gate
+  run verify_post_merge "$TEST_WORKTREE"
+  [ "$status" -eq 1 ]
+  grep -q "POST_MERGE_VERIFY_FLAKE_PERSISTENT reason=too_many_files files=9" "$PMV_DIAG"
+}
