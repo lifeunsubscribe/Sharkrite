@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/providers/claude.sh::_claude_classify_exit
+# sharkrite-test-covers: lib/providers/claude.sh::_claude_classify_exit, lib/core/local-review.sh
 
 # Regression test for: Detect usage caps on all provider call paths (#1613)
 #
@@ -328,4 +328,20 @@ teardown() {
   # The exit-0 cap path (issue #1121) is a separate elif — confirm it exists.
   grep -qE 'elif.*_exit_code.*-eq.*0.*&&' \
     "${RITE_LIB}/providers/claude.sh"
+}
+
+# ---------------------------------------------------------------------------
+# 9. local-review.sh retry loop: exit 5/18 short-circuit guards exist
+#    (structural; issue #1623 — detection without propagation makes the
+#     feature inert on the review path)
+# ---------------------------------------------------------------------------
+
+@test "local-review.sh retry loop has an exit-5 short-circuit guard" {
+  grep -qE 'REVIEW_EXIT.*-eq.*5' \
+    "${RITE_LIB}/core/local-review.sh"
+}
+
+@test "local-review.sh retry loop has an exit-18 short-circuit guard" {
+  grep -qE 'REVIEW_EXIT.*-eq.*18' \
+    "${RITE_LIB}/core/local-review.sh"
 }

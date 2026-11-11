@@ -659,6 +659,20 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
     exit 124
   fi
 
+  # Usage cap (exit 5) or auth failure (exit 18): retrying cannot recover
+  # either condition — the cap resets on a schedule and auth failures require
+  # operator action. Propagate immediately so the batch handler can
+  # cap-resume or surface the right error, instead of burning all retry
+  # attempts futilely.
+  if [ "${REVIEW_EXIT:-0}" -eq 5 ]; then
+    print_warning "Review provider hit usage cap (exit 5) — aborting without retry"
+    exit 5
+  fi
+  if [ "${REVIEW_EXIT:-0}" -eq 18 ]; then
+    print_warning "Review provider auth failure (exit 18) — aborting without retry"
+    exit 18
+  fi
+
   # Hard error (non-zero, non-timeout): a transient API/network/rate-limit blip
   # fast-fails here in seconds (live: PR reviews exit-1'd in ~14s, aborting an
   # otherwise-complete run — issues #482, #649, #631). These are retryable: a
