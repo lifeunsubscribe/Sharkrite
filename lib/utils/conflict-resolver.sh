@@ -274,6 +274,46 @@ _cr_materialize_addadd_conflict() {
 }
 
 # ===================================================================
+# INLINE VERIFICATION HELPERS (issue #1621)
+# ===================================================================
+
+# _cr_file_has_conflict_markers FILE
+# Returns 0 when FILE contains conflict markers outside fenced ``` blocks,
+# 1 when the file is marker-free.  CR-stripping handles CRLF endings (#533).
+# DO NOT WEAKEN this check — fence-awareness prevents false positives on
+# documented examples (e.g. behavioral-design.md conflict shapes; #1221/#533).
+_cr_file_has_conflict_markers() {
+  tr -d '\r' < "$1" 2>/dev/null | awk '
+    /^```/ { fence = !fence; next }
+    !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
+    END { exit(found ? 0 : 1) }
+  '
+}
+
+# _cr_check_no_unexpected_unmerged
+# Check 1: verify that every currently-unmerged path is in the known conflict
+# set (_cr_conflict_files, accessed via bash dynamic scoping from the caller).
+# On failure: logs the unexpected paths, aborts the merge, and returns 1.
+_cr_check_no_unexpected_unmerged() {
+  local _cr_unexpected=""
+  local _cr_u_path
+  while IFS= read -r _cr_u_path; do
+    [ -z "$_cr_u_path" ] && continue
+    if ! printf '%s\n' "$_cr_conflict_files" | grep -qxF "$_cr_u_path"; then
+      _cr_unexpected="${_cr_unexpected}${_cr_u_path}
+"
+    fi
+  done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
+
+  if [ -n "${_cr_unexpected:-}" ]; then
+    _cr_error "Unmerged path(s) the session was never given:"
+    printf '%s' "$_cr_unexpected" | sed 's/^/    /' >&2
+    git merge --abort 2>/dev/null || true
+    return 1
+  fi
+}
+
+# ===================================================================
 # PUBLIC: attempt_claude_merge_resolution
 # ===================================================================
 
@@ -739,37 +779,17 @@ the resolved files after this session ends."
     # Check 1: No UNEXPECTED unmerged files (not retryable — abort immediately).
     # A session that introduces a new unmerged path has done something the resolver
     # cannot safely interpret; aborting is the correct response regardless of attempt count.
-    local _cr_unexpected=""
-    local _cr_u_path
-    while IFS= read -r _cr_u_path; do
-      [ -z "$_cr_u_path" ] && continue
-      if ! printf '%s\n' "$_cr_conflict_files" | grep -qxF "$_cr_u_path"; then
-        _cr_unexpected="${_cr_unexpected}${_cr_u_path}
-"
-      fi
-    done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
-
-    if [ -n "${_cr_unexpected:-}" ]; then
-      _cr_error "Unmerged path(s) the session was never given:"
-      printf '%s' "$_cr_unexpected" | sed 's/^/    /' >&2
-      git merge --abort 2>/dev/null || true
-      return 1
-    fi
+    _cr_check_no_unexpected_unmerged || return 1
 
     # Check 2: Fence-aware conflict-marker scan on the REMAINING files.
     # Collect still-failing paths — the loop uses them as the retry target on
-    # the next attempt. The awk program and CR-strip are identical to the outer
-    # Step 6 (CR-strip for CRLF; fence-awareness so documented examples inside
-    # ``` blocks don't fire — see #1221/#533). DO NOT WEAKEN this check.
+    # the next attempt. See _cr_file_has_conflict_markers for CR-strip and
+    # fence-awareness rationale (#1221/#533). DO NOT WEAKEN this check.
     _cr_still_failing=""
     while IFS= read -r _cr_f; do
       [ -z "$_cr_f" ] && continue
       [ -f "$_cr_f" ] || continue
-      if tr -d '\r' < "$_cr_f" 2>/dev/null | awk '
-          /^```/ { fence = !fence; next }
-          !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
-          END { exit(found ? 0 : 1) }
-        '; then
+      if _cr_file_has_conflict_markers "$_cr_f"; then
         _cr_error "Conflict markers remain in: $_cr_f"
         _cr_still_failing="${_cr_still_failing}${_cr_f}
 "
@@ -835,22 +855,7 @@ the resolved files after this session ends."
   # known paths is Check 2's job (conflict markers in the working tree), and
   # the two together are the real contract: every unmerged path is a known
   # conflict path, and every known conflict path is marker-free.
-  local _cr_unexpected=""
-  local _cr_u_path
-  while IFS= read -r _cr_u_path; do
-    [ -z "$_cr_u_path" ] && continue
-    if ! printf '%s\n' "$_cr_conflict_files" | grep -qxF "$_cr_u_path"; then
-      _cr_unexpected="${_cr_unexpected}${_cr_u_path}
-"
-    fi
-  done < <(git diff --name-only --diff-filter=U 2>/dev/null || true)
-
-  if [ -n "${_cr_unexpected:-}" ]; then
-    _cr_error "Unmerged path(s) the session was never given:"
-    printf '%s' "$_cr_unexpected" | sed 's/^/    /' >&2
-    git merge --abort 2>/dev/null || true
-    return 1
-  fi
+  _cr_check_no_unexpected_unmerged || return 1
 
   # Check 2: No literal conflict markers in resolved files (belt-and-suspenders)
   #
@@ -891,11 +896,7 @@ the resolved files after this session ends."
   while IFS= read -r _cr_f; do
     [ -z "$_cr_f" ] && continue
     [ -f "$_cr_f" ] || continue
-    if tr -d '\r' < "$_cr_f" 2>/dev/null | awk '
-        /^```/ { fence = !fence; next }
-        !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
-        END { exit(found ? 0 : 1) }
-      '; then
+    if _cr_file_has_conflict_markers "$_cr_f"; then
       _cr_error "Conflict markers remain in: $_cr_f"
       _cr_marker_found=true
     fi

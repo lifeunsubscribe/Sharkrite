@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/conflict-resolver.sh
+# sharkrite-test-covers: lib/utils/conflict-resolver.sh::_cr_file_has_conflict_markers|_cr_check_no_unexpected_unmerged|attempt_claude_merge_resolution
 # tests/regression/conflict-resolver-retry.bats
 #
 # Tests the bounded retry loop added in #1602:
@@ -383,4 +383,114 @@ _assert_diag() {
 
   # Provider called only once — no retry on cap
   [ "$PROVIDER_CALL_COUNT" -eq 1 ]
+}
+
+# ===========================================================================
+# HELPERS: _cr_file_has_conflict_markers (issue #1621)
+# ===========================================================================
+
+@test "_cr_file_has_conflict_markers: returns 0 when file contains conflict markers" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  local f="$RITE_TEST_TMPDIR/marked.txt"
+  printf 'some text\n<<<<<<< HEAD\nbranch line\n=======\nmain line\n>>>>>>> origin/main\nmore text\n' > "$f"
+
+  _cr_file_has_conflict_markers "$f"
+}
+
+@test "_cr_file_has_conflict_markers: returns 1 when file has no conflict markers" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  local f="$RITE_TEST_TMPDIR/clean.txt"
+  printf 'just resolved content\nno markers here\n' > "$f"
+
+  local rc=0
+  _cr_file_has_conflict_markers "$f" || rc=$?
+  [ "$rc" -eq 1 ]
+}
+
+@test "_cr_file_has_conflict_markers: markers inside fenced block are ignored (fence-awareness #1221)" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  local f="$RITE_TEST_TMPDIR/fenced.md"
+  # Markers inside ``` are documentation, not real conflicts — must NOT fire.
+  printf 'Here is a documented conflict shape:\n\n```\n<<<<<<< HEAD\nbranch\n=======\nmain\n>>>>>>> origin/main\n```\n\nEnd of doc.\n' > "$f"
+
+  local rc=0
+  _cr_file_has_conflict_markers "$f" || rc=$?
+  [ "$rc" -eq 1 ]
+}
+
+@test "_cr_file_has_conflict_markers: CRLF line endings do not cause false negatives (#533)" {
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  local f="$RITE_TEST_TMPDIR/crlf.txt"
+  # Write CRLF file: the ======= line ends with \r\n; anchored "=======$" would miss it
+  # without the tr -d '\r' CR-strip.
+  printf 'line\r\n<<<<<<< HEAD\r\nbranch\r\n=======\r\nmain\r\n>>>>>>> origin/main\r\n' > "$f"
+
+  _cr_file_has_conflict_markers "$f"
+}
+
+# ===========================================================================
+# HELPERS: _cr_check_no_unexpected_unmerged (issue #1621)
+# ===========================================================================
+
+@test "_cr_check_no_unexpected_unmerged: returns 0 when all unmerged paths are in the known set" {
+  _setup_multi_file_conflict
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  load_provider()       { return 0; }
+  provider_detect_cli() { return 0; }
+  provider_healthcheck(){ return 0; }
+
+  # Re-run the merge to get unmerged files in the index
+  git merge origin/main --no-edit 2>/dev/null || true
+
+  # Call the helper from a wrapper so _cr_conflict_files is in dynamic scope
+  _test_wrapper() {
+    # _cr_conflict_files must include every file that git diff --diff-filter=U reports
+    local _cr_conflict_files
+    _cr_conflict_files=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+    _cr_check_no_unexpected_unmerged
+  }
+
+  _test_wrapper
+  git merge --abort 2>/dev/null || true
+}
+
+@test "_cr_check_no_unexpected_unmerged: returns 1 and aborts when an unexpected unmerged path exists" {
+  _setup_multi_file_conflict
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  load_provider()       { return 0; }
+  provider_detect_cli() { return 0; }
+  provider_healthcheck(){ return 0; }
+
+  git merge origin/main --no-edit 2>/dev/null || true
+
+  # Call with an empty known set — every unmerged path becomes "unexpected"
+  _test_wrapper2() {
+    local _cr_conflict_files=""
+    local rc=0
+    _cr_check_no_unexpected_unmerged || rc=$?
+    echo "$rc"
+  }
+
+  local out
+  out=$(_test_wrapper2 2>/dev/null)
+  [ "$out" = "1" ]
+
+  # Merge should have been aborted (no unmerged entries remain)
+  local remaining
+  remaining=$(git diff --name-only --diff-filter=U 2>/dev/null | wc -l | tr -d ' ' || true)
+  [ "$remaining" -eq 0 ]
 }
