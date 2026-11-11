@@ -239,3 +239,59 @@ _make_trusted_stub() {
 @test "rite-health-report calls provider_healthcheck before provider_run_prompt" {
   grep -qE "^[[:space:]]*if ! provider_healthcheck" "$PROJECT_ROOT/bin/rite-health-report"
 }
+
+# ---------------------------------------------------------------------------
+# Test 13: sentinel _RITE_PROVIDER_PREFLIGHT_OK is exported on healthy check
+# ---------------------------------------------------------------------------
+@test "provider_healthcheck: exports _RITE_PROVIDER_PREFLIGHT_OK=true on success" {
+  _make_trusted_stub
+
+  run bash -c "
+    export PATH=\"$STUB_BIN:\$PATH\"
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    source '$RITE_LIB_DIR/providers/provider-interface.sh'
+    load_provider 'claude'
+    provider_detect_cli 2>/dev/null || true
+    provider_healthcheck 2>/dev/null
+    echo \"SENTINEL=\${_RITE_PROVIDER_PREFLIGHT_OK:-unset}\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SENTINEL=true"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: sentinel is NOT set when healthcheck fails (untrusted workspace)
+# ---------------------------------------------------------------------------
+@test "provider_healthcheck: does NOT export sentinel on failure" {
+  _make_untrusted_stub
+
+  run bash -c "
+    export PATH=\"$STUB_BIN:\$PATH\"
+    export RITE_LIB_DIR='$RITE_LIB_DIR'
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    source '$RITE_LIB_DIR/providers/provider-interface.sh'
+    load_provider 'claude'
+    provider_detect_cli 2>/dev/null || true
+    provider_healthcheck 2>/dev/null || true
+    echo \"SENTINEL=\${_RITE_PROVIDER_PREFLIGHT_OK:-unset}\"
+  "
+  [[ "$output" == *"SENTINEL=unset"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: conflict-resolver.sh skips healthcheck when sentinel is set
+# (structural: guard block present in attempt_claude_merge_resolution)
+# ---------------------------------------------------------------------------
+@test "conflict-resolver.sh guards provider_healthcheck with _RITE_PROVIDER_PREFLIGHT_OK sentinel" {
+  _body=$(awk '
+    /^attempt_claude_merge_resolution[(][)]/ { in_func=1 }
+    in_func && /^[a-z_]+[(][)] \{/ && !/^attempt_claude_merge_resolution/ { exit }
+    in_func { print }
+  ' "$PROJECT_ROOT/lib/utils/conflict-resolver.sh")
+  [ -n "$_body" ]
+  # The guard must check the sentinel before calling provider_healthcheck
+  echo "$_body" | grep -q "_RITE_PROVIDER_PREFLIGHT_OK"
+  # The healthcheck call must still be present (unconditional for standalone callers)
+  echo "$_body" | grep -qE "if ! provider_healthcheck"
+}

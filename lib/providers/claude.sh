@@ -131,6 +131,10 @@ claude_provider_healthcheck() {
     _claude_model_fallback_preflight "$_cmd"
   fi
 
+  # Signal that preflight passed so callers invoked from an already-preflighted
+  # run (e.g. conflict-resolver.sh inside a batch) can skip the redundant check.
+  export _RITE_PROVIDER_PREFLIGHT_OK=true
+
   return 0
 }
 
