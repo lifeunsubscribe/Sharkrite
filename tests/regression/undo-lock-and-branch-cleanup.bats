@@ -181,7 +181,8 @@ teardown() { rm -rf "$TEST_DIR"; }
 
 @test "undo source: pr ready --undo does not swallow stderr via 2>/dev/null" {
   # Structural guard: the stderr-capture fix must not be reverted.
-  ! grep -qE 'pr ready.*--undo.*2>/dev/null' "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  run grep -qE 'pr ready.*--undo.*2>/dev/null' "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  [ "$status" -ne 0 ]
 }
 
 @test "undo source: pr ready --undo warns on non-already failures" {
@@ -191,28 +192,12 @@ teardown() { rm -rf "$TEST_DIR"; }
 }
 
 @test "undo pr ready --undo: 'already' in stderr routes to print_info, real error to print_warning" {
-  # Behavioural: the routing logic from the fix must correctly distinguish the
-  # benign 'already a draft' case from genuine failures (auth, network, etc.).
-  run bash -c '
-    set -euo pipefail
-
-    _route_undoready_failure() {
-      local _msg="$1"
-      if echo "$_msg" | grep -qi "already"; then
-        echo "INFO: already a draft"
-      else
-        echo "WARN: Failed to revert${_msg:+ — ${_msg}}"
-      fi
-    }
-
-    _route_undoready_failure "already a draft"
-    _route_undoready_failure "PR is already in draft state"
-    _route_undoready_failure "GraphQL error: authentication required"
-    _route_undoready_failure "HTTP 503 Service Unavailable"
-  '
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"INFO: already a draft"* ]]
-  [[ "$output" == *"INFO: PR is already in draft state"* ]]
-  [[ "$output" == *"WARN: Failed to revert — GraphQL error: authentication required"* ]]
-  [[ "$output" == *"WARN: Failed to revert — HTTP 503 Service Unavailable"* ]]
+  # Structural guard: the routing logic in the real source must distinguish the
+  # benign 'already a draft' case from genuine failures.
+  local _src="${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  # The elif guard uses grep -qi "already" and routes to print_info
+  grep -qE 'elif.*grep -qi "already"' "$_src"
+  grep -qE 'print_info.*already' "$_src"
+  # Real failures route to print_warning
+  grep -qE 'print_warning.*Failed to revert PR' "$_src"
 }

@@ -382,6 +382,7 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
       print_info "Issue #$ISSUE_NUMBER's PR may already be a draft"
     else
       print_warning "Failed to revert PR #${PR_NUMBER} to draft${_undoready_msg:+ — ${_undoready_msg}}"
+      UNDO_ERRORS=$((UNDO_ERRORS + 1))
     fi
 
     # Reset the remote branch to origin/main's HEAD (clean code slate).
