@@ -131,33 +131,55 @@ teardown() {
   }
 }
 
+# ---------------------------------------------------------------------------
+# Helper: source assess-and-resolve.sh (functions-only) and call _extract_remedy_field.
+# Usage: _run_extract_remedy_field <fixture_file> <field_label>
+# Sets bats $status and $output via `run`.
+# ---------------------------------------------------------------------------
+_run_extract_remedy_field() {
+  local _fixture_file="$1" _label="$2"
+  run bash -c "
+    set -euo pipefail
+    export RITE_LIB_DIR='${RITE_REPO_ROOT}/lib'
+    export RITE_PROJECT_ROOT='${RITE_REPO_ROOT}'
+    print_info()    { :; }
+    print_warning() { :; }
+    print_success() { :; }
+    print_error()   { :; }
+    verbose_info()  { :; }
+    _diag()         { :; }
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source '${RITE_REPO_ROOT}/lib/core/assess-and-resolve.sh'
+    set +u; set +o pipefail
+    _finding_block=\$(cat '${_fixture_file}')
+    _result=\$(_extract_remedy_field \"\$_finding_block\" '${_label}')
+    echo \"\${_result:-}\"
+  "
+}
+
 # ─── Test 10: Unit — _f_verification extracted correctly from fixture block ───
 
 @test "assess-and-resolve.sh: _f_verification is extracted from a finding block with the field" {
-  run bash -c '
-    set -euo pipefail
-    _finding_block="### Fix missing input guard - ACTIONABLE_LATER
-
-**Severity:** HIGH
-**Category:** CodeQuality
-**Reasoning:** The function accepts user input without validation.
-**Context:** In scope of this PR but deferred due to refactor complexity.
-**Location:** lib/core/foo.sh:42
-**Fix Effort:** <1hr
-**Defer Reason:** Needs separate focused PR
-**Suggested Fix:** Add an early return when the argument is empty or non-numeric.
-**Verification:** grep -n \"validate_input\" lib/core/foo.sh"
-
-    _f_verification=$(echo "$_finding_block" | grep -oE '"'"'\*\*Verification:\*\*.*'"'"' | head -1 | sed '"'"'s/\*\*Verification:\*\*[[:space:]]*//'"'"' | sed '"'"'s/\*//g'"'"' || true)
-    _f_verification="${_f_verification:-}"
-    echo "$_f_verification"
-  '
+  local _fixture="${RITE_TEST_TMPDIR}/fixture-10.txt"
+  printf '%s\n' \
+    '### Fix missing input guard - ACTIONABLE_LATER' \
+    '' \
+    '**Severity:** HIGH' \
+    '**Category:** CodeQuality' \
+    '**Reasoning:** The function accepts user input without validation.' \
+    '**Context:** In scope of this PR but deferred due to refactor complexity.' \
+    '**Location:** lib/core/foo.sh:42' \
+    '**Fix Effort:** <1hr' \
+    '**Defer Reason:** Needs separate focused PR' \
+    '**Suggested Fix:** Add an early return when the argument is empty or non-numeric.' \
+    '**Verification:** grep -n validate_input lib/core/foo.sh' \
+    > "$_fixture"
+  _run_extract_remedy_field "$_fixture" "Verification"
   [ "$status" -eq 0 ] || {
     echo "FAIL: subshell exited non-zero ($status): $output"
     false
   }
-  [[ "$output" == *"grep"*"validate_input"* ]] || {
-    echo "FAIL: Expected extracted verification command containing 'grep' and 'validate_input', got: '$output'"
+  [ "$output" = "grep -n validate_input lib/core/foo.sh" ] || {
+    echo "FAIL: Expected exact verification command 'grep -n validate_input lib/core/foo.sh' (prefix stripped), got: '$output'"
     false
   }
 }
@@ -165,30 +187,27 @@ teardown() {
 # ─── Test 11: Unit — _f_suggested_fix extracted correctly from fixture block ──
 
 @test "assess-and-resolve.sh: _f_suggested_fix is extracted from a finding block with the field" {
-  run bash -c '
-    set -euo pipefail
-    _finding_block="### Fix missing input guard - ACTIONABLE_LATER
-
-**Severity:** HIGH
-**Category:** CodeQuality
-**Reasoning:** The function accepts user input without validation.
-**Context:** In scope of this PR but deferred due to refactor complexity.
-**Location:** lib/core/foo.sh:42
-**Fix Effort:** <1hr
-**Defer Reason:** Needs separate focused PR
-**Suggested Fix:** Add an early return when the argument is empty or non-numeric.
-**Verification:** grep -n \"validate_input\" lib/core/foo.sh"
-
-    _f_suggested_fix=$(echo "$_finding_block" | grep -oE '"'"'\*\*Suggested Fix:\*\*.*'"'"' | head -1 | sed '"'"'s/\*\*Suggested Fix:\*\*[[:space:]]*//'"'"' | sed '"'"'s/\*//g'"'"' || true)
-    _f_suggested_fix="${_f_suggested_fix:-}"
-    echo "$_f_suggested_fix"
-  '
+  local _fixture="${RITE_TEST_TMPDIR}/fixture-11.txt"
+  printf '%s\n' \
+    '### Fix missing input guard - ACTIONABLE_LATER' \
+    '' \
+    '**Severity:** HIGH' \
+    '**Category:** CodeQuality' \
+    '**Reasoning:** The function accepts user input without validation.' \
+    '**Context:** In scope of this PR but deferred due to refactor complexity.' \
+    '**Location:** lib/core/foo.sh:42' \
+    '**Fix Effort:** <1hr' \
+    '**Defer Reason:** Needs separate focused PR' \
+    '**Suggested Fix:** Add an early return when the **argument** is empty or non-numeric.' \
+    '**Verification:** grep -n validate_input lib/core/foo.sh' \
+    > "$_fixture"
+  _run_extract_remedy_field "$_fixture" "Suggested Fix"
   [ "$status" -eq 0 ] || {
     echo "FAIL: subshell exited non-zero ($status): $output"
     false
   }
-  [[ "$output" == *"early return"* ]] || {
-    echo "FAIL: Expected extracted suggested fix containing 'early return', got: '$output'"
+  [ "$output" = "Add an early return when the **argument** is empty or non-numeric." ] || {
+    echo "FAIL: Expected exact suggested fix 'Add an early return when the **argument** is empty or non-numeric.' (prefix stripped, inner asterisks preserved), got: '$output'"
     false
   }
 }
@@ -196,34 +215,37 @@ teardown() {
 # ─── Test 12: Unit — legacy fixture (no new fields) yields empty strings ──────
 
 @test "assess-and-resolve.sh: legacy assessment without new fields produces empty _f_suggested_fix and _f_verification (no crash)" {
-  run bash -c '
-    set -euo pipefail
-    # Legacy finding block — no Suggested Fix or Verification fields
-    _finding_block="### Fix missing input guard - ACTIONABLE_LATER
+  local _fixture="${RITE_TEST_TMPDIR}/fixture-12.txt"
+  printf '%s\n' \
+    '### Fix missing input guard - ACTIONABLE_LATER' \
+    '' \
+    '**Severity:** HIGH' \
+    '**Category:** CodeQuality' \
+    '**Reasoning:** The function accepts user input without validation.' \
+    '**Context:** In scope of this PR but deferred due to refactor complexity.' \
+    '**Location:** lib/core/foo.sh:42' \
+    '**Fix Effort:** <1hr' \
+    '**Defer Reason:** Needs separate focused PR' \
+    > "$_fixture"
 
-**Severity:** HIGH
-**Category:** CodeQuality
-**Reasoning:** The function accepts user input without validation.
-**Context:** In scope of this PR but deferred due to refactor complexity.
-**Location:** lib/core/foo.sh:42
-**Fix Effort:** <1hr
-**Defer Reason:** Needs separate focused PR"
-
-    _f_suggested_fix=$(echo "$_finding_block" | grep -oE '"'"'\*\*Suggested Fix:\*\*.*'"'"' | head -1 | sed '"'"'s/\*\*Suggested Fix:\*\*[[:space:]]*//'"'"' | sed '"'"'s/\*//g'"'"' || true)
-    _f_suggested_fix="${_f_suggested_fix:-}"
-    _f_verification=$(echo "$_finding_block" | grep -oE '"'"'\*\*Verification:\*\*.*'"'"' | head -1 | sed '"'"'s/\*\*Verification:\*\*[[:space:]]*//'"'"' | sed '"'"'s/\*//g'"'"' || true)
-    _f_verification="${_f_verification:-}"
-    # Both must be empty (not crash under set -u)
-    [ -z "$_f_suggested_fix" ] || { echo "FAIL: _f_suggested_fix should be empty for legacy fixture, got: $_f_suggested_fix"; exit 1; }
-    [ -z "$_f_verification" ] || { echo "FAIL: _f_verification should be empty for legacy fixture, got: $_f_verification"; exit 1; }
-    echo "ok"
-  '
+  # Both fields must be empty for a legacy block (no crash under set -u)
+  _run_extract_remedy_field "$_fixture" "Suggested Fix"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: subshell exited non-zero ($status): $output"
+    echo "FAIL (Suggested Fix): subshell exited non-zero ($status): $output"
     false
   }
-  [ "$output" = "ok" ] || {
-    echo "FAIL: Expected 'ok', got: '$output'"
+  [ -z "$output" ] || {
+    echo "FAIL: _f_suggested_fix should be empty for legacy fixture, got: '$output'"
+    false
+  }
+
+  _run_extract_remedy_field "$_fixture" "Verification"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL (Verification): subshell exited non-zero ($status): $output"
+    false
+  }
+  [ -z "$output" ] || {
+    echo "FAIL: _f_verification should be empty for legacy fixture, got: '$output'"
     false
   }
 }
