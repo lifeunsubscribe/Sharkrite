@@ -509,8 +509,8 @@ _assert_diag() {
 }
 
 # ===========================================================================
-# SHARED HELPERS (_cr_file_has_conflict_markers, _cr_check_no_unexpected_unmerged)
-# These tests exercise the extracted helpers directly to confirm the shared
+# SHARED HELPER (_cr_file_has_conflict_markers)
+# These tests exercise the extracted helper directly to confirm the shared
 # implementation is correct (dedup of in-loop and Step 6 — issue #1621).
 # ===========================================================================
 
