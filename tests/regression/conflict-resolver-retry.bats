@@ -456,3 +456,54 @@ _assert_diag() {
   # Provider called only once — no retry on auth failure
   [ "$PROVIDER_CALL_COUNT" -eq 1 ]
 }
+
+# ===========================================================================
+# UNKNOWN stderr classification: resolver continues retrying — does NOT abort.
+# Covers the case where provider_detect_error returns 1 (non-auth, unrecognized
+# stderr) and the retry loop must keep going rather than bail out silently.
+# ===========================================================================
+
+@test "retry: unknown stderr classification (UNKNOWN) continues retrying, does not abort" {
+  _setup_multi_file_conflict
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  set +u; set +o pipefail
+
+  PROVIDER_CALL_COUNT=0
+
+  # Attempt 1: write unrecognized stderr, exit 1 — does NOT touch conflict files.
+  # Attempt 2: resolve all files cleanly so the resolver can succeed.
+  provider_run_agentic_session() {
+    PROVIDER_CALL_COUNT=$(( PROVIDER_CALL_COUNT + 1 ))
+    local _stderr_file="$4"
+    if [ "$PROVIDER_CALL_COUNT" -eq 1 ]; then
+      printf 'Some unrecognized transient error\n' > "$_stderr_file"
+      return 1
+    fi
+    # Attempt 2: resolve all conflicting files
+    local _prompt="$1"
+    local _conflicted
+    _conflicted=$(printf '%s\n' "$_prompt" | awk '/^## Conflicting files to resolve:$/{f=1;next} /^Read each conflicting file/{f=0} f && NF{print}' || true)
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      printf 'resolved content\n' > "$_f"
+    done <<< "$_conflicted"
+    return 0
+  }
+  load_provider()        { return 0; }
+  provider_detect_cli()  { return 0; }
+  provider_healthcheck() { return 0; }
+  # provider_detect_error returns 1 (UNKNOWN) — not AUTH_EXPIRED
+  provider_detect_error() { return 1; }
+
+  local result=0
+  attempt_claude_merge_resolution \
+    --branch-name "$BRANCH_NAME" \
+    --merge-target "origin/main" 2>/dev/null || result=$?
+
+  # Must succeed — UNKNOWN does not abort; second attempt resolved all files
+  [ "$result" -eq 0 ]
+
+  # Provider was called at least twice — UNKNOWN triggered a retry, not an abort
+  [ "$PROVIDER_CALL_COUNT" -ge 2 ]
+}

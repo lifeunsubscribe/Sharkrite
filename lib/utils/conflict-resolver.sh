@@ -743,7 +743,8 @@ the resolved files after this session ends."
         _cr_info "Session stderr:" >&2
         head -5 "$_cr_stderr_file" >&2
         # Classify before discarding: break immediately on non-retryable errors.
-        _cr_error_type=$(provider_detect_error "$(cat "$_cr_stderr_file")" "$_cr_session_exit")
+        local _cr_error_type
+        _cr_error_type=$(provider_detect_error "$(cat "$_cr_stderr_file")" "$_cr_session_exit") || true
         if [ "$_cr_error_type" = "AUTH_EXPIRED" ]; then
           rm -f "$_cr_stderr_file"
           git merge --abort 2>/dev/null || true
