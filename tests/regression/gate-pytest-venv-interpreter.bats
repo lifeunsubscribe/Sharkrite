@@ -70,7 +70,7 @@ _mk_python() { mkdir -p "$(dirname "$1")"; printf '#!/bin/bash\nexit 0\n' > "$1"
 }
 
 @test "test-gate.sh has no bare 'python3 -m pytest' invocation" {
-  run grep -nE '^[^#]*\bpython3 -m pytest' "$RITE_LIB_DIR/utils/test-gate.sh"
+  run grep -nE '^[^#]*python3 -m pytest' "$RITE_LIB_DIR/utils/test-gate.sh"
   [ "$status" -ne 0 ]
 }
 

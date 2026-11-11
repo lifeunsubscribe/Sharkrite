@@ -911,7 +911,7 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   # conclusion as "" for CheckRun (GraphQL null → Go zero value), so `== null`
   # alone misses every in-progress run — live: freshup 2026-11-11, a check
   # stuck IN_PROGRESS on every PR was reported as `outcome=passed pending=0`.
-  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
+  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or .conclusion == "TIMED_OUT" or .conclusion == "STARTUP_FAILURE" or .conclusion == "CANCELLED")] | length')
   PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(((.status // "COMPLETED") != "COMPLETED") or .conclusion == null or .conclusion == "" or .conclusion == "PENDING")] | length')
 
   if [ "$FAILED_CHECKS" -gt 0 ]; then
