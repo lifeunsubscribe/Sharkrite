@@ -174,3 +174,30 @@ teardown() { rm -rf "$TEST_DIR"; }
     return 1
   }
 }
+
+# ---------------------------------------------------------------------------
+# pr ready --undo stderr swallow fix (#1556)
+# ---------------------------------------------------------------------------
+
+@test "undo source: pr ready --undo does not swallow stderr via 2>/dev/null" {
+  # Structural guard: the stderr-capture fix must not be reverted.
+  run grep -qE 'pr ready.*--undo.*2>/dev/null' "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  [ "$status" -ne 0 ]
+}
+
+@test "undo source: pr ready --undo warns on non-already failures" {
+  # Structural guard: a print_warning call must exist for real failures (not just
+  # a silent print_info that masks auth errors, network failures, etc.).
+  grep -qE 'print_warning.*Failed to revert PR' "${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+}
+
+@test "undo pr ready --undo: 'already' in stderr routes to print_info, real error to print_warning" {
+  # Structural guard: the routing logic in the real source must distinguish the
+  # benign 'already a draft' case from genuine failures.
+  local _src="${RITE_REPO_ROOT}/lib/core/undo-workflow.sh"
+  # The elif guard uses grep -qi "already" and routes to print_info
+  grep -qE 'elif.*grep -qi "already"' "$_src"
+  grep -qE 'print_info.*already' "$_src"
+  # Real failures route to print_warning
+  grep -qE 'print_warning.*Failed to revert PR' "$_src"
+}
