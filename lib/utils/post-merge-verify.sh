@@ -56,6 +56,11 @@ if ! declare -f _diag >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/logging.sh"
 fi
 
+# Source bounded-wait helpers for the serial re-run (wait_pid_with_timeout, kill_process_tree)
+if ! declare -f wait_pid_with_timeout >/dev/null 2>&1 && [ -f "$RITE_LIB_DIR/utils/timeout.sh" ]; then
+  source "$RITE_LIB_DIR/utils/timeout.sh"
+fi
+
 # Source marker constants (needed by run_test_gate for RITE_MARKER_TEST_COVERS)
 if ! declare -f rite_markers_loaded >/dev/null 2>&1; then
   _pmv_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -141,16 +146,36 @@ _pmv_serial_rerun_clears() {
   # Same environment sanitisation as run_test_gate's _bats_sandbox: the
   # selected tests must not inherit this run's session state or an outer
   # bats process's BATS_* variables (a nested bats run misbehaves otherwise).
+  #
+  # No BATS_TEST_TIMEOUT here, deliberately: bats-core 1.13 waits out the full
+  # per-test timeout after a FAILING test (verified 2026-11-11: `{ false; }`
+  # with BATS_TEST_TIMEOUT=20 takes 21s, unset takes 0s), so a genuine failure
+  # would cost the whole ceiling before being reported. The run is bounded as a
+  # whole instead: 900s wall-clock, then the tree is killed and the failure
+  # stands (a hung test is not a flake either).
+  local _bats_pid=""
   (
     cd "$_wt" && \
-    env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER -u SESSION_STATE_FILE \
+    exec env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER -u SESSION_STATE_FILE \
         -u RITE_BATCH_ID -u BATCH_MODE -u SESSION_START_TIME -u RITE_TARGET_BRANCH \
-        -u RITE_TEST_GATE_SKIP_TRIGGERS -u RITE_TEST_GATE_DIFF_BASE \
+        -u RITE_TEST_GATE_SKIP_TRIGGERS -u RITE_TEST_GATE_DIFF_BASE -u BATS_TEST_TIMEOUT \
         -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR -u BATS_TEST_TMPDIR \
         -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER \
-        PATH="$_path" BATS_TEST_TIMEOUT="${RITE_BATS_TEST_TIMEOUT:-300}" \
+        PATH="$_path" \
       bats "${_file_args[@]+"${_file_args[@]}"}" </dev/null >/dev/null 2>&1
-  ) || _rc=$?
+  ) &
+  _bats_pid=$!
+  if declare -f wait_pid_with_timeout >/dev/null 2>&1; then
+    if ! wait_pid_with_timeout "$_bats_pid" 900; then
+      declare -f kill_process_tree >/dev/null 2>&1 && kill_process_tree "$_bats_pid" 2>/dev/null || kill "$_bats_pid" 2>/dev/null || true
+      wait "$_bats_pid" 2>/dev/null || true
+      _rc=124
+    else
+      wait "$_bats_pid" || _rc=$?
+    fi
+  else
+    wait "$_bats_pid" || _rc=$?
+  fi
   [ -n "${_shim_dir:-}" ] && rm -rf "$_shim_dir" 2>/dev/null
 
   if [ "$_rc" -eq 0 ]; then
