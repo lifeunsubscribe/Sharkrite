@@ -371,10 +371,17 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
     # Avoids PR number stacking — the draft PR is reused on next run.
     # STAYS-MAIN: these two references to origin/main are intentionally literal per
     # design §5.1; do NOT convert to resolver calls (#1052 adds RAW_ORIGIN_MAIN_REF suppressions).
-    if gh_safe pr ready --undo "$PR_NUMBER" 2>/dev/null; then
+    _undoready_stderr=$(mktemp)
+    _undoready_rc=0
+    gh_safe pr ready --undo "$PR_NUMBER" 2>"$_undoready_stderr" || _undoready_rc=$?
+    _undoready_msg=$(cat "$_undoready_stderr" 2>/dev/null || true)
+    rm -f "$_undoready_stderr"
+    if [ "$_undoready_rc" -eq 0 ]; then
       print_success "Reverted issue #$ISSUE_NUMBER's PR to draft"
-    else
+    elif echo "$_undoready_msg" | grep -qi "already"; then
       print_info "Issue #$ISSUE_NUMBER's PR may already be a draft"
+    else
+      print_warning "Failed to revert PR #${PR_NUMBER} to draft${_undoready_msg:+ — ${_undoready_msg}}"
     fi
 
     # Reset the remote branch to origin/main's HEAD (clean code slate).
