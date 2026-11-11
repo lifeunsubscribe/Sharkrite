@@ -128,17 +128,19 @@ verify_post_merge() {
   # branch's own changes touch the SAME files. When they don't overlap, verifying
   # is pure waste. Compute the overlap and skip when empty.
   #
-  # pre_merge_ref = PRE (pre-rebase branch tip SHA, the typical caller case):
-  #   _mb = merge-base(PRE, HEAD) = common ancestor before the branch diverged.
-  #   _main_files = diff(PRE, HEAD) = files the rebase pulled in from the target.
-  #   _branch_files = diff(_mb, PRE) = files the branch changed originally.
-  #   Non-overlapping → safe to skip. Overlapping → must verify.
+  # pre_merge_ref = origin/<target> (all current callers — #854/#1655):
+  #   _mb = merge-base(origin/<target>, HEAD) = origin/<target> (HEAD is rebased
+  #   on top of it, making origin/<target> the common ancestor).
+  #   _main_files = diff(origin/<target>, HEAD) = files the branch changed.
+  #   _branch_files = diff(origin/<target>, origin/<target>) = empty (same ref).
+  #   Because _branch_files is empty, the [ -n "$_branch_files" ] guard is false
+  #   → always falls through to verification.
   #
-  # pre_merge_ref = origin/<target> (#854/#1655 updated callers):
-  #   _mb = merge-base(origin/main, HEAD) = origin/main (ancestor of rebased HEAD).
-  #   _branch_files = diff(origin/main, origin/main) = empty → condition false →
-  #   always falls through to verification (conservative, no false-skip on
-  #   integration-branch targets).
+  # pre_merge_ref = HEAD~1 (legacy default for callers not yet updated):
+  #   _branch_files = diff(HEAD~1, HEAD~1) = empty (same ref) → same fall-through.
+  #
+  # The skip can only fire when pre_merge_ref is a ref that genuinely diverged
+  # from HEAD (e.g., a pre-rebase branch-tip SHA). No current caller passes that.
   #
   # Defensive: any git hiccup (_mb empty) falls through to verifying — safe default.
   local _mb _main_files _branch_files _overlap
