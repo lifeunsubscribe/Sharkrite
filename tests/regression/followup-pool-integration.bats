@@ -146,3 +146,23 @@ B
   grep -q 'RITE_FOLLOWUP_POOL:-true}" != "false"' "$SPM"
   grep -q '^# RITE_FOLLOWUP_POOL=false' "$RITE_REPO_ROOT/config/project.conf.example"
 }
+
+@test "reconcile candidate list unions every open pool, not only this run's FOLLOWUP_CREATED pools" {
+  # Source order matters: reconcile-followups.sh's function-sentinel guard keeps pre-source stubs.
+  export RITE_STATE_DIR="$BATS_TEST_TMPDIR/state"; mkdir -p "$RITE_STATE_DIR"
+  export RITE_PROJECT_ROOT="$BATS_TEST_TMPDIR/repo"; mkdir -p "$RITE_PROJECT_ROOT"; git -C "$RITE_PROJECT_ROOT" init -q
+  source "$RITE_LIB_DIR/utils/followup-pool.sh"
+  source "$RCF"
+  set +u; set +o pipefail
+  _diag() { echo "[diag] $*" >> "$BATS_TEST_TMPDIR/diag.log"; }
+  print_step() { :; }; print_warning() { :; }; print_info() { :; }
+  _batch_followups_created() { :; }                         # this run created nothing
+  followup_pool_open_pools() { printf '%s\n' 901 902; }     # two pools from earlier runs
+  provider_resolve_model() { echo triage; }
+  SEEN="$BATS_TEST_TMPDIR/seen"; : > "$SEEN"
+  _reconcile_pool() { echo "$1" >> "$SEEN"; echo "0 0 1 0 1"; }
+  gh_safe() { case "$1 $2" in "issue view") printf '{"body":"<!-- sharkrite-followup-pool:old-run -->\\n## Entries\\n","labels":[]}' ;; esac; }
+  reconcile_batch_followups
+  [ "$(sort "$SEEN" | tr '\n' ' ')" = "901 902 " ]
+  grep -q "FOLLOWUP_RECONCILED closed=0 annotated=0 verified=2 skipped=0" "$BATS_TEST_TMPDIR/diag.log"
+}

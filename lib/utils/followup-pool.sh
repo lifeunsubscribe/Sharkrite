@@ -31,6 +31,7 @@
 #         FOLLOWUP_POOL_LAST_ACTION=appended|pooled-duplicate|tracked:<N>)
 #         1 pool unavailable (caller must fall back)
 #   followup_pool_entries BODY          → TSV: key<TAB>sha<TAB>location<TAB>title
+#   followup_pool_open_pools            → every open pool number (all runs)
 #   followup_pool_entry_block BODY KEY  → the entry's markdown block
 #   followup_pool_resolve_entry POOL KEY RANGE → removes entry, closes pool when empty
 
@@ -147,7 +148,7 @@ followup_pool_issue() {
     echo "<!-- ${_FP_M_POOL}:${_run} -->"
     echo "Deferred review findings and dev-session encountered issues collected during run \`${_run}\`, started $(date '+%Y-%m-%d %H:%M:%S')."
     echo
-    echo "This issue is an **inbox**, not a unit of work: \`rite --label tech-debt\` never selects it. Each entry below is one finding with its source issue, PR, location and the commit it was observed at. Promote an entry into a real issue by hand or via \`rite plan\` (which reads this pool), or delete it. Entries that a later PR in the same run resolved are moved to the bottom by the batch-end reconcile pass; the pool closes itself when no entries remain."
+    echo "This issue is an **inbox**, not a unit of work: \`rite --label tech-debt\` never selects it. Each entry below is one finding with its source issue, PR, location and the commit it was observed at. Every later run checks this pool before pooling a finding again and re-reconciles it at batch end: entries whose code has since changed are classified, resolved ones move to the bottom, and the pool closes itself when no entries remain. Promote an entry into a real issue by hand if it needs dedicated work."
     echo
     echo "## Entries"
     echo
@@ -221,11 +222,23 @@ _followup_pool_open_issue_list() {
   local _cache
   _cache="$(_followup_pool_state_file).openissues"
   if [ ! -f "$_cache" ]; then
+    local _this_pool _pb _pn _pt
+    _this_pool=$(head -1 "$(_followup_pool_state_file)" 2>/dev/null | tr -cd '0-9' || true)
     {
       gh_safe issue list --state open --label tech-debt --limit 200 --json number,title \
         --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true
       gh_safe issue list --state open --label from-review --limit 200 --json number,title \
         --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true
+      # Entries of OTHER open pools (earlier runs): a finding already pooled last
+      # night must not be pooled again tonight. Emitted as "poolnum:entry title".
+      gh_safe issue list --state open --label "$FOLLOWUP_POOL_LABEL" --limit 50 --json number,body \
+        --jq '.[] | "\(.number)\t\(.body | @base64)"' 2>/dev/null | \
+      while IFS=$'\t' read -r _pn _pb; do
+        [ -z "${_pn:-}" ] && continue
+        [ "$_pn" = "${_this_pool:-}" ] && continue
+        followup_pool_entries "$(printf '%s' "$_pb" | base64 --decode 2>/dev/null || true)" | \
+          awk -F'\t' -v n="$_pn" '{print n ":" $4}'
+      done || true
     } | sort -u > "$_cache" 2>/dev/null || true
   fi
   cat "$_cache" 2>/dev/null || true
@@ -351,6 +364,15 @@ ${_entry}"
   FOLLOWUP_POOL_LAST_ACTION="appended"
   _diag "FOLLOWUP_POOLED pool=${_num} issue=${_src} pr=${_pr} key=${_key}"
   return 0
+}
+
+# followup_pool_open_pools — numbers of every open pool issue (all runs), one
+# per line. The batch-end reconcile sweeps all of them, not only this run's,
+# so an entry pooled on an earlier night is re-checked every night until its
+# code changes and it resolves — the pool is cleaned at the end of every run.
+followup_pool_open_pools() {
+  gh_safe issue list --state open --label "$FOLLOWUP_POOL_LABEL" --limit 50 \
+    --json number --jq '.[].number' 2>/dev/null || true
 }
 
 # followup_pool_resolve_entry POOL KEY RANGE — move an entry to "Resolved during
