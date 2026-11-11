@@ -1136,7 +1136,8 @@ ${_promo_review_body}"
   #      after marking leaves only a benign orphaned branch — the re-run cleanly
   #      reports "nothing to promote".
   #   2. Remove temp worktree (already done above after full suite).
-  #   3. Delete integration branch remote + local.
+  #   3. TOCTOU re-check: refuse to delete if new open PRs appeared mid-promote.
+  #      Then delete integration branch remote + local.
   #   4. Post per-issue "Promoted to main in PR #N" comments (best-effort).
 
   # Capture constituent issue list BEFORE marking (for the comments loop)
@@ -1166,7 +1167,68 @@ ${_promo_review_body}"
 
   # Step 2: Temp worktree already removed above (after full suite).
 
-  # Step 3: Delete the integration branch (remote, then local)
+  # Step 3: TOCTOU re-check before branch deletion (#1679).
+  # Phase 1 preflight ran the same guard, but Phases 2-6 (review, gate,
+  # assessment, follow-up creation, merge) can take minutes to tens of minutes.
+  # A PR opened against this branch during that window would be silently closed
+  # by the deletion below.  Re-check now that the merge is complete.
+  local _p7_prs_json _p7_prs_count _p7_jq_exit
+  _p7_prs_json=""
+  _p7_prs_count=0
+  _p7_jq_exit=0
+  if ! _p7_prs_json=$(gh_safe pr list --state open \
+    --json number,body,headRefName,baseRefName --limit 200); then
+    print_error "Phase 7: cannot verify in-flight PRs for '${BRANCH}': gh pr list failed."
+    echo "  The integration branch was already merged to main (PR #${PROMO_PR:-?})." >&2
+    echo "  To finish cleanup, verify no open PRs target '${BRANCH}', then:" >&2
+    echo "    git push origin --delete $BRANCH && git branch -D $BRANCH" >&2
+    exit 1
+  fi
+  _p7_prs_json="${_p7_prs_json:-[]}"
+  _p7_prs_count=$(printf '%s' "$_p7_prs_json" | jq --arg b "$BRANCH" \
+    '[.[] | select(.baseRefName == $b)] | length' 2>/dev/null) || _p7_jq_exit=$?
+  if [ "${_p7_jq_exit}" -ne 0 ]; then
+    print_error "Phase 7: cannot verify in-flight PRs for '${BRANCH}': failed to parse output."
+    echo "  The integration branch was already merged to main (PR #${PROMO_PR:-?})." >&2
+    echo "  To finish cleanup, verify no open PRs target '${BRANCH}', then:" >&2
+    echo "    git push origin --delete $BRANCH && git branch -D $BRANCH" >&2
+    exit 1
+  fi
+  _p7_prs_count="${_p7_prs_count:-0}"
+
+  if [ "${_p7_prs_count:-0}" -gt 0 ]; then
+    _diag "PROMOTE_TOCTOU_BLOCKED branch=${BRANCH} open_prs=${_p7_prs_count} merge_pr=${PROMO_PR:-?}"
+    print_error "Phase 7 aborted: ${_p7_prs_count} open PR(s) targeting '${BRANCH}' appeared mid-promote."
+    echo "  Deleting the branch now would silently close these PR(s)." >&2
+    echo "  The integration branch was already merged to main (PR #${PROMO_PR:-?})." >&2
+    echo "" >&2
+    while IFS= read -r _p7_entry; do
+      [ -n "${_p7_entry:-}" ] || continue
+      local _p7_num _p7_head _p7_body _p7_issue
+      _p7_num=$(printf '%s' "$_p7_entry" | jq -r '.number // ""' 2>/dev/null || true)
+      _p7_head=$(printf '%s' "$_p7_entry" | jq -r '.headRefName // ""' 2>/dev/null || true)
+      _p7_body=$(printf '%s' "$_p7_entry" | jq -r '.body // ""' 2>/dev/null || true)
+      _p7_issue=$(printf '%s' "$_p7_body" | \
+        grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | \
+        head -1 | grep -oE '[0-9]+' || true)
+      if [ -n "${_p7_issue:-}" ]; then
+        echo "    PR #${_p7_num}  (issue #${_p7_issue})  ${_p7_head:-}" >&2
+        echo "      Finish:  rite --branch ${BRANCH} ${_p7_issue}" >&2
+        echo "      Abandon: rite ${_p7_issue} --undo" >&2
+      else
+        echo "    PR #${_p7_num}  ${_p7_head:-}" >&2
+        echo "      Finish:  rite --branch ${BRANCH} <issue>" >&2
+        echo "      Abandon: rite <issue> --undo" >&2
+      fi
+      echo "" >&2
+    done < <(printf '%s' "$_p7_prs_json" | jq -c --arg b "$BRANCH" \
+      '[.[] | select(.baseRefName == $b)] | .[]' 2>/dev/null || true)
+    echo "  After resolving all in-flight issues, delete the integration branch:" >&2
+    echo "    git push origin --delete $BRANCH && git branch -D $BRANCH" >&2
+    exit 1
+  fi
+
+  # Step 3 deletion: Delete the integration branch (remote, then local)
   print_step "Deleting integration branch '$BRANCH'..."
   if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "refs/heads/${BRANCH}$"; then
     if git push origin --delete "$BRANCH" 2>/dev/null; then

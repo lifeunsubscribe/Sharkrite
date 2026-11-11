@@ -2257,6 +2257,16 @@ gh pr list --state open --json number,body,headRefName,baseRefName --limit 200
 
 **Regression:** `tests/regression/promote-branch.bats` Group 2 — "open PR targeting the branch blocks promote and names PR, issue, and commands"; "emits PROMOTE_BLOCKED_INFLIGHT diag"; "open PR targeting a different branch does not block promote".
 
+**TOCTOU window closure (#1679).** The Phase 1 guard only covers PRs that existed *before* the promote started. Phases 2-6 (review, gate, assessment, follow-up creation, squash-merge) can take minutes to tens of minutes; a PR opened against the integration branch during that window would still be silently closed by Phase 7's branch deletion. To close this window, `run_promote` performs a second identical check immediately before the Phase 7 `git push origin --delete` call.
+
+If new PRs are found at this point, the branch deletion is aborted: `PROMOTE_TOCTOU_BLOCKED branch=<b> open_prs=<n> merge_pr=<promo_pr>` is emitted, an error message notes that the main merge already completed (naming the promotion PR number), the same finish/abandon guidance is printed for each in-flight PR, and a manual deletion command is provided for after cleanup. The state at abort is recoverable: the ledger is already marked `promoted=true` (Step 1 of Phase 7 runs before the TOCTOU check), so a subsequent `rite --promote <branch>` will find no unpromoted entries and report "nothing to promote" (consistent with the #1641 ordering contract). The user only needs to finish or undo the in-flight issues and then run `git push origin --delete <branch> && git branch -D <branch>`.
+
+If the GitHub API is unavailable during the Phase 7 re-check, the deletion is also blocked (same fail-hard behavior as Phase 1) with a message providing the manual deletion command.
+
+**Diag (Phase 7):** `PROMOTE_TOCTOU_BLOCKED branch=<b> open_prs=<n> merge_pr=<promo_pr>` — emitted when the Phase 7 re-check finds PRs; never emitted when the re-check passes.
+
+**Regression (Phase 7):** `tests/regression/promote-branch.bats` — "Phase 7: open PR that appeared mid-promote blocks branch deletion and names in-flight PR, issue, merge PR, and manual deletion command"; "Phase 7 TOCTOU re-check appears before branch deletion in source".
+
 ## The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)
 
 `attempt_claude_merge_resolution` returns 0 for "conflicts resolved **in the
