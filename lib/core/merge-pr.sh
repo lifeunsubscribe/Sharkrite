@@ -894,9 +894,9 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   echo "  Total: $ALL_CI_CHECKS_COUNT"
 
   # An in-progress CheckRun arrives from gh with conclusion "" (empty string,
-  # not null) and status IN_PROGRESS/QUEUED — `//` treats "" as present, so
-  # fall back on the status explicitly.
-  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name): \(if (.conclusion // "") == "" then (.status // "PENDING") else .conclusion end)"' | while read -r line; do
+  # not null) — `select(. != null and . != "")` filters it out so .state/.status
+  # fill in. StatusContext uses .context (not .name) and .state (not .conclusion).
+  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name // .context): \([.conclusion, .state, .status] | map(select(. != null and . != "")) | first // "PENDING")"' | while read -r line; do
     if echo "$line" | grep -q "SUCCESS"; then
       echo -e "  ${GREEN}✓${NC} $(echo "$line" | sed 's/: SUCCESS//')"
     elif echo "$line" | grep -q "FAILURE\|ERROR"; then
@@ -906,13 +906,13 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
     fi
   done
 
-  # Only completed-FAILURE/ERROR/TIMED_OUT/STARTUP_FAILURE/CANCELLED checks block; pending is advisory.
-  # Pending = not COMPLETED, or no conclusion yet. gh serialises a missing
-  # conclusion as "" for CheckRun (GraphQL null → Go zero value), so `== null`
-  # alone misses every in-progress run — live: freshup 2026-11-11, a check
-  # stuck IN_PROGRESS on every PR was reported as `outcome=passed pending=0`.
-  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or .conclusion == "TIMED_OUT" or .conclusion == "STARTUP_FAILURE" or .conclusion == "CANCELLED")] | length')
-  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(((.status // "COMPLETED") != "COMPLETED") or .conclusion == null or .conclusion == "" or .conclusion == "PENDING")] | length')
+  # Only completed failures block; pending is advisory.
+  # CheckRun: block on FAILURE/ERROR/TIMED_OUT/STARTUP_FAILURE/CANCELLED conclusion.
+  # StatusContext (legacy commit status API): .conclusion is always null; use .state.
+  # Pending: gh serialises a missing CheckRun conclusion as "" (not null), so
+  # `== null` alone misses IN_PROGRESS runs — live: freshup 2026-11-11.
+  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or .conclusion == "TIMED_OUT" or .conclusion == "STARTUP_FAILURE" or .conclusion == "CANCELLED" or ((.conclusion == null or .conclusion == "") and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(((.conclusion == null or .conclusion == "") and ((.status // "COMPLETED") != "COMPLETED" or (.state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS"))) or .conclusion == "PENDING")] | length')
 
   if [ "$FAILED_CHECKS" -gt 0 ]; then
     print_error "$FAILED_CHECKS CI check(s) completed with failure"

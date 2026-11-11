@@ -718,15 +718,23 @@ the resolved files after this session ends."
 
     provider_run_agentic_session "$_cr_prompt" "$_cr_attempt_timeout" true "$_cr_stderr_file" || _cr_session_exit=$?
 
-    # Cap check: provider_run_agentic_session sets exit 5 for usage cap
-    # (see claude.sh:156-160). provider_detect_error never returns "USAGE_CAP" (only
-    # PROVIDER_BUG|RATE_LIMITED|AUTH_EXPIRED|NETWORK_ERROR|UNKNOWN), so the real signal
-    # is the exit code itself. Check exit code first; stderr is belt-and-suspenders.
+    # Non-retryable exit-code fast paths.
+    # Exit 5 = usage cap; exit 18 = auth failure (see CLAUDE.md exit-code table).
+    # provider_detect_error never returns "USAGE_CAP" (only
+    # PROVIDER_BUG|RATE_LIMITED|AUTH_EXPIRED|NETWORK_ERROR|UNKNOWN), so for the
+    # cap the exit code is the only signal. For auth failure, exit 18 is primary
+    # and provider_detect_error on stderr is belt-and-suspenders.
     if [ "$_cr_session_exit" -eq 5 ]; then
       rm -f "$_cr_stderr_file"
       git merge --abort 2>/dev/null || true
       _cr_error "Provider usage cap reached during conflict resolution"
       return 5
+    fi
+    if [ "$_cr_session_exit" -eq 18 ]; then
+      rm -f "$_cr_stderr_file"
+      git merge --abort 2>/dev/null || true
+      _cr_error "Provider auth expired during conflict resolution — run: claude /login"
+      return 18
     fi
 
     if [ "$_cr_session_exit" -ne 0 ]; then
@@ -734,6 +742,15 @@ the resolved files after this session ends."
       if [ -s "$_cr_stderr_file" ]; then
         _cr_info "Session stderr:" >&2
         head -5 "$_cr_stderr_file" >&2
+        # Classify before discarding: break immediately on non-retryable errors.
+        local _cr_error_type
+        _cr_error_type=$(provider_detect_error "$(cat "$_cr_stderr_file")" "$_cr_session_exit") || true
+        if [ "$_cr_error_type" = "AUTH_EXPIRED" ]; then
+          rm -f "$_cr_stderr_file"
+          git merge --abort 2>/dev/null || true
+          _cr_error "Provider auth expired during conflict resolution — run: claude /login"
+          return 18
+        fi
       fi
     fi
     if [ "$_cr_session_exit" -eq 124 ]; then
