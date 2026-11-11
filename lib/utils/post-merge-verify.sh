@@ -249,8 +249,13 @@ verify_post_merge() {
     elif [ -f "$worktree_path/pytest.ini" ] || [ -f "$worktree_path/pyproject.toml" ] || \
          [ -f "$worktree_path/setup.cfg" ] || [ -f "$worktree_path/setup.py" ] || \
          [ -d "$worktree_path/tests" ]; then
-      # Prefer venv python
-      if [ -f "$worktree_path/.venv/bin/python" ]; then
+      # Prefer venv python — one resolver shared with the post-commit gate
+      # (gate-runners.sh::_resolve_pytest_python) so both pick the same
+      # interpreter. Inline fallback keeps the minimal test sandbox working
+      # when test-gate.sh is absent.
+      if declare -f _resolve_pytest_python >/dev/null 2>&1; then
+        test_cmd="$(_resolve_pytest_python "$worktree_path") -m pytest"
+      elif [ -f "$worktree_path/.venv/bin/python" ]; then
         test_cmd="$worktree_path/.venv/bin/python -m pytest"
       elif [ -f "$worktree_path/venv/bin/python" ]; then
         test_cmd="$worktree_path/venv/bin/python -m pytest"

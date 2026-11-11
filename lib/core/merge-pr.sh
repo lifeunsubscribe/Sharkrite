@@ -893,6 +893,9 @@ ALL_CI_CHECKS_COUNT=$(echo "$ALL_CI_CHECKS" | jq 'length')
 if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   echo "  Total: $ALL_CI_CHECKS_COUNT"
 
+  # An in-progress CheckRun arrives from gh with conclusion "" (empty string,
+  # not null) — `select(. != null and . != "")` filters it out so .state/.status
+  # fill in. StatusContext uses .context (not .name) and .state (not .conclusion).
   echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name // .context): \([.conclusion, .state, .status] | map(select(. != null and . != "")) | first // "PENDING")"' | while read -r line; do
     if echo "$line" | grep -q "SUCCESS"; then
       echo -e "  ${GREEN}✓${NC} $(echo "$line" | sed 's/: SUCCESS//')"
@@ -903,17 +906,20 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
     fi
   done
 
-  # Only completed-FAILURE/ERROR checks block; pending is advisory.
-  # StatusContext objects (legacy commit status API) use .state instead of .conclusion (conclusion is always null).
-  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or ((.conclusion == null or .conclusion == "") and (.state == "FAILURE" or .state == "ERROR")))] | length')
-  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(((.conclusion == null or .conclusion == "") and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  # Only completed failures block; pending is advisory.
+  # CheckRun: block on FAILURE/ERROR/TIMED_OUT/STARTUP_FAILURE/CANCELLED conclusion.
+  # StatusContext (legacy commit status API): .conclusion is always null; use .state.
+  # Pending: gh serialises a missing CheckRun conclusion as "" (not null), so
+  # `== null` alone misses IN_PROGRESS runs — live: freshup 2026-11-11.
+  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or .conclusion == "TIMED_OUT" or .conclusion == "STARTUP_FAILURE" or .conclusion == "CANCELLED" or ((.conclusion == null or .conclusion == "") and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(((.conclusion == null or .conclusion == "") and ((.status // "COMPLETED") != "COMPLETED" or (.state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS"))) or .conclusion == "PENDING")] | length')
 
   if [ "$FAILED_CHECKS" -gt 0 ]; then
     print_error "$FAILED_CHECKS CI check(s) completed with failure"
     VALIDATION_FAILED=true
     _diag "MERGE_GATE_CI outcome=blocked failed=$FAILED_CHECKS pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   elif [ "$PENDING_CHECKS" -gt 0 ]; then
-    print_warning "$PENDING_CHECKS CI check(s) still pending (not blocking)"
+    print_warning "$PENDING_CHECKS CI check(s) still pending (not blocking) — no CI verdict backs this merge"
     _diag "MERGE_GATE_CI outcome=pending failed=0 pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   else
     print_success "All CI checks passed"

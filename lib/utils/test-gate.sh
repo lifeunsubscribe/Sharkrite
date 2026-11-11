@@ -1399,10 +1399,15 @@ run_test_gate() {
           print_warning "[test-gate] pytest-testmon unavailable — running unscoped (see sharkrite #975 / #1125)"
         fi
         # _RITE_PYTEST_VENV_PYTHON now holds the venv interpreter path when provision
-        # succeeded (empty on failure). Wire it + --testmon into the invocation in #1306/#1168.
+        # succeeded (empty on failure); _resolve_pytest_python reads it first.
+        # --testmon wiring remains #1306/#1168.
       fi
-      echo "[test-gate] Running pytest..."
-      { (cd "$project_root" && python3 -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
+      # Never a bare `python3 -m pytest`: the venv resolved above (or the
+      # project's primary .venv) is the interpreter that has the test deps.
+      local _pytest_python
+      _pytest_python=$(_resolve_pytest_python "$project_root")
+      echo "[test-gate] Running pytest ($_pytest_python -m pytest)..."
+      { (cd "$project_root" && "$_pytest_python" -m pytest 2>&1); echo $? > "$_nonsr_exit_file"; } \
         | tee "$_tests_raw_file" >> "$_gate_raw_sink" || true
       _tests_exit=$(cat "$_nonsr_exit_file" 2>/dev/null || echo 1)
       _tests_exit=${_tests_exit:-1}  # empty = child killed before writing = failure (#935; LeadFlow Terminated-15 crash)
