@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/scratchpad-lock.sh, lib/utils/scratchpad-manager.sh
+# sharkrite-test-covers: lib/utils/scratchpad-lock.sh, lib/utils/scratchpad-manager.sh, lib/utils/lock.sh
 # sharkrite-gate-serial — spawns competing processes; under the full suite's parallel group these starve past BATS_TEST_TIMEOUT (false red main, #916 preflight)
 # tests/concurrency/scratchpad-lock.bats - Scratchpad concurrent write and lock tests
 #

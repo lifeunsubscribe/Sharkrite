@@ -7,9 +7,11 @@
 #   - crash recovery (a SIGKILL'd holder's stale lock is reclaimed),
 #   - basic acquire / release / held-pid semantics.
 #
-# Distinct-PID (separate `bash -c` processes), NOT subshells: subshells share $$,
-# which would defeat the PID-based liveness/identity the primitive relies on — the
-# same reason the issue's stress probe specified distinct PIDs.
+# Most tests use distinct-PID (separate `bash -c`) processes: subshells share $$,
+# which would defeat the PID-based liveness/identity the primitive relies on. One
+# test deliberately uses subshells to verify the BASHPID fix (issue #1597): before
+# the fix, subshells' shared $$ caused live-lock steals; after, BASHPID gives each
+# subshell a unique PID so the primitive's self-ownership check behaves correctly.
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
