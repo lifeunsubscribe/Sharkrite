@@ -2249,6 +2249,12 @@ gh pr list --state open --json number,body,headRefName,baseRefName --limit 200
 
 **Regression:** `tests/regression/promote-branch.bats` Group 2 — "open PR targeting the branch blocks promote and names PR, issue, and commands"; "emits PROMOTE_BLOCKED_INFLIGHT diag"; "open PR targeting a different branch does not block promote".
 
+**TOCTOU re-check (#1679).** The Phase 1 guard fires before any gh mutations (ordering contract). Phases 2-6 can take minutes to tens of minutes; a PR opened against the integration branch *during* that window would pass the Phase 1 guard and be silently closed when Phase 7 deletes the branch. To close this window, `run_promote` issues the same `gh pr list` query again immediately before `git push origin --delete` in Phase 7. If new inflight PRs are found, remote branch deletion is skipped and the user receives a warning listing each PR with recovery instructions (`gh pr edit <N> --base main` or `rite <issue> --undo`). The local branch is still deleted (no PR side-effects). If the `gh pr list` call itself fails at this point, deletion is also skipped — an orphaned stale branch is a recoverable state; a silently closed PR is not. The code is already in main regardless.
+
+**Diag (TOCTOU path):** `PROMOTE_TOCTOU_SKIP_DELETE branch=<b> pr=<promo_pr> inflight=<n>` — emitted when deletion is skipped due to mid-promote PRs. `PROMOTE_TOCTOU_CHECK_FAILED branch=<b> pr=<promo_pr>` — emitted when the re-check query itself fails.
+
+**Regression:** `tests/regression/promote-branch.bats` Group 7 — "phase7: PR opened mid-promote skips remote branch deletion and emits PROMOTE_TOCTOU_SKIP_DELETE diag"; "phase7: gh list failure at TOCTOU re-check skips deletion with warning".
+
 ## The Resolver's Success Contract Is the Working Tree, Not the Index (#1317)
 
 `attempt_claude_merge_resolution` returns 0 for "conflicts resolved **in the

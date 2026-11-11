@@ -1167,17 +1167,71 @@ ${_promo_review_body}"
   # Step 2: Temp worktree already removed above (after full suite).
 
   # Step 3: Delete the integration branch (remote, then local)
-  print_step "Deleting integration branch '$BRANCH'..."
-  if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "refs/heads/${BRANCH}$"; then
-    if git push origin --delete "$BRANCH" 2>/dev/null; then
-      print_info "Deleted remote branch origin/$BRANCH"
-    else
-      print_warning "Could not delete remote branch origin/$BRANCH"
-    fi
-  else
-    print_info "Remote branch origin/$BRANCH already gone"
+  #
+  # TOCTOU re-check (#1679): the Phase 1 inflight guard ran before any gh mutations.
+  # Phases 2-6 can take minutes; a PR opened against the branch mid-promote would be
+  # silently closed by GitHub when the base branch disappears.  Re-query now, immediately
+  # before remote deletion, to close the window.  On any check failure, skip deletion
+  # (orphaned branch < silently closed PR — the code is already in main).
+  local _p7_inflight_json="" _p7_inflight_count=0 _p7_check_ok=true _p7_jq_exit=0
+  if ! _p7_inflight_json=$(gh_safe pr list --state open \
+    --json number,body,headRefName,baseRefName --limit 200 2>/dev/null); then
+    _p7_check_ok=false
   fi
-  git branch -D "$BRANCH" 2>/dev/null || true
+  if [ "$_p7_check_ok" = "true" ]; then
+    _p7_inflight_json="${_p7_inflight_json:-[]}"
+    _p7_inflight_count=$(printf '%s' "$_p7_inflight_json" | jq --arg b "$BRANCH" \
+      '[.[] | select(.baseRefName == $b)] | length' 2>/dev/null) || _p7_jq_exit=$?
+    if [ "${_p7_jq_exit}" -ne 0 ]; then
+      _p7_check_ok=false
+    fi
+    _p7_inflight_count="${_p7_inflight_count:-0}"
+  fi
+
+  print_step "Deleting integration branch '$BRANCH'..."
+  if [ "$_p7_check_ok" != "true" ]; then
+    print_warning "Could not verify in-flight PRs for '$BRANCH' — skipping remote branch deletion."
+    echo "  '$BRANCH' code is in main (PR #$PROMO_PR). Delete manually after confirming no open PRs target it:" >&2
+    echo "    git push origin --delete $BRANCH" >&2
+    _diag "PROMOTE_TOCTOU_CHECK_FAILED branch=${BRANCH} pr=${PROMO_PR}"
+  elif [ "${_p7_inflight_count:-0}" -gt 0 ]; then
+    print_warning "'$BRANCH' is squash-merged to main (PR #$PROMO_PR), but ${_p7_inflight_count} PR(s) targeting it were opened during promotion."
+    echo "  Skipping remote branch deletion to avoid silently closing them:" >&2
+    echo "" >&2
+    while IFS= read -r _p7_entry; do
+      [ -n "${_p7_entry:-}" ] || continue
+      local _p7_num _p7_head _p7_body _p7_issue
+      _p7_num=$(printf '%s' "$_p7_entry" | jq -r '.number // ""' 2>/dev/null || true)
+      _p7_head=$(printf '%s' "$_p7_entry" | jq -r '.headRefName // ""' 2>/dev/null || true)
+      _p7_body=$(printf '%s' "$_p7_entry" | jq -r '.body // ""' 2>/dev/null || true)
+      _p7_issue=$(printf '%s' "$_p7_body" | \
+        grep -oiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) #[0-9]+' | \
+        head -1 | grep -oE '[0-9]+' || true)
+      if [ -n "${_p7_issue:-}" ]; then
+        echo "    PR #${_p7_num}  (issue #${_p7_issue})  ${_p7_head:-}" >&2
+      else
+        echo "    PR #${_p7_num}  ${_p7_head:-}" >&2
+      fi
+    done < <(printf '%s' "$_p7_inflight_json" | jq -c --arg b "$BRANCH" \
+      '[.[] | select(.baseRefName == $b)] | .[]' 2>/dev/null || true)
+    echo "" >&2
+    echo "  '$BRANCH' code is in main. For each PR above, either:" >&2
+    echo "    Re-target to main: gh pr edit <N> --base main" >&2
+    echo "    Abandon:           rite <issue> --undo" >&2
+    echo "  Then delete the stale branch: git push origin --delete $BRANCH" >&2
+    _diag "PROMOTE_TOCTOU_SKIP_DELETE branch=${BRANCH} pr=${PROMO_PR} inflight=${_p7_inflight_count}"
+  else
+    if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "refs/heads/${BRANCH}$"; then
+      if git push origin --delete "$BRANCH" 2>/dev/null; then
+        print_info "Deleted remote branch origin/$BRANCH"
+      else
+        print_warning "Could not delete remote branch origin/$BRANCH"
+      fi
+    else
+      print_info "Remote branch origin/$BRANCH already gone"
+    fi
+    git branch -D "$BRANCH" 2>/dev/null || true
+  fi
 
   # Step 4: Best-effort per-issue promotion comments
   for _pn in ${_constituent_issues:-}; do

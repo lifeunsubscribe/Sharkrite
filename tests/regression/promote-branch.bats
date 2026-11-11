@@ -1520,3 +1520,210 @@ RUNEOF
   echo "$output" | grep -q "gh pr create said:"
   echo "$output" | grep -q "Body is too long (maximum is 65536 characters)"
 }
+
+# ===========================================================================
+# Group 12: TOCTOU re-check — PR opened mid-promote (#1679)
+# ===========================================================================
+
+@test "phase7: PR opened mid-promote skips remote branch deletion and emits PROMOTE_TOCTOU_SKIP_DELETE" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/toctou_calls.log"
+  local _diag_log="$RITE_TEST_TMPDIR/toctou_diag.log"
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-toctou"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "deadbeef123456789012345678901234deadbeef"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/toctou-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push)
+    printf 'GIT_PUSH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+  branch)
+    printf 'GIT_BRANCH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
+export PATH="$_fake_bin:\$PATH"
+export _PROMOTE_CALLLOG="$_call_log"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+_diag_log="$_diag_log"
+_diag() { printf '%s\n' "\$*" >> "\$_diag_log"; }
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() {
+  echo "LEDGER_MARKED branch=\$1 issue=\$2" >> "$_call_log"
+}
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+# Count calls to pr list --limit (Phase 1 guard vs. Phase 7 TOCTOU re-check).
+_INFLIGHT_CALL_COUNT=0
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)
+          if printf '%s ' "\$@" | grep -qF -- '--limit'; then
+            _INFLIGHT_CALL_COUNT=\$((_INFLIGHT_CALL_COUNT + 1))
+            if [ "\$_INFLIGHT_CALL_COUNT" -eq 1 ]; then
+              printf '[]\n'; return 0
+            else
+              printf '[{"number":88,"headRefName":"ft-mid-promote_b66","baseRefName":"toctou-branch","body":"Closes #66"}]\n'
+              return 0
+            fi
+          fi
+          echo ""; return 0 ;;
+        create) echo "150"; return 0 ;;
+        view)
+          printf '%s\n' "\$@" | grep -q "headRefOid" && echo "deadbeef" || true
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)
+      echo '{"merged":true}'
+      return 0 ;;
+    issue)
+      echo "ISSUE_COMMENT issue=\${3:-?}" >> "$_call_log"
+      return 0 ;;
+  esac
+  return 0
+}
+run_test_gate() { return 0; }
+run_promote "toctou-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+
+  # Remote branch deletion must be SKIPPED (no git push --delete)
+  ! grep -qiE "GIT_PUSH.*--delete.*toctou-branch" "$_call_log"
+
+  # TOCTOU diag must be emitted
+  grep -q "PROMOTE_TOCTOU_SKIP_DELETE" "$_diag_log"
+  grep -q "branch=toctou-branch" "$_diag_log"
+  grep -q "inflight=1" "$_diag_log"
+
+  # Output must name the mid-promote PR
+  echo "$output" | grep -q "PR #88"
+}
+
+@test "phase7: gh list failure at TOCTOU re-check skips deletion and emits PROMOTE_TOCTOU_CHECK_FAILED" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/toctou_fail_calls.log"
+  local _diag_log="$RITE_TEST_TMPDIR/toctou_fail_diag.log"
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-toctou-fail"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "deadbeef123456789012345678901234deadbeef"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/toctou-fail-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push)
+    printf 'GIT_PUSH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+  branch)
+    printf 'GIT_BRANCH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
+export PATH="$_fake_bin:\$PATH"
+export _PROMOTE_CALLLOG="$_call_log"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+_diag_log="$_diag_log"
+_diag() { printf '%s\n' "\$*" >> "\$_diag_log"; }
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+# Phase 1 guard returns clear; Phase 7 TOCTOU re-check simulates network failure.
+_INFLIGHT_CALL_COUNT=0
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)
+          if printf '%s ' "\$@" | grep -qF -- '--limit'; then
+            _INFLIGHT_CALL_COUNT=\$((_INFLIGHT_CALL_COUNT + 1))
+            if [ "\$_INFLIGHT_CALL_COUNT" -eq 1 ]; then
+              printf '[]\n'; return 0
+            else
+              return 1
+            fi
+          fi
+          echo ""; return 0 ;;
+        create) echo "151"; return 0 ;;
+        view)
+          printf '%s\n' "\$@" | grep -q "headRefOid" && echo "deadbeef" || true
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)
+      echo '{"merged":true}'
+      return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_test_gate() { return 0; }
+run_promote "toctou-fail-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+
+  # Remote branch deletion must be SKIPPED when the TOCTOU check itself fails
+  ! grep -qiE "GIT_PUSH.*--delete.*toctou-fail-branch" "$_call_log"
+
+  # Check-failed diag must be emitted
+  grep -q "PROMOTE_TOCTOU_CHECK_FAILED" "$_diag_log"
+  grep -q "branch=toctou-fail-branch" "$_diag_log"
+}
