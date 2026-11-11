@@ -979,6 +979,11 @@ _resolve_prior_gate_findings() {
 }
 
 # ---------------------------------------------------------------------------
+# Deferred-findings pool (2026-11-11): ACTIONABLE_LATER deferrals are pooled.
+if [ -f "$RITE_LIB_DIR/utils/followup-pool.sh" ]; then
+  source "$RITE_LIB_DIR/utils/followup-pool.sh"
+fi
+
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above (_followup_dedup_check,
 # _resolve_priority_label, _resolve_done_def, _resolve_time_estimate,
@@ -2503,6 +2508,32 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _f_verification="${_f_verification:-}"
 
     _finding_index=$((_finding_index + 1))
+
+    # --- Deferred-findings pool: ACTIONABLE_LATER, non-security → pool ---
+    # Deferrals go to the run's single pool issue (dedup inside). Unresolved
+    # ACTIONABLE_NOW items at the retry cap, [GATE] items (skipped above) and
+    # Security findings keep the individual-issue path: the first two are
+    # escalations that need a human, the third is the security floor.
+    case "$_fh_line" in
+      *" - ACTIONABLE_LATER"*)
+        if declare -f followup_pool_enabled >/dev/null 2>&1 && followup_pool_enabled && \
+           ! echo "${_f_category:-}" | grep -qi "security"; then
+          if declare -f followup_pool_append >/dev/null 2>&1 && \
+             followup_pool_append "${PR_NUMBER:-}" "${ISSUE_NUMBER:-}" "${_f_severity:-MEDIUM}" \
+               "${_f_category:-}" "$_clean_title" "${_f_location:-}" "${_assessment_head_sha:-}" \
+               "${_f_reasoning:-}" "${_f_suggested_fix:-}" "${_f_defer:-}"; then
+            _pool_num=$(followup_pool_issue 2>/dev/null || true)
+            print_info "  Pooled in #${_pool_num:-?} (${FOLLOWUP_POOL_LAST_ACTION:-}): $_clean_title"
+            if [ -n "${_pool_num:-}" ]; then
+              FOLLOWUP_NUMBERS="${FOLLOWUP_NUMBERS}${_pool_num} "
+              _rollup_any_created=true
+            fi
+            continue
+          fi
+          print_warning "  Pool unavailable — filing individually: $_clean_title"
+        fi
+        ;;
+    esac
 
     # --- Per-finding cap guard ---
     # RITE_MAX_FINDINGS_PER_RUN (default 20) limits GitHub API calls per assess run.

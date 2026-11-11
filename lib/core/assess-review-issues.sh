@@ -81,6 +81,9 @@ load_provider "${RITE_REVIEW_PROVIDER:-claude}"
 if ! declare -f _resolve_done_def >/dev/null 2>&1; then
   RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/assess-and-resolve.sh"
 fi
+# Deferred-findings pool: non-security ACTIONABLE_LATER items are appended to
+# the run's single pool issue instead of each becoming an issue (2026-11-11).
+source "$RITE_LIB_DIR/utils/followup-pool.sh"
 
 # =============================================================================
 # FRESHNESS CHECK: Skip assessment if no commits since last assessment
@@ -583,14 +586,20 @@ For EVERY finding, suggestion, or improvement mentioned:
 THREE-STATE CATEGORIZATION:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ACTIONABLE_NOW - Fix in this PR cycle:
-  - CRITICAL security vulnerabilities (always, no exceptions)
-  - HIGH bugs that would break the feature being implemented
-  - Issues that make the PR UNMERGEABLE (build fails, tests fail)
-  - Any valid concern WITHIN the original issue scope
-  - Quick fixes (<30min) that a reasonable engineer would include
-  - Logical completions of the work (e.g., if fixing regex, also fix related validation)
-  - Changes in the SAME file/module that are directly related
+ACTIONABLE_NOW - Fix in this PR cycle. ONLY these three classes qualify:
+  - An UNMET acceptance criterion or core deliverable of the issue under
+    assessment (the SCOPE BAR below) — the PR is not done without it
+  - A failure that makes the PR UNMERGEABLE: build fails, tests fail, lint
+    fails, a [GATE] finding
+  - A REGRESSION THIS PR INTRODUCED: a defect in behaviour that worked before
+    this diff (any severity — a MEDIUM regression the PR caused is still NOW)
+  CRITICAL security vulnerabilities in the diff are regressions of the third
+  kind and are always NOW. Everything else — related improvements, nearby
+  cleanups, quick fixes outside the acceptance criteria, logical extensions,
+  same-module tidy-ups — is NOT NOW: classify it ACTIONABLE_LATER if it meets
+  the necessity bar, otherwise DISMISSED. Each NOW item costs a full fix +
+  review round; the bar exists so that round is spent only on what blocks a
+  correct, green merge.
 
 ACTIONABLE_LATER - Valid concern, create follow-up issue:
   NECESSITY BAR: ACTIONABLE_LATER is for genuinely necessary future work ONLY: a
@@ -677,14 +686,13 @@ CATEGORY GUIDE:
 DECISION CRITERIA:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ACTIONABLE_NOW (fix now) IF:
-  - Security vulnerability (CRITICAL always, HIGH if exploitable)
-  - Bug that breaks the feature being implemented
-  - Valid concern WITHIN the original issue scope
-  - Quick fix (<30min) that a reasonable engineer would include
-  - Build or test failure
-  - Logical completion of the work being done (same domain)
-  - Changes in the SAME module that are directly related
+ACTIONABLE_NOW (fix now) ONLY IF one of:
+  - Unmet acceptance criterion / core deliverable of THIS issue (SCOPE BAR)
+  - Build, test, lint or [GATE] failure — the PR cannot merge green
+  - Regression introduced by THIS PR (any severity; CRITICAL security in the
+    diff always counts)
+  NOT NOW: quick fixes outside the ACs, logical extensions, same-module
+  cleanups, pre-existing defects the PR did not cause → LATER or DISMISSED
 
 ACTIONABLE_LATER (defer to tech-debt) IF:
   - Functional inconsistency across files (e.g., validation rule X in one file,
@@ -1112,6 +1120,36 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         _item_finding_key=$(derive_followup_finding_key \
           "${RITE_ISSUE_NUMBER:-0}" "$ITEM_TITLE" "$_item_index")
 
+        # --- Deferred-findings pool (non-security) ---
+        # Every deferrable finding goes to the run's pool issue; the pool dedups
+        # against its own entries and against open issues before appending. Only
+        # Security findings keep the individual-issue path below (security floor:
+        # never buried in an inbox). If the pool is unavailable (create/edit
+        # failed) fall through to the individual path so nothing is lost.
+        if followup_pool_enabled && ! echo "${ITEM_CATEGORY:-}" | grep -qi "security"; then
+          if followup_pool_append "${PR_NUMBER:-}" "${RITE_ISSUE_NUMBER:-}" \
+               "${ITEM_SEVERITY:-MEDIUM}" "${ITEM_CATEGORY:-}" "$ITEM_TITLE" \
+               "${ITEM_LOCATION:-}" "${_assessment_head_sha:-}" "${ITEM_REASONING:-}" \
+               "${ITEM_SUGGESTED_FIX:-}" "${ITEM_DEFER:-}" "${_item_finding_key:-}"; then
+            _pool_num=$(followup_pool_issue 2>/dev/null || true)
+            case "${FOLLOWUP_POOL_LAST_ACTION:-}" in
+              appended)         print_info "  Pooled in #${_pool_num}: $ITEM_TITLE" >&2 ;;
+              pooled-duplicate) print_info "  Already pooled in #${_pool_num}: $ITEM_TITLE" >&2 ;;
+              tracked:*)        print_info "  Already tracked in #${FOLLOWUP_POOL_LAST_ACTION#tracked:}: $ITEM_TITLE" >&2 ;;
+            esac
+            if [ -n "${_pool_num:-}" ] && ! echo "${POOLED_ISSUES:-}" | grep -qF "#${_pool_num} "; then
+              POOLED_ISSUES="${POOLED_ISSUES:-}#${_pool_num} "
+              # Passback: assess-and-resolve.sh treats a filed pool like filed
+              # per-item issues and skips its own consolidated rollup.
+              if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
+                echo "$_pool_num" >> "$RITE_PER_ITEM_ISSUES_FILE" 2>/dev/null || true
+              fi
+            fi
+            continue
+          fi
+          print_warning "  Pool unavailable — filing individually: $ITEM_TITLE" >&2
+        fi
+
         # Stage 1: fuzzy title match against cached issue list (both tech-debt and review-follow-up)
         DUPLICATE_ISSUE=""
         if [ -n "$EXISTING_ISSUES" ]; then
@@ -1499,7 +1537,7 @@ _Parent PR: #${PR_NUMBER}_"
   ')
 
   # Update PR body with follow-up issue links
-  if [ -n "$CREATED_ISSUES" ] || [ -n "$UPDATED_ISSUES" ]; then
+  if [ -n "$CREATED_ISSUES" ] || [ -n "$UPDATED_ISSUES" ] || [ -n "${POOLED_ISSUES:-}" ]; then
     print_status "Updating PR body with follow-up issue links..."
 
     CURRENT_BODY=$(gh_safe pr view "$PR_NUMBER" --json body --jq '.body' || true)
@@ -1511,6 +1549,7 @@ _Parent PR: #${PR_NUMBER}_"
       NEW_ISSUES_LINE=""
       [ -n "$CREATED_ISSUES" ] && NEW_ISSUES_LINE="Created: ${CREATED_ISSUES}"
       [ -n "$UPDATED_ISSUES" ] && NEW_ISSUES_LINE="${NEW_ISSUES_LINE} Updated: ${UPDATED_ISSUES}"
+      [ -n "${POOLED_ISSUES:-}" ] && NEW_ISSUES_LINE="${NEW_ISSUES_LINE} Pooled: ${POOLED_ISSUES}"
 
       UPDATED_BODY=$(echo "$CURRENT_BODY" | sed "/## Follow-up Issues/a\\
 ${NEW_ISSUES_LINE}" || true)
@@ -1524,7 +1563,8 @@ ${NEW_ISSUES_LINE}" || true)
 
 **From assessment on ${ASSESSMENT_TIMESTAMP}:**
 - Created: ${CREATED_ISSUES:-none}
-- Updated: ${UPDATED_ISSUES:-none}"
+- Updated: ${UPDATED_ISSUES:-none}
+- Pooled: ${POOLED_ISSUES:-none}"
     fi
 
     PR_EDIT_BODY_FILE=$(mktemp)

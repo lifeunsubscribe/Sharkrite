@@ -141,6 +141,15 @@
 # volume where the GitHub API calls would exceed rate limits).
 # RITE_BATCH_RECONCILE=false
 
+# Deferred-findings pool (default: true).
+# Non-security ACTIONABLE_LATER review findings and dev-session encountered
+# issues are appended to ONE pool issue per run (label `followup-pool`, an
+# inbox that `rite --label tech-debt` never selects) instead of one issue each.
+# Set to false to restore one-issue-per-finding. Security findings, unresolved
+# NOW items at the retry cap and CRITICAL/[GATE] escalations are always filed
+# individually regardless of this setting.
+# RITE_FOLLOWUP_POOL=false
+
 # Unscoped suite warning threshold in seconds (default: 300).
 # When a target repo's full test suite takes this long or longer on a fix cycle,
 # the gate emits a once-per-gate-run warning recommending scoped selection (sharkrite #975

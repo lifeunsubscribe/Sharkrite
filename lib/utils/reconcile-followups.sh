@@ -50,6 +50,9 @@ fi
 # When no line number is extractable, returns the first 60 lines of the file.
 # Returns empty string when the file does not exist (deleted by the fix).
 # ---------------------------------------------------------------------------
+# Deferred-findings pool: pool issues are reconciled per entry.
+source "$RITE_LIB_DIR/utils/followup-pool.sh"
+
 _get_code_region() {
   local _file="$1"
   local _loc_raw="$2"
@@ -221,6 +224,52 @@ _do_verify() {
 #
 # Opt-out: RITE_BATCH_RECONCILE=false skips the entire pass.
 # ---------------------------------------------------------------------------
+# _reconcile_pool POOL_NUM BODY TARGET_REF MODEL
+# Per-entry reconcile for a deferred-findings pool issue. Each entry carries
+# its own finding-sha + location markers; an entry whose file changed since
+# its sha is classified exactly like a standalone follow-up, and a `resolved`
+# verdict moves it to "Resolved during run" (the pool closes itself when no
+# entries remain). Prints "closed annotated verified skipped providerok" so the
+# caller can fold the counts into the batch totals.
+_reconcile_pool() {
+  local _pool="$1" _body="$2" _target_ref="$3" _model="$4"
+  local _closed=0 _annotated=0 _verified=0 _skipped=0 _ok=1
+  local _key _sha _loc _title _file _changed _region _block _verdict _rc
+  while IFS=$'\t' read -r _key _sha _loc _title; do
+    [ -z "${_key:-}" ] && continue
+    _file=$(echo "${_loc:-}" | sed 's/[[:space:]].*//; s/:[0-9]*$//' || true)
+    if [ -z "${_sha:-}" ] || [ -z "${_file:-}" ]; then _skipped=$((_skipped+1)); continue; fi
+    if ! git -C "$RITE_PROJECT_ROOT" cat-file -e "${_sha}^{commit}" 2>/dev/null; then
+      _skipped=$((_skipped+1)); continue
+    fi
+    _changed=$(git -C "$RITE_PROJECT_ROOT" diff --name-only "${_sha}..${_target_ref}" -- 2>/dev/null || true)
+    if ! echo "${_changed:-}" | grep -qxF "$_file"; then _skipped=$((_skipped+1)); continue; fi
+    if [ "$_ok" -eq 0 ]; then _skipped=$((_skipped+1)); continue; fi
+    _region=$(_get_code_region "$_file" "$_loc" 2>/dev/null || true)
+    _block=$(followup_pool_entry_block "$_body" "$_key")
+    _rc=0
+    _verdict=$(_classify_finding "${_pool}/${_key}" "$_block" "$_region" "$_model") || _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+      if [ "$_rc" -eq 5 ] || [ "$_rc" -eq 18 ]; then _ok=0; fi
+      _skipped=$((_skipped+1)); continue
+    fi
+    case "${_verdict:-}" in
+      resolved)
+        if followup_pool_resolve_entry "$_pool" "$_key" "${_sha}..${_target_ref}"; then
+          _closed=$((_closed+1))
+          # Body changed on GitHub — re-read so later entries are addressed in the new body.
+          _body=$(gh_safe issue view "$_pool" --json body --jq '.body' 2>/dev/null || echo "$_body")
+        else
+          _skipped=$((_skipped+1))
+        fi ;;
+      partially-resolved) _annotated=$((_annotated+1)) ;;
+      still-open)         _verified=$((_verified+1)) ;;
+      *)                  _skipped=$((_skipped+1)) ;;
+    esac
+  done <<< "$(followup_pool_entries "$_body")"
+  echo "$_closed $_annotated $_verified $_skipped $_ok"
+}
+
 reconcile_batch_followups() {
   if [ "${RITE_BATCH_RECONCILE:-true}" = "false" ]; then
     return 0
@@ -228,6 +277,17 @@ reconcile_batch_followups() {
 
   local _fu_list=""
   _fu_list=$(_batch_followups_created 2>/dev/null || true)
+
+  # Every open deferred-findings pool joins the candidate list, not only the
+  # one this run created: a pool from an earlier run is re-reconciled at the
+  # end of every later run until its entries resolve and it closes itself.
+  local _open_pools=""
+  if declare -f followup_pool_open_pools >/dev/null 2>&1; then
+    _open_pools=$(followup_pool_open_pools 2>/dev/null || true)
+  fi
+  if [ -n "${_open_pools:-}" ]; then
+    _fu_list=$(printf '%s\n%s\n' "${_fu_list:-}" "$_open_pools" | grep -E '^[0-9]+$' | sort -un || true)
+  fi
 
   if [ -z "${_fu_list:-}" ]; then
     declare -f _diag >/dev/null 2>&1 && \
@@ -278,6 +338,27 @@ reconcile_batch_followups() {
     _issue_body=$(echo "$_gh_resp" | jq -r '.body // ""' 2>/dev/null || true)
     local _issue_labels=""
     _issue_labels=$(echo "$_gh_resp" | jq -r '.labels | join(" ")' 2>/dev/null || true)
+
+    # ── Deferred-findings pool: reconcile per entry, not per issue ──────────
+    # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_FOLLOWUP_POOL is a marker constant defined in lib/utils/markers.sh; not a user config var.
+    if echo "${_issue_body:-}" | grep -qE "${RITE_MARKER_FOLLOWUP_POOL}:[A-Za-z0-9._-]+"; then
+      if [ "$_provider_ok" = "false" ]; then
+        _provider_unavail_list="${_provider_unavail_list}#${_fu_num} "
+        _skipped=$(( _skipped + 1 ))
+        continue
+      fi
+      local _pool_counts _pc _pa _pv _ps _pok
+      _pool_counts=$(_reconcile_pool "$_fu_num" "$_issue_body" "$_target_ref" "$_triage_model")
+      read -r _pc _pa _pv _ps _pok <<< "$_pool_counts"
+      _closed=$(( _closed + ${_pc:-0} )); _annotated=$(( _annotated + ${_pa:-0} ))
+      _verified=$(( _verified + ${_pv:-0} )); _skipped=$(( _skipped + ${_ps:-0} ))
+      if [ "${_pok:-1}" = "0" ]; then
+        _provider_ok=false
+        _provider_unavail_list="${_provider_unavail_list}#${_fu_num} "
+        print_warning "reconcile: provider unavailable during pool #${_fu_num} — remaining entries need manual re-triage"
+      fi
+      continue
+    fi
 
     # ── Tier 1: deterministic filter — both markers required ─────────────────
     # Format-anchored guards (BARE_MARKER_GREP rule): require [0-9a-f]+ / [^-]+
