@@ -872,3 +872,142 @@ STUB
   [ -n "$_log" ]
   ! grep -q 'FULL_SUITE_INVESTIGATE_ABORTED' "$_log"
 }
+
+# ---------------------------------------------------------------------------
+# 16. Investigate deadline guard: mid-loop abort yields partial classification
+#     and remediation issue (CLAUDE.md contract: "Persistent count from
+#     already-processed files still triggers remediation issue creation")
+# ---------------------------------------------------------------------------
+@test "--investigate --scheduled: mid-loop abort with partial classification triggers remediation" {
+  _write_lib_stubs
+
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin-midabort"
+  mkdir -p "$fake_bin"
+  local date_call_file="$RITE_TEST_TMPDIR/date-h-calls"
+  local gh_calls_file="$RITE_TEST_TMPDIR/gh-calls.log"
+
+  # make: passes
+  cat > "$fake_bin/make" << 'STUB'
+#!/bin/bash
+exit 0
+STUB
+  chmod +x "$fake_bin/make"
+
+  # git stub
+  cat > "$fake_bin/git" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then echo "test-branch"; exit 0; fi
+exec /usr/bin/git "$@"
+STUB
+  chmod +x "$fake_bin/git"
+
+  # bats stub:
+  #   - args contain "fake1.bats": serial rerun of file1 — still fails (persistent)
+  #   - args contain "fake2.bats": serial rerun of file2 — never reached (deadline fires first)
+  #   - otherwise (main run with -r): two failing tests
+  cat > "$fake_bin/bats" << 'STUB'
+#!/bin/bash
+case "$*" in
+  *fake1.bats*)
+    printf '1..1\nnot ok 1 failing test one\n'
+    exit 1
+    ;;
+  *fake2.bats*)
+    printf '1..1\nnot ok 1 failing test two\n'
+    exit 1
+    ;;
+  *)
+    printf '1..2\nnot ok 1 failing test one\nnot ok 2 failing test two\n'
+    exit 1
+    ;;
+esac
+STUB
+  chmod +x "$fake_bin/bats"
+
+  # gh stub: issue list returns empty (no dedup hit); issue create returns fake URL
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: gh_calls_file path must expand
+  cat > "$fake_bin/gh" << STUB
+#!/bin/bash
+printf 'gh %s\n' "\$*" >> "${gh_calls_file}"
+if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "list" ]; then
+  echo ""
+  exit 0
+fi
+if [ "\${1:-}" = "issue" ] && [ "\${2:-}" = "create" ]; then
+  echo "https://github.com/fake/repo/issues/999"
+  exit 0
+fi
+exit 0
+STUB
+  chmod +x "$fake_bin/gh"
+
+  # date stub: count +%H calls; return "03" for first 3 calls (window open, plenty of time),
+  # "04" for call 4+ (H=04, M=59, S=00 → _sr_remaining=60 ≤ BATS_TEST_TIMEOUT=300 → abort).
+  # This means: window guard passes, main deadline check passes, file1 serial deadline passes,
+  # file2 serial deadline triggers abort.
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: date_call_file path must expand
+  cat > "$fake_bin/date" << STUB
+#!/bin/bash
+if [ "\${1:-}" = "+%H" ]; then
+  _dc=0; [ -f "${date_call_file}" ] && _dc=\$(cat "${date_call_file}")
+  _dc=\$(( _dc + 1 ))
+  printf '%s' "\$_dc" > "${date_call_file}"
+  if [ "\$_dc" -le 3 ]; then echo "03"; else echo "04"; fi
+  exit 0
+fi
+case "\${1:-}" in
+  '+%M') echo "59" ;;
+  '+%S') echo "00" ;;
+  '+%Y-%m-%d') echo "2026-01-01" ;;
+  '+%Y%m%d')   echo "20260101" ;;
+  '+%H:%M:%S') echo "03:30:00" ;;
+  *) exec /bin/date "\$@" ;;
+esac
+STUB
+  chmod +x "$fake_bin/date"
+
+  # Two fixture bats files whose @test names match the TAP output above
+  mkdir -p "$_FAKE_PROJECT/tests"
+  printf '#!/usr/bin/env bats\n@test "failing test one" { false; }\n' \
+    > "$_FAKE_PROJECT/tests/fake1.bats"
+  printf '#!/usr/bin/env bats\n@test "failing test two" { false; }\n' \
+    > "$_FAKE_PROJECT/tests/fake2.bats"
+
+  # markers.sh stub so remediation block can source it without error
+  cat > "$_FAKE_PROJECT/lib/utils/markers.sh" << 'STUB'
+#!/bin/bash
+RITE_MARKER_FULL_SUITE_REMEDIATION="sharkrite-full-suite-remediation"
+export RITE_MARKER_FULL_SUITE_REMEDIATION
+STUB
+
+  # gh-retry.sh stub — gh_safe delegates to the fake gh in PATH
+  cat > "$_FAKE_PROJECT/lib/utils/gh-retry.sh" << 'STUB'
+#!/bin/bash
+gh_safe() { command gh "$@"; }
+STUB
+
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    BATS_TEST_TIMEOUT=300 \
+    bash "$_FULL_SUITE_SCRIPT" --investigate --scheduled
+
+  # Overall exit: 1 (bats failures were detected)
+  [ "$status" -eq 1 ]
+
+  # FULL_SUITE_INVESTIGATE_ABORTED must appear in the log (loop was cut short)
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+  grep -q 'FULL_SUITE_INVESTIGATE_ABORTED' "$_log"
+  grep -q 'reason=window_end' "$_log"
+
+  # Remediation path fired — gh issue create was called (persistent failure from
+  # the already-processed file triggers the remediation block)
+  [ -f "$gh_calls_file" ]
+  grep -q 'issue create' "$gh_calls_file"
+}

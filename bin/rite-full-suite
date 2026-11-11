@@ -492,6 +492,7 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
   # --- Serial re-run each failing .bats file ---
   _serial_results_raw=$(mktemp "${TMPDIR:-/tmp}/rite_fs_serial_$$_XXXXXX")
   _serial_aborted=false
+  _sr_watchdog=()
 
   while IFS= read -r _bats_file; do
     [ -z "$_bats_file" ] && continue
@@ -513,13 +514,26 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
         _serial_aborted=true
         break
       fi
+      # Build in-flight watchdog using remaining window budget (same pattern as lines 315–320)
+      _sr_watchdog=()
+      if command -v gtimeout >/dev/null 2>&1; then
+        _sr_watchdog=(gtimeout -k 30 "$_sr_remaining")
+      elif command -v timeout >/dev/null 2>&1; then
+        _sr_watchdog=(timeout -k 30 "$_sr_remaining")
+      fi
     fi
 
     print_info "  Serial re-run: ${_bats_file#"$_PROJECT_ROOT/"}"
     set +e
-    (cd "$_PROJECT_ROOT" && bats "$_bats_file") > "$_serial_results_raw" 2>&1
+    (cd "$_PROJECT_ROOT" && "${_sr_watchdog[@]+"${_sr_watchdog[@]}"}" bats "$_bats_file") > "$_serial_results_raw" 2>&1
     _serial_file_exit=$?
     set -e
+
+    # Timeout exit codes — watchdog killed in-flight file; treat as deadline abort
+    if [ "$_serial_file_exit" -eq 124 ] || [ "$_serial_file_exit" -eq 137 ]; then
+      _serial_aborted=true
+      break
+    fi
 
     # Fast-path: entire file passed serially — all originally-failing tests from it are cleared
     if [ "$_serial_file_exit" -eq 0 ]; then
@@ -907,6 +921,8 @@ PROMPT_HDR
         _diag "FULL_SUITE_REMEDIATION_ORPHANED hash=${_hash} persistent=${_persistent_count} lint=${_lint_persistent_count}"
       fi
     fi
+  elif [ "$_serial_aborted" = "true" ]; then
+    print_warning "Serial reruns aborted before full classification — persistent count may be understated. Run 'rite --full-suite --investigate' (manual) for a complete classification. No remediation issue filed."
   else
     print_info "All bats failures cleared on serial re-run — parallel-starvation flake only. No remediation issue filed."
   fi
