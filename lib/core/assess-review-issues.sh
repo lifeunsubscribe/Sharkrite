@@ -1264,29 +1264,7 @@ _Added by Sharkrite on ${ASSESSMENT_TIMESTAMP}_"
 
           # Pre-extract location path so it can be used for both the verification
           # command and the Files to Modify section.
-          _loc_path_safe=""
-          _loc_line=""
-          if [ -n "${ITEM_LOCATION:-}" ]; then
-            # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
-            # Strip any trailing description after whitespace; then split on the last colon
-            # that is followed only by digits so we handle paths like lib/core/foo.sh:142
-            # but not bare paths without a line number.
-            _loc_path=$(echo "${ITEM_LOCATION:-}" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
-            _loc_line=$(echo "${ITEM_LOCATION:-}" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
-            # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
-            # break the surrounding single-quoted sed/grep command strings and inject
-            # arbitrary shell text into the generated verification command.
-            # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
-            # Also require at least one '/' (directory path), '.' (file extension), or
-            # a filesystem hit so prose words like "Multiple" do not pass the charset
-            # check and become a confidently-wrong Files to Modify entry (#720/#722
-            # wrong file pointer class). Root-level files like CLAUDE.md or README.md
-            # have no slash but do have a dot; extensionless root files like Makefile
-            # have neither, so the filesystem existence check catches them.
-            if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.' || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
-              _loc_path_safe="$_loc_path"
-            fi
-          fi
+          _resolve_location_path "${ITEM_LOCATION:-}"
 
           # Acceptance criterion: embed Suggested Fix text when present so the criterion
           # describes what to change and where, not just a restatement of the title.
