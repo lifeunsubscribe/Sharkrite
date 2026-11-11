@@ -62,6 +62,33 @@ teardown() { rm -rf "${LOCKDIR:-}"; }
   [ "$(cat "$counter")" -eq 30 ]
 }
 
+@test "subshell contention: BASHPID tokens are distinct, not shared \$\$" {
+  # Regresses the $$ → BASHPID fix (issue #1597). In ( ) & subshells, $$ equals
+  # the parent PID for all workers; the "is this my own lock?" check in
+  # lock_acquire would fire for every waiter — allowing live-lock steals and lost
+  # increments. BASHPID is the actual subprocess PID, unique per subshell.
+  # Runs only on bash 4+ where BASHPID differs from $$ in subshells; on bash 3.2
+  # the ${BASHPID:-$$} fallback gives the same behaviour as the pre-fix code and
+  # cannot distinguish subshell PIDs — skip rather than produce a false red.
+  if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    skip "BASHPID requires bash 4+; \$\$ fallback on bash 3.2 cannot distinguish subshell PIDs"
+  fi
+  local lock="$LOCKDIR/sub.lock" counter="$LOCKDIR/counter"
+  echo 0 > "$counter"
+  local i _pids=()
+  for i in $(seq 1 10); do
+    (
+      source "$LIB"
+      lock_acquire "$lock" 15 || exit 7
+      c=$(cat "$counter"); sleep 0.002; echo $((c + 1)) > "$counter"
+      lock_release "$lock"
+    ) &
+    _pids+=($!)
+  done
+  wait "${_pids[@]+"${_pids[@]}"}" || true
+  [ "$(cat "$counter")" -eq 10 ]
+}
+
 @test "crash recovery: a SIGKILL'd holder's stale lock is reclaimed" {
   local lock="$LOCKDIR/c.lock"
   LIB="$LIB" LK="$lock" RDY="$LOCKDIR/ready" bash -c '

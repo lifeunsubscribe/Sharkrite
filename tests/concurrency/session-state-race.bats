@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/session-tracker.sh
+# sharkrite-test-covers: lib/utils/session-tracker.sh, lib/utils/lock.sh
 # sharkrite-gate-serial — spawns competing processes; under the full suite's parallel group these starve past BATS_TEST_TIMEOUT (false red main, #916 preflight)
 # tests/concurrency/session-state-race.bats - Session state file race condition tests
 #
