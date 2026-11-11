@@ -26,6 +26,9 @@
 #  11.  Structural: backward-compat — explicit "not specified" note when location absent
 #  12.  assess-and-resolve.sh acceptance criterion line no longer has trailing prose
 #  13.  _resolve_done_def: accepts empty severity without crashing
+#  14.  _resolve_location_path: file:line input sets _loc_path_safe and _loc_line
+#  15.  _resolve_location_path: prose word 'Multiple' does not become _loc_path_safe
+#  16.  _resolve_location_path: empty input sets both outputs to empty
 
 load '../helpers/setup.bash'
 
@@ -226,6 +229,53 @@ teardown() {
   [ "$status" -ne 0 ] || {
     echo "FAIL: trailing ': see Description above for details' still appended to acceptance criterion"
     echo "$output"
+    false
+  }
+}
+
+# ─── Tests 14-16: _resolve_location_path unit tests (behavioral) ──────────────
+
+@test "_resolve_location_path: file:line input sets _loc_path_safe and _loc_line" {
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+  # sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: assess-and-resolve.sh uses _RITE_ASSESS_AND_RESOLVE_LOADED env-var guard which is set after sourcing; no same-name function stubs defined before source here
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$ASSESS_RESOLVE_SCRIPT"
+  set +u; set +o pipefail
+
+  _resolve_location_path "lib/core/assess-and-resolve.sh:375"
+  [ "$_loc_path_safe" = "lib/core/assess-and-resolve.sh" ] || {
+    echo "FAIL: expected _loc_path_safe='lib/core/assess-and-resolve.sh', got: '$_loc_path_safe'"
+    false
+  }
+  [ "$_loc_line" = "375" ] || {
+    echo "FAIL: expected _loc_line='375', got: '$_loc_line'"
+    false
+  }
+}
+
+@test "_resolve_location_path: prose word 'Multiple' does not become _loc_path_safe" {
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$ASSESS_RESOLVE_SCRIPT"
+  set +u; set +o pipefail
+
+  _resolve_location_path "Multiple files — various locations"
+  [ -z "$_loc_path_safe" ] || {
+    echo "FAIL: prose word should produce empty _loc_path_safe, got: '$_loc_path_safe'"
+    false
+  }
+}
+
+@test "_resolve_location_path: empty input sets both outputs to empty" {
+  export RITE_LIB_DIR="${RITE_REPO_ROOT}/lib"
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$ASSESS_RESOLVE_SCRIPT"
+  set +u; set +o pipefail
+
+  _resolve_location_path ""
+  [ -z "$_loc_path_safe" ] || {
+    echo "FAIL: empty input should give empty _loc_path_safe, got: '$_loc_path_safe'"
+    false
+  }
+  [ -z "$_loc_line" ] || {
+    echo "FAIL: empty input should give empty _loc_line, got: '$_loc_line'"
     false
   }
 }
