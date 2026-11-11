@@ -535,6 +535,47 @@ _resolve_time_estimate() {
 }
 
 # ---------------------------------------------------------------------------
+# _resolve_location_path — parse and sanitize a location string into a safe
+# file path and optional line number, writing results into caller's variables.
+#
+# Args: $1 = raw location string (LLM-derived, e.g. "lib/core/foo.sh:142 — desc")
+# Sets (in caller's scope):
+#   _loc_path_safe — sanitized file path, or "" when not a recognized path
+#   _loc_line      — line number string (without colon), or "" when absent
+#
+# Used by both the per-finding rollup loop in this file and the ACTIONABLE_LATER
+# per-item loop in assess-review-issues.sh so both emit identical location-derived
+# verification commands and Files to Modify entries.  Sourced from
+# assess-review-issues.sh via the RITE_SOURCE_FUNCTIONS_ONLY=1 pattern.
+# ---------------------------------------------------------------------------
+_resolve_location_path() {
+  local _location="${1:-}"
+  _loc_path_safe=""
+  _loc_line=""
+  [ -n "$_location" ] || return 0
+  # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
+  # Strip any trailing description after whitespace; then split on the last colon
+  # that is followed only by digits so we handle paths like lib/core/foo.sh:142
+  # but not bare paths without a line number.
+  local _loc_path
+  _loc_path=$(echo "$_location" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
+  _loc_line=$(echo "$_location" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
+  # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
+  # break the surrounding single-quoted sed/grep command strings and inject
+  # arbitrary shell text into the generated verification command.
+  # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
+  # Also require at least one '/' (directory path), '.' (file extension), or a
+  # filesystem hit so prose words like "Multiple" do not pass the charset check
+  # and become a confidently-wrong Files to Modify entry (#720/#722 wrong file
+  # pointer class). Root-level files like CLAUDE.md or README.md have no slash
+  # but do have a dot; extensionless root files like Makefile have neither, so
+  # the filesystem existence check catches them.
+  if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.' || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
+    _loc_path_safe="$_loc_path"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # _extract_remedy_field — extract a single-line remedy field from a finding block
 #
 # Args: $1 = finding block text
@@ -2603,31 +2644,9 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     _finding_labels=$(_resolve_issue_labels "${_rollup_base_label}" "${_f_severity}" "${_f_category:-}")
 
     # --- Build per-finding acceptance criterion and verification command ---
-    # Pre-extract location path so it can be used for both the verification command
-    # and the Files to Modify section — avoids duplicating the extraction logic.
-    _loc_path_safe=""
-    _loc_line=""
-    if [ -n "${_f_location:-}" ]; then
-      # Parse file:line format (e.g. "lib/core/foo.sh:142 — description text").
-      # Strip any trailing description after whitespace; then split on the last colon
-      # that is followed only by digits so we handle paths like lib/core/foo.sh:142
-      # but not bare paths without a line number.
-      _loc_path=$(echo "${_f_location}" | awk '{print $1}' | sed 's/:[0-9]*$//' || true)
-      _loc_line=$(echo "${_f_location}" | awk '{print $1}' | grep -oE ':[0-9]+$' | tr -d ':' || true)
-      # Sanitize _loc_path: it is LLM-derived.  A single-quote in the path would
-      # break the surrounding single-quoted sed/grep command strings and inject
-      # arbitrary shell text into the generated verification command.
-      # Only allow the safe subset [A-Za-z0-9/._-]; anything else falls back to prose.
-      # Also require at least one '/' (directory path), '.' (file extension), or a
-      # filesystem hit so prose words like "Multiple" do not pass the charset check
-      # and become a confidently-wrong Files to Modify entry (#720/#722 wrong file
-      # pointer class). Root-level files like CLAUDE.md or README.md have no slash
-      # but do have a dot; extensionless root files like Makefile have neither, so
-      # the filesystem existence check catches them.
-      if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.' || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
-        _loc_path_safe="$_loc_path"
-      fi
-    fi
+    # Parse and sanitize the location string into _loc_path_safe and _loc_line
+    # for use in both the verification command and the Files to Modify section.
+    _resolve_location_path "${_f_location:-}"
 
     # Acceptance criterion: embed Suggested Fix text when present so the criterion
     # describes what to change and where, not just a restatement of the title.
