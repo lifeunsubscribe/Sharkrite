@@ -893,7 +893,7 @@ ALL_CI_CHECKS_COUNT=$(echo "$ALL_CI_CHECKS" | jq 'length')
 if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   echo "  Total: $ALL_CI_CHECKS_COUNT"
 
-  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name // .context): \(.conclusion // .state // .status // "PENDING")"' | while read -r line; do
+  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name // .context): \([.conclusion, .state, .status] | map(select(. != null and . != "")) | first // "PENDING")"' | while read -r line; do
     if echo "$line" | grep -q "SUCCESS"; then
       echo -e "  ${GREEN}✓${NC} $(echo "$line" | sed 's/: SUCCESS//')"
     elif echo "$line" | grep -q "FAILURE\|ERROR"; then
