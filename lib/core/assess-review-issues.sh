@@ -1043,7 +1043,6 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
   # ACTIONABLE_NOW items precede ACTIONABLE_LATER items in the assessment output.
   # Source 1 dedup (evidence-file lookup) is best-effort across paths; Sources
   # 2 and 3 (sentinel + title search) are the reliable dedup gates.
-  # LOW-severity items do NOT increment the counter.
   _item_index=0
 
   # Extract ACTIONABLE_LATER sections from assessment (process substitution avoids subshell variable loss)
@@ -1102,14 +1101,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         ITEM_VERIFICATION="${line#\*\*Verification:\*\* }"
         ;;
       ---END---)
-        # Severity gate: LOW findings are logged but do not justify issue overhead.
-        # They accumulate noise in the tracker and rarely get addressed.
-        if echo "$ITEM_SEVERITY" | grep -qi "LOW"; then
-          print_info "  Skipped (LOW severity): $ITEM_TITLE" >&2
-          continue
-        fi
-
-        # Increment after LOW-severity skip (same gate as assess-and-resolve.sh).
+        # Increment the per-finding counter.
         # Note: the index will diverge from assess-and-resolve.sh's _finding_index
         # when the cap or ACTIONABLE_NOW items are in play — see comment above.
         _item_index=$((_item_index + 1))
