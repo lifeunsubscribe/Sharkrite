@@ -1136,9 +1136,11 @@ ${_promo_review_body}"
   #      after marking leaves only a benign orphaned branch — the re-run cleanly
   #      reports "nothing to promote".
   #   2. Remove temp worktree (already done above after full suite).
-  #   3. TOCTOU re-check: refuse to delete if new open PRs appeared mid-promote.
+  #   3. Post per-issue "Promoted to main in PR #N" comments (best-effort).
+  #      Runs BEFORE the TOCTOU check so comments are posted even when branch
+  #      deletion is aborted — the merge already succeeded at this point.
+  #   4. TOCTOU re-check: refuse to delete if new open PRs appeared mid-promote.
   #      Then delete integration branch remote + local.
-  #   4. Post per-issue "Promoted to main in PR #N" comments (best-effort).
 
   # Capture constituent issue list BEFORE marking (for the comments loop)
   local _constituent_issues=""
@@ -1167,7 +1169,15 @@ ${_promo_review_body}"
 
   # Step 2: Temp worktree already removed above (after full suite).
 
-  # Step 3: TOCTOU re-check before branch deletion (#1679).
+  # Step 3: Best-effort per-issue promotion comments.
+  # Posted here (before the TOCTOU re-check) so they are recorded even when
+  # branch deletion is later aborted — the squash-merge already landed on main.
+  for _pn in ${_constituent_issues:-}; do
+    gh_safe issue comment "$_pn" \
+      --body "Promoted to main in PR #$PROMO_PR" 2>/dev/null || true
+  done
+
+  # Step 4: TOCTOU re-check before branch deletion (#1679).
   # Phase 1 preflight ran the same guard, but Phases 2-6 (review, gate,
   # assessment, follow-up creation, merge) can take minutes to tens of minutes.
   # A PR opened against this branch during that window would be silently closed
@@ -1240,12 +1250,6 @@ ${_promo_review_body}"
     print_info "Remote branch origin/$BRANCH already gone"
   fi
   git branch -D "$BRANCH" 2>/dev/null || true
-
-  # Step 4: Best-effort per-issue promotion comments
-  for _pn in ${_constituent_issues:-}; do
-    gh_safe issue comment "$_pn" \
-      --body "Promoted to main in PR #$PROMO_PR" 2>/dev/null || true
-  done
 
   # ── Phase 8: Post-merge doc pass (best-effort, #1435) ─────────────────────
   #

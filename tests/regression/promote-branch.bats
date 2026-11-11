@@ -1045,7 +1045,8 @@ RUNEOF
   # Manual deletion command must be provided
   echo "$output" | grep -q "git push origin --delete toctou-branch"
   # The integration branch must NOT have been deleted (guard fires before push)
-  ! grep -qiE "GIT_PUSH.*--delete.*toctou-branch" "$_call_log" 2>/dev/null || true
+  run grep -iE "GIT_PUSH.*--delete.*toctou-branch" "$_call_log"
+  [ "$status" -ne 0 ]
 }
 
 @test "Phase 7: TOCTOU re-check passes when no new PRs appeared and deletion proceeds" {
@@ -1568,7 +1569,7 @@ RUNEOF
   [ -f "$_src" ]
   local _toctou_line _deletion_line
   _toctou_line=$(grep -n "PROMOTE_TOCTOU_BLOCKED" "$_src" | head -1 | cut -d: -f1 || true)
-  _deletion_line=$(grep -n 'git push origin --delete' "$_src" | head -1 | cut -d: -f1 || true)
+  _deletion_line=$(grep -n 'if git push origin --delete' "$_src" | head -1 | cut -d: -f1 || true)
   [ -n "$_toctou_line" ]
   [ -n "$_deletion_line" ]
   [ "$_toctou_line" -lt "$_deletion_line" ]
