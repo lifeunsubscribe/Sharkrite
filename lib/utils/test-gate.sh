@@ -1391,6 +1391,10 @@ run_test_gate() {
             # in eslint stylish/compact format), name the cause so the gate JSON
             # reason field says "lint_unparseable" rather than a generic label.
             # Only set when no prior reason (workspace_build_failed etc.) is active.
+            # Counterpart: gate-verdict.sh sets "lint_infrastructure_error" for the
+            # same observable condition (lint_exit=1, zero parsed violations, no
+            # prior reason) on non-node paths. Both labels mean "lint tool exited
+            # non-zero but produced nothing parseable"; grep both when searching logs.
             if [ ! -s "$_lint_raw_file" ] && [ -z "${_gate_reason:-}" ]; then
               _gate_reason="lint_unparseable"
             fi
