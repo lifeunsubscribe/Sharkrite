@@ -1090,7 +1090,7 @@ After `flock` returns, a **post-acquire verification** checks whether `$lockfile
 
 **Invariant**: only one process, on either strategy, can hold the lock at a time. An `exec` that races a live-symlink plant is detected post-`flock` and rejected before the lock is reported held.
 
-**Tests**: `tests/concurrency/scratchpad-lock.bats` — Test 14 (flock waits for symlink holder then acquires), Test 15 (flock times out on persistent symlink holder, returns 1), and Test 16 (flock rejects dead-PID symlink planted after exec, returns 1). All three skip if `flock(1)` is unavailable.
+**Tests**: `tests/concurrency/scratchpad-lock.bats` — Test 17 (flock waits for symlink holder then acquires), Test 18 (flock times out on persistent symlink holder, returns 1), and Test 19 (flock reclaims stale symlink from SIGKILL'd holder mid-wait-loop, acquires successfully). All three skip if `flock(1)` is unavailable. The post-flock verification rejection path (dead-PID symlink planted after `exec`, returns 1) has no test.
 
 ### PR Follow-up Lock: Timing Budget
 
