@@ -12,8 +12,10 @@
 #   - Created lazily at the FIRST deferred finding, never at batch end, so a
 #     cap abort, crash or failed slot can never lose what was already pooled.
 #   - Dedup BEFORE append: (a) against entries already in the pool this run,
-#     (b) against any open tech-debt / from-review issue. Match is location
-#     file + shared title words, not title text alone.
+#     (b) against any open tech-debt / from-review issue and the entries of
+#     every other open pool — never against the finding's own source issue.
+#     Match is location file + ≥2 shared title words; without a location on
+#     both sides, ≥3 shared words. Title text alone is never enough.
 #   - The pool is an INBOX, not a runnable issue: label `followup-pool`,
 #     never `tech-debt`, so `rite --label tech-debt` cannot select it.
 #   - Security findings never enter the pool (callers keep the individual
@@ -111,7 +113,7 @@ _followup_pool_find_open() {
   _hit=$(gh_safe issue list --state open --label "$FOLLOWUP_POOL_LABEL" --limit 50 \
     --json number,body \
     --jq ".[] | select(.body | contains(\"<!-- ${_FP_M_POOL}:${_run} -->\")) | .number" \
-    2>/dev/null | head -1 || true)
+    2>/dev/null | head -1 | tr -cd '0-9' || true)
   [ -n "${_hit:-}" ] && echo "$_hit"
 }
 
@@ -182,11 +184,25 @@ _followup_pool_title_words() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '\n' | awk 'length($0) > 3' | sort -u
 }
 
-# _followup_pool_titles_match A B — 0 when the two titles share ≥2 significant words.
+# _followup_pool_titles_match A B [MIN] — 0 when the two titles share at least
+# MIN significant words (default 2). Callers pass 3 when there is no location
+# evidence on either side: two shared words alone ("silently", "cross-strategy")
+# is how #1668's own deferred findings were mistaken for #1668 (2026-11-11).
 _followup_pool_titles_match() {
-  local _shared
+  local _shared _min="${3:-2}"
   _shared=$(comm -12 <(_followup_pool_title_words "$1") <(_followup_pool_title_words "$2") | wc -l | tr -d ' ' || true)
-  [ "${_shared:-0}" -ge 2 ]
+  [ "${_shared:-0}" -ge "$_min" ]
+}
+
+# _followup_pool_split_tsv LINE — set _f1 _f2 _f3 _f4 from a 4-column TSV line.
+# `IFS=$'\t' read` collapses adjacent tabs (tab is IFS whitespace), so an empty
+# sha or location column would shift the title left; split explicitly instead.
+_followup_pool_split_tsv() {
+  local _l="${1:-}"
+  _f1="${_l%%$'\t'*}"; _l="${_l#*$'\t'}"
+  _f2="${_l%%$'\t'*}"; _l="${_l#*$'\t'}"
+  _f3="${_l%%$'\t'*}"
+  _f4="${_l#*$'\t'}"
 }
 
 # _followup_pool_loc_file LOCATION — the file part of "path:line — text".
@@ -216,28 +232,37 @@ followup_pool_entry_block() {
     inb { print }'
 }
 
-# _followup_pool_open_issue_list — cached "num:title" list of open candidate
-# issues (one fetch per run), for the against-open-issues dedup.
+# _followup_pool_open_issue_list — cached list of open candidate issues (one
+# fetch per run) for the against-open-issues dedup. One line per candidate:
+# num<TAB>location-file<TAB>title. Plain tech-debt / from-review issues have
+# an empty location file; entries of other open pools carry theirs.
 _followup_pool_open_issue_list() {
   local _cache
   _cache="$(_followup_pool_state_file).openissues"
   if [ ! -f "$_cache" ]; then
-    local _this_pool _pb _pn _pt
+    local _this_pool _pb _pn _el
     _this_pool=$(head -1 "$(_followup_pool_state_file)" 2>/dev/null | tr -cd '0-9' || true)
     {
-      gh_safe issue list --state open --label tech-debt --limit 200 --json number,title \
-        --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true
-      gh_safe issue list --state open --label from-review --limit 200 --json number,title \
-        --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true
+      {
+        gh_safe issue list --state open --label tech-debt --limit 200 --json number,title \
+          --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true
+        gh_safe issue list --state open --label from-review --limit 200 --json number,title \
+          --jq '.[] | "\(.number):\(.title)"' 2>/dev/null || true
+      } | awk -F: 'NF >= 2 && $1 ~ /^[0-9]+$/ { n=$1; sub(/^[0-9]+:/, ""); printf "%s\t\t%s\n", n, $0 }'
       # Entries of OTHER open pools (earlier runs): a finding already pooled last
-      # night must not be pooled again tonight. Emitted as "poolnum:entry title".
+      # night must not be pooled again tonight. Emitted with the entry's location file.
       gh_safe issue list --state open --label "$FOLLOWUP_POOL_LABEL" --limit 50 --json number,body \
         --jq '.[] | "\(.number)\t\(.body | @base64)"' 2>/dev/null | \
       while IFS=$'\t' read -r _pn _pb; do
         [ -z "${_pn:-}" ] && continue
         [ "$_pn" = "${_this_pool:-}" ] && continue
         followup_pool_entries "$(printf '%s' "$_pb" | base64 --decode 2>/dev/null || true)" | \
-          awk -F'\t' -v n="$_pn" '{print n ":" $4}'
+          while IFS= read -r _el; do
+            [ -z "${_el:-}" ] && continue
+            local _f1 _f2 _f3 _f4
+            _followup_pool_split_tsv "$_el"
+            printf '%s\t%s\t%s\n' "$_pn" "$(_followup_pool_loc_file "$_f3")" "$_f4"
+          done
       done || true
     } | sort -u > "$_cache" 2>/dev/null || true
   fi
@@ -276,18 +301,22 @@ followup_pool_append() {
 
   # (a) Dedup within the pool: same location file + ≥2 shared title words, or
   #     the identical key. A duplicate records where else it was seen.
-  local _loc_file _line _ekey _esha _eloc _etitle
+  local _loc_file _line _ekey _esha _eloc _etitle _f1 _f2 _f3 _f4
   _loc_file=$(_followup_pool_loc_file "$_loc")
-  while IFS=$'\t' read -r _ekey _esha _eloc _etitle; do
-    [ -z "${_ekey:-}" ] && continue
+  while IFS= read -r _line; do
+    [ -z "${_line:-}" ] && continue
+    _followup_pool_split_tsv "$_line"
+    _ekey="$_f1"; _esha="$_f2"; _eloc="$_f3"; _etitle="$_f4"
     local _dup=false
     if [ "$_ekey" = "$_key" ]; then
       _dup=true
-    elif _followup_pool_titles_match "$_title" "$_etitle"; then
+    else
       local _eloc_file
       _eloc_file=$(_followup_pool_loc_file "$_eloc")
-      if [ -z "$_loc_file" ] || [ -z "$_eloc_file" ] || [ "$_loc_file" = "$_eloc_file" ]; then
-        _dup=true
+      if [ -n "$_loc_file" ] && [ "$_loc_file" = "$_eloc_file" ]; then
+        _followup_pool_titles_match "$_title" "$_etitle" 2 && _dup=true
+      elif [ -z "$_loc_file" ] || [ -z "$_eloc_file" ]; then
+        _followup_pool_titles_match "$_title" "$_etitle" 3 && _dup=true
       fi
     fi
     if [ "$_dup" = true ]; then
@@ -308,12 +337,25 @@ followup_pool_append() {
   done <<< "$(followup_pool_entries "$_body")"
 
   # (b) Dedup against open issues: an already-tracked finding is not re-pooled.
-  local _oline _onum _otitle
+  #     The SOURCE issue is never a match: a PR's deferred findings naturally
+  #     share words with the issue it closes, and that issue closes on merge —
+  #     a "tracked" verdict there is a silent discard (live: #1668, 2026-11-11).
+  local _oline _onum _oloc _otitle
   while IFS= read -r _oline; do
     [ -z "${_oline:-}" ] && continue
-    _onum="${_oline%%:*}"; _otitle="${_oline#*:}"
+    case "$_oline" in
+      *$'\t'*) _onum="${_oline%%$'\t'*}"; _oloc="${_oline#*$'\t'}"; _otitle="${_oloc#*$'\t'}"; _oloc="${_oloc%%$'\t'*}" ;;
+      *) _onum="${_oline%%:*}"; _oloc=""; _otitle="${_oline#*:}" ;;   # pre-TSV cache line
+    esac
     [ "$_onum" = "$_num" ] && continue
-    if _followup_pool_titles_match "$_title" "$_otitle"; then
+    [ -n "${_src:-}" ] && [ "$_onum" = "$_src" ] && continue
+    local _omatch=false
+    if [ -n "$_loc_file" ] && [ "$_loc_file" = "${_oloc:-}" ]; then
+      _followup_pool_titles_match "$_title" "$_otitle" 2 && _omatch=true
+    elif [ -z "$_loc_file" ] || [ -z "${_oloc:-}" ]; then
+      _followup_pool_titles_match "$_title" "$_otitle" 3 && _omatch=true
+    fi
+    if [ "$_omatch" = true ]; then
       FOLLOWUP_POOL_LAST_ACTION="tracked:${_onum}"
       _diag "FOLLOWUP_POOL_DEDUP pool=${_num} issue=${_src} pr=${_pr} tracked=${_onum}"
       return 0

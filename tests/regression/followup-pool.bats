@@ -149,6 +149,46 @@ _body() { cat "$FAKE_GH/issues/$1.body"; }
   grep -q "FOLLOWUP_POOL_DEDUP .* tracked=7" "$BATS_TEST_TMPDIR/diag.log"
 }
 
+@test "open-issue dedup never matches the finding's own source issue (live: #1668 lost two LATER findings)" {
+  mkdir -p "$FAKE_GH/issues"
+  echo "Flock path silently opens through live symlink lock, breaking cross-strategy exclusion" > "$FAKE_GH/issues/1668.title"
+  echo "tech-debt,from-review" > "$FAKE_GH/issues/1668.labels"; echo open > "$FAKE_GH/issues/1668.state"; echo x > "$FAKE_GH/issues/1668.body"
+  followup_pool_append 1725 1668 MEDIUM CodeQuality "Worst-case acquire latency silently doubles under cross-strategy contention" "lib/utils/scratchpad-lock.sh, ~line 173" abc1234 "r"
+  [ "$FOLLOWUP_POOL_LAST_ACTION" = "appended" ]
+  [ "$(_body "$(followup_pool_issue)" | grep -c '^### ')" = "1" ]
+  ! grep -q "tracked=1668" "$BATS_TEST_TMPDIR/diag.log"
+}
+
+@test "open-issue dedup: two shared title words with no location evidence is not a match; three is" {
+  mkdir -p "$FAKE_GH/issues"
+  echo "Flock path silently opens through live symlink lock, breaking cross-strategy exclusion" > "$FAKE_GH/issues/8.title"
+  echo "tech-debt" > "$FAKE_GH/issues/8.labels"; echo open > "$FAKE_GH/issues/8.state"; echo x > "$FAKE_GH/issues/8.body"
+  # "lock" + "silently" only (hyphenated words count per part) → appended
+  followup_pool_append 55 42 MEDIUM CodeQuality "Lock acquire latency silently doubles under contention" "lib/utils/scratchpad-lock.sh:173" abc1234 "r"
+  [ "$FOLLOWUP_POOL_LAST_ACTION" = "appended" ]
+  # flock + symlink + cross + strategy + exclusion → tracked
+  followup_pool_append 55 42 MEDIUM CodeQuality "Flock acquirer follows symlink holder and breaks cross-strategy exclusion" "lib/utils/other.sh:1" abc1234 "r" "" "" k-other
+  [ "$FOLLOWUP_POOL_LAST_ACTION" = "tracked:8" ]
+}
+
+@test "cross-run dedup is location-aware: same two title words at a different file is a new entry" {
+  followup_pool_append 55 42 HIGH Reliability "Retry loop swallows exit 18 on auth failure" "lib/core/local-review.sh:664" abc1234 "r"
+  poolA=$(followup_pool_issue)
+  export RITE_BATCH_ID="batch-test-2"; rm -f "$RITE_STATE_DIR"/followup-pool-*
+  followup_pool_append 70 60 HIGH Reliability "Retry loop ignores auth failure" "lib/core/create-pr.sh:12" ffff111 "r"
+  [ "$FOLLOWUP_POOL_LAST_ACTION" = "appended" ]
+  poolB=$(followup_pool_issue)
+  [ "$poolA" != "$poolB" ]
+  [ "$(_body "$poolB" | grep -c '^### ')" = "1" ]
+}
+
+@test "pool recovery ignores a non-numeric gh result instead of recording it as the pool number" {
+  gh_safe() { if [ "$1 $2" = "issue list" ]; then echo '[]'; return 0; fi; _fake_gh "$@"; }
+  num=$(followup_pool_issue)
+  [ "$num" = "100" ]
+  [ "$(cat "$RITE_STATE_DIR/followup-pool-batch-test-1.num")" = "100" ]
+}
+
 @test "entries parser returns key, sha, location, title per entry" {
   followup_pool_append 55 42 HIGH Reliability "First finding here" "lib/a.sh:1" aaaaaaa "r" "" "" key-one
   followup_pool_append 55 42 LOW Style "Second different thing" "lib/b.sh:2" bbbbbbb "r" "" "" key-two
