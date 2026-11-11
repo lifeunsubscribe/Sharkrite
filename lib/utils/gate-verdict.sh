@@ -647,3 +647,76 @@ _gate_build_verdict() {
     "$_gbv_overall_exit" "false" "$_gbv_reason" "$_gbv_head_sha"
   return "$_gbv_overall_exit"
 }
+
+# ---------------------------------------------------------------------------
+# Gate verdict cache — keyed on (tree SHA, diff-base SHA), passes only.
+#
+# Live (batch 20261111-095317): every resumed issue ran the targeted gate
+# twice on the same tree within ~60s — once as post-rebase verification on
+# the stale-branch path, once as the Phase 2 initial gate. 82-175s each,
+# the first one serial on the critical path. Both runs are a pure function
+# of the tree being tested and the diff base the selection is computed
+# against, so a PASS recorded for that exact pair can be reused.
+#
+# Keyed on the TREE hash, not the commit: a rebase or amend that leaves the
+# tree identical hits; any content change misses. Only passing, non-skipped
+# verdicts are stored — a failure must always re-run to be confirmed.
+# Pilot's 2026-07-06 red merge came from an assessment cached on "this issue
+# already passed" with no SHA in the key; this cache has no such path.
+# ---------------------------------------------------------------------------
+
+# _gate_verdict_cache_path PROJECT_ROOT DIFF_BASE
+# Prints the cache file path for the worktree's current tree + the resolved
+# diff base, or nothing (return 1) when either cannot be resolved (detached
+# fixtures, "A...B" range forms, missing remote ref) — callers then skip the
+# cache entirely.
+_gate_verdict_cache_path() {
+  local _pr="$1" _base="$2"
+  local _tree _base_sha
+  _tree=$(git -C "$_pr" rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null || true)
+  _base_sha=$(git -C "$_pr" rev-parse --verify -q "${_base}^{commit}" 2>/dev/null || true)
+  [ -n "$_tree" ] && [ -n "$_base_sha" ] || return 1
+  echo "${RITE_STATE_DIR:-$_pr/.rite/state}/gate-verdicts/${_tree}-${_base_sha}.json"
+}
+
+# _gate_verdict_cache_hit CACHE_PATH OUTPUT_FILE PROJECT_ROOT
+# When a passing verdict exists at CACHE_PATH, writes it to OUTPUT_FILE with
+# head_sha refreshed to the worktree's current HEAD (the #986 SHA-pin check in
+# assess-and-resolve compares head_sha to the PR head; the cached commit may
+# differ from the current one while the tree is identical) and returns 0.
+# Returns 1 on miss, on an unreadable file, or on anything but exit_code 0.
+_gate_verdict_cache_hit() {
+  local _cache="$1" _out="$2" _pr="$3"
+  [ -n "$_cache" ] && [ -f "$_cache" ] || return 1
+  local _exit _skipped
+  _exit=$(jq -r '.exit_code // 1' "$_cache" 2>/dev/null || echo 1)
+  _skipped=$(jq -r '.skipped // false' "$_cache" 2>/dev/null || echo true)
+  [ "$_exit" = "0" ] && [ "$_skipped" = "false" ] || return 1
+  local _head
+  _head=$(git -C "$_pr" rev-parse HEAD 2>/dev/null || true)
+  if [ -n "$_head" ]; then
+    jq --arg sha "$_head" '.head_sha = $sha | .cached = true' "$_cache" > "$_out" 2>/dev/null || return 1
+  else
+    jq '.cached = true' "$_cache" > "$_out" 2>/dev/null || return 1
+  fi
+  return 0
+}
+
+# _gate_verdict_cache_store CACHE_PATH OUTPUT_FILE
+# Stores OUTPUT_FILE at CACHE_PATH when it is a passing, non-skipped verdict.
+# Prunes entries older than 7 days so the dir stays bounded. Never fails the
+# caller — the cache is an optimisation, not a verdict.
+_gate_verdict_cache_store() {
+  local _cache="$1" _out="$2"
+  [ -n "$_cache" ] && [ -f "$_out" ] || return 0
+  local _exit _skipped
+  _exit=$(jq -r '.exit_code // 1' "$_out" 2>/dev/null || echo 1)
+  _skipped=$(jq -r '.skipped // false' "$_out" 2>/dev/null || echo true)
+  [ "$_exit" = "0" ] && [ "$_skipped" = "false" ] || return 0
+  local _dir
+  _dir=$(dirname "$_cache")
+  mkdir -p "$_dir" 2>/dev/null || return 0
+  cp "$_out" "$_cache" 2>/dev/null || return 0
+  find "$_dir" -name '*.json' -type f -mtime +7 -delete 2>/dev/null || true
+  return 0
+}

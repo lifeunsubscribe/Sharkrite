@@ -1053,6 +1053,7 @@ tail -f .rite/logs/rite-sync-*.log           # live view during a sync
 Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points for health report aggregation. They write directly to the file (not via stdout tee) so they appear exactly once — see two-channel write convention above.
 
 - `POST_MERGE_VERIFY_FLAKE_CLEARED` / `POST_MERGE_VERIFY_FLAKE_PERSISTENT` — a red post-rebase/post-merge gate was re-run serially before being called a semantic conflict; `CLEARED files=N list=…` means every failing file passed alone (load flake — verification passes), `PERSISTENT reason=still_failing|too_many_files` means the failure stands. See `behavioral-design.md` → "Serial Re-run Before Semantic Conflict".
+- `TEST_GATE` — per gate run: `outcome=passed|failed|skipped`, counts, `duration_s`. `cached=true` means a passing verdict for the identical tree + diff base was reused (the post-rebase verification and the Phase 2 initial gate otherwise run the same selection twice ~60s apart); key is `HEAD^{tree}` + resolved base SHA, passes only, under `RITE_STATE_DIR/gate-verdicts/`.
 - `WORKFLOW_COMPLETE` — issue number, fix iterations, rtk savings per phase
 - `ASSESSMENT` — per-issue assessment counts (NOW/LATER/DISMISSED)
 - `REVIEW` — review severity counts (CRITICAL/HIGH/MEDIUM/LOW)
