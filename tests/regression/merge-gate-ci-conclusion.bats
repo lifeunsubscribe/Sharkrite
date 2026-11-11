@@ -110,3 +110,60 @@ setup() {
   [ "$ALL" = "1" ]
   [ "$FAILED" = "1" ]
 }
+
+# ---------------------------------------------------------------------------
+# StatusContext (legacy commit status API) — state field, conclusion always null
+# ---------------------------------------------------------------------------
+
+@test "jq: StatusContext state=FAILURE is counted as failed (not pending)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  CHECKS='[{"context":"jenkins/build","state":"FAILURE","conclusion":null}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING=$(echo "$CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  [ "$FAILED" = "1" ]
+  [ "$PENDING" = "0" ]
+}
+
+@test "jq: StatusContext state=ERROR is counted as failed (not pending)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  CHECKS='[{"context":"ci/build","state":"ERROR","conclusion":null}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING=$(echo "$CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  [ "$FAILED" = "1" ]
+  [ "$PENDING" = "0" ]
+}
+
+@test "jq: StatusContext state=PENDING is advisory (not failed)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  CHECKS='[{"context":"ci/build","state":"PENDING","conclusion":null}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING=$(echo "$CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  [ "$FAILED" = "0" ]
+  [ "$PENDING" = "1" ]
+}
+
+@test "jq: StatusContext state=SUCCESS is neither failed nor pending" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  CHECKS='[{"context":"ci/build","state":"SUCCESS","conclusion":null}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING=$(echo "$CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  [ "$FAILED" = "0" ]
+  [ "$PENDING" = "0" ]
+}
+
+@test "jq: mixed CheckRun pending + StatusContext FAILURE — FAILURE blocks, pending stays advisory" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  CHECKS='[{"name":"Actions","conclusion":null,"state":null},{"context":"jenkins/build","state":"FAILURE","conclusion":null}]'
+  FAILED=$(echo "$CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING=$(echo "$CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
+  [ "$FAILED" = "1" ]
+  [ "$PENDING" = "1" ]
+}
+
+@test "jq: StatusContext uses .context as name fallback in display" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  CHECKS='[{"context":"jenkins/build","state":"FAILURE","conclusion":null}]'
+  OUTPUT=$(echo "$CHECKS" | jq -r '.[] | "  - \(.name // .context): \(.conclusion // .state // .status // "PENDING")"')
+  echo "$OUTPUT" | grep -q "jenkins/build"
+  echo "$OUTPUT" | grep -q "FAILURE"
+}

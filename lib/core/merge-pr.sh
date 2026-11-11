@@ -893,7 +893,7 @@ ALL_CI_CHECKS_COUNT=$(echo "$ALL_CI_CHECKS" | jq 'length')
 if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   echo "  Total: $ALL_CI_CHECKS_COUNT"
 
-  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name): \(.conclusion // .status // "PENDING")"' | while read -r line; do
+  echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name // .context): \(.conclusion // .state // .status // "PENDING")"' | while read -r line; do
     if echo "$line" | grep -q "SUCCESS"; then
       echo -e "  ${GREEN}✓${NC} $(echo "$line" | sed 's/: SUCCESS//')"
     elif echo "$line" | grep -q "FAILURE\|ERROR"; then
@@ -904,8 +904,9 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   done
 
   # Only completed-FAILURE/ERROR checks block; pending is advisory.
-  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR")] | length')
-  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == null or .conclusion == "PENDING")] | length')
+  # StatusContext objects (legacy commit status API) use .state instead of .conclusion (conclusion is always null).
+  FAILED_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select(.conclusion == "FAILURE" or .conclusion == "ERROR" or (.conclusion == null and (.state == "FAILURE" or .state == "ERROR")))] | length')
+  PENDING_CHECKS=$(echo "$ALL_CI_CHECKS" | jq '[.[] | select((.conclusion == null and .state != "FAILURE" and .state != "ERROR" and .state != "SUCCESS") or .conclusion == "PENDING")] | length')
 
   if [ "$FAILED_CHECKS" -gt 0 ]; then
     print_error "$FAILED_CHECKS CI check(s) completed with failure"
