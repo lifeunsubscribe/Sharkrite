@@ -127,6 +127,35 @@ acquire_scratchpad_lock() {
       if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
         echo "scratchpad-lock: removing leftover symlink-style lock before flock acquire" >&2
         rm -f "$lockfile" 2>/dev/null || true
+      else
+        # Live symlink-strategy holder present. exec 200>"$lockfile" follows the
+        # symlink to a PID-named path (e.g. ./12345), allowing a concurrent flock
+        # hold on a different inode — no mutual exclusion. Wait for the holder to
+        # release before proceeding to exec.
+        echo "scratchpad-lock: flock path waiting for symlink-strategy lock held by PID ${_stale_pid}..." >&2
+        local _flock_symlink_wait=0
+        local _flock_symlink_cleared=false
+        while [ "$_flock_symlink_wait" -lt "$max_attempts" ]; do
+          sleep 1
+          _flock_symlink_wait=$(( _flock_symlink_wait + 1 ))
+          if [ ! -L "$lockfile" ]; then
+            _flock_symlink_cleared=true
+            break
+          fi
+          _stale_pid=$(readlink "$lockfile" 2>/dev/null || true)
+          if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
+            rm -f "$lockfile" 2>/dev/null || true
+            _flock_symlink_cleared=true
+            break
+          fi
+        done
+        if [ "$_flock_symlink_cleared" != "true" ]; then
+          echo "WARNING: scratchpad lock busy after ${max_attempts}s — caller will skip this advisory write." >&2
+          echo "         If a previous run crashed, remove the lock file: rm -f \"$lockfile\"" >&2
+          _SCRATCHPAD_LOCK_HELD=false
+          _SCRATCHPAD_LOCK_DEPTH=0
+          return 1
+        fi
       fi
     elif [ -d "$lockfile" ]; then
       # Legacy directory-style lock from a pre-#1651 run. Only reclaim if the

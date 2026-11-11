@@ -1571,3 +1571,190 @@ GHEOF
   unset RITE_SCRATCHPAD_LOCK_TIMEOUT
   unset RITE_SCRATCHPAD_LOCK_STRATEGY
 }
+
+# ---------------------------------------------------------------------------
+# Test 14: Flock path waits for a live symlink-strategy holder then acquires
+#
+# Regression test for the cross-strategy silent-admission bug (issue #1668).
+# Before the fix, exec 200>"$lockfile" followed the live symlink and flocked a
+# PID-named file on a different inode, admitting two simultaneous holders.
+#
+# After the fix, the flock fast-path detects a live symlink-strategy holder and
+# waits (bounded poll) until the holder releases, then proceeds to exec.
+#
+# Acceptance criteria:
+#   (a) The flock-path waiter must NOT acquire the lock while the symlink-
+#       strategy holder is still alive (no silent concurrent hold).
+#   (b) After the symlink-strategy holder releases, the flock-path waiter must
+#       acquire the lock and return 0 within 10 seconds.
+#
+# Design: spawn a symlink-strategy holder (RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir),
+# then immediately try to acquire via the flock path (no RITE_SCRATCHPAD_LOCK_STRATEGY).
+# Release the symlink holder after 2 seconds; assert the flock waiter succeeds.
+# ---------------------------------------------------------------------------
+@test "flock path waits for live symlink-strategy holder then acquires (cross-strategy fix)" {
+  command -v flock >/dev/null 2>&1 || skip "flock(1) not available on this system"
+
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+  local lock_acquired_file="$RITE_TEST_TMPDIR/symlink_holder_acquired"
+  local holder_pid_file="$RITE_TEST_TMPDIR/symlink_holder_pid"
+  local flock_result_file="$RITE_TEST_TMPDIR/flock_waiter_result"
+
+  # Spawn a symlink-strategy holder that acquires and holds for 2 seconds.
+  # Must be a real child process (not a subshell) so its $$ equals its actual PID.
+  "${BASH}" -c '
+    set -uo pipefail
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    acquire_scratchpad_lock
+    echo $$ > "'"$holder_pid_file"'"
+    touch "'"$lock_acquired_file"'"
+    sleep 2
+    release_scratchpad_lock
+  ' &
+  local holder_bgpid=$!
+
+  # Wait up to 5s for the symlink-strategy holder to acquire the lock.
+  local wait_count=0
+  while [ ! -f "$lock_acquired_file" ] && [ "$wait_count" -lt 50 ]; do
+    sleep 0.1
+    wait_count=$((wait_count + 1))
+  done
+  [ -f "$lock_acquired_file" ] || {
+    echo "FAIL: symlink-strategy holder never acquired the lock" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  # Precondition: the lockfile must be a live symlink right now.
+  [ -L "$lockfile" ] || {
+    echo "FAIL: lockfile is not a symlink after symlink-strategy holder acquired" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+  local _holder_pid
+  _holder_pid=$(cat "$holder_pid_file")
+  kill -0 "$_holder_pid" 2>/dev/null || {
+    echo "FAIL: symlink-strategy holder PID $_holder_pid is not alive" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  # Now attempt to acquire via the flock path (unset RITE_SCRATCHPAD_LOCK_STRATEGY).
+  # The fix makes this wait up to max_attempts seconds for the symlink to clear.
+  # We expect the holder to release after ~2s, well within the 15s timeout.
+  local start_time
+  start_time=$(date +%s)
+  (
+    unset RITE_SCRATCHPAD_LOCK_STRATEGY
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=15
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    if acquire_scratchpad_lock; then
+      release_scratchpad_lock
+      echo "success" > "$flock_result_file"
+    else
+      echo "failure" > "$flock_result_file"
+    fi
+  )
+  local end_time
+  end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+
+  wait "$holder_bgpid" 2>/dev/null || true
+
+  # (b) Flock-path waiter must have acquired the lock
+  [ -f "$flock_result_file" ] || {
+    echo "FAIL: flock-path waiter did not write a result file" >&2
+    return 1
+  }
+  local result
+  result=$(cat "$flock_result_file")
+  [ "$result" = "success" ] || {
+    echo "FAIL: flock-path waiter failed to acquire after symlink-strategy holder released" >&2
+    echo "      This means the fix regressed — flock path should wait and then acquire." >&2
+    return 1
+  }
+
+  # Must acquire within 10s (holder releases after 2s; some polling overhead expected)
+  [ "$elapsed" -le 10 ] || {
+    echo "FAIL: flock-path waiter took ${elapsed}s (expected <= 10s)" >&2
+    return 1
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Test 15: Flock path soft-fails (returns 1) when symlink-strategy holder persists
+#
+# Verifies the bounded soft-fail behavior: when a live symlink-strategy holder
+# does not release within max_attempts seconds, acquire_scratchpad_lock returns
+# 1 — it never proceeds to exec and never falsely admits the caller.
+#
+# Acceptance criteria:
+#   (a) acquire_scratchpad_lock returns 1 (not 0)
+#   (b) _SCRATCHPAD_LOCK_HELD is false after the soft-fail
+#   (c) Returns within 2× the configured timeout (10 seconds for timeout=2)
+# ---------------------------------------------------------------------------
+@test "flock path soft-fails (returns 1) when symlink-strategy holder persists beyond timeout" {
+  command -v flock >/dev/null 2>&1 || skip "flock(1) not available on this system"
+
+  local lockfile="${SCRATCHPAD_FILE}.lock"
+  local lock_acquired_file="$RITE_TEST_TMPDIR/symlink_holder2_acquired"
+  local holder_pid_file="$RITE_TEST_TMPDIR/symlink_holder2_pid"
+
+  # Spawn a symlink-strategy holder that holds indefinitely.
+  "${BASH}" -c '
+    set -uo pipefail
+    export RITE_SCRATCHPAD_LOCK_STRATEGY=mkdir
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    acquire_scratchpad_lock
+    echo $$ > "'"$holder_pid_file"'"
+    touch "'"$lock_acquired_file"'"
+    sleep 60
+  ' &
+  local holder_bgpid=$!
+
+  # Wait for the symlink-strategy holder to acquire.
+  local wait_count=0
+  while [ ! -f "$lock_acquired_file" ] && [ "$wait_count" -lt 50 ]; do
+    sleep 0.1
+    wait_count=$((wait_count + 1))
+  done
+  [ -f "$lock_acquired_file" ] || {
+    echo "FAIL: symlink-strategy holder never acquired the lock" >&2
+    kill "$holder_bgpid" 2>/dev/null || true
+    return 1
+  }
+
+  local start_time
+  start_time=$(date +%s)
+
+  # Attempt to acquire via the flock path with a short timeout.
+  local flock_rc=0
+  (
+    unset RITE_SCRATCHPAD_LOCK_STRATEGY
+    export RITE_SCRATCHPAD_LOCK_TIMEOUT=2
+    source "$RITE_LIB_DIR/utils/scratchpad-lock.sh"
+    acquire_scratchpad_lock
+  ) || flock_rc=$?
+
+  local end_time
+  end_time=$(date +%s)
+  local elapsed=$((end_time - start_time))
+
+  kill "$holder_bgpid" 2>/dev/null || true
+  wait "$holder_bgpid" 2>/dev/null || true
+  rm -f "$lockfile" 2>/dev/null || true
+
+  # (a) Must return non-zero — the lock was never acquired
+  [ "$flock_rc" -ne 0 ] || {
+    echo "FAIL: flock path returned 0 despite persistent live symlink-strategy holder" >&2
+    echo "      exec followed the symlink, flocked a PID-named file, admitted concurrent hold." >&2
+    return 1
+  }
+
+  # (c) Must complete within 2× timeout (10 seconds for timeout=2)
+  [ "$elapsed" -le 10 ] || {
+    echo "FAIL: soft-fail took ${elapsed}s (expected <= 10s with timeout=2)" >&2
+    return 1
+  }
+}

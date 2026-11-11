@@ -1048,7 +1048,7 @@ All three lock implementations use `kill -0 $PID` to decide whether a lock-holdi
 
 **Affected files and lines:**
 - `lib/utils/issue-lock.sh` — `acquire_issue_lock` and `acquire_pr_followup_lock`
-- `lib/utils/scratchpad-lock.sh` — portable mkdir path only (the `flock` fast-path on Linux does not use `kill -0`)
+- `lib/utils/scratchpad-lock.sh` — portable symlink path uses `kill -0`; the `flock` fast-path also uses `kill -0` when it detects a live symlink-strategy holder before calling `exec` (see "Flock-Path vs Symlink-Path Cross-Strategy Mutual Exclusion" below)
 - `lib/utils/session-tracker.sh` — `_acquire_session_lock` portable path
 
 ### The mkdir-then-deferred-pid Reclaim Race (issue #706)
@@ -1061,7 +1061,7 @@ All three locks share a second race, **distinct from the same-host assumption ab
 
 **Status:**
 - `issue-lock.sh` **fixed in #1701** via symlink-based acquire (same design as scratchpad-lock.sh #1651): `ln -sn "$tmp_dir" "$lock_dir"` is atomic; the `-n` flag prevents dereference so a racing publisher cannot plant its temp dir inside the holder's directory when `lock_dir` is already a symlink. `$tmp_dir` is pre-populated with `pid`/`cwd` before publication so a live lock is never observable without its owner — the `mkdir`-gate TOCTOU window and grace period are both eliminated. Stale reclaim uses rename-before-remove (`_atomic_steal_lock` with `mv`), serialising concurrent reclaimers. Backfill locks (real dirs, `backfill` sentinel, no `pid`) are reclaimed immediately.
-- `scratchpad-lock.sh` **fixed in #1651** via symlink-based acquire: `ln -s "$$" "$lockfile"` is atomic (symlink(2)/POSIX), so the lock carries its owner's PID the instant it exists — there is no create→PID-write window. Stale reclaim uses rename-before-remove (`mv "$lockfile" "$lockfile.stale.$$"`): two concurrent waiters both see a dead PID but only one `mv` wins, serialising the steal. Grace-reclaim branch deleted; the bad state it patched is now unrepresentable.
+- `scratchpad-lock.sh` **fixed in #1651** via symlink-based acquire: `ln -s "$$" "$lockfile"` is atomic (symlink(2)/POSIX), so the lock carries its owner's PID the instant it exists — there is no create→PID-write window. Stale reclaim uses rename-before-remove (`mv "$lockfile" "$lockfile.stale.$$"`): two concurrent waiters both see a dead PID but only one `mv` wins, serialising the steal. Grace-reclaim branch deleted; the bad state it patched is now unrepresentable. **Cross-strategy regression fixed in #1668** — see "Flock-Path vs Symlink-Path Cross-Strategy Mutual Exclusion" below.
 - `session-tracker.sh` has the same class and is **fixed by #706** via migration onto `lock.sh` — see Adoption below.
 
 **Resolution (#706): `lib/utils/lock.sh` — one atomic primitive.** A single shared lock replaces the bespoke implementations. It is an `ln(1)` hard-link lock whose file content is a unique `<pid>.<nonce>` token, written into a private temp file *before* the link — so the lock carries its identity atomically the instant it exists. There is **no create→PID-write window** (the root cause above). Each property below was pinned by a finding during bring-up:
@@ -1075,6 +1075,20 @@ Validated: 50-process × 10-round distinct-PID stress → **0 lost / 0 overlaps*
 **Platform seam.** `lock.sh` is the single place the OS concurrency model lives (atomic create-exclusive, process liveness, atomic rename — all POSIX, uniform on macOS + Linux; macOS has no `flock(1)`, so the `ln` path carries correctness). A future **Windows** backend swaps exactly the three public functions (`lock_acquire`/`lock_release`/`lock_held_pid`) over `CreateFile CREATE_NEW` / `OpenProcess` / `MoveFileEx` — nothing outside `lock.sh` encodes the assumptions. See the file header for the contract.
 
 **Adoption.** `session-tracker.sh` is migrated onto `lock.sh` (this fixes the named lost-increment bug; `session-state-race.bats` passes under load). `scratchpad-lock.sh` fixed its own race independently in #1651 (symlink acquire + rename-before-remove reclaim). `issue-lock.sh` fixed its own race in #1701 (same symlink design — `ln -s "$tmp_dir" "$lock_dir"` with pre-populated `pid`/`cwd`; `cwd`/`backfill` metadata stays inside the temp dir so the reader contract is unchanged; `_atomic_steal_stale_lock` renamed to `_atomic_steal_lock` and extended to handle both symlink-style and legacy real-directory locks). All three lock subsystems are now race-free; there are no remaining follow-up adopters for `lock.sh`.
+
+### Flock-Path vs Symlink-Path Cross-Strategy Mutual Exclusion
+
+**Regression introduced in #1651** (scratchpad-lock.sh symlink acquire): `scratchpad-lock.sh` has two lock strategies: a flock(1) fast-path (Linux / Homebrew util-linux) and a portable symlink path. After #1651, a process using the symlink path creates `$lockfile` as a symlink pointing to its PID (e.g., `$lockfile → "12345"`). A concurrent process using the flock path that sees this live symlink fell through to `exec 200>"$lockfile"`. Because `>` follows the symlink, it opens/creates a file at the symlink's target path — a PID string like `"12345"`, treated as a path relative to the lockfile's directory. `flock` then locked that new inode with no other contender and returned immediately, admitting two simultaneous holders.
+
+**Fixed in #1668** (this PR): the flock path's pre-exec cleanup block now has an `else` branch for the live-symlink case. When `readlink "$lockfile"` returns a PID and `kill -0 $PID` succeeds:
+1. Print a "waiting for symlink-strategy lock held by PID ..." diagnostic.
+2. Poll every 1s until the symlink disappears or the holder's PID becomes dead (`kill -0` fails).
+3. If the holder releases or the PID goes dead, reclaim any residual stale symlink and proceed to `exec`.
+4. If the symlink is still live after `max_attempts` seconds, **soft-fail** (`return 1`) — same behavior as the symlink path's timeout.
+
+**Invariant**: a process on either strategy can hold the lock at a time. No `exec` is called while `$lockfile` is a live symlink with a reachable PID.
+
+**Tests**: `tests/concurrency/scratchpad-lock.bats` — Test 14 (flock waits for symlink holder then acquires) and Test 15 (flock times out on persistent symlink holder, returns 1). Both skip if `flock(1)` is unavailable.
 
 ### PR Follow-up Lock: Timing Budget
 
