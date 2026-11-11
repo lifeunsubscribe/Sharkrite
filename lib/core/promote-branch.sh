@@ -978,8 +978,44 @@ ${_promo_now_items}"
           # shellcheck source=/dev/null
           source "$RITE_LIB_DIR/utils/labels.sh" 2>/dev/null || true
         fi
+        # Lazy load _resolve_issue_labels (functions only) for security-category
+        # routing (#1562): security findings must reach priority-high + security label
+        # on the promote path, the last gate before main.
+        if ! declare -f _resolve_issue_labels >/dev/null 2>&1; then
+          # shellcheck source=/dev/null
+          RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/assess-and-resolve.sh" 2>/dev/null || true
+        fi
+
+        # Derive label set from the assessed output: scan for the highest severity
+        # and any Security category so security findings reach priority-high + security.
+        # Scope to ACTIONABLE_NOW blocks only — DISMISSED/LATER findings must not
+        # contaminate the aggregate labels (a dismissed security finding would cause
+        # security-label routing, and security-labeled issues are never auto-closed).
+        local _promo_now_only
+        _promo_now_only=$(echo "$_promo_assess_out" | awk '
+          /^### .* - ACTIONABLE_NOW/ { in_now=1; next }
+          /^### / { in_now=0 }
+          in_now { print }
+        ' || true)
+        local _promo_now_max_sev="MEDIUM"
+        local _promo_now_sec_cat=""
+        local _sv_line _sv
+        while IFS= read -r _sv_line; do
+          _sv=$(echo "$_sv_line" | sed 's/^\*\*Severity:\*\* *//' || true)
+          case "$_sv" in
+            CRITICAL) _promo_now_max_sev="CRITICAL" ;;
+            HIGH) [ "$_promo_now_max_sev" = "CRITICAL" ] || _promo_now_max_sev="HIGH" ;;
+          esac
+        done < <(echo "$_promo_now_only" | grep "^\*\*Severity:\*\*" || true)
+        _promo_now_sec_cat=$(echo "$_promo_now_only" \
+          | grep -iE "^\*\*Category:\*\*.*[Ss]ecurity" | head -1 \
+          | sed 's/\*\*Category:\*\* *//' || true)
+        local _promo_now_labels="tech-debt,from-review"
+        if declare -f _resolve_issue_labels >/dev/null 2>&1; then
+          _promo_now_labels=$(_resolve_issue_labels "tech-debt,from-review" "$_promo_now_max_sev" "$_promo_now_sec_cat")
+        fi
         if declare -f ensure_labels_exist >/dev/null 2>&1; then
-          ensure_labels_exist "from-review,tech-debt" 2>/dev/null || true
+          ensure_labels_exist "$_promo_now_labels" 2>/dev/null || true
         fi
 
         # Promotion follow-ups intentionally do NOT carry a followup-no-inherit
@@ -988,8 +1024,7 @@ ${_promo_now_items}"
         local _promo_now_url
         if _promo_now_url=$(gh_safe issue create \
               --title "Promotion review ACTIONABLE_NOW findings: ${BRANCH}" \
-              --label "from-review" \
-              --label "tech-debt" \
+              --label "$_promo_now_labels" \
               --body "$_promo_now_body" 2>/dev/null); then
           print_success "ACTIONABLE_NOW findings tracked: ${_promo_now_url}"
           _diag "PROMOTE_ASSESSED_FOLLOWUP_CREATED branch=${BRANCH} pr=${PROMO_PR} now=${_promo_kept} duplicate=${_promo_dups} url=${_promo_now_url}"
@@ -1071,10 +1106,35 @@ ${_promo_review_body}"
     # Fallback follow-ups intentionally do NOT carry a followup-no-inherit
     # marker: they are filed against an integration branch and the next run
     # should target that same branch.
+    #
+    # Derive label set: scan the raw review for Security category so security
+    # findings reach priority-high + security label even on this unassessed path.
+    # Lazy load _resolve_issue_labels (may already be loaded from the NOW path above).
+    if ! declare -f _resolve_issue_labels >/dev/null 2>&1; then
+      # shellcheck source=/dev/null
+      RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/core/assess-and-resolve.sh" 2>/dev/null || true
+    fi
+    local _promo_fb_sev="MEDIUM"
+    [ "${_promo_h:-0}" -gt 0 ] && _promo_fb_sev="HIGH"
+    local _promo_fb_sec_cat=""
+    _promo_fb_sec_cat=$(echo "${_promo_review:-}" \
+      | grep -iE "^\*\*Category:\*\*.*[Ss]ecurity" | head -1 \
+      | sed 's/\*\*Category:\*\* *//' || true)
+    local _promo_fb_labels="from-review,needs-re-triage"
+    if declare -f _resolve_issue_labels >/dev/null 2>&1; then
+      _promo_fb_labels=$(_resolve_issue_labels "from-review,needs-re-triage" "$_promo_fb_sev" "$_promo_fb_sec_cat")
+    fi
+    if ! declare -f ensure_labels_exist >/dev/null 2>&1; then
+      # shellcheck source=/dev/null
+      source "$RITE_LIB_DIR/utils/labels.sh" 2>/dev/null || true
+    fi
+    if declare -f ensure_labels_exist >/dev/null 2>&1; then
+      ensure_labels_exist "$_promo_fb_labels" 2>/dev/null || true
+    fi
     local _promo_issue_url
     if _promo_issue_url=$(gh_safe issue create \
           --title "Promotion review follow-ups: ${BRANCH}" \
-          --label "from-review,needs-re-triage" \
+          --label "$_promo_fb_labels" \
           --body "$_promo_body" 2>/dev/null); then
       print_success "Promotion findings tracked: ${_promo_issue_url}"
       _diag "PROMOTE_FOLLOWUP_CREATED branch=${BRANCH} pr=${PROMO_PR} high=${_promo_h} medium=${_promo_m} low=${_promo_l} url=${_promo_issue_url}"
