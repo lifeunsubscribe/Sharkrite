@@ -285,6 +285,36 @@ _run_review_loop() {
 # rule is active and would catch a reintroduced violation.
 # -----------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Review retry loop: exit 5 (usage cap) and exit 18 (auth failure) are
+# non-retryable and must short-circuit immediately without burning attempts.
+# See issue #1623.
+# ---------------------------------------------------------------------------
+
+@test "review retry: exit 5 (usage cap) is short-circuited — not retried" {
+  CALLF="$BATS_TEST_TMPDIR/calls-cap"; echo 0 > "$CALLF"
+  _run_review_loop "
+    provider_run_prompt() {
+      _n=\$(cat '$CALLF'); _n=\$((_n+1)); echo \$_n > '$CALLF'
+      echo 'Spending cap reached' >&2; return 5
+    }
+  "
+  [ "$status" -eq 5 ]
+  [ "$(cat "$CALLF")" -eq 1 ]   # called exactly once — no retries burned
+}
+
+@test "review retry: exit 18 (auth failure) is short-circuited — not retried" {
+  CALLF="$BATS_TEST_TMPDIR/calls-auth"; echo 0 > "$CALLF"
+  _run_review_loop "
+    provider_run_prompt() {
+      _n=\$(cat '$CALLF'); _n=\$((_n+1)); echo \$_n > '$CALLF'
+      echo 'Invalid API key' >&2; return 18
+    }
+  "
+  [ "$status" -eq 18 ]
+  [ "$(cat "$CALLF")" -eq 1 ]   # called exactly once — no retries burned
+}
+
 @test "codebase-wide: local-review.sh specific lint check passes" {
   # Run the canonical LOCAL_OUTSIDE_FUNCTION lint rule against local-review.sh
   # only. This uses the same brace-counting logic as tools/sharkrite-lint.sh
