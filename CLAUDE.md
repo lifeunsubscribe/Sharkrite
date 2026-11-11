@@ -667,7 +667,7 @@ ANY issue you file — by hand via `gh issue create`, or via `rite plan` — MUS
 
 ## Follow-up Issue Template
 
-**Deferred-findings pool (2026-11-11):** non-security `ACTIONABLE_LATER` findings and dev-session encountered issues no longer become one issue each. They are appended to the run's single pool issue (label `followup-pool`, marker `sharkrite-followup-pool:RUN_ID`, library `lib/utils/followup-pool.sh`), created at the first deferred finding and deduped against the pool and against open issues before every append. The pool is an inbox, not a runnable issue. Individual issues are still filed for: Security findings, unresolved NOW items at the retry cap, CRITICAL/[GATE] escalations, and the promote path's aggregated NOW issue. See `behavioral-design.md` → "Deferred-Findings Pool".
+**Deferred-findings pool (2026-11-11):** non-security `ACTIONABLE_LATER` findings and dev-session encountered issues no longer become one issue each. They are appended to the run's single pool issue (label `followup-pool`, marker `sharkrite-followup-pool:RUN_ID`, library `lib/utils/followup-pool.sh`), created at the first deferred finding and deduped against the pool, every other open pool, and open issues before every append; batch-end reconcile re-checks every open pool, not only this run's. The pool is an inbox, not a runnable issue. Individual issues are still filed for: Security findings, unresolved NOW items at the retry cap, CRITICAL/[GATE] escalations, and the promote path's aggregated NOW issue. See `behavioral-design.md` → "Deferred-Findings Pool".
 
 Individually-filed follow-up issues (the cases above) follow the structure in `templates/issue-template.md`:
 

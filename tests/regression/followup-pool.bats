@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/followup-pool.sh::followup_pool_enabled|followup_pool_run_id|followup_pool_issue|followup_pool_append|followup_pool_entries|followup_pool_entry_block|followup_pool_resolve_entry, lib/utils/markers.sh
+# sharkrite-test-covers: lib/utils/followup-pool.sh::followup_pool_open_pools|followup_pool_enabled|followup_pool_run_id|followup_pool_issue|followup_pool_append|followup_pool_entries|followup_pool_entry_block|followup_pool_resolve_entry, lib/utils/markers.sh
 #
 # Deferred-findings pool (2026-11-11): one issue per run collects every
 # ACTIONABLE_LATER / encountered finding. Contract under test:
@@ -64,6 +64,10 @@ _fake_gh() {
         if [[ "$jq" == *contains* ]]; then
           local marker; marker=$(printf '%s' "$jq" | sed 's/.*contains("\(.*\)")).*/\1/')
           grep -qF "$marker" "$FAKE_GH/issues/$n.body" && echo "$n"
+        elif [[ "$jq" == *@base64* ]]; then
+          printf '%s\t%s\n' "$n" "$(base64 < "$FAKE_GH/issues/$n.body" | tr -d '\n')"
+        elif [[ "$jq" == *".[].number"* ]]; then
+          echo "$n"
         else
           echo "$n:$(cat "$FAKE_GH/issues/$n.title")"
         fi
@@ -187,4 +191,28 @@ _body() { cat "$FAKE_GH/issues/$1.body"; }
   RITE_FOLLOWUP_POOL=true followup_pool_enabled
   run env RITE_FOLLOWUP_POOL=false bash -c "source '$RITE_LIB_DIR/utils/followup-pool.sh'; followup_pool_enabled"
   [ "$status" -ne 0 ]
+}
+
+@test "cross-run dedup: a finding already held by an EARLIER run's open pool is not pooled again" {
+  # Run A pools a finding, then run B (new RITE_BATCH_ID, fresh state) sees the same finding.
+  followup_pool_append 55 42 HIGH Reliability "Retry loop swallows exit 18 on auth failure" "lib/core/local-review.sh:664" abc1234 "r"
+  poolA=$(followup_pool_issue)
+  export RITE_BATCH_ID="batch-test-2"; rm -f "$RITE_STATE_DIR"/followup-pool-*
+  followup_pool_append 70 60 HIGH Reliability "Auth failure exit 18 swallowed by the retry loop" "lib/core/local-review.sh:664" ffff111 "r"
+  [ "$FOLLOWUP_POOL_LAST_ACTION" = "tracked:$poolA" ]
+  poolB=$(followup_pool_issue)
+  [ "$poolA" != "$poolB" ]
+  [ "$(_body "$poolB" | grep -c '^### ')" = "0" ]
+}
+
+@test "open pools: lists every open pool across runs, excludes closed ones" {
+  followup_pool_append 55 42 HIGH Reliability "First finding here" "lib/a.sh:1" aaaaaaa "r" "" "" k1
+  poolA=$(followup_pool_issue)
+  export RITE_BATCH_ID="batch-test-2"; rm -f "$RITE_STATE_DIR"/followup-pool-*
+  followup_pool_append 70 60 LOW Style "Second different thing" "lib/b.sh:2" bbbbbbb "r" "" "" k2
+  poolB=$(followup_pool_issue)
+  out=$(followup_pool_open_pools | sort -n | tr '\n' ' ')
+  [ "$out" = "$poolA $poolB " ]
+  echo closed > "$FAKE_GH/issues/$poolA.state"
+  [ "$(followup_pool_open_pools | tr -d '\n')" = "$poolB" ]
 }

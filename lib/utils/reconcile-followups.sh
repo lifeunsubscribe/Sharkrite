@@ -278,6 +278,17 @@ reconcile_batch_followups() {
   local _fu_list=""
   _fu_list=$(_batch_followups_created 2>/dev/null || true)
 
+  # Every open deferred-findings pool joins the candidate list, not only the
+  # one this run created: a pool from an earlier run is re-reconciled at the
+  # end of every later run until its entries resolve and it closes itself.
+  local _open_pools=""
+  if declare -f followup_pool_open_pools >/dev/null 2>&1; then
+    _open_pools=$(followup_pool_open_pools 2>/dev/null || true)
+  fi
+  if [ -n "${_open_pools:-}" ]; then
+    _fu_list=$(printf '%s\n%s\n' "${_fu_list:-}" "$_open_pools" | grep -E '^[0-9]+$' | sort -un || true)
+  fi
+
   if [ -z "${_fu_list:-}" ]; then
     declare -f _diag >/dev/null 2>&1 && \
       _diag "FOLLOWUP_RECONCILED closed=0 annotated=0 verified=0 skipped=0"
