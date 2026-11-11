@@ -124,9 +124,70 @@ acquire_scratchpad_lock() {
       # Only reclaim if the symlink has no live holder PID.
       local _stale_pid
       _stale_pid=$(readlink "$lockfile" 2>/dev/null || true)
+      local _flock_symlink_cleared=false
       if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
-        echo "scratchpad-lock: removing leftover symlink-style lock before flock acquire" >&2
-        rm -f "$lockfile" 2>/dev/null || true
+        # Dead holder — rename-before-verify-remove to prevent live-lock-steal race:
+        # a symlink-strategy waiter can win its own mv-steal between kill -0 and rm,
+        # publishing a fresh live-PID symlink that our exec then follows to the wrong inode.
+        local _flock_pre_stale="${lockfile}.stale.flock.pre.$$"
+        if mv "$lockfile" "$_flock_pre_stale" 2>/dev/null; then
+          local _flock_pre_post_pid
+          _flock_pre_post_pid=$(readlink "$_flock_pre_stale" 2>/dev/null || true)
+          if [ "$_flock_pre_post_pid" = "$_stale_pid" ]; then
+            echo "scratchpad-lock: removing leftover symlink-style lock before flock acquire" >&2
+            rm -f "$_flock_pre_stale" 2>/dev/null || true
+            _flock_symlink_cleared=true
+          else
+            # PID changed — a new live acquirer slipped in; restore their lock
+            mv "$_flock_pre_stale" "$lockfile" 2>/dev/null || true
+          fi
+        fi
+        # If mv failed, another racer won the rename — _flock_symlink_cleared remains false
+      fi
+      # If symlink was not cleared (live holder, or our reclaim was beaten), wait for it
+      if [ "$_flock_symlink_cleared" = "false" ] && [ -L "$lockfile" ]; then
+        # Live symlink-strategy holder present. exec 200>"$lockfile" follows the
+        # symlink to a PID-named path (e.g. ./12345), allowing a concurrent flock
+        # hold on a different inode — no mutual exclusion. Wait for the holder to
+        # release before proceeding to exec.
+        _stale_pid=$(readlink "$lockfile" 2>/dev/null || true)
+        echo "scratchpad-lock: flock path waiting for symlink-strategy lock held by PID ${_stale_pid}..." >&2
+        local _flock_symlink_wait=0
+        while [ "$_flock_symlink_wait" -lt "$max_attempts" ]; do
+          sleep 1
+          _flock_symlink_wait=$(( _flock_symlink_wait + 1 ))
+          if [ ! -L "$lockfile" ]; then
+            _flock_symlink_cleared=true
+            break
+          fi
+          _stale_pid=$(readlink "$lockfile" 2>/dev/null || true)
+          if [ -z "$_stale_pid" ] || ! kill -0 "$_stale_pid" 2>/dev/null; then
+            # Dead holder in wait loop — rename-before-verify-remove (same race protection
+            # as the portable path and the pre-exec dead-holder block above).
+            local _flock_wait_stale="${lockfile}.stale.flock.wait.$$"
+            if mv "$lockfile" "$_flock_wait_stale" 2>/dev/null; then
+              local _flock_wait_post_pid
+              _flock_wait_post_pid=$(readlink "$_flock_wait_stale" 2>/dev/null || true)
+              if [ "$_flock_wait_post_pid" = "$_stale_pid" ]; then
+                echo "scratchpad-lock: reclaiming stale symlink lock from dead process (PID $_stale_pid) in flock-path wait loop" >&2
+                rm -f "$_flock_wait_stale" 2>/dev/null || true
+                _flock_symlink_cleared=true
+                break
+              else
+                # PID changed — a new live acquirer slipped in; restore and continue waiting
+                mv "$_flock_wait_stale" "$lockfile" 2>/dev/null || true
+              fi
+            fi
+            # mv failed — another racer won the rename; continue waiting
+          fi
+        done
+        if [ "$_flock_symlink_cleared" != "true" ]; then
+          echo "WARNING: scratchpad lock busy after ${max_attempts}s — caller will skip this advisory write." >&2
+          echo "         If a previous run crashed, remove the lock file: rm -f \"$lockfile\"" >&2
+          _SCRATCHPAD_LOCK_HELD=false
+          _SCRATCHPAD_LOCK_DEPTH=0
+          return 1
+        fi
       fi
     elif [ -d "$lockfile" ]; then
       # Legacy directory-style lock from a pre-#1651 run. Only reclaim if the
@@ -146,6 +207,18 @@ acquire_scratchpad_lock() {
       echo "         If a previous run crashed, remove the lock file: rm -f \"$lockfile\"" >&2
       # Close the fd opened for this failed acquire so it doesn't leak.
       eval "exec ${_SCRATCHPAD_LOCK_FD}>&-" 2>/dev/null || true
+      _SCRATCHPAD_LOCK_HELD=false
+      _SCRATCHPAD_LOCK_DEPTH=0
+      return 1
+    fi
+    # Post-acquire verification: exec 200>"$lockfile" follows symlinks. If a symlink-strategy
+    # acquirer planted a symlink (live or dead-PID) between our pre-exec clear and this exec,
+    # our flock holds a PID-named file on a different inode — not the shared lock path. Any
+    # symlink present after flock means we opened the wrong inode; reject unconditionally.
+    if [ -L "$lockfile" ]; then
+      eval "exec ${_SCRATCHPAD_LOCK_FD}>&-" 2>/dev/null || true
+      echo "scratchpad-lock: post-flock symlink detected — flock acquired wrong inode; soft-failing" >&2
+      echo "WARNING: scratchpad lock could not be safely acquired — caller will skip this advisory write." >&2
       _SCRATCHPAD_LOCK_HELD=false
       _SCRATCHPAD_LOCK_DEPTH=0
       return 1
