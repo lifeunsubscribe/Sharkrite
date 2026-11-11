@@ -491,14 +491,49 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
 
   # --- Serial re-run each failing .bats file ---
   _serial_results_raw=$(mktemp "${TMPDIR:-/tmp}/rite_fs_serial_$$_XXXXXX")
+  _serial_aborted=false
+  _sr_watchdog=()
 
   while IFS= read -r _bats_file; do
     [ -z "$_bats_file" ] && continue
+
+    # Deadline guard (--scheduled only): don't start a file when less than one
+    # per-test timeout's worth of time remains until window end. Without this,
+    # a wide-failure night near 05:00 runs serial reruns unboundedly into working
+    # hours — the same "defers into working hours" bug as the main bats deadline.
+    # Uses BATS_TEST_TIMEOUT as the floor: if we can't complete a single test
+    # before the window closes, don't start another file.
+    if [ "$_scheduled" = "true" ]; then
+      _sr_h_raw=$(date '+%H'); _sr_m_raw=$(date '+%M'); _sr_s_raw=$(date '+%S')
+      _sr_h=$(( 10#${_sr_h_raw} ))
+      _sr_m=$(( 10#${_sr_m_raw} ))
+      _sr_s=$(( 10#${_sr_s_raw} ))
+      _sr_remaining=$(( _FULL_SUITE_WINDOW_END * 3600 - _sr_h * 3600 - _sr_m * 60 - _sr_s ))
+      if [ "$_sr_remaining" -le "${BATS_TEST_TIMEOUT:-300}" ]; then
+        print_warning "  Investigate deadline: ${_sr_remaining}s until window end <= per-test timeout — aborting serial reruns"
+        _serial_aborted=true
+        break
+      fi
+      # Build in-flight watchdog using remaining window budget (same pattern as lines 315–320)
+      _sr_watchdog=()
+      if command -v gtimeout >/dev/null 2>&1; then
+        _sr_watchdog=(gtimeout -k 30 "$_sr_remaining")
+      elif command -v timeout >/dev/null 2>&1; then
+        _sr_watchdog=(timeout -k 30 "$_sr_remaining")
+      fi
+    fi
+
     print_info "  Serial re-run: ${_bats_file#"$_PROJECT_ROOT/"}"
     set +e
-    (cd "$_PROJECT_ROOT" && bats "$_bats_file") > "$_serial_results_raw" 2>&1
+    (cd "$_PROJECT_ROOT" && "${_sr_watchdog[@]+"${_sr_watchdog[@]}"}" bats "$_bats_file") > "$_serial_results_raw" 2>&1
     _serial_file_exit=$?
     set -e
+
+    # Timeout exit codes — watchdog killed in-flight file; treat as deadline abort
+    if [ "$_serial_file_exit" -eq 124 ] || [ "$_serial_file_exit" -eq 137 ]; then
+      _serial_aborted=true
+      break
+    fi
 
     # Fast-path: entire file passed serially — all originally-failing tests from it are cleared
     if [ "$_serial_file_exit" -eq 0 ]; then
@@ -542,6 +577,17 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
       fi
     done < "$_failing_names_file"
   done < "$_failing_bats_file"
+
+  # Emit abort diag and warning when the serial rerun loop was cut short by the
+  # window-end deadline. This runs before the count/report so the note appears
+  # in the report's output section.
+  if [ "$_serial_aborted" = "true" ]; then
+    {
+      echo "=== Investigate serial re-run ABORTED at window end ==="
+    } >> "$_LOG_FILE"
+    _diag "FULL_SUITE_INVESTIGATE_ABORTED reason=window_end"
+    print_warning "  Serial re-runs aborted — not all failing files were re-run. Run 'rite --full-suite --investigate' (manual) for a complete classification."
+  fi
 
   # --- Count results ---
   _persistent_count=$(grep -c "." "$_persistent_tsv" || true)
@@ -631,6 +677,10 @@ PROMPT_HDR
     echo "| Cleared on serial re-run (flake) | ${_cleared_count} |"
     echo "| Unmapped (source file not found) | ${_unmapped_count} |"
     echo ""
+    if [ "$_serial_aborted" = "true" ]; then
+      echo "> **Warning:** Serial re-runs were aborted before window end — persistent/cleared counts may be understated. Re-run with \`rite --full-suite --investigate\` (manual) for a complete classification."
+      echo ""
+    fi
     if [ -n "${_interpretation:-}" ]; then
       echo "## Interpretation"
       echo ""
@@ -871,6 +921,8 @@ PROMPT_HDR
         _diag "FULL_SUITE_REMEDIATION_ORPHANED hash=${_hash} persistent=${_persistent_count} lint=${_lint_persistent_count}"
       fi
     fi
+  elif [ "$_serial_aborted" = "true" ]; then
+    print_warning "Serial reruns aborted before full classification — persistent count may be understated. Run 'rite --full-suite --investigate' (manual) for a complete classification. No remediation issue filed."
   else
     print_info "All bats failures cleared on serial re-run — parallel-starvation flake only. No remediation issue filed."
   fi
