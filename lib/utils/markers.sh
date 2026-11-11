@@ -73,6 +73,17 @@ RITE_MARKER_FINDING_LOCATION="sharkrite-finding-location"
 # Used by a reconciliation pass to detect whether the relevant code changed after filing.
 RITE_MARKER_FINDING_SHA="sharkrite-finding-sha"
 
+# Deferred-findings pool marker — identifies the one pool issue a run (batch or
+# solo) appends its ACTIONABLE_LATER / encountered findings to (2026-11-11).
+# Format in issue body: <!-- sharkrite-followup-pool:RUN_ID -->
+# RUN_ID is RITE_BATCH_ID for batch runs or "solo-<log-slug>" for single runs.
+RITE_MARKER_FOLLOWUP_POOL="sharkrite-followup-pool"
+
+# Pool entry marker — one per finding inside the pool body; KEY is the
+# derive_followup_finding_key slug so reconcile can address an entry.
+# Format in issue body: <!-- sharkrite-pool-entry:KEY -->
+RITE_MARKER_POOL_ENTRY="sharkrite-pool-entry"
+
 # Issue tags marker (tag-index read-path, #403) — wraps the tags: block in an
 # issue body so the read-path can extract candidate tags for context loading.
 # Format in issue body: <!-- sharkrite-issue-tags --> tags: ... <!-- /sharkrite-issue-tags -->

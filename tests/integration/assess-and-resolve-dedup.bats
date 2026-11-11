@@ -209,6 +209,9 @@ setup() {
   export RITE_DEDUP_BACKOFF=0       # No sleep delays in tests
   export RITE_GH_MAX_RETRIES=1      # Single attempt; suppress retry loops
   export RITE_DRY_RUN=false
+  # These tests pin the individual-issue path; the deferred-findings pool
+  # (default on, 2026-11-11) would otherwise absorb the fixtures' LATER items.
+  export RITE_FOLLOWUP_POOL=false
   export RITE_VERBOSE=false
   export RITE_GH_RETRY_MAX_SLEEP=0
 

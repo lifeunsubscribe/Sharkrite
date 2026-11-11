@@ -667,7 +667,9 @@ ANY issue you file — by hand via `gh issue create`, or via `rite plan` — MUS
 
 ## Follow-up Issue Template
 
-Follow-up issues (tech-debt, review follow-ups) follow the structure in `templates/issue-template.md`:
+**Deferred-findings pool (2026-11-11):** non-security `ACTIONABLE_LATER` findings and dev-session encountered issues no longer become one issue each. They are appended to the run's single pool issue (label `followup-pool`, marker `sharkrite-followup-pool:RUN_ID`, library `lib/utils/followup-pool.sh`), created at the first deferred finding and deduped against the pool and against open issues before every append. The pool is an inbox, not a runnable issue. Individual issues are still filed for: Security findings, unresolved NOW items at the retry cap, CRITICAL/[GATE] escalations, and the promote path's aggregated NOW issue. See `behavioral-design.md` → "Deferred-Findings Pool".
+
+Individually-filed follow-up issues (the cases above) follow the structure in `templates/issue-template.md`:
 
 - **Claude Context**: `Files to Read:` from PR changed files; `Files to Modify:` seeded from the finding's `**Location:**` path (explicit note when absent)
 - **Acceptance Criteria**: Finding's `**Suggested Fix:**` text embedded under the checkbox (falls back to title-only when field absent)
@@ -1034,6 +1036,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `WORKFLOW_COMPLETE` — issue number, fix iterations, rtk savings per phase
 - `ASSESSMENT` — per-issue assessment counts (NOW/LATER/DISMISSED)
 - `REVIEW` — review severity counts (CRITICAL/HIGH/MEDIUM/LOW)
+- `FOLLOWUP_POOLED` / `FOLLOWUP_POOL_CREATED` / `FOLLOWUP_POOL_DEDUP` / `FOLLOWUP_POOL_CLOSED` — deferred-findings pool events: an entry appended (`pool=N issue= pr= key=`), the run's pool created (`pool=N run=`), an append suppressed as a duplicate (`matched=<key>` same-pool, or `tracked=<issue>` already an open issue), the pool closed because reconcile resolved every entry. One `FOLLOWUP_CREATED` is emitted per pool so the batch reporter counts it once.
 - `FOLLOWUP_CREATED` — a follow-up issue was filed (source issue, PR, new issue number). Emitted by BOTH per-issue creation sites (`assess-and-resolve.sh` rollup, `assess-review-issues.sh` ACTIONABLE_LATER per-item); the batch reporter harvests these for its `Issues Created` line. The promote path has its own `PROMOTE_FOLLOWUP_CREATED` / `PROMOTE_ASSESSED_FOLLOWUP_CREATED` and is deliberately excluded from a batch's total.
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code

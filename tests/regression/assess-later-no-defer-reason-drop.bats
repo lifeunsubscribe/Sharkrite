@@ -20,6 +20,9 @@
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
+  # These tests pin the individual-issue path; the deferred-findings pool
+  # (default on, 2026-11-11) would otherwise absorb the fixtures' LATER items.
+  export RITE_FOLLOWUP_POOL=false
 
   # Isolate RITE_LOCK_DIR BEFORE sourcing config.sh so the :-default in config.sh
   # does not resolve to the real .rite/locks/. write_followup_evidence (called by
