@@ -170,6 +170,18 @@ REVIEWHELPER_EOF
 _resolve_done_def() { echo "Done when the finding is addressed."; }
 RESOLVE_EOF
 
+  # Stub followup-pool.sh — sourced at load time for ACTIONABLE_LATER pooling.
+  # The real file sources lock.sh and gh-retry.sh (not stubbed here), so without
+  # this stub the script dies at source before reaching the provider call.
+  # These tests never reach the ACTIONABLE_LATER path, so minimal stubs suffice.
+  cat > "$RITE_LIB_DIR/utils/followup-pool.sh" <<'POOL_EOF'
+#!/bin/bash
+FOLLOWUP_POOL_LAST_ACTION=""
+followup_pool_enabled() { return 0; }
+followup_pool_append() { return 1; }
+followup_pool_issue() { echo ""; return 0; }
+POOL_EOF
+
   # Copy actual assess-review-issues.sh from the real repo
   REAL_RITE_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
   cp "${REAL_RITE_ROOT}/lib/core/assess-review-issues.sh" "$RITE_LIB_DIR/core/"

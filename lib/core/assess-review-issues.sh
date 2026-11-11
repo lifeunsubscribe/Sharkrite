@@ -778,8 +778,14 @@ if [ "$AUTO_MODE" = true ]; then
     # Run provider assessment with timeout.
     # Use tee to display output while also capturing it.
     # Capture exit code via a temp file — PIPESTATUS doesn't survive $() subshells.
+    # Use || _provider_rc=$? to prevent set -e from killing the subshell on
+    # non-zero exit before the echo can run.
     _exit_file=$(mktemp)
-    ASSESSMENT_OUTPUT=$({ provider_run_prompt_with_timeout "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" true "$ASSESSMENT_TIMEOUT" 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
+    ASSESSMENT_OUTPUT=$({
+      _provider_rc=0
+      provider_run_prompt_with_timeout "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" true "$ASSESSMENT_TIMEOUT" 2>"$CLAUDE_STDERR" || _provider_rc=$?
+      echo $_provider_rc > "$_exit_file"
+    } | tee /dev/stderr)
     ASSESSMENT_EXIT_CODE=$(cat "$_exit_file")
     rm -f "$_exit_file"
 
@@ -859,8 +865,14 @@ else
     # Run provider assessment.
     # Use tee to display output while also capturing it.
     # Capture exit code via a temp file — PIPESTATUS doesn't survive $() subshells.
+    # Use || _provider_rc=$? to prevent set -e from killing the subshell on
+    # non-zero exit before the echo can run.
     _exit_file=$(mktemp)
-    ASSESSMENT_OUTPUT=$({ provider_run_prompt "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" false 2>"$CLAUDE_STDERR"; echo $? > "$_exit_file"; } | tee /dev/stderr)
+    ASSESSMENT_OUTPUT=$({
+      _provider_rc=0
+      provider_run_prompt "$ASSESSMENT_PROMPT" "$EFFECTIVE_MODEL" false 2>"$CLAUDE_STDERR" || _provider_rc=$?
+      echo $_provider_rc > "$_exit_file"
+    } | tee /dev/stderr)
     ASSESSMENT_EXIT_CODE=$(cat "$_exit_file")
     rm -f "$_exit_file"
 
