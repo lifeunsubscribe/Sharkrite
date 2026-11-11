@@ -34,7 +34,7 @@
 #     4.  check_branch_mismatch passes source to handle_branch_mismatch (6th arg)
 #     5.  handle_branch_mismatch has SOURCE parameter and names it in output
 #     6.  handle_branch_mismatch uses --branch for state-file source (anti-loop)
-#     7.  workflow-runner.sh --base main handler removes stale state file
+#     7.  workflow-runner.sh --base handler removes stale state file when target differs
 #
 #   BEHAVIORAL (subprocess execution with stubs):
 #     8.  No-inherit marker prevents state file from being written (genuine fix)
@@ -42,6 +42,7 @@
 #    10.  State-file-driven mismatch output contains "state file" source label
 #    11.  State-file-driven mismatch prescribes "rite --branch main N" not bare "rite N"
 #    12.  Anti-loop: --base main handler clears state file; re-check produces no mismatch
+#    13.  Anti-loop: --base non-main clears state file when target differs (non-main-to-non-main)
 
 REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
@@ -252,27 +253,30 @@ setup() {
   }
 }
 
-@test "structural: workflow-runner.sh --base main handler removes stale state file" {
-  # The --base handler in main() must rm -f the stale target-branch file when
-  # RITE_TARGET_BRANCH is set to "main". This is what makes "rite --branch main N"
-  # an effective escape from a poisoned state file.
+@test "structural: workflow-runner.sh --base handler removes stale state file when target differs" {
+  # The --base handler in main() must rm -f the stale target-branch file whenever
+  # the explicit target differs from the recorded state-file value. This escapes
+  # both --base main (primary scenario) and --base B when state file holds A (non-main loop).
   _base_handler=$(awk '
     /--base[)]/ { in_handler=1 }
     in_handler { print; count++ }
     in_handler && /;;$/ { exit }
-    count > 30 { exit }
+    count > 40 { exit }
   ' "$WORKFLOW_RUNNER")
 
   echo "$_base_handler" | grep -qE 'rm -f.*target-branch' || {
     echo "FAIL: --base handler does not rm -f a stale target-branch-N.txt file" >&2
-    echo "      Without this, 'rite --branch main N' still hits the old state-file tier-2" >&2
+    echo "      Without this, 'rite --branch <target> N' still hits the old state-file tier-2" >&2
     echo "      and loops on the same mismatch it was supposed to fix" >&2
     return 1
   }
 
-  echo "$_base_handler" | grep -qE '"main"' || {
-    echo "FAIL: state-file deletion in --base handler is not gated on target == main" >&2
-    echo "      Only clear the file when --base main is passed (re-targeting to main)" >&2
+  # The guard must compare the explicit target against the recorded value (not just == main).
+  # Look for the pattern that reads the state file and does a != comparison.
+  echo "$_base_handler" | grep -qE '_base_recorded|cat.*_base_state_file' || {
+    echo "FAIL: --base handler does not read the recorded state-file value for comparison" >&2
+    echo "      The guard must clear when RITE_TARGET_BRANCH != recorded, not only when == main" >&2
+    echo "      (The non-main-to-non-main loop case is unbreakable with the old == main guard)" >&2
     return 1
   }
 }
@@ -559,6 +563,61 @@ STUB_EOF
   }
   echo "$output" | grep -qF "PASS: prescribed command breaks the loop" || {
     echo "FAIL: anti-loop assertion not confirmed in output" >&2
+    echo "Output: $output" >&2
+    return 1
+  }
+}
+
+@test "behavioral: anti-loop: --base non-main clears state file when target differs (non-main-to-non-main)" {
+  # Regression for the non-main-to-non-main loop:
+  #   State file holds "integration-A"; user passes "--base integration-B"
+  #   Old guard (== main) left the file untouched → silent run on "A" or exit-19 loop.
+  #   New guard (!= recorded) must clear the file so the run proceeds on "integration-B".
+  _tmpdir="$BATS_TEST_TMPDIR/anti-loop-nonmain"
+  mkdir -p "$_tmpdir"
+  _issue_num="1563"
+  _state_file="${_tmpdir}/target-branch-${_issue_num}.txt"
+
+  # Poison the state file with "integration-A"
+  echo "integration-A" > "$_state_file"
+
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
+  _script="$BATS_TEST_TMPDIR/test-anti-loop-nonmain.sh"
+  cat > "$_script" <<STUB_EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+RITE_STATE_DIR="${_tmpdir}"
+ISSUE_NUMBER="${_issue_num}"
+RITE_TARGET_BRANCH="integration-B"
+
+# Simulate the widened --base handler: clear when explicit target != recorded.
+if [ -n "\${RITE_STATE_DIR:-}" ] && [ -n "\${ISSUE_NUMBER:-}" ]; then
+  _base_state_file="\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt"
+  _base_recorded=\$(cat "\$_base_state_file" 2>/dev/null || true)
+  if [ -n "\$_base_recorded" ] && [ "\${RITE_TARGET_BRANCH}" != "\$_base_recorded" ]; then
+    rm -f "\$_base_state_file" 2>/dev/null || true
+  fi
+fi
+
+# State file must be gone now.
+if [ -f "\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt" ]; then
+  echo "FAIL: state file still present after --base integration-B with recorded integration-A" >&2
+  exit 1
+fi
+
+echo "PASS: non-main-to-non-main state file cleared"
+exit 0
+STUB_EOF
+  chmod +x "$_script"
+  run bash "$_script"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: anti-loop (non-main) simulation failed (exit $status)" >&2
+    echo "$output" >&2
+    return 1
+  }
+  echo "$output" | grep -qF "PASS: non-main-to-non-main state file cleared" || {
+    echo "FAIL: non-main-to-non-main anti-loop assertion not confirmed in output" >&2
     echo "Output: $output" >&2
     return 1
   }

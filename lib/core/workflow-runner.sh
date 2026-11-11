@@ -3847,16 +3847,23 @@ main() {
         fi
         RITE_TARGET_BRANCH="$2"
         export RITE_TARGET_BRANCH  # sharkrite-target-transport
-        # When the user explicitly passes --base main, clear any stale non-main
-        # state file so this run escapes a poisoned tier-2 entry without the user
-        # having to delete the file by hand. handle_branch_mismatch() prints
-        # "rite --branch main N" as the corrected command for state-file-driven
-        # mismatches; this handler makes that command effective.
+        # Clear a stale state file whenever the explicit --base target differs from
+        # the recorded tier-2 value. Covers both the main-revert scenario (the
+        # primary documented case: integration stamp → --base main) and the
+        # non-main-to-non-main case where a poisoned state file containing "A"
+        # would silently defeat "--base B" or loop on exit 19 with no file-system
+        # escape. handle_branch_mismatch() prescribes "rite --branch <pr_base> N"
+        # for state-file mismatches; this handler makes that command effective for
+        # any target, not just main.
         # Only fires in single-issue mode (batch-process-issues.sh never passes
         # --base to workflow-runner.sh; the batch uses exported RITE_TARGET_BRANCH).
-        if [ "${RITE_TARGET_BRANCH}" = "main" ] && \
-           [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${issue_number:-}" ]; then
-          rm -f "${RITE_STATE_DIR}/target-branch-${issue_number}.txt" 2>/dev/null || true
+        if [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${issue_number:-}" ]; then
+          local _base_state_file="${RITE_STATE_DIR}/target-branch-${issue_number}.txt"
+          local _base_recorded
+          _base_recorded=$(cat "$_base_state_file" 2>/dev/null || true)
+          if [ -n "$_base_recorded" ] && [ "${RITE_TARGET_BRANCH}" != "$_base_recorded" ]; then
+            rm -f "$_base_state_file" 2>/dev/null || true
+          fi
         fi
         shift  # consume the value (the loop's shift below consumes the flag)
         ;;
