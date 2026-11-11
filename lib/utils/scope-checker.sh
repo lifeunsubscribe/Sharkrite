@@ -257,20 +257,13 @@ check_scope_boundary() {
     return 0
   fi
 
-  # Prose-only guard: when DO bullets exist but none contains a STRONG path
-  # token (path-shaped + slash), check_scope_boundary would flag every changed
-  # file as a violation (no path can match a prose-only DO).  Defer to the
-  # scope_boundary_is_enforceable predicate — if it says non-enforceable, skip
-  # the check silently rather than emitting false-positive violations.
-  if [ "${#_do_patterns[@]}" -gt 0 ] && ! scope_boundary_is_enforceable "$issue_body"; then
-    return 0
-  fi
-
-  # Union Files-to-Modify paths from Claude Context into the DO allowed set.
-  # Declared modification intent (what the issue author told Claude to change)
-  # can never be a violation — the author explicitly listed those files.
-  # We add them as additional DO patterns so they satisfy the "must match at
-  # least one DO" check without altering any existing matching logic.
+  # Union Files-to-Modify paths from Claude Context into the DO allowed set
+  # BEFORE the prose-only enforceability guard.  This ensures the guard sees
+  # the full allowed set (DO bullets ∪ FtM paths) — an issue with prose-only
+  # DO bullets but a path-shaped Files to Modify list is enforceable via FtM.
+  # Declared modification intent can never be a violation; adding FtM paths
+  # here also satisfies the "must match at least one DO" check without altering
+  # any existing matching logic.
   if [ "${#_do_patterns[@]}" -gt 0 ]; then
     local _ftm_path
     while IFS= read -r _ftm_path; do
@@ -282,6 +275,17 @@ check_scope_boundary() {
         _do_patterns+=("$_ftm_path")
       fi
     done <<< "$(parse_files_to_modify "$issue_body")"
+  fi
+
+  # Prose-only guard: when DO bullets exist but neither DO bullets nor Files to
+  # Modify contain a strong path token (path-shaped + slash), every changed file
+  # would be flagged as a violation (no path can match prose-only DO).  Defer to
+  # scope_boundary_is_enforceable — if it says non-enforceable, skip the check
+  # silently rather than emitting false-positive violations.
+  # scope_boundary_is_enforceable consults parse_files_to_modify directly,
+  # consistent with the union above.
+  if [ "${#_do_patterns[@]}" -gt 0 ] && ! scope_boundary_is_enforceable "$issue_body"; then
+    return 0
   fi
 
   # Collect changed files vs base_ref (or all staged/modified if base_ref not found).
@@ -570,6 +574,7 @@ parse_files_to_modify() {
            sub(/^[[:space:]]*[-*][[:space:]]*/, "", line)
            sub(/[[:space:]]*#.*$/, "", line)
            sub(/[[:space:]]+$/, "", line)
+           gsub(/`/, "", line)
            print line
            next
          }
@@ -639,6 +644,29 @@ scope_boundary_is_enforceable() {
       if _is_strong_path_token "$_pat"; then return 0; fi
     fi
   done
+
+  # Fallback: DO bullets are prose-only, but Files to Modify may supply the
+  # allowed set.  check_scope_boundary unions FtM into _do_patterns before the
+  # prose-only skip, so if FtM has at least one strong path token the check is
+  # meaningful and should run.
+  local _ftm_path _ftm_tok
+  while IFS= read -r _ftm_path; do
+    [ -z "$_ftm_path" ] && continue
+    # Strip leading/trailing backtick decorators (parse_files_to_modify emits
+    # raw bullet content; some issues format paths as `lib/core/foo.sh`).
+    _ftm_path="${_ftm_path#\`}"
+    _ftm_path="${_ftm_path%\`}"
+    [ -z "$_ftm_path" ] && continue
+    if [[ "$_ftm_path" == *" "* ]]; then
+      # Multi-word entry: check each whitespace-separated token (consistent
+      # with the DO-bullet strength loop above).
+      for _ftm_tok in $_ftm_path; do
+        if _is_strong_path_token "$_ftm_tok"; then return 0; fi
+      done
+    else
+      if _is_strong_path_token "$_ftm_path"; then return 0; fi
+    fi
+  done <<< "$(parse_files_to_modify "$issue_body")"
 
   return 1
 }

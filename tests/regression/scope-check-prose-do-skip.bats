@@ -16,8 +16,8 @@
 #   Bare filenames in prose do not qualify.
 #
 # Acceptance criteria this file covers:
-#   1. Issue #823's verbatim body → scope_boundary_is_enforceable returns 1
-#      (non-enforceable), zero violations for its three Files-to-Modify.
+#   1. Issue #823's verbatim body → scope_boundary_is_enforceable returns 0
+#      (enforceable via FtM), zero violations for its three Files-to-Modify.
 #   2. Both section formats (**Scope Boundary**: and ## Scope Boundary) parse
 #      identically — twin fixtures for the same DO content.
 #   3. Files-to-Modify from Claude Context are unioned into the allowed set
@@ -74,24 +74,31 @@ teardown() {
 }
 
 # =============================================================================
-# 1. Enforceability: issue #823 body → non-enforceable (prose-only DO)
+# 1. Enforceability: prose-only DO + FtM paths → enforceable via FtM
 #
 # Issue #823 "Halt batch on repeated identical gate failures":
 #   Files-to-Modify: lib/core/batch-process-issues.sh,
 #                    tests/regression/batch-gate-circuit-breaker.bats,
 #                    docs/architecture/exit-codes.md
 #   Scope Boundary DO: pure prose, no path with slash.
+#   → scope_boundary_is_enforceable returns 0 (enforceable via FtM fallback).
 #
 # Issue #833 "Add repo-level batch mutex" (the direct trigger of the bug):
 #   DO bullet: "reusing issue-lock.sh's mkdir/pid/kill-0 pattern"
 #   "issue-lock.sh" has a .sh extension → old _is_path_shaped returned true →
 #   scope_boundary_is_enforceable wrongly returned 0 (enforceable) → every
 #   file not matching that bare filename was flagged as a violation.
+#   After the fix: "issue-lock.sh" is not strong (no slash); FtM has three
+#   slash-bearing paths → returns 0 (enforceable via FtM fallback).
 # =============================================================================
 
-@test "issue-823 body (prose DO): scope_boundary_is_enforceable returns non-enforceable" {
-  # Verbatim Scope Boundary from issue #823 (bold-label format).
-  # DO bullet is pure prose — no token with a slash.
+@test "issue-823 body (prose DO + FtM paths): scope_boundary_is_enforceable returns enforceable via FtM" {
+  # Verbatim issue #823 body (bold-label format).  DO bullet is pure prose — no
+  # token with a slash.  But Files to Modify contains three slash-bearing paths.
+  # After the fix, scope_boundary_is_enforceable consults parse_files_to_modify
+  # and returns 0 (enforceable), so the check runs against FtM paths rather than
+  # being skipped.  Test name updated from "non-enforceable" because #823's FtM
+  # supplies the allowed set that makes the check meaningful.
   local body_file="${BATS_TEST_TMPDIR}/issue-823.txt"
   cat > "$body_file" <<'EOF'
 ## Description
@@ -138,15 +145,16 @@ EOF
     scope_boundary_is_enforceable \"\$BODY\"
   "
 
-  # DO bullet is pure prose (no slash-bearing token) → non-enforceable
-  [ "$status" -eq 1 ]
+  # DO bullet is prose-only but FtM has three slash-bearing paths →
+  # scope_boundary_is_enforceable returns 0 (enforceable via FtM fallback).
+  [ "$status" -eq 0 ]
 }
 
-@test "issue-833 body (bare .sh in prose DO): scope_boundary_is_enforceable returns non-enforceable" {
-  # Verbatim Scope Boundary from issue #833 — the direct trigger of the bug.
-  # "issue-lock.sh" has a .sh extension, which old _is_path_shaped matched,
-  # incorrectly making the scope "enforceable" and flagging every file not
-  # matching that bare filename.
+@test "issue-833 body (bare .sh in prose DO): scope_boundary_is_enforceable returns enforceable via FtM" {
+  # Verbatim issue #833 body — the direct trigger of the original bug.
+  # "issue-lock.sh" is a bare filename (no slash) → NOT a strong path token,
+  # so DO bullets alone are prose-only.  But Files to Modify has three
+  # slash-bearing paths, so the FtM fallback makes the scope enforceable.
   local body_file="${BATS_TEST_TMPDIR}/issue-833.txt"
   cat > "$body_file" <<'EOF'
 ## Description
@@ -192,9 +200,9 @@ EOF
     scope_boundary_is_enforceable \"\$BODY\"
   "
 
-  # "issue-lock.sh" is a bare filename (no slash) → NOT a strong path token →
-  # scope_boundary_is_enforceable must return 1 (NOT enforceable)
-  [ "$status" -eq 1 ]
+  # FtM has lib/core/batch-process-issues.sh, lib/utils/issue-lock.sh,
+  # docs/architecture/exit-codes.md → all slash-bearing → enforceable via FtM.
+  [ "$status" -eq 0 ]
 }
 
 @test "issue-823 body: zero scope violations for its three declared files" {
@@ -521,4 +529,240 @@ EOF
   "
   [ "$status" -eq 0 ]
   [[ "$output" == *"none_strong"* ]]
+}
+
+# =============================================================================
+# 8. Freshup #508 body shape: prose DO + path-shaped Files to Modify
+#    (the class of issue that triggered the original bug report)
+# =============================================================================
+
+@test "prose-DO + FtM paths: check_scope_boundary reports violation for file outside FtM and test whitelist" {
+  # Scenario (freshup #508 shape): issue has prose-only DO bullets and a
+  # complete Files to Modify list.  One changed file is IN FtM; one changed
+  # file is NOT in FtM and NOT a test file.  After the fix the check runs
+  # (scope is enforceable via FtM) and flags the out-of-scope file.
+  local _repo="${BATS_TEST_TMPDIR}/violation-repo"
+  mkdir -p "$_repo/lib/core" "$_repo/lib/utils"
+  git -C "$_repo" init -q
+  git -C "$_repo" config user.email "t@t.com"
+  git -C "$_repo" config user.name "T"
+
+  printf "# in-scope stub\n" > "$_repo/lib/core/target.sh"
+  printf "# out-of-scope stub\n" > "$_repo/lib/utils/unrelated.sh"
+  git -C "$_repo" add -A
+  git -C "$_repo" commit -q -m "baseline"
+
+  _cur=$(git -C "$_repo" branch --show-current 2>/dev/null || git -C "$_repo" rev-parse --abbrev-ref HEAD || true)
+  if [ "$_cur" != "main" ]; then
+    git -C "$_repo" branch -m "$_cur" main 2>/dev/null || true
+  fi
+  git -C "$_repo" update-ref refs/remotes/origin/main refs/heads/main 2>/dev/null || true
+
+  git -C "$_repo" checkout -q -b feature
+  printf "# modified in-scope\n" > "$_repo/lib/core/target.sh"
+  printf "# modified out-of-scope\n" > "$_repo/lib/utils/unrelated.sh"
+  git -C "$_repo" add -A
+  git -C "$_repo" commit -q -m "feature changes"
+  git -C "$_repo" update-ref refs/remotes/origin/main "$(git -C "$_repo" rev-parse main)" 2>/dev/null || true
+
+  local body_file="${BATS_TEST_TMPDIR}/prose-do-ftm-violation.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/target.sh
+
+Files to Modify:
+- lib/core/target.sh
+
+## Scope Boundary
+
+- DO: implement the target feature with the new helper
+- DO NOT: touch unrelated helpers
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$_repo\"
+  "
+
+  # lib/utils/unrelated.sh is changed but NOT in FtM and NOT a test path → VIOLATION
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"VIOLATION:"*"lib/utils/unrelated.sh"* ]]
+  # lib/core/target.sh is in FtM → matched by FtM union → no violation
+  [[ "$output" != *"VIOLATION:"*"lib/core/target.sh"* ]] || false
+}
+
+# =============================================================================
+# 9. Backtick-formatted and annotated FtM entries
+#    (the class of issue that triggered the false positive in this PR)
+# =============================================================================
+
+@test "backtick FtM entry: parse_files_to_modify strips backticks" {
+  # Issues often format FtM paths as `lib/core/foo.sh` (backtick code spans).
+  # parse_files_to_modify must strip the backticks so callers receive the bare
+  # path and _file_matches_pattern can compare it against changed-file paths.
+  local body_file="${BATS_TEST_TMPDIR}/backtick-ftm-parse.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/foo.sh
+
+Files to Modify:
+- `lib/core/batch-process-issues.sh`
+- `docs/architecture/exit-codes.md`
+
+Related Issues: None
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    parse_files_to_modify \"\$BODY\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Backticks must be stripped — bare paths only
+  [[ "$output" == *"lib/core/batch-process-issues.sh"* ]]
+  [[ "$output" == *"docs/architecture/exit-codes.md"* ]]
+  # Confirm no residual backticks in output
+  [[ "$output" != *"\`"* ]] || false
+}
+
+@test "backtick FtM entry: declared file is not a violation (false-positive regression)" {
+  # Core regression guard: a file declared in FtM with backtick formatting must
+  # not produce a VIOLATION.  Before the parse_files_to_modify fix, the raw
+  # backtick-bearing entry was added to _do_patterns and _file_matches_pattern
+  # failed to match the undecorated changed path, producing a false VIOLATION.
+  local body_file="${BATS_TEST_TMPDIR}/backtick-ftm-no-violation.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- `lib/core/batch-process-issues.sh`
+- `docs/architecture/exit-codes.md`
+
+## Scope Boundary
+
+- DO: implement the circuit breaker with signature extraction
+- DO NOT: change single-issue mode failure behavior
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # lib/core/batch-process-issues.sh declared in FtM with backticks → no violation
+  # docs/architecture/exit-codes.md declared in FtM with backticks → no violation
+  # tests/regression/batch-gate-circuit-breaker.bats is added → test-path whitelist
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+@test "annotated FtM entry: inline comment stripped, path matched correctly" {
+  # FtM entries like "lib/core/foo.sh  # the main orchestrator" must resolve to
+  # just the path.  The awk block's comment-stripping sub() handles this, but
+  # the fix session adds an explicit regression test so it stays covered.
+  local body_file="${BATS_TEST_TMPDIR}/annotated-ftm.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- lib/core/batch-process-issues.sh  # the batch orchestrator
+- docs/architecture/exit-codes.md   # add exit 16 entry
+
+Related Issues: None
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    parse_files_to_modify \"\$BODY\"
+  "
+
+  [ "$status" -eq 0 ]
+  # Comments must be stripped — bare paths only
+  [[ "$output" == *"lib/core/batch-process-issues.sh"* ]]
+  [[ "$output" == *"docs/architecture/exit-codes.md"* ]]
+  # No comment fragments in output
+  [[ "$output" != *"# the batch"* ]] || false
+  [[ "$output" != *"# add exit"* ]] || false
+}
+
+@test "annotated FtM entry: declared file with inline comment is not a violation" {
+  local body_file="${BATS_TEST_TMPDIR}/annotated-ftm-no-violation.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- lib/core/batch-process-issues.sh  # the batch orchestrator
+- docs/architecture/exit-codes.md   # add exit 16 entry
+
+## Scope Boundary
+
+- DO: implement the circuit breaker
+- DO NOT: change single-issue mode failure behavior
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # Both annotated FtM files must be allowed (comment stripped → path matches)
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
+}
+
+@test "prose-DO + FtM paths: check_scope_boundary reports no violations for FtM-listed and whitelisted test files" {
+  # Scenario (freshup #508 shape): prose-only DO bullets + path-shaped FtM.
+  # All changed files in TEST_REPO_DIR (from setup) are either listed in FtM
+  # or are newly-added test files (implicitly whitelisted).  Verifies that the
+  # FtM union + enforceability fix produces zero violations, not a skip.
+  #
+  # Changed files in TEST_REPO_DIR (feature/issue-823-test branch):
+  #   lib/core/batch-process-issues.sh       (modified) → in FtM
+  #   docs/architecture/exit-codes.md         (modified) → in FtM
+  #   tests/regression/batch-gate-circuit-breaker.bats (added) → test-path whitelist
+  local body_file="${BATS_TEST_TMPDIR}/freshup-508-shape.txt"
+  cat > "$body_file" <<'EOF'
+## Claude Context
+
+Files to Read:
+- lib/core/batch-process-issues.sh
+
+Files to Modify:
+- lib/core/batch-process-issues.sh
+- docs/architecture/exit-codes.md
+
+## Scope Boundary
+
+- DO: implement the circuit breaker with signature extraction
+- DO: add exit code doc entry
+- DO NOT: change single-issue mode failure behavior
+EOF
+
+  run bash -c "
+    source \"$SCOPE_CHECKER\"
+    BODY=\$(cat \"$body_file\")
+    check_scope_boundary \"\$BODY\" \"$TEST_REPO_DIR\"
+  "
+
+  # All changed files are either in FtM or are added test files → no violations
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"VIOLATION:"* ]] || false
 }
