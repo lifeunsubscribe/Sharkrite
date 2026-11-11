@@ -236,3 +236,47 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" =~ "PASS" ]]
 }
+
+# ---------------------------------------------------------------------------
+# Test 13: integration_ledger_append is safe when branch name contains a single quote
+#
+# A branch name like "feat/it's-mine" produces a lock_path containing a
+# single quote.  The old double-quoted trap string would inject a parse error;
+# the fixed single-quoted string expands lock_path safely at trap-fire time.
+# ---------------------------------------------------------------------------
+@test "integration_ledger_append handles branch name with single quote (trap-injection safety)" {
+  _TEST_BRANCH13="feat/it's-mine"
+  export _TEST_BRANCH13
+  run bash -c "
+    set -euo pipefail
+    export RITE_STATE_DIR='$TEST_TMPDIR/state13'
+    source '$LEDGER_SH'
+    set +u; set +o pipefail
+    integration_ledger_append \"\$_TEST_BRANCH13\" '1' '2' 'cccccccccccccccccccccccccccccccccccc0001'
+    echo PASS
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "PASS" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Test 14: integration_ledger_mark_promoted is safe when branch name contains a single quote
+#
+# Same injection class: lock_path and tmp_file both derive from the branch
+# name.  The fixed single-quoted trap string is safe regardless of content.
+# ---------------------------------------------------------------------------
+@test "integration_ledger_mark_promoted handles branch name with single quote (trap-injection safety)" {
+  _TEST_BRANCH14="feat/it's-mine"
+  export _TEST_BRANCH14
+  run bash -c "
+    set -euo pipefail
+    export RITE_STATE_DIR='$TEST_TMPDIR/state14'
+    source '$LEDGER_SH'
+    set +u; set +o pipefail
+    integration_ledger_append \"\$_TEST_BRANCH14\" '10' '20' 'dddddddddddddddddddddddddddddddddddd0001'
+    integration_ledger_mark_promoted \"\$_TEST_BRANCH14\" '10'
+    echo PASS
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "PASS" ]]
+}

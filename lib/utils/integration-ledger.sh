@@ -95,8 +95,9 @@ integration_ledger_append() {
   fi
 
   # Trap ensures the lock is released even if printf fails under set -e.
-  # shellcheck disable=SC2064
-  trap "lock_release '$lock_path'" RETURN
+  # Single-quoted so the variable expands at trap-fire time (within scope), not
+  # at setup time — prevents single-quote injection from branch names in lock_path.
+  trap 'lock_release "$lock_path"' RETURN
 
   # Append the ledger entry (tab-separated key=value fields)
   printf 'issue=%s\tpr=%s\tsha=%s\tmerged_at=%s\tpromoted=false\n' \
@@ -159,8 +160,9 @@ integration_ledger_mark_promoted() {
 
   # Trap ensures the lock is released even if the rewrite fails under set -e.
   # Also cleans up the temp file on unexpected exit.
-  # shellcheck disable=SC2064
-  trap "rm -f '${tmp_file}'; lock_release '$lock_path'" RETURN
+  # Single-quoted so variables expand at trap-fire time — prevents single-quote
+  # injection from branch names in lock_path and tmp_file.
+  trap 'rm -f "$tmp_file"; lock_release "$lock_path"' RETURN
 
   while IFS= read -r line; do
     # Match the exact issue field at the start of a tab-separated record
