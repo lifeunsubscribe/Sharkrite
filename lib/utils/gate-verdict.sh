@@ -635,6 +635,10 @@ _gate_build_verdict() {
   # crashed/silent lint tool from a genuine rule violation. assess-and-resolve.sh
   # renders reason= as "gate failure: <reason> (exit_code=N)" rather than the
   # misleading "no parseable findings" fallback (issue #1492).
+  # Counterpart: test-gate.sh sets "lint_unparseable" for the same observable
+  # condition on the node-lint path (eslint/biome/oxlint produced no parseable
+  # output). Both labels mean "lint tool exited non-zero but produced nothing
+  # parseable"; grep both when searching logs or gate JSON.
   if [ "$_gbv_lint_exit" -ne 0 ] && [ "$_gbv_lint_count" -eq 0 ] && [ -z "$_gbv_reason" ]; then
     _gbv_reason="lint_infrastructure_error"
   fi

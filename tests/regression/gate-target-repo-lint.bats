@@ -341,3 +341,73 @@ RAW
   run jq empty "$TEST_REPO/gate.json"
   [ "$status" -eq 0 ]
 }
+
+# =============================================================================
+# Integration: non-eslint runner (biome/oxlint) fails with no parseable output
+# =============================================================================
+
+# Build a node repo fixture with a non-eslint scripts.lint (biome).
+_make_biome_fixture() {
+  printf '{"name":"proj","version":"1.0.0","scripts":{"test":"jest --ci","lint":"biome check ."}}\n' \
+    > "$TEST_REPO/package.json"
+  printf '{"lockfileVersion":3}\n' > "$TEST_REPO/package-lock.json"
+  printf 'var x = 1;\n' > "$TEST_REPO/index.ts"
+  (cd "$TEST_REPO" \
+    && git init -q && git config user.email t@t && git config user.name t \
+    && git add -A && git commit -qm base \
+    && git update-ref refs/remotes/origin/main HEAD \
+    && printf 'var x = 2;\n' > index.ts \
+    && git add -A && git commit -qm change) >/dev/null 2>&1
+}
+
+# Write an npm stub where "run lint" outputs biome-format output (not eslint-compatible)
+# and exits 1; "test" passes.
+_write_npm_stub_biome() {
+  cat > "$STUB_DIR/npm" <<STUB
+#!/bin/bash
+case "\$1" in
+  ci|install)
+    mkdir -p "$TEST_REPO/node_modules/.bin"
+    exit 0
+    ;;
+  test)
+    echo "PASS 1 suite"
+    exit 0
+    ;;
+  run)
+    # npm run lint → biome-format output (not in eslint stylish/compact format)
+    printf 'index.ts:1:1 suspicious/noVar ━━━━━━━━━━━━━━━\n'
+    printf '  > 1 │ var x = 2;\n'
+    printf '    │ ^^^\n'
+    printf 'Found 1 error(s)\n'
+    exit 1
+    ;;
+esac
+exit 0
+STUB
+  chmod +x "$STUB_DIR/npm"
+}
+
+@test "(#1600) non-eslint lint runner (biome) fails → reason=lint_unparseable, empty lint[]" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  _make_biome_fixture
+  _write_jest_stub
+  _write_npm_stub_biome
+
+  _run_gate ""
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+
+  # Gate must block (lint runner exited non-zero)
+  [ "$status" -eq 1 ]
+
+  run jq -r '.exit_code' "$TEST_REPO/gate.json"
+  [ "$output" = "1" ]
+
+  # lint array must be empty — biome output is not in eslint stylish/compact format
+  run jq -r '.lint | length' "$TEST_REPO/gate.json"
+  [ "$output" = "0" ]
+
+  # reason must name the cause so assess-and-resolve.sh can say "lint" failed
+  run jq -r '.reason // ""' "$TEST_REPO/gate.json"
+  [ "$output" = "lint_unparseable" ]
+}
