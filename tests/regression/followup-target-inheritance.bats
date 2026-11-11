@@ -264,8 +264,15 @@ setup() {
     count > 40 { exit }
   ' "$WORKFLOW_RUNNER")
 
-  echo "$_base_handler" | grep -qE 'rm -f.*target-branch' || {
-    echo "FAIL: --base handler does not rm -f a stale target-branch-N.txt file" >&2
+  echo "$_base_handler" | grep -qE '_base_state_file=.*target-branch' || {
+    echo "FAIL: --base handler does not assign _base_state_file from a target-branch-N.txt path" >&2
+    echo "      Without this, 'rite --branch <target> N' still hits the old state-file tier-2" >&2
+    echo "      and loops on the same mismatch it was supposed to fix" >&2
+    return 1
+  }
+
+  echo "$_base_handler" | grep -qE 'rm -f[[:space:]]+"?\$_base_state_file' || {
+    echo "FAIL: --base handler does not rm -f \$_base_state_file" >&2
     echo "      Without this, 'rite --branch <target> N' still hits the old state-file tier-2" >&2
     echo "      and loops on the same mismatch it was supposed to fix" >&2
     return 1
