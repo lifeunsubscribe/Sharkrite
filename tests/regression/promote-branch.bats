@@ -940,6 +940,192 @@ RUNEOF
 }
 
 # ===========================================================================
+# Group 8a: Phase 7 TOCTOU re-check (#1679)
+#
+# Phase 1 preflight blocks promote when open PRs target the branch, but
+# Phases 2-6 can take minutes; a PR opened mid-promote would be silently closed
+# by Phase 7's branch deletion.  A second identical check runs immediately
+# before git push --delete to close this window.
+# ===========================================================================
+
+@test "Phase 7: open PR that appeared mid-promote blocks branch deletion and names PR, issue, merge PR, and manual deletion command" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/toctou_calls.log"
+  local _counter="$RITE_TEST_TMPDIR/plist_count"
+  printf '0' > "$_counter"
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-toctou"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "deadbeef123456789012345678901234deadbeef"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/toctou-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push)
+    printf 'GIT_PUSH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+  branch)
+    printf 'GIT_BRANCH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
+export PATH="$_fake_bin:\$PATH"
+export _PROMOTE_CALLLOG="$_call_log"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)
+          # Distinguish inflight-guard calls (carry --json with baseRefName) from
+          # the Phase 2 promotion-PR lookup (carries --base main).
+          # First inflight-guard call → Phase 1 preflight: no PRs (clean).
+          # Second inflight-guard call → Phase 7 re-check: a PR appeared mid-promote.
+          if printf '%s\n' "\$@" | grep -q "baseRefName"; then
+            _n=\$(cat "$_counter"); _n=\$((_n + 1)); printf '%s' "\$_n" > "$_counter"
+            if [ "\$_n" -eq 1 ]; then
+              printf '[]\n'
+            else
+              printf '[{"number":88,"headRefName":"ft-mid_b99","baseRefName":"toctou-branch","body":"Closes #99"}]\n'
+            fi
+          else
+            echo ""
+          fi
+          return 0 ;;
+        create) echo "https://github.com/owner/repo/pull/201"; return 0 ;;
+        view)
+          printf '%s\n' "\$@" | grep -q "headRefOid" && echo "deadbeef" || true
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_test_gate() { return 0; }
+run_promote "toctou-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 1 ]
+  # In-flight PR that appeared mid-promote must be named
+  echo "$output" | grep -q "PR #88"
+  echo "$output" | grep -q "issue #99"
+  # The merge PR that already completed must be mentioned
+  echo "$output" | grep -q "PR #201"
+  # Manual deletion command must be provided
+  echo "$output" | grep -q "git push origin --delete toctou-branch"
+  # The integration branch must NOT have been deleted (guard fires before push)
+  run grep -iE "GIT_PUSH.*--delete.*toctou-branch" "$_call_log"
+  [ "$status" -ne 0 ]
+}
+
+@test "Phase 7: TOCTOU re-check passes when no new PRs appeared and deletion proceeds" {
+  local _lib="$RITE_TEST_TMPDIR/lib"
+  _write_promote_stubs_base "$_lib"
+
+  local _entry="issue=42	pr=97	sha=abc1234500000000000000000000000000000000	merged_at=2026-01-01T00:00:00Z	promoted=false"
+  local _call_log="$RITE_TEST_TMPDIR/toctou_clean.log"
+
+  mkdir -p "$RITE_TEST_TMPDIR/bin"
+  printf '#!/bin/bash\nexit 0\n' > "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+  chmod +x "$RITE_TEST_TMPDIR/bin/rite-full-suite"
+
+  local _fake_bin="$RITE_TEST_TMPDIR/fake-git-toctou-clean"
+  mkdir -p "$_fake_bin"
+  cat > "$_fake_bin/git" << 'GITEOF'
+#!/bin/bash
+for _a in "$@"; do [ "$_a" = "rev-list" ] && { echo "0"; exit 0; }; done
+case "${1:-}" in
+  rev-parse) echo "deadbeef123456789012345678901234deadbeef"; exit 0 ;;
+  ls-remote) echo "abc refs/heads/clean-toctou-branch"; exit 0 ;;
+  worktree)  [ "${2:-}" = "add" ] && mkdir -p "${3:-}"; exit 0 ;;
+  push)
+    printf 'GIT_PUSH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+  branch)
+    printf 'GIT_BRANCH %s\n' "$*" >> "${_PROMOTE_CALLLOG:-/dev/null}"
+    exit 0 ;;
+esac
+exit 0
+GITEOF
+  chmod +x "$_fake_bin/git"
+
+  local _runner
+  _runner=$(_write_promote_runner << RUNEOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="$_lib"
+export RITE_PROJECT_ROOT="$RITE_TEST_TMPDIR"
+export RITE_INSTALL_DIR="$RITE_TEST_TMPDIR"
+export RITE_WORKTREE_DIR="$RITE_TEST_TMPDIR/wt-$$"
+export PATH="$_fake_bin:\$PATH"
+export _PROMOTE_CALLLOG="$_call_log"
+source "$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+set +u; set +o pipefail
+git_fetch_safe() { return 0; }
+integration_ledger_entries() { printf '%s\n' "$_entry"; }
+integration_ledger_mark_promoted() { return 0; }
+gather_promotion_context() { printf '' > "\${2:-/dev/null}"; return 0; }
+compose_promotion_pr_body() { echo "stub body"; return 0; }
+detect_critical_issues() { return 0; }
+gh_safe() {
+  case "\${1:-}" in
+    pr)
+      case "\${2:-}" in
+        list)   echo ""; return 0 ;;
+        create) echo "https://github.com/owner/repo/pull/202"; return 0 ;;
+        view)
+          printf '%s\n' "\$@" | grep -q "headRefOid" && echo "deadbeef" || true
+          return 0 ;;
+      esac ;;
+    repo) echo 'owner/repo'; return 0 ;;
+    api)  echo '{"merged":true}'; return 0 ;;
+    issue) return 0 ;;
+  esac
+  return 0
+}
+run_test_gate() { return 0; }
+run_promote "clean-toctou-branch" 2>&1
+RUNEOF
+)
+
+  run bash "$_runner" 2>&1
+  [ "$status" -eq 0 ]
+  # Branch must have been deleted when no mid-promote PRs appeared
+  grep -qiE "GIT_PUSH.*--delete.*clean-toctou-branch" "$_call_log"
+}
+
+# ===========================================================================
 # Group 8: Placement pin — git worktree prune is unconditional
 # ===========================================================================
 
@@ -1374,6 +1560,19 @@ RUNEOF
   [ -n "$_inflight_line" ]
   [ -n "$_currency_line" ]
   [ "$_inflight_line" -lt "$_currency_line" ]
+}
+
+@test "Phase 7 TOCTOU re-check appears before branch deletion in source (#1679)" {
+  # Structural: verify the TOCTOU re-check block (PROMOTE_TOCTOU_BLOCKED diag)
+  # appears before the branch deletion (git push origin --delete) in Phase 7.
+  local _src="$RITE_REPO_ROOT/lib/core/promote-branch.sh"
+  [ -f "$_src" ]
+  local _toctou_line _deletion_line
+  _toctou_line=$(grep -n "PROMOTE_TOCTOU_BLOCKED" "$_src" | head -1 | cut -d: -f1 || true)
+  _deletion_line=$(grep -n 'if git push origin --delete' "$_src" | head -1 | cut -d: -f1 || true)
+  [ -n "$_toctou_line" ]
+  [ -n "$_deletion_line" ]
+  [ "$_toctou_line" -lt "$_deletion_line" ]
 }
 
 # ===========================================================================
