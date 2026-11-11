@@ -77,8 +77,8 @@ _run_review_loop() {
 @test "stderr warnings do not crowd out stdout cause: both tails reported" {
   _run_review_loop "
     provider_run_prompt() {
-      echo 'Permission allow rule matchPatterns has a wildcard' >&2
-      echo 'Permission allow rule another has a wildcard' >&2
+      echo 'Permission allow rule (.claude/settings.json): Bash(cp a/*.sh b/) has a wildcard before the rest of the command, so it also matches any options inserted at that position and approves them without a prompt. Replace that * with the exact value you mean, or only use * after the subcommand.' >&2
+      echo 'rate limit exceeded' >&2
       echo 'You are out of usage credits.'
       return 1
     }
@@ -86,9 +86,35 @@ _run_review_loop() {
   [ "$status" -eq 1 ]
   # Both channels must appear, labelled
   [[ "$output" == *"Provider stderr (tail):"* ]]
+  [[ "$output" == *"rate limit exceeded"* ]]
   [[ "$output" == *"Provider stdout (tail):"* ]]
   [[ "$output" == *"You are out of usage credits."* ]]
-  [[ "$output" == *"wildcard"* ]]
+  # The CLI's allow-rule advisory is noise, not a failure cause: stripped.
+  [[ "$output" != *"has a wildcard"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# allow-rule advisories: stripped from the stderr tail entirely
+# ---------------------------------------------------------------------------
+
+@test "stderr made only of allow-rule advisories: no stderr tail block, stdout cause still shown" {
+  # Live shape (batch 20261111-010111): five advisory lines per attempt on
+  # stderr, the real cause on stdout. Before the filter the warning line was
+  # ~1,500 chars of advisory text ending in "— retrying in 3s...".
+  _run_review_loop "
+    provider_run_prompt() {
+      for i in 1 2 3 4 5; do
+        echo \"Permission allow rule (../.claude/settings.json): Bash(perl -0pi -e 's/x/y/' /tmp/f\$i) has a wildcard before the rest of the command, so it also matches any options inserted at that position and approves them without a prompt. Replace that * with the exact value you mean, or only use * after the subcommand.\" >&2
+      done
+      echo \"You're out of usage credits. Switch to another model, or manage usage credits at claude.ai/settings/usage\"
+      return 1
+    }
+  " "MAX_REVIEW_ATTEMPTS=1"
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"Provider stderr (tail):"* ]]
+  [[ "$output" != *"has a wildcard"* ]]
+  [[ "$output" == *"Provider stdout (tail):"* ]]
+  [[ "$output" == *"out of usage credits"* ]]
 }
 
 # ---------------------------------------------------------------------------

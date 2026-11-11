@@ -646,6 +646,11 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
 
   CLAUDE_ERROR=$(cat "$CLAUDE_STDERR")
   rm -f "$CLAUDE_STDERR"
+  # Drop the CLI's "Permission allow rule (...) has a wildcard ..." advisories.
+  # They are emitted on every --print call regardless of outcome, one long line
+  # per allow-rule, and on a failure they filled the whole 5-line stderr tail
+  # (five times per attempt) while saying nothing about the failure.
+  CLAUDE_ERROR=$(printf '%s\n' "$CLAUDE_ERROR" | grep -v '^Permission allow rule .* has a wildcard' || true)
 
   # Timeout: the full per-call timeout already elapsed, so retrying would just
   # double the wall-clock for no benefit. Abort.
