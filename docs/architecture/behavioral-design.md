@@ -1083,12 +1083,14 @@ Validated: 50-process × 10-round distinct-PID stress → **0 lost / 0 overlaps*
 **Fixed in #1668** (this PR): the flock path's pre-exec cleanup block now has an `else` branch for the live-symlink case. When `readlink "$lockfile"` returns a PID and `kill -0 $PID` succeeds:
 1. Print a "waiting for symlink-strategy lock held by PID ..." diagnostic.
 2. Poll every 1s until the symlink disappears or the holder's PID becomes dead (`kill -0` fails).
-3. If the holder releases or the PID goes dead, reclaim any residual stale symlink and proceed to `exec`.
+3. If the holder releases or the PID goes dead, reclaim any residual stale symlink via rename-verify-remove (atomic `mv "$lockfile" "$lockfile.stale.$$"`, re-verify the stale copy still points to a dead PID, then `rm`) and proceed to `exec`.
 4. If the symlink is still live after `max_attempts` seconds, **soft-fail** (`return 1`) — same behavior as the symlink path's timeout.
 
-**Invariant**: only one process, on either strategy, can hold the lock at a time. No `exec` is called while `$lockfile` is a live symlink with a reachable PID.
+After `flock` returns, a **post-acquire verification** checks whether `$lockfile` is a symlink. Any symlink present at that point — live or dead-PID — means `exec` opened the wrong inode (the PID-named file the symlink pointed to, not the shared lock path); the fd is closed and the acquire soft-fails.
 
-**Tests**: `tests/concurrency/scratchpad-lock.bats` — Test 14 (flock waits for symlink holder then acquires) and Test 15 (flock times out on persistent symlink holder, returns 1). Both skip if `flock(1)` is unavailable.
+**Invariant**: only one process, on either strategy, can hold the lock at a time. An `exec` that races a live-symlink plant is detected post-`flock` and rejected before the lock is reported held.
+
+**Tests**: `tests/concurrency/scratchpad-lock.bats` — Test 14 (flock waits for symlink holder then acquires), Test 15 (flock times out on persistent symlink holder, returns 1), and Test 16 (flock rejects dead-PID symlink planted after exec, returns 1). All three skip if `flock(1)` is unavailable.
 
 ### PR Follow-up Lock: Timing Budget
 

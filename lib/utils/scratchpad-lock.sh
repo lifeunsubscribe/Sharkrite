@@ -212,19 +212,16 @@ acquire_scratchpad_lock() {
       return 1
     fi
     # Post-acquire verification: exec 200>"$lockfile" follows symlinks. If a symlink-strategy
-    # acquirer planted a live symlink between our pre-exec clear and this exec, our flock holds
-    # a PID-named file on a different inode — not the shared lock path. Detect and reject.
+    # acquirer planted a symlink (live or dead-PID) between our pre-exec clear and this exec,
+    # our flock holds a PID-named file on a different inode — not the shared lock path. Any
+    # symlink present after flock means we opened the wrong inode; reject unconditionally.
     if [ -L "$lockfile" ]; then
-      local _post_flock_pid
-      _post_flock_pid=$(readlink "$lockfile" 2>/dev/null || true)
-      if [ -n "$_post_flock_pid" ] && kill -0 "$_post_flock_pid" 2>/dev/null; then
-        eval "exec ${_SCRATCHPAD_LOCK_FD}>&-" 2>/dev/null || true
-        echo "scratchpad-lock: post-flock live symlink detected — flock acquired wrong inode; soft-failing" >&2
-        echo "WARNING: scratchpad lock could not be safely acquired — caller will skip this advisory write." >&2
-        _SCRATCHPAD_LOCK_HELD=false
-        _SCRATCHPAD_LOCK_DEPTH=0
-        return 1
-      fi
+      eval "exec ${_SCRATCHPAD_LOCK_FD}>&-" 2>/dev/null || true
+      echo "scratchpad-lock: post-flock symlink detected — flock acquired wrong inode; soft-failing" >&2
+      echo "WARNING: scratchpad lock could not be safely acquired — caller will skip this advisory write." >&2
+      _SCRATCHPAD_LOCK_HELD=false
+      _SCRATCHPAD_LOCK_DEPTH=0
+      return 1
     fi
     _SCRATCHPAD_LOCK_HELD=true
     _SCRATCHPAD_LOCK_STRATEGY="flock"
