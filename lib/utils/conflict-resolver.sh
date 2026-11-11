@@ -596,11 +596,18 @@ attempt_claude_merge_resolution() {
   source "$RITE_LIB_DIR/providers/provider-interface.sh"
   load_provider "${RITE_DEV_PROVIDER:-claude}"
 
-  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284)
+  # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284).
+  # Skip when the sentinel is already set — the run-level preflight (batch or
+  # single-issue) already passed, so re-checking here would fire a redundant
+  # 120s-bounded API call per conflict resolution inside the same run.
+  # Standalone callers (rite --sync, direct script invocation) never export the
+  # sentinel, so they always get the full check.
   provider_detect_cli || { git merge --abort 2>/dev/null || true; return 1; }
-  if ! provider_healthcheck; then
-    git merge --abort 2>/dev/null || true
-    return 1
+  if [ "${_RITE_PROVIDER_PREFLIGHT_OK:-}" != "true" ]; then
+    if ! provider_healthcheck; then
+      git merge --abort 2>/dev/null || true
+      return 1
+    fi
   fi
 
   # Publish the pre-session conflict-path list for commit_resolved_conflicts.
