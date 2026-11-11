@@ -906,7 +906,7 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
     fi
   done
 
-  # Only completed-FAILURE/ERROR checks block; pending is advisory.
+  # Only completed-FAILURE/ERROR/TIMED_OUT/STARTUP_FAILURE/CANCELLED checks block; pending is advisory.
   # Pending = not COMPLETED, or no conclusion yet. gh serialises a missing
   # conclusion as "" for CheckRun (GraphQL null → Go zero value), so `== null`
   # alone misses every in-progress run — live: freshup 2026-11-11, a check
