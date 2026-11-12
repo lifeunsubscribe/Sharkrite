@@ -56,6 +56,11 @@ if ! declare -f _diag >/dev/null 2>&1; then
   source "$RITE_LIB_DIR/utils/logging.sh"
 fi
 
+# Source bounded-wait helpers for the serial re-run (wait_pid_with_timeout, kill_process_tree)
+if ! declare -f wait_pid_with_timeout >/dev/null 2>&1 && [ -f "$RITE_LIB_DIR/utils/timeout.sh" ]; then
+  source "$RITE_LIB_DIR/utils/timeout.sh"
+fi
+
 # Source marker constants (needed by run_test_gate for RITE_MARKER_TEST_COVERS)
 if ! declare -f rite_markers_loaded >/dev/null 2>&1; then
   _pmv_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,6 +82,112 @@ if ! declare -f run_test_gate >/dev/null 2>&1; then
 fi
 
 # ===================================================================
+
+# _pmv_serial_rerun_clears GATE_JSON WORKTREE
+#
+# Maps the gate's failing bats test names back to their files (the name
+# appears verbatim in the file's @test line), re-runs those files serially
+# (no --jobs) in the CI-equivalent environment (claude masked, GNU tools
+# preferred — same as run_test_gate, #1607) with the 300s per-test ceiling the
+# full-suite investigate pass uses for serial runs, and returns 0 when every
+# one passes. Returns 1 (caller keeps the failure) when: any test still fails,
+# a failing name cannot be mapped to a file, more than 8 files failed (that
+# is not a flake profile), or the gate failed on lint rather than tests.
+# Emits POST_MERGE_VERIFY_FLAKE_CLEARED / POST_MERGE_VERIFY_FLAKE_PERSISTENT.
+_pmv_serial_rerun_clears() {
+  local _gate_json="$1" _wt="$2"
+  command -v jq >/dev/null 2>&1 || return 1
+  command -v bats >/dev/null 2>&1 || return 1
+
+  local _lint_n
+  _lint_n=$(jq -r '.lint | length' "$_gate_json" 2>/dev/null || echo 1)
+  [ "${_lint_n:-1}" = "0" ] || return 1
+
+  local _names
+  _names=$(jq -r '.tests[]? | select(.file == "bats") | .test_name' "$_gate_json" 2>/dev/null || true)
+  [ -n "${_names:-}" ] || return 1
+
+  local _name _hit _files="" _unmapped=0
+  while IFS= read -r _name; do
+    [ -z "$_name" ] && continue
+    _hit=$(grep -rlF --include="*.bats" -- "$_name" "$_wt/tests" 2>/dev/null | head -1 || true)
+    if [ -z "$_hit" ]; then
+      _unmapped=$((_unmapped + 1)); continue
+    fi
+    _files="${_files}${_hit#"$_wt"/}"$'\n'
+  done <<< "$_names"
+  _files=$(printf '%s' "$_files" | grep -v '^$' | sort -u || true)
+  [ -n "${_files:-}" ] || return 1
+  [ "$_unmapped" -eq 0 ] || return 1
+
+  local _count
+  _count=$(printf '%s\n' "$_files" | grep -c . || true)
+  if [ "${_count:-0}" -gt 8 ]; then
+    _diag "POST_MERGE_VERIFY_FLAKE_PERSISTENT reason=too_many_files files=${_count} pr=${PR_NUMBER:-?}"
+    return 1
+  fi
+
+  echo "Post-merge gate red on ${_count} file(s) — re-running serially to separate flake from semantic conflict..." >&2
+
+  # CI-equivalent environment, mirroring run_test_gate (#1607).
+  local _shim_dir _gnu_prefix="" _path
+  _shim_dir=$(mktemp -d "${TMPDIR:-/tmp}/rite_pmv_cienv_$$_XXXXXX" 2>/dev/null || true)
+  if [ -d "${_shim_dir:-}" ]; then
+    printf '#!/bin/sh\necho "[gate-cienv] claude is masked in CI-equivalent gate environment" >&2\nexit 1\n' > "$_shim_dir/claude"
+    chmod +x "$_shim_dir/claude" 2>/dev/null || true
+  fi
+  if declare -f _cienv_gnu_prefix >/dev/null 2>&1; then
+    _gnu_prefix=$(_cienv_gnu_prefix)
+  fi
+  _path="${_shim_dir:+$_shim_dir:}${_gnu_prefix:-}${PATH}"
+
+  local _rc=0 _file_args=()
+  while IFS= read -r _name; do [ -n "$_name" ] && _file_args+=("$_name"); done <<< "$_files"
+  # Same environment sanitisation as run_test_gate's _bats_sandbox: the
+  # selected tests must not inherit this run's session state or an outer
+  # bats process's BATS_* variables (a nested bats run misbehaves otherwise).
+  #
+  # No BATS_TEST_TIMEOUT here, deliberately: bats-core 1.13 waits out the full
+  # per-test timeout after a FAILING test (verified 2026-11-11: `{ false; }`
+  # with BATS_TEST_TIMEOUT=20 takes 21s, unset takes 0s), so a genuine failure
+  # would cost the whole ceiling before being reported. The run is bounded as a
+  # whole instead: 900s wall-clock, then the tree is killed and the failure
+  # stands (a hung test is not a flake either).
+  local _bats_pid=""
+  (
+    cd "$_wt" && \
+    exec env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER -u SESSION_STATE_FILE \
+        -u RITE_BATCH_ID -u BATCH_MODE -u SESSION_START_TIME -u RITE_TARGET_BRANCH \
+        -u RITE_TEST_GATE_SKIP_TRIGGERS -u RITE_TEST_GATE_DIFF_BASE -u BATS_TEST_TIMEOUT \
+        -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR -u BATS_TEST_TMPDIR \
+        -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER \
+        PATH="$_path" \
+      bats "${_file_args[@]+"${_file_args[@]}"}" </dev/null >/dev/null 2>&1
+  ) &
+  _bats_pid=$!
+  if declare -f wait_pid_with_timeout >/dev/null 2>&1; then
+    if ! wait_pid_with_timeout "$_bats_pid" 900; then
+      declare -f kill_process_tree >/dev/null 2>&1 && kill_process_tree "$_bats_pid" 2>/dev/null || kill "$_bats_pid" 2>/dev/null || true
+      wait "$_bats_pid" 2>/dev/null || true
+      _rc=124
+    else
+      wait "$_bats_pid" || _rc=$?
+    fi
+  else
+    wait "$_bats_pid" || _rc=$?
+  fi
+  [ -n "${_shim_dir:-}" ] && rm -rf "$_shim_dir" 2>/dev/null
+
+  if [ "$_rc" -eq 0 ]; then
+    echo "Serial re-run passed — the parallel failure was load flake, not a semantic conflict" >&2
+    _diag "POST_MERGE_VERIFY_FLAKE_CLEARED files=${_count} pr=${PR_NUMBER:-?} list=$(printf '%s' "$_files" | tr '\n' ',')"
+    return 0
+  fi
+  echo "Serial re-run still fails — genuine failure, not flake" >&2
+  _diag "POST_MERGE_VERIFY_FLAKE_PERSISTENT reason=still_failing files=${_count} pr=${PR_NUMBER:-?}"
+  return 1
+}
+
 # PUBLIC: verify_post_merge [worktree_path] [pre_merge_ref]
 #
 # Runs the project's test suite (if detectable) to verify that a
@@ -210,6 +321,24 @@ verify_post_merge() {
     RITE_TEST_GATE_DIFF_BASE="$pre_merge_ref" \
     RITE_TEST_GATE_SKIP_TRIGGERS=true \
       run_test_gate "$_pmv_gate_file" "$worktree_path" || _pmv_gate_exit=$?
+
+    # Serial re-run before calling a red gate a semantic conflict.
+    #
+    # Live (2026-11-11, rite 1737): the post-rebase gate ran 86 files under
+    # --jobs 8 while a batch ran beside it, took 2h21m, and failed 4 tests
+    # (lib-resource-safety, three PIPESTATUS-propagation tests) that pass on
+    # both main and the branch when run alone. The caller treated that as a
+    # rebase-introduced semantic conflict, CLOSED the PR, deleted the branch
+    # and worktree, and restarted development from scratch — a complete,
+    # reviewed implementation thrown away on load flake. A genuine semantic
+    # conflict fails deterministically; a flake does not. Re-run the failing
+    # FILES serially (same classification the overnight investigate pass
+    # uses) and only fail when they still fail.
+    if [ "$_pmv_gate_exit" -ne 0 ] && [ -f "${_pmv_gate_file:-}" ]; then
+      if _pmv_serial_rerun_clears "$_pmv_gate_file" "$worktree_path"; then
+        _pmv_gate_exit=0
+      fi
+    fi
     rm -f "${_pmv_gate_file:-}"
 
     if [ "$_pmv_gate_exit" -ne 0 ]; then
