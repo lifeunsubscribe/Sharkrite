@@ -1394,7 +1394,7 @@ _stale_close_and_cleanup() {
     else
       print_info "Closed PR #$pr_number"
     fi
-  elif echo "$_pr_close_output" | grep -qiE "already closed|already merged|no open pull request|Pull request .* is already closed"; then
+  elif grep -qiE "already closed|already merged|no open pull request|Pull request .* is already closed" <<< "$_pr_close_output"; then
     # PR is not open — treat as already resolved, safe to proceed with branch delete.
     # NOTE: "not found" is intentionally excluded — it can match genuine API errors
     # (e.g. wrong PR number, network issue) and would falsely permit branch deletion

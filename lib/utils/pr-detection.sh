@@ -326,7 +326,7 @@ detect_parent_pr_attachment() {
   PARENT_ATTACHMENT_MODE="none"
 
   # Outer guard requires digits — rejects all placeholder/documentation text.
-  if ! echo "$issue_body" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then
+  if ! grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+" <<< "$issue_body"; then
     return 0
   fi
 

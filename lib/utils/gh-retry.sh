@@ -140,8 +140,9 @@ gh_safe() {
     # Not-found: PR/issue/resource doesn't exist
     # For READ operations: expected (resource may not exist yet) → return empty, exit 0
     # For WRITE operations: a real error (can't merge/close a non-existent PR) → propagate
-    if echo "$stderr_content" | grep -qiE \
-        "not found|no pull requests|could not resolve|HTTP 404|404 Not Found|does not exist"; then
+    if grep -qiE \
+        "not found|no pull requests|could not resolve|HTTP 404|404 Not Found|does not exist" \
+        <<< "$stderr_content"; then
       if _gh_is_read_op "$@"; then
         rm -f "$stderr_file"
         echo ""
@@ -206,11 +207,13 @@ gh_safe() {
     # appear in the regex; transport-layer forms that prefix with "dial tcp" ARE
     # printed verbatim and appear above.
     local _transient_reason=""
-    if echo "$stderr_content" | grep -qiE \
-        "HTTP (429|5[0-9][0-9])([^0-9:)]|$)|\(HTTP (429|5[0-9][0-9])\)([^0-9:]|$)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9:)]|$)|rate limit|secondary rate|too many requests|server error"; then
+    if grep -qiE \
+        "HTTP (429|5[0-9][0-9])([^0-9:)]|$)|\(HTTP (429|5[0-9][0-9])\)([^0-9:]|$)|\(429\)([^0-9:]|$)|\(5[0-9][0-9]\)([^0-9:]|$)|(^|[^0-9])(429|5[0-9][0-9])([^0-9:)]|$)|rate limit|secondary rate|too many requests|server error" \
+        <<< "$stderr_content"; then
       _transient_reason="rate-limited or server error"
-    elif echo "$stderr_content" | grep -qiE \
-        "operation timed out|connection reset by peer|connection refused|dial tcp|TLS handshake timeout|i/o timeout|unexpected EOF|: EOF$|context deadline exceeded|error connecting to|check your internet connection"; then
+    elif grep -qiE \
+        "operation timed out|connection reset by peer|connection refused|dial tcp|TLS handshake timeout|i/o timeout|unexpected EOF|: EOF$|context deadline exceeded|error connecting to|check your internet connection" \
+        <<< "$stderr_content"; then
       _transient_reason="network error"
     fi
 

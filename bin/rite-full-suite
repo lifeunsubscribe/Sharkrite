@@ -56,7 +56,7 @@ readonly _FULL_SUITE_WINDOW_END=5      # 05:00 (exclusive)
 # RITE_FULL_SUITE_MIN_DEADLINE overrides this for testing (default: 1200 = 20 min).
 _FULL_SUITE_MIN_DEADLINE_S=1200
 if [ -n "${RITE_FULL_SUITE_MIN_DEADLINE:-}" ]; then
-  if echo "${RITE_FULL_SUITE_MIN_DEADLINE}" | grep -qE '^[1-9][0-9]*$'; then
+  if grep -qE '^[1-9][0-9]*$' <<< "${RITE_FULL_SUITE_MIN_DEADLINE}"; then
     _FULL_SUITE_MIN_DEADLINE_S="${RITE_FULL_SUITE_MIN_DEADLINE}"
   fi
   # Non-integer value → fall through to default 1200 (silent, like RITE_BATS_JOBS)
@@ -284,7 +284,7 @@ if command -v parallel >/dev/null 2>&1 || command -v rush >/dev/null 2>&1; then
   _bats_jobs=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo "2")
 fi
 if [ -n "${RITE_BATS_JOBS:-}" ]; then
-  if echo "${RITE_BATS_JOBS}" | grep -qE '^[1-9][0-9]*$'; then
+  if grep -qE '^[1-9][0-9]*$' <<< "${RITE_BATS_JOBS}"; then
     _bats_jobs="${RITE_BATS_JOBS}"
   fi
   # Non-integer value → fall through to auto-detected _bats_jobs (silent, like test-gate.sh)
@@ -804,7 +804,7 @@ PROMPT_HDR
       while IFS= read -r _candidate; do
         [ -z "$_candidate" ] && continue
         _cbody=$(gh_safe issue view "$_candidate" --json body --jq '.body' 2>/dev/null || true)
-        if echo "${_cbody:-}" | grep -qE "${RITE_MARKER_FULL_SUITE_REMEDIATION}:${_hash}([^0-9]|$)"; then
+        if grep -qE "${RITE_MARKER_FULL_SUITE_REMEDIATION}:${_hash}([^0-9]|$)" <<< "${_cbody:-}"; then
           _existing_remediation="${_candidate}"
           break
         fi

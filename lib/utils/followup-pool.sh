@@ -332,7 +332,7 @@ followup_pool_append() {
     fi
     if [ "$_dup" = true ]; then
       local _seen="- **Also seen:** issue #${_src:-?} via PR #${_pr:-?}"
-      if ! printf '%s\n' "$_body" | grep -qF "$_seen"; then
+      if ! grep -qF "$_seen" <<< "$_body"; then
         _body=$(printf '%s\n' "$_body" | awk -v em="${_FP_M_ENTRY}" -v key="$_ekey" -v seen="$_seen" '
           index($0, "<!-- " em ":" key " -->") { inb=1 }
           inb && (/^### / || /^## / || /^$/) && !done { print seen; done=1; inb=0 }

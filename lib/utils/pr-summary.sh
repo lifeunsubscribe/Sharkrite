@@ -75,7 +75,7 @@ build_changes_summary() {
 extract_changes_summary() {
   local pr_body="$1"
 
-  if ! echo "$pr_body" | grep -qF "$SUMMARY_START"; then
+  if ! grep -qF "$SUMMARY_START" <<< "$pr_body"; then
     return 1
   fi
 
@@ -91,7 +91,7 @@ replace_changes_summary() {
   local existing_body="$1"
   local new_summary="$2"
 
-  if echo "$existing_body" | grep -qF "$SUMMARY_START"; then
+  if grep -qF "$SUMMARY_START" <<< "$existing_body"; then
     # Delete old section (markers inclusive), insert new section
     local before after
     before=$(echo "$existing_body" | sed "/${SUMMARY_START}/,\$d" || true)

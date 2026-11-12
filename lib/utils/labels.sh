@@ -37,7 +37,7 @@ ensure_labels_exist() {
     label="${label#"${label%%[![:space:]]*}"}"
     label="${label%"${label##*[![:space:]]}"}"
     [ -z "$label" ] && continue
-    if ! echo "$existing" | grep -qxF "$label"; then
+    if ! grep -qxF "$label" <<< "$existing"; then
       # gh_safe handles retry on 429/5xx; || true allows "already exists" failures
       # (label may race-create between list and create — harmless to skip)
       case "$label" in
