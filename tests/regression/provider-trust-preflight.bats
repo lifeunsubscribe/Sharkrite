@@ -266,7 +266,12 @@ _make_trusted_stub() {
 @test "provider_healthcheck: does NOT export sentinel on failure" {
   _make_untrusted_stub
 
+  # Start from a clean sentinel: inside a rite run the batch preflight has
+  # already exported _RITE_PROVIDER_PREFLIGHT_OK=true and the gate's bats
+  # inherits it, so without this unset the assertion fails whenever this file
+  # is selected (live: #1640's gate, 4 rounds, 2026-11-12).
   run bash -c "
+    unset _RITE_PROVIDER_PREFLIGHT_OK
     export PATH=\"$STUB_BIN:\$PATH\"
     export RITE_LIB_DIR='$RITE_LIB_DIR'
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
