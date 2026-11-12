@@ -229,11 +229,11 @@ _run_resolve() {
     echo "Expected: sed -n \"/<!-- \${RITE_MARKER_REVIEW_DATA}/\" block after the markdown scan"
     false
   }
-  # Verify the jq select(.category ...) call is present in the fallback block.
-  run grep -n 'select(.category' "$PROMOTE_SCRIPT"
+  # Verify the jq select((.category // "") ...) call is present in the fallback block.
+  run grep -n 'select((.category // "")' "$PROMOTE_SCRIPT"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: jq select(.category ...) not found in $PROMOTE_SCRIPT"
-    echo "Expected a jq filter that checks items[].category for Security"
+    echo "FAIL: jq select((.category // \"\") ...) not found in $PROMOTE_SCRIPT"
+    echo "Expected a null-safe jq filter that checks items[].category for Security"
     false
   }
 }
@@ -278,7 +278,7 @@ Findings: CRITICAL: 0 | HIGH: 0 | MEDIUM: 1 | LOW: 0
         | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed "1d;\$d" || true)
       if [ -n "${_promo_fb_json:-}" ] && printf "%s" "${_promo_fb_json}" | jq empty 2>/dev/null; then
         if printf "%s" "${_promo_fb_json}" \
-            | jq -e "[.items[]? | select(.category | test(\"(?i)security\"))] | length > 0" \
+            | jq -e "[.items[]? | select((.category // \"\") | test(\"(?i)security\"))] | length > 0" \
             >/dev/null 2>&1; then
           _promo_fb_sec_cat="Security"
         fi
@@ -293,6 +293,40 @@ Findings: CRITICAL: 0 | HIGH: 0 | MEDIUM: 1 | LOW: 0
   }
   [ "$output" = "Security" ] || {
     echo "FAIL: expected 'Security', got: '$output'"
+    false
+  }
+}
+
+# ─── Test 14: Unit — null category field does not abort jq or mask Security ───
+
+@test "promote-branch.sh fallback: null-category item does not mask Security item in same array" {
+  # Regression guard for the null-category abort: a jq filter without (.category // "")
+  # program-aborts on a null/missing category field, silently skipping ALL items in the
+  # array including real Security ones. Verify that the fixed filter returns "Security"
+  # even when one item in the array has no category field (#1745).
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+
+  run bash -c '
+    set -euo pipefail
+
+    # Mixed array: first item has no category field, second has category=Security.
+    _json="{\"items\":[{\"id\":1,\"severity\":\"LOW\",\"title\":\"style nit\"},{\"id\":2,\"severity\":\"MEDIUM\",\"category\":\"Security\",\"title\":\"Unvalidated input\"}]}"
+
+    if printf "%s" "${_json}" \
+        | jq -e "[.items[]? | select((.category // \"\") | test(\"(?i)security\"))] | length > 0" \
+        >/dev/null 2>&1; then
+      echo "Security"
+    else
+      echo ""
+    fi
+  '
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: subshell exited non-zero ($status): $output"
+    false
+  }
+  [ "$output" = "Security" ] || {
+    echo "FAIL: expected 'Security', got: '$output'"
+    echo "A null/missing category field aborted jq and masked the Security item"
     false
   }
 }

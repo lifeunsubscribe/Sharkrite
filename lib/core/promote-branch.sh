@@ -1130,7 +1130,7 @@ ${_promo_review_body}"
         | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
       if [ -n "${_promo_fb_json:-}" ] && printf '%s' "${_promo_fb_json}" | jq empty 2>/dev/null; then
         if printf '%s' "${_promo_fb_json}" \
-            | jq -e '[.items[]? | select(.category | test("(?i)security"))] | length > 0' \
+            | jq -e '[.items[]? | select((.category // "") | test("(?i)security"))] | length > 0' \
             >/dev/null 2>&1; then
           _promo_fb_sec_cat="Security"
         fi
