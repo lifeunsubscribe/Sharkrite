@@ -2422,9 +2422,19 @@ _batch_print_drift_summary
 # Batch-end follow-up reconciliation pass.
 # Opt-out: RITE_BATCH_RECONCILE=false in .rite/config.
 # Must run after all merges so git diff reflects the final target-branch state.
+# Runs in a subshell: the pass is best-effort and every open pool is
+# re-reconciled by the next run, so a crash inside it (set -u on a constant
+# this long-lived shell never loaded — #1758) must not turn a finished batch
+# into exit 1.
 if [ "${RITE_BATCH_RECONCILE:-true}" != "false" ]; then
-  source "$RITE_LIB_DIR/utils/reconcile-followups.sh"
-  reconcile_batch_followups
+  _reconcile_rc=0
+  (
+    source "$RITE_LIB_DIR/utils/reconcile-followups.sh"
+    reconcile_batch_followups
+  ) || _reconcile_rc=$?
+  if [ "$_reconcile_rc" -ne 0 ]; then
+    print_warning "Follow-up reconcile pass failed (exit $_reconcile_rc) — open pools are re-reconciled by the next run"
+  fi
 fi
 
 # Build comprehensive Slack summary

@@ -49,6 +49,17 @@ if [ -z "${RITE_LIB_DIR:-}" ]; then
   source "$_fp_self_dir/config.sh"
 fi
 source "$RITE_LIB_DIR/utils/markers.sh"
+# markers.sh is guarded by a function sentinel, so a long-running shell that
+# loaded an older copy keeps it and never sees constants added later. Reload it
+# when ours are missing (its assignments are idempotent). Live: the 2026-11-11
+# batch started 09:53, #1741 landed 15:31, and the batch-end reconcile died
+# here under set -u on RITE_MARKER_FOLLOWUP_POOL — no reconcile ran and the
+# batch exited 1 after 19 completions (#1758).
+# sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_FOLLOWUP_POOL / RITE_MARKER_POOL_ENTRY are marker constants defined in lib/utils/markers.sh; not user config vars.
+if [ -z "${RITE_MARKER_FOLLOWUP_POOL:-}" ] || [ -z "${RITE_MARKER_POOL_ENTRY:-}" ]; then
+  unset -f rite_markers_loaded
+  source "$RITE_LIB_DIR/utils/markers.sh"
+fi
 source "$RITE_LIB_DIR/utils/lock.sh"
 source "$RITE_LIB_DIR/utils/gh-retry.sh"
 source "$RITE_LIB_DIR/utils/labels.sh"
