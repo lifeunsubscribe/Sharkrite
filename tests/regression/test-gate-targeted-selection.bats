@@ -637,20 +637,22 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "_bats_file_has_body_reference: multi-path — matches when second path present, first absent" {
-  # Two changed paths: only the second appears in the bats body.
-  # Combined Rule 1 pattern must still fire on the second path.
+  # Two changed paths: only the second appears in the bats body as a full
+  # relative path (Rule 1 ERE alternation must fire, not Rule 2 suffix match).
+  # Using CONFIG_SH="$REPO_ROOT/lib/utils/config.sh" embeds the literal
+  # "lib/utils/config.sh" so Rule 1 is exercised, not the /$_suffix Rule 2.
   local _bats_multi="$TEST_REPO/tests/regression/body-second-only.bats"
   {
     echo '#!/usr/bin/env bats'
     echo '# sharkrite-test-covers: lib/core/a.sh'
-    echo 'setup() { source "$RITE_LIB_DIR/utils/config.sh"; }'
+    echo 'setup() { CONFIG_SH="$REPO_ROOT/lib/utils/config.sh"; }'
     echo '@test "y" { true; }'
   } > "$_bats_multi"
   local _changed
   _changed=$(printf 'lib/core/absent.sh\nlib/utils/config.sh\n')
   run _bats_file_has_body_reference "$_bats_multi" "$_changed"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: second changed path not matched with combined pattern; got status $status" >&2
+    echo "FAIL: second changed path not matched with Rule 1 combined pattern; got status $status" >&2
     return 1
   }
 }

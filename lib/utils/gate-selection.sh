@@ -508,8 +508,11 @@ _bats_file_has_body_reference() {
   fi
 
   # Rule 2: single grep pass with all /$_suffix patterns from stdin.
+  # here-string avoids the printf | grep -q SIGPIPE race under pipefail.
+  # Strip the trailing newline so <<< doesn't append an extra blank pattern
+  # (a blank pattern in -Ff makes grep match every line).
   if [ -n "$_rule2_patterns" ]; then
-    if printf '%s' "$_rule2_patterns" | grep -qFf - "$bats_file" 2>/dev/null; then
+    if grep -qFf - "$bats_file" 2>/dev/null <<< "${_rule2_patterns%$'\n'}"; then
       return 0
     fi
   fi
