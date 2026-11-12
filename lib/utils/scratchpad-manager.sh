@@ -576,9 +576,18 @@ EOF
     body_file=$(mktemp)
     printf '%s' "$issue_body" > "$body_file"
     ensure_labels_exist "tech-debt,automated" >/dev/null
-    if gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated" >/dev/null; then
+    local _ei_issue_url
+    if _ei_issue_url=$(gh_safe issue create --title "$issue_title" --body-file "$body_file" --label "tech-debt" --label "automated"); then
       created=$((created + 1))
+      local _ei_issue_num
+      _ei_issue_num=$(echo "$_ei_issue_url" | grep -oE '[0-9]+$' || true)
       echo "Created tech-debt issue: ${issue_title}" >&2
+      # Prevent this encountered-issue follow-up from inheriting the parent batch's
+      # integration-branch target. claude-workflow.sh reads this marker and skips
+      # the state-file write for issues carrying it (issue #1568).
+      if [ -n "${_ei_issue_num:-}" ] && [ -n "${RITE_STATE_DIR:-}" ]; then
+        touch "${RITE_STATE_DIR}/followup-no-inherit-${_ei_issue_num}.marker" 2>/dev/null || true
+      fi
     else
       echo "Failed to create tech-debt issue for ${location}" >&2
     fi
