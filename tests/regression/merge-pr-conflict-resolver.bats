@@ -64,3 +64,14 @@ setup() {
   _region=$(sed -n '/Conflicts resolved and pushed/,/could not be auto-resolved/p' "$SUT")
   echo "$_region" | grep -q '_mpr_await_mergeable.*PR_NUMBER'
 }
+
+@test "auth failure (exit 18) propagates instead of being masked as a merge failure" {
+  # An auth expiry during resolution must halt the batch. Collapsing it into
+  # VALIDATION_FAILED would let a dead auth session continue and attempt a merge
+  # that will fail again — the same cascade exit 18 exists to prevent.
+  local _region
+  _region=$(sed -n '/Attempting conflict resolution before giving up/,/could not be auto-resolved/p' "$SUT")
+  [ -n "$_region" ]
+  echo "$_region" | grep -qE '_mpr_resolver_exit.*-eq 18'
+  echo "$_region" | grep -qE 'exit 18'
+}

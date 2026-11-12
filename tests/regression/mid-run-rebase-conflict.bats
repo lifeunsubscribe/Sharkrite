@@ -273,3 +273,45 @@ teardown() {
   git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
   git branch -D "$branch_name" >/dev/null 2>&1 || true
 }
+
+# ---------------------------------------------------------------------------
+# Auth-failure (exit 18) propagation
+# ---------------------------------------------------------------------------
+
+@test "check_and_rebase_against_main: resolver exit 18 — propagates out (not treated as resolution failure)" {
+  local branch_name="fix/conflict-auth-214"
+  local issue_number="214"
+  local pr_number="176"
+
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature content" > auth-test-file.txt
+  git add auth-test-file.txt
+  git commit -m "Feature adds auth-test-file.txt" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+
+  # Advance main with a conflicting change to the same file
+  git checkout main >/dev/null 2>&1
+  echo "conflicting main content" > auth-test-file.txt
+  git add auth-test-file.txt
+  git commit -m "Main modifies auth-test-file.txt" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  local worktree_path="$RITE_WORKTREE_DIR/issue-214"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+
+  # Override the setup()-level stub: this test exercises auth failure (exit 18)
+  attempt_claude_merge_resolution() { return 18; }
+
+  run check_and_rebase_against_main "$worktree_path" "$branch_name" "$issue_number" "$pr_number" "unsupervised"
+
+  # Must propagate exit 18 (not 1 from the generic failure path)
+  [ "$status" -eq 18 ]
+
+  # Output should mention auth / login
+  echo "$output" | grep -qi "auth\|login"
+
+  cd "$FIXTURE_REPO"
+  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}

@@ -3,16 +3,18 @@
 # tests/regression/stale-branch-conflict-resolver.bats
 #
 # Tests that stale-branch conflict bail paths invoke attempt_claude_merge_resolution
-# and handle all three documented exit codes correctly:
+# and handle all four documented exit codes correctly:
 #
 #   0 = resolved — continue workflow (push and return 0)
 #   1 = failure  — fall back to supervised-mode message, return 1
 #   5 = usage cap — propagate exit 5 out (do NOT fall back to supervised)
+#  18 = auth failure — propagate exit 18 out (do NOT trigger destructive close-and-restart)
 #
 # The tests stub attempt_claude_merge_resolution as a shell function so they
 # work independently of conflict-resolver.sh landing (issue #21).
 #
 # Verifies fix for issue #75: Wire conflict resolver into stale-branch failures.
+# Verifies fix for issue #1734: Handle exit 18 (auth failure) in merger resolution callers.
 
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
@@ -223,6 +225,66 @@ _setup_conflicting_branch() {
   echo "$output" | grep -qi "usage cap\|usage-cap"
 
   # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Test 5: Resolver returns 18 (auth failure) → exit 18 propagates,
+#         NOT exit 1 / "close-and-restart"
+# ───────────────────────────────────────────────────────────────────
+@test "conflict resolver exit 18: auth failure propagates out (does NOT trigger close-and-restart)" {
+  _setup_conflicting_branch
+
+  # Stub: resolver returns auth-expired signal
+  attempt_claude_merge_resolution() {
+    return 18
+  }
+
+  local output exit_code=0
+  output=$(_stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "75" "101" 2>&1) || exit_code=$?
+
+  # Must propagate exit 18 exactly (batch-blocking, not "resolve failure")
+  [ "$exit_code" -eq 18 ]
+
+  # Output should mention auth / login
+  echo "$output" | grep -qi "auth\|login"
+
+  # Must NOT fall through to the "supervised mode required" message (that would
+  # indicate the else branch ran instead of the new elif)
+  ! echo "$output" | grep -qi "supervised mode required"
+
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Test 6: Exit-18 propagates through check_stale_branch public entry point
+#         (must NOT trigger _stale_close_and_cleanup / exit 11)
+# ───────────────────────────────────────────────────────────────────
+@test "check_stale_branch: exit 18 propagates without triggering close-and-restart" {
+  _setup_conflicting_branch
+
+  # Stub: resolver hits auth expiry
+  attempt_claude_merge_resolution() {
+    return 18
+  }
+
+  export RITE_STALE_BRANCH_THRESHOLD=10
+
+  local output exit_code=0
+  output=$(check_stale_branch "$WORKTREE_PATH" "101" "75" "unsupervised" 2>&1) || exit_code=$?
+
+  # Must propagate exit 18 (not 11 from close-and-restart, not 1 from generic failure)
+  [ "$exit_code" -eq 18 ]
+
+  # Output should mention auth / login
+  echo "$output" | grep -qi "auth\|login"
+
   cd "$FIXTURE_REPO"
   git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
   git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true

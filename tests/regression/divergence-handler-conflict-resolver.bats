@@ -3,11 +3,12 @@
 # tests/regression/divergence-handler-conflict-resolver.bats
 #
 # Tests that divergence-handler conflict bail paths invoke attempt_claude_merge_resolution
-# and handle all three documented exit codes correctly:
+# and handle all four documented exit codes correctly:
 #
 #   0 = resolved — continue workflow (verify + push and return 0)
 #   1 = failure  — block in auto mode, return 1
-#   5 = usage cap — propagate exit 5 out (do NOT fall back to supervised)
+#   5 = usage cap  — propagate exit 5 out (do NOT fall back to supervised)
+#  18 = auth failure — propagate exit 18 out (do NOT treat as resolution failure)
 #
 # The tests stub attempt_claude_merge_resolution as a shell function so they
 # work independently of conflict-resolver.sh landing (issue #21).
@@ -283,6 +284,34 @@ _setup_diverging_branch() {
   echo "$output" | grep -qi "usage cap\|usage-cap"
 
   # Clean up
+  cd "$FIXTURE_REPO"
+  git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
+  git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true
+  git push origin --delete "$BRANCH_NAME" >/dev/null 2>&1 || true
+}
+
+# ───────────────────────────────────────────────────────────────────
+# Test 6: Resolver returns 18 (auth failure) → exit 18 propagates,
+#         NOT exit 1 / "resolution failure"
+# ───────────────────────────────────────────────────────────────────
+@test "divergence: conflict resolver exit 18 — auth failure propagates (not treated as resolution failure)" {
+  _setup_diverging_branch
+
+  # Stub: resolver hits auth expiry
+  attempt_claude_merge_resolution() {
+    return 18
+  }
+
+  local exit_code=0
+  local output
+  output=$(_do_rebase_and_push "$BRANCH_NAME" "true" "104" "103" 2>&1) || exit_code=$?
+
+  # Must propagate exit 18 exactly (batch-blocking)
+  [ "$exit_code" -eq 18 ]
+
+  # Output should mention auth / login
+  echo "$output" | grep -qi "auth\|login"
+
   cd "$FIXTURE_REPO"
   git worktree remove "$WORKTREE_PATH" --force >/dev/null 2>&1 || true
   git branch -D "$BRANCH_NAME" >/dev/null 2>&1 || true

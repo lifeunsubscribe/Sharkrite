@@ -348,6 +348,10 @@ _mid_run_rebase_onto_main() {
         _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_error "mid-run-rebase: Claude usage cap reached during conflict resolution — aborting batch"
         return 5
+      elif [ "$_resolver_result" -eq 18 ]; then
+        _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=auth_failure issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        print_error "mid-run-rebase: provider auth expired during conflict resolution — run: claude /login"
+        return 18
       else
         _diag "CONFLICT_RESOLVER context=mid_run_rebase outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         print_warning "mid-run-rebase: Claude could not resolve conflicts"
