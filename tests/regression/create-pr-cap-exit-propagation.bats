@@ -108,17 +108,36 @@ _run_trigger_block() {
 # ---------------------------------------------------------------------------
 
 @test "bin/rite fix-loop PUSH_EXIT 5 propagates to FINAL_EXIT=5" {
-  run grep -nE 'PUSH_EXIT -eq 5' "$BINRITE"
+  run grep -nE '\$PUSH_EXIT -eq 5' "$BINRITE"
   [ "$status" -eq 0 ]
-  run awk '/PUSH_EXIT -eq 5/{f=1} f&&/FINAL_EXIT=5/{print; exit}' "$BINRITE"
+  run awk '/\$PUSH_EXIT -eq 5/{f=1} f&&/FINAL_EXIT=5/{print; exit}' "$BINRITE"
   [ -n "$output" ]
 }
 
 @test "bin/rite fix-loop PUSH_EXIT 18 propagates to FINAL_EXIT=18" {
-  run grep -nE 'PUSH_EXIT -eq 18' "$BINRITE"
+  run grep -nE '\$PUSH_EXIT -eq 18' "$BINRITE"
   [ "$status" -eq 0 ]
-  run awk '/PUSH_EXIT -eq 18/{f=1} f&&/FINAL_EXIT=18/{print; exit}' "$BINRITE"
+  run awk '/\$PUSH_EXIT -eq 18/{f=1} f&&/FINAL_EXIT=18/{print; exit}' "$BINRITE"
   [ -n "$output" ]
+}
+
+@test "bin/rite fix-loop FIX_EXIT 5 propagates to FINAL_EXIT=5" {
+  run grep -nE '\$FIX_EXIT -eq 5' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/\$FIX_EXIT -eq 5/{f=1} f&&/FINAL_EXIT=5/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
+}
+
+@test "bin/rite fix-loop FIX_EXIT 18 propagates to FINAL_EXIT=18" {
+  run grep -nE '\$FIX_EXIT -eq 18' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/\$FIX_EXIT -eq 18/{f=1} f&&/FINAL_EXIT=18/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
+}
+
+@test "bin/rite stale-review STALE_PUSH_EXIT 2 is tolerated (not fatal)" {
+  run grep -nE 'STALE_PUSH_EXIT -ne 2' "$BINRITE"
+  [ "$status" -eq 0 ]
 }
 
 @test "bin/rite stale-review branch captures CREATE_PR exit code" {

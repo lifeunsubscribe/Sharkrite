@@ -2309,7 +2309,15 @@ case "$_DISPATCH_KEY" in
       FIX_EXIT=$?
       set -e
 
-      if [ $FIX_EXIT -ne 0 ]; then
+      if [ $FIX_EXIT -eq 5 ]; then
+        print_warning "Usage cap reached during fix session — aborting"
+        FINAL_EXIT=5
+        break
+      elif [ $FIX_EXIT -eq 18 ]; then
+        print_warning "Provider auth failure during fix session — aborting"
+        FINAL_EXIT=18
+        break
+      elif [ $FIX_EXIT -ne 0 ]; then
         print_error "Fix cycle failed (exit code: $FIX_EXIT)"
         FINAL_EXIT=1
         break
@@ -2359,7 +2367,7 @@ case "$_DISPATCH_KEY" in
         print_warning "Provider auth failure during stale-review reroute — aborting"
         FINAL_EXIT=18
         break
-      elif [ $STALE_PUSH_EXIT -ne 0 ]; then
+      elif [ $STALE_PUSH_EXIT -ne 0 ] && [ $STALE_PUSH_EXIT -ne 2 ]; then
         print_error "Failed to regenerate review during stale reroute (exit code: $STALE_PUSH_EXIT)"
         FINAL_EXIT=1
         break
