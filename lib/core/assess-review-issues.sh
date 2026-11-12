@@ -84,7 +84,13 @@ if ! declare -f _resolve_done_def >/dev/null 2>&1; then
 fi
 # Deferred-findings pool: non-security ACTIONABLE_LATER items are appended to
 # the run's single pool issue instead of each becoming an issue (2026-11-11).
-source "$RITE_LIB_DIR/utils/followup-pool.sh"
+# Guarded: test sandboxes run this script with a minimal RITE_LIB_DIR (no
+# followup-pool.sh / lock.sh / gh-retry.sh); an unconditional source killed
+# the script at load time and failed pipestatus-after-substitution.bats on
+# main (2026-11-11). The LATER path checks declare -f before calling.
+if [ -f "$RITE_LIB_DIR/utils/followup-pool.sh" ]; then
+  source "$RITE_LIB_DIR/utils/followup-pool.sh"
+fi
 
 # =============================================================================
 # FRESHNESS CHECK: Skip assessment if no commits since last assessment
@@ -1139,7 +1145,8 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         # Security findings keep the individual-issue path below (security floor:
         # never buried in an inbox). If the pool is unavailable (create/edit
         # failed) fall through to the individual path so nothing is lost.
-        if followup_pool_enabled && ! echo "${ITEM_CATEGORY:-}" | grep -qi "security"; then
+        if declare -f followup_pool_enabled >/dev/null 2>&1 && followup_pool_enabled && \
+           ! echo "${ITEM_CATEGORY:-}" | grep -qi "security"; then
           if followup_pool_append "${PR_NUMBER:-}" "${RITE_ISSUE_NUMBER:-}" \
                "${ITEM_SEVERITY:-MEDIUM}" "${ITEM_CATEGORY:-}" "$ITEM_TITLE" \
                "${ITEM_LOCATION:-}" "${_assessment_head_sha:-}" "${ITEM_REASONING:-}" \

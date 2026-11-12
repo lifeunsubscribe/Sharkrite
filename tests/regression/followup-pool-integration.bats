@@ -24,7 +24,8 @@ setup() {
 }
 
 @test "per-item LATER path: security findings bypass the pool (security floor)" {
-  grep -q 'if followup_pool_enabled && ! echo "${ITEM_CATEGORY:-}" | grep -qi "security"; then' "$ARI"
+  grep -q 'declare -f followup_pool_enabled >/dev/null 2>&1 && followup_pool_enabled && \\' "$ARI"
+  grep -q '! echo "${ITEM_CATEGORY:-}" | grep -qi "security"; then' "$ARI"
 }
 
 @test "per-item LATER path: pool failure falls through to the individual issue (no silent drop)" {
@@ -141,7 +142,7 @@ B
 }
 
 @test "all three call sites consult the operator toggle before pooling (disabled pool is silent)" {
-  grep -q 'if followup_pool_enabled && ! echo "${ITEM_CATEGORY:-}"' "$ARI"
+  grep -q 'followup_pool_enabled >/dev/null 2>&1 && followup_pool_enabled' "$ARI"
   grep -q 'followup_pool_enabled && \\' "$AAR"
   grep -q 'RITE_FOLLOWUP_POOL:-true}" != "false"' "$SPM"
   grep -q '^# RITE_FOLLOWUP_POOL=false' "$RITE_REPO_ROOT/config/project.conf.example"
@@ -165,4 +166,9 @@ B
   reconcile_batch_followups
   [ "$(sort "$SEEN" | tr '\n' ' ')" = "901 902 " ]
   grep -q "FOLLOWUP_RECONCILED closed=0 annotated=0 verified=2 skipped=0" "$BATS_TEST_TMPDIR/diag.log"
+}
+
+@test "assess-review-issues.sh survives a sandbox RITE_LIB_DIR without followup-pool.sh (main-red 2026-11-11)" {
+  grep -q 'if \[ -f "$RITE_LIB_DIR/utils/followup-pool.sh" \]; then' "$ARI"
+  ! grep -qE '^source "\$RITE_LIB_DIR/utils/followup-pool.sh"' "$ARI"
 }
