@@ -52,26 +52,30 @@ CLAUDE_WORKFLOW="$REPO_ROOT/lib/core/claude-workflow.sh"
 SCRATCHPAD_MANAGER="$REPO_ROOT/lib/utils/scratchpad-manager.sh"
 
 setup() {
-  [ -f "$WORKFLOW_RUNNER" ] || {
-    echo "FATAL: $WORKFLOW_RUNNER not found" >&2
-    return 1
-  }
-  [ -f "$ASSESS_AND_RESOLVE" ] || {
-    echo "FATAL: $ASSESS_AND_RESOLVE not found" >&2
-    return 1
-  }
-  [ -f "$ASSESS_REVIEW_ISSUES" ] || {
-    echo "FATAL: $ASSESS_REVIEW_ISSUES not found" >&2
-    return 1
-  }
-  [ -f "$CLAUDE_WORKFLOW" ] || {
-    echo "FATAL: $CLAUDE_WORKFLOW not found" >&2
-    return 1
-  }
-  [ -f "$SCRATCHPAD_MANAGER" ] || {
-    echo "FATAL: $SCRATCHPAD_MANAGER not found" >&2
-    return 1
-  }
+  [ -f "$WORKFLOW_RUNNER" ] || { echo "FATAL: $WORKFLOW_RUNNER not found" >&2; return 1; }
+  [ -f "$ASSESS_AND_RESOLVE" ] || { echo "FATAL: $ASSESS_AND_RESOLVE not found" >&2; return 1; }
+  [ -f "$ASSESS_REVIEW_ISSUES" ] || { echo "FATAL: $ASSESS_REVIEW_ISSUES not found" >&2; return 1; }
+  [ -f "$CLAUDE_WORKFLOW" ] || { echo "FATAL: $CLAUDE_WORKFLOW not found" >&2; return 1; }
+  [ -f "$SCRATCHPAD_MANAGER" ] || { echo "FATAL: $SCRATCHPAD_MANAGER not found" >&2; return 1; }
+
+  export RITE_LIB_DIR="$REPO_ROOT/lib"
+
+  # Source claude-workflow.sh to load _write_target_branch_state_if_eligible
+  # and its shared library dependencies (logging.sh, gh-retry.sh, etc.).
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$CLAUDE_WORKFLOW"
+
+  # Source workflow-runner.sh for handle_branch_mismatch and
+  # _clear_stale_target_state_file without executing the program body.
+  # RITE_SOURCE_FUNCTIONS_ONLY=1 skips library loading; shared libs already
+  # loaded above via claude-workflow.sh remain available.
+  RITE_SOURCE_FUNCTIONS_ONLY=1 source "$WORKFLOW_RUNNER"
+
+  # Override print_error after all sources — the real implementation emits ANSI
+  # color codes that break the plain-text match assertions in tests 10/11.
+  print_error() { echo "ERROR: $*" >&2; }
+  _diag() { true; }
+
+  set +u; set +o pipefail
 }
 
 # =============================================================================
@@ -319,7 +323,7 @@ setup() {
 }
 
 # =============================================================================
-# BEHAVIORAL: subprocess execution with stubs
+# BEHAVIORAL: direct function calls (shipped production functions)
 # =============================================================================
 
 @test "behavioral: no-inherit marker prevents state-file write for a follow-up issue" {
@@ -366,92 +370,27 @@ STUB_EOF
   _state_file="${_tmpdir}/target-branch-${_issue_num}.txt"
   # No marker file — this is a genuine (non-follow-up) issue
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
-  _script="$BATS_TEST_TMPDIR/test-genuine.sh"
-  cat > "$_script" <<STUB_EOF
-#!/usr/bin/env bash
-set -euo pipefail
-RITE_STATE_DIR="${_tmpdir}"
-RITE_TARGET_BRANCH="doc-refactor"
-ISSUE_NUMBER="${_issue_num}"
-
-_target_no_inherit_marker="\${RITE_STATE_DIR}/followup-no-inherit-\${ISSUE_NUMBER}.marker"
-if [ ! -f "\$_target_no_inherit_marker" ]; then
-  echo "\$RITE_TARGET_BRANCH" > "\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt" 2>/dev/null || true
-fi
-unset _target_no_inherit_marker
-exit 0
-STUB_EOF
-  chmod +x "$_script"
-  run bash "$_script"
-  [ "$status" -eq 0 ]
+  _write_target_branch_state_if_eligible "$_issue_num" "doc-refactor" "$_tmpdir"
 
   [ -f "$_state_file" ] || {
-    echo "FAIL: state file was NOT written for genuine (non-follow-up) issue" >&2
-    echo "      Genuine issues must keep recording their target branch for resume" >&2
+    echo "FAIL: state file was NOT written for genuine (non-follow-up) issue"
+    echo "      Genuine issues must keep recording their target branch for resume"
     return 1
   }
 
   _content=$(cat "$_state_file")
   [ "$_content" = "doc-refactor" ] || {
-    echo "FAIL: state file content '$_content' != 'doc-refactor'" >&2
+    echo "FAIL: state file content '$_content' != 'doc-refactor'"
     return 1
   }
 }
 
 @test "behavioral: state-file-driven mismatch output contains 'state file' source label" {
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
-  _script="$BATS_TEST_TMPDIR/test-state-mismatch-label.sh"
-  cat > "$_script" <<'STUB_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+  _output=$(handle_branch_mismatch "42" "456" "main" "doc-refactor" "" "state" 2>&1) || true
 
-print_error() { echo "ERROR: $*" >&2; }
-
-# Inline the handle_branch_mismatch logic under test
-handle_branch_mismatch() {
-  local issue_number="$1"
-  local pr_number="$2"
-  local pr_base="$3"
-  local effective_target="$4"
-  local _mode_suffix="${5:-}"
-  local _source="${6:-default}"
-
-  local _corrected_cmd
-  if [ "$_source" = "state" ]; then
-    _corrected_cmd="rite --branch ${pr_base} ${issue_number}${_mode_suffix:+ $_mode_suffix}"
-  elif [ "$pr_base" = "main" ]; then
-    _corrected_cmd="rite ${issue_number}${_mode_suffix:+ $_mode_suffix}"
-  else
-    _corrected_cmd="rite --branch ${pr_base} ${issue_number}${_mode_suffix:+ $_mode_suffix}"
-  fi
-
-  local _source_label
-  case "$_source" in
-    state)   _source_label="state file (.rite/state/target-branch-${issue_number}.txt)" ;;
-    env)     _source_label="RITE_TARGET_BRANCH env var" ;;
-    *)       _source_label="default" ;;
-  esac
-
-  print_error "PR #${pr_number} base mismatch for issue #${issue_number}"
-  print_error "  Current effective target:  ${effective_target}  [from: ${_source_label}]"
-  print_error "  Re-run with: ${_corrected_cmd}"
-  return 19
-}
-
-_output=$(handle_branch_mismatch "42" "456" "main" "doc-refactor" "" "state" 2>&1 || true)
-echo "$_output" | grep -qF "state file" || {
-  echo "FAIL: 'state file' not found in handle_branch_mismatch output for source=state" >&2
-  echo "Output was: $_output" >&2
-  exit 1
-}
-exit 0
-STUB_EOF
-  chmod +x "$_script"
-  run bash "$_script"
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: test script exited $status" >&2
-    echo "$output" >&2
+  grep -qF "state file" <<< "$_output" || {
+    echo "FAIL: 'state file' not found in handle_branch_mismatch output for source=state"
+    echo "Output was: $_output"
     return 1
   }
 }
@@ -461,67 +400,29 @@ STUB_EOF
   # the corrected command must be "rite --branch main N", NOT bare "rite N".
   # Without --branch main, a bare "rite N" still hits the old state-file tier-2
   # and loops on the same mismatch.
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
-  _script="$BATS_TEST_TMPDIR/test-state-mismatch-main-base.sh"
-  cat > "$_script" <<'STUB_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
+  _output=$(handle_branch_mismatch "1496" "520" "main" "doc-refactor" "" "state" 2>&1) || true
 
-print_error() { echo "ERROR: $*" >&2; }
-
-handle_branch_mismatch() {
-  local issue_number="$1"
-  local pr_base="$3"
-  local _source="${6:-default}"
-
-  local _corrected_cmd
-  if [ "$_source" = "state" ]; then
-    _corrected_cmd="rite --branch ${pr_base} ${issue_number}"
-  elif [ "$pr_base" = "main" ]; then
-    _corrected_cmd="rite ${issue_number}"
-  else
-    _corrected_cmd="rite --branch ${pr_base} ${issue_number}"
-  fi
-
-  print_error "Re-run with: ${_corrected_cmd}"
-  return 19
-}
-
-_output=$(handle_branch_mismatch "1496" "520" "main" "doc-refactor" "" "state" 2>&1 || true)
-
-# Must contain --branch main (not bare "rite 1496")
-echo "$_output" | grep -qF "rite --branch main 1496" || {
-  echo "FAIL: corrected command does not contain 'rite --branch main 1496'" >&2
-  echo "Output was: $_output" >&2
-  exit 1
-}
-
-# Must NOT be bare "rite 1496" (without --branch): that loops on the state file
-if echo "$_output" | grep -qE "^ERROR: Re-run with: rite 1496$"; then
-  echo "FAIL: bare 'rite 1496' (without --branch) would loop on the stale state file" >&2
-  echo "Output was: $_output" >&2
-  exit 1
-fi
-
-exit 0
-STUB_EOF
-  chmod +x "$_script"
-  run bash "$_script"
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: test script exited $status" >&2
-    echo "$output" >&2
+  # Must contain --branch main (not bare "rite 1496")
+  grep -qF "rite --branch main 1496" <<< "$_output" || {
+    echo "FAIL: corrected command does not contain 'rite --branch main 1496'"
+    echo "Output was: $_output"
     return 1
   }
+
+  # Must NOT be bare "rite 1496" (without --branch): that loops on the state file
+  if grep -qE "Re-run with:.*rite 1496$" <<< "$_output"; then
+    echo "FAIL: bare 'rite 1496' (without --branch) would loop on the stale state file"
+    echo "Output was: $_output"
+    return 1
+  fi
 }
 
 @test "behavioral: anti-loop: --base main handler clears state file; subsequent mismatch check passes" {
   # Full loop-escape simulation:
   #   1. Poison the state file (target-branch-1496.txt = doc-refactor)
-  #   2. PR base is "main"
-  #   3. handle_branch_mismatch prescribes "rite --branch main 1496"
-  #   4. The --base main handler runs: rm -f target-branch-1496.txt
-  #   5. resolve_target_branch now returns "main" (default; no state file)
-  #   6. compare main == main → NO mismatch → anti-loop confirmed
+  #   2. _clear_stale_target_state_file (the real --base handler production function) runs
+  #   3. State file is gone — resolve_target_branch returns "main" (default)
+  #   4. compare main == main → NO mismatch → anti-loop confirmed
   _tmpdir="$BATS_TEST_TMPDIR/anti-loop"
   mkdir -p "$_tmpdir"
   _issue_num="1496"
@@ -530,77 +431,20 @@ STUB_EOF
   # Step 1: poison the state file
   echo "doc-refactor" > "$_state_file"
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
-  _script="$BATS_TEST_TMPDIR/test-anti-loop.sh"
-  cat > "$_script" <<STUB_EOF
-#!/usr/bin/env bash
-set -euo pipefail
+  # Steps 2-4: the --base main handler uses the real production function
+  _clear_stale_target_state_file "$_issue_num" "main" "$_tmpdir"
 
-RITE_STATE_DIR="${_tmpdir}"
-ISSUE_NUMBER="${_issue_num}"
-
-# Simulate resolve_target_branch: sets RESOLVED_TARGET_BRANCH/SOURCE and echoes.
-# Called in the same shell (not subshell) so the variable assignments survive.
-resolve_target_branch() {
-  local _issue="\${1:-}"
-  local _state="\${RITE_STATE_DIR}/target-branch-\${_issue}.txt"
-  if [ -f "\$_state" ]; then
-    RESOLVED_TARGET_BRANCH="\$(cat "\$_state")"
-    RESOLVED_TARGET_SOURCE="state"
-    echo "\$RESOLVED_TARGET_BRANCH"
-  else
-    RESOLVED_TARGET_BRANCH="main"
-    RESOLVED_TARGET_SOURCE="default"
-    echo "\$RESOLVED_TARGET_BRANCH"
-  fi
-}
-RESOLVED_TARGET_SOURCE="default"
-
-# Step 2: first resolution hits the poisoned state file.
-# Call in the same shell (>/dev/null suppresses echo) so RESOLVED_TARGET_SOURCE is set.
-resolve_target_branch "\$ISSUE_NUMBER" >/dev/null
-_target1="\${RESOLVED_TARGET_BRANCH:-main}"
-[ "\$_target1" = "doc-refactor" ] || {
-  echo "FAIL: expected state file to return 'doc-refactor', got '\$_target1'" >&2
-  exit 1
-}
-[ "\$RESOLVED_TARGET_SOURCE" = "state" ] || {
-  echo "FAIL: expected RESOLVED_TARGET_SOURCE='state', got '\$RESOLVED_TARGET_SOURCE'" >&2
-  exit 1
-}
-
-# Step 3: mismatch fires (PR base=main, effective=doc-refactor)
-# Step 4: simulate --base main handler clearing the state file
-RITE_TARGET_BRANCH="main"
-if [ "\$RITE_TARGET_BRANCH" = "main" ] && [ -n "\${RITE_STATE_DIR:-}" ] && [ -n "\${ISSUE_NUMBER:-}" ]; then
-  rm -f "\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt" 2>/dev/null || true
-fi
-
-# Step 5: re-resolve (simulates check_branch_mismatch on the corrected-command run).
-# Same-shell call so RESOLVED_TARGET_BRANCH is set.
-resolve_target_branch "\$ISSUE_NUMBER" >/dev/null
-_target2="\${RESOLVED_TARGET_BRANCH:-main}"
-
-# Step 6: must now return "main" (no state file, default wins)
-[ "\$_target2" = "main" ] || {
-  echo "FAIL: after --base main handler, resolve returned '\$_target2' (expected 'main')" >&2
-  exit 1
-}
-
-# PR base is "main", effective target is now "main" → NO mismatch (anti-loop confirmed)
-[ "\$_target2" = "main" ] && echo "PASS: prescribed command breaks the loop"
-exit 0
-STUB_EOF
-  chmod +x "$_script"
-  run bash "$_script"
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: anti-loop simulation failed (exit $status)" >&2
-    echo "$output" >&2
+  # State file must be gone (resolve_target_branch would return default "main")
+  [ ! -f "$_state_file" ] || {
+    echo "FAIL: state file still present after _clear_stale_target_state_file with target=main"
+    echo "      Content: $(cat "$_state_file")"
     return 1
   }
-  echo "$output" | grep -qF "PASS: prescribed command breaks the loop" || {
-    echo "FAIL: anti-loop assertion not confirmed in output" >&2
-    echo "Output: $output" >&2
+
+  # Additional verification: idempotent — a second call is a no-op (file still gone)
+  _clear_stale_target_state_file "$_issue_num" "main" "$_tmpdir"
+  [ ! -f "$_state_file" ] || {
+    echo "FAIL: state file reappeared after second _clear_stale_target_state_file call"
     return 1
   }
 }

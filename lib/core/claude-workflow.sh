@@ -1971,6 +1971,38 @@ _supervised_commit_push() {
 }
 
 # ---------------------------------------------------------------------------
+# _write_target_branch_state_if_eligible ISSUE_NUMBER TARGET STATE_DIR
+#
+# Writes the per-issue target-branch state file so resumed runs can recover
+# the integration-branch target without re-passing --branch on each invocation.
+# Skipped for follow-up issues that carry a no-inherit marker (written by
+# assess-and-resolve.sh at filing time), preventing them from inheriting the
+# parent session's integration-branch target.
+#
+# Skipped when TARGET is "main" (default path: no state file needed).
+# Skipped when ISSUE_NUMBER or STATE_DIR is empty.
+#
+# This function is defined before the RITE_SOURCE_FUNCTIONS_ONLY guard so
+# behavioral tests can source this file and call it directly without launching
+# the real Claude Code dev session body.
+#
+# See: tests/regression/followup-target-inheritance.bats (no-inherit tests)
+# See: lib/core/assess-and-resolve.sh (writes the no-inherit marker)
+# ---------------------------------------------------------------------------
+_write_target_branch_state_if_eligible() {
+  local _wtse_issue="${1:-}"
+  local _wtse_target="${2:-}"
+  local _wtse_state_dir="${3:-}"
+
+  [ -n "$_wtse_state_dir" ] && [ -n "$_wtse_issue" ] && [ "$_wtse_target" != "main" ] || return 0
+
+  local _wtse_no_inherit_marker="${_wtse_state_dir}/followup-no-inherit-${_wtse_issue}.marker"
+  if [ ! -f "$_wtse_no_inherit_marker" ]; then
+    echo "$_wtse_target" > "${_wtse_state_dir}/target-branch-${_wtse_issue}.txt" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
 # can load only the function definitions above without executing the script body
 # (which calls gh/git, detects the provider CLI, navigates worktrees, and
@@ -2996,18 +3028,10 @@ If the changes are unrelated work, answer UNRELATED."
     # recover the target without requiring an explicit re-pass of the flag.
     # Path MUST be absolute — cwd moves into the worktree at the cd above.
     # Write-once Phase-1 semantics; cleanup on --undo/close is #1040.
-    # Gated on non-main so the default path stays byte-identical (no new file). # sharkrite-target-transport
-    # Skipped for follow-ups filed by assess-and-resolve.sh: those issues belong
-    # on main and must not inherit the parent batch's integration-branch target.
-    # assess-and-resolve.sh writes a no-inherit marker at filing time; we read it
-    # here to avoid stamping the follow-up with the batch env's RITE_TARGET_BRANCH.
-    if [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${ISSUE_NUMBER:-}" ] && [ "${RITE_TARGET_BRANCH:-main}" != "main" ]; then  # sharkrite-target-transport
-      _target_no_inherit_marker="${RITE_STATE_DIR}/followup-no-inherit-${ISSUE_NUMBER}.marker"
-      if [ ! -f "$_target_no_inherit_marker" ]; then
-        echo "$RITE_TARGET_BRANCH" > "${RITE_STATE_DIR}/target-branch-${ISSUE_NUMBER}.txt" 2>/dev/null || true  # sharkrite-target-transport
-      fi
-      unset _target_no_inherit_marker
-    fi
+    # Write the per-issue target-branch state file (skipped for follow-ups that
+    # carry a no-inherit marker to prevent integration-branch target inheritance).
+    # sharkrite-target-transport
+    _write_target_branch_state_if_eligible "${ISSUE_NUMBER:-}" "${RITE_TARGET_BRANCH:-main}" "${RITE_STATE_DIR:-}"  # sharkrite-target-transport
 
     # Check for relevant stashed changes and auto-apply if they're from this branch
     LATEST_STASH_BRANCH=$(git stash list 2>/dev/null | head -1 | grep -oE 'WIP on [^:]+|On [^:]+' | sed 's/.*On //' | sed 's/WIP on //' || echo "")
