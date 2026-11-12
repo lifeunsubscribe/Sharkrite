@@ -1358,20 +1358,27 @@ run_test_gate() {
               _nlint_files_arr+=("$project_root/$_nlf")
             done < <(printf '%s\n' "$_node_lint_src_files")
             if [ ${#_nlint_files_arr[@]} -gt 0 ]; then
+              # Preserve flags from scripts.lint (--max-warnings, --config, --rulesdir, etc.)
+              # so the scoped run matches the CI lint command's flag set (#1601).
+              local _nlint_flags_arr=() _nlf_tok
+              while IFS= read -r _nlf_tok; do
+                [ -n "$_nlf_tok" ] || continue
+                _nlint_flags_arr+=("$_nlf_tok")
+              done < <(_extract_node_lint_flags "$project_root")
               echo "[test-gate] Node lint: eslint scoped to ${#_nlint_files_arr[@]} changed file(s)" >> "$_gate_raw_sink"
               local _eslint_bin="$project_root/node_modules/.bin/eslint"
               if [ -x "$_eslint_bin" ]; then
-                { (cd "$project_root" && "$_eslint_bin" "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                { (cd "$project_root" && "$_eslint_bin" "${_nlint_flags_arr[@]+"${_nlint_flags_arr[@]}"}" "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
                   | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
               elif [ "$_node_lint_pm" = "pnpm" ]; then
                 # pnpm lint -- <files> passes args to the script but the script's own
                 # positional args (e.g. '.') survive, linting the whole repo.
                 # Use pnpm exec to invoke eslint directly with only the changed files.
-                { (cd "$project_root" && pnpm exec eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                { (cd "$project_root" && pnpm exec eslint "${_nlint_flags_arr[@]+"${_nlint_flags_arr[@]}"}" "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
                   | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
               else
                 # npm run lint -- <files> has the same '.' problem; use npx to bypass.
-                { (cd "$project_root" && npx --no-install eslint "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
+                { (cd "$project_root" && npx --no-install eslint "${_nlint_flags_arr[@]+"${_nlint_flags_arr[@]}"}" "${_nlint_files_arr[@]+"${_nlint_files_arr[@]}"}" 2>&1); echo $? > "$_node_lint_exit_f"; } \
                   | tee -a "$_node_lint_raw_f" >> "$_gate_raw_sink" || true
               fi
             else

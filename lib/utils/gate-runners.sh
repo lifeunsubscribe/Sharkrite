@@ -401,6 +401,102 @@ _resolve_node_lint_runner() {
 }
 
 # ---------------------------------------------------------------------------
+# _extract_node_lint_flags PROJECT_ROOT
+#
+# Extract flag arguments from scripts.lint, preserving --flag and --flag value
+# pairs while dropping the binary name and positional file/glob arguments.
+#
+# Args: $1=project_root
+# Echoes one token per line; callers read into an array with a while+read loop
+# (bash 3.2 portable — no mapfile/readarray).
+# Returns 0 always.
+#
+# Examples (scripts.lint → extracted flags):
+#   "eslint . --max-warnings 0"                  → "--max-warnings" / "0"
+#   "eslint --config .eslintrc.js src/"          → "--config" / ".eslintrc.js"
+#   "eslint . --ext .ts,.tsx"                    → "--ext" / ".ts,.tsx"
+#   "npx --no-install eslint . --max-warnings 0" → "--max-warnings" / "0"
+#   "eslint ."                                   → (empty)
+#
+# Token classification after locating the eslint binary:
+#   -* tokens               → flag (always included)
+#   tokens following a flag → included as the flag's value UNLESS the token is
+#                             a bare path/glob positional: ".", "..", "./"*,
+#                             "../"*, "/"*, contains "*" or "?", or ends with "/"
+#   other non-flag tokens   → positional file/glob argument (skipped)
+#
+# Resolves one level of `npm run <X>` delegation (mirrors _resolve_node_lint_runner).
+# Scans for the literal "eslint" token (or any token whose basename is "eslint")
+# so wrapper prefixes like `npx --no-install` are ignored.
+# ---------------------------------------------------------------------------
+_extract_node_lint_flags() {
+  local _pr="$1"
+  local _pkg="$_pr/package.json"
+  [ -f "$_pkg" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local _script
+  _script=$(jq -r '.scripts.lint // ""' "$_pkg" 2>/dev/null || echo "")
+  [ -n "$_script" ] || return 0
+
+  # Resolve one level of `npm run <X>` delegation — mirrors _resolve_node_lint_runner.
+  local _first
+  _first=$(printf '%s\n' "$_script" | awk '{print $1}' || echo "")
+  if [ "$_first" = "npm" ]; then
+    local _second _target _delegated
+    _second=$(printf '%s\n' "$_script" | awk '{print $2}' || echo "")
+    if [ "$_second" = "lint" ]; then
+      return 0  # self-referential loop guard
+    fi
+    if [ "$_second" = "run" ] || [ "$_second" = "run-script" ]; then
+      _target=$(printf '%s\n' "$_script" | awk '{print $3}' || echo "")
+    else
+      _target="$_second"
+    fi
+    if [ -n "$_target" ]; then
+      _delegated=$(jq -r --arg k "$_target" '.scripts[$k] // ""' "$_pkg" 2>/dev/null || echo "")
+      [ -n "$_delegated" ] && _script="$_delegated"
+    fi
+  fi
+
+  # Scan tokens: skip wrapper prefix by finding the eslint binary, then collect
+  # flags and their values. awk tokenizes without shell glob expansion.
+  local _found_binary=false _prev_is_flag=false _tok _tok_base
+  while IFS= read -r _tok; do
+    [ -n "$_tok" ] || continue
+    _tok_base="${_tok##*/}"
+    if [ "$_found_binary" = "false" ]; then
+      if [ "$_tok" = "eslint" ] || [ "$_tok_base" = "eslint" ]; then
+        _found_binary=true
+      fi
+      continue
+    fi
+    case "$_tok" in
+      -*)
+        printf '%s\n' "$_tok"
+        _prev_is_flag=true
+        ;;
+      *)
+        if [ "$_prev_is_flag" = "true" ]; then
+          # Include only when the token is not a bare path/glob positional.
+          case "$_tok" in
+            "." | ".." | "./"* | "../"* | "/"* | *"*"* | *"?"* | */)
+              _prev_is_flag=false
+              ;;
+            *)
+              printf '%s\n' "$_tok"
+              _prev_is_flag=false
+              ;;
+          esac
+        fi
+        ;;
+    esac
+  done < <(printf '%s\n' "$_script" | awk '{for(i=1;i<=NF;i++) print $i}' || true)
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # _normalize_eslint_output — convert eslint output to _parse_lint_line format
 # Args: $1 = raw eslint output file (read)
 #       $2 = lint findings file (APPEND normalized lines)

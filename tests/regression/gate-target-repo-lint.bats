@@ -1,16 +1,18 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/gate-runners.sh::_resolve_node_lint_runner|_normalize_eslint_output, lib/utils/test-gate.sh
+# sharkrite-test-covers: lib/utils/gate-runners.sh::_resolve_node_lint_runner|_normalize_eslint_output|_extract_node_lint_flags, lib/utils/test-gate.sh
 # sharkrite-gate-serial
 #
 # Issue #1545: target repo lint script (scripts.lint) integration with the
 # post-commit gate. Tests cover:
 #   - _resolve_node_lint_runner: extracts runner binary from scripts.lint
+#   - _extract_node_lint_flags: extracts flags from scripts.lint (#1601)
 #   - _normalize_eslint_output: eslint stylish and compact → file:line: [rule] msg
 #   - Integration: scripts.lint failing eslint → blocking [GATE] lint finding
 #   - Integration: scripts.lint absent → gate unaffected (no noise)
 #   - Integration: RITE_GATE_REPO_LINT=false → lint step skipped
 #   - Integration: eslint scoped to changed JS/TS files (not full repo)
 #   - Integration: all changed JS/TS files deleted → no error
+#   - Integration: flags from scripts.lint forwarded to scoped eslint run (#1601)
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -179,6 +181,72 @@ _run_gate() {
 }
 
 # =============================================================================
+# Unit: _extract_node_lint_flags (#1601)
+# =============================================================================
+
+@test "(_extract_node_lint_flags #1601) --max-warnings 0 extracted from 'eslint . --max-warnings 0'" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint . --max-warnings 0"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  echo "$output" | grep -q -- '--max-warnings'
+  echo "$output" | grep -q '^0$'
+}
+
+@test "(_extract_node_lint_flags #1601) --config .eslintrc.js extracted from 'eslint --config .eslintrc.js .'" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint --config .eslintrc.js ."}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  echo "$output" | grep -q -- '--config'
+  echo "$output" | grep -q '\.eslintrc\.js'
+  # bare '.' must NOT appear as the --config flag value
+  local _lines
+  _lines=$(printf '%s\n' "$output" | grep -c '^[.]$' || true)
+  [ "$_lines" -eq 0 ]
+}
+
+@test "(_extract_node_lint_flags #1601) --ext .ts,.tsx extracted from 'eslint . --ext .ts,.tsx'" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint . --ext .ts,.tsx"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  echo "$output" | grep -q -- '--ext'
+  echo "$output" | grep -q '\.ts,\.tsx'
+}
+
+@test "(_extract_node_lint_flags #1601) no flags for 'eslint .'" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint ."}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  [ -z "$output" ]
+}
+
+@test "(_extract_node_lint_flags #1601) npx wrapper prefix flags skipped, eslint flags preserved" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"npx --no-install eslint . --max-warnings 0"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  # --no-install is an npx flag — must NOT appear
+  local _no_install_count
+  _no_install_count=$(printf '%s\n' "$output" | grep -c -- '--no-install' || true)
+  [ "$_no_install_count" -eq 0 ]
+  # --max-warnings from the eslint portion must appear
+  echo "$output" | grep -q -- '--max-warnings'
+}
+
+@test "(_extract_node_lint_flags #1601) no package.json → empty output" {
+  rm -f "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  [ -z "$output" ]
+}
+
+@test "(_extract_node_lint_flags #1601) npm run delegation resolves flags from delegated script" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"npm run lint:check","lint:check":"eslint . --max-warnings 0"}}\n' \
+    > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  echo "$output" | grep -q -- '--max-warnings'
+  echo "$output" | grep -q '^0$'
+}
+
+# =============================================================================
 # Unit: _normalize_eslint_output
 # =============================================================================
 
@@ -340,6 +408,44 @@ RAW
   [ -f "$TEST_REPO/gate.json" ]
   run jq empty "$TEST_REPO/gate.json"
   [ "$status" -eq 0 ]
+}
+
+# =============================================================================
+# Integration: flags from scripts.lint forwarded to scoped eslint run (#1601)
+# =============================================================================
+
+@test "(#1601) flags from scripts.lint forwarded to scoped eslint invocation" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  # scripts.lint with --max-warnings 0 and --ext .ts
+  printf '{"name":"proj","version":"1.0.0","scripts":{"test":"jest --ci","lint":"eslint . --max-warnings 0 --ext .ts"}}\n' \
+    > "$TEST_REPO/package.json"
+  printf '{"lockfileVersion":3}\n' > "$TEST_REPO/package-lock.json"
+  printf 'const x = 1;\n' > "$TEST_REPO/index.ts"
+  (cd "$TEST_REPO" \
+    && git init -q && git config user.email t@t && git config user.name t \
+    && git add -A && git commit -qm base \
+    && git update-ref refs/remotes/origin/main HEAD \
+    && printf 'const x = 2;\n' > index.ts \
+    && git add -A && git commit -qm change) >/dev/null 2>&1
+  _write_jest_stub
+  _write_eslint_stub "record-args"
+  _write_npm_stub
+
+  _run_gate ""
+  [ -f "$TEST_REPO/gate.json" ] || skip "gate fixture did not run in this environment"
+  [ -f "$TEST_REPO/eslint-args.txt" ] || skip "eslint stub was not invoked"
+
+  local _args
+  _args=$(cat "$TEST_REPO/eslint-args.txt")
+
+  # Flags from scripts.lint must appear in the args received by eslint
+  echo "$_args" | grep -q -- '--max-warnings'
+  echo "$_args" | grep -q '^0$'
+  echo "$_args" | grep -q -- '--ext'
+  echo "$_args" | grep -q '\.ts'
+
+  # The changed file must also be present (scoping still works)
+  echo "$_args" | grep -q 'index\.ts'
 }
 
 # =============================================================================
