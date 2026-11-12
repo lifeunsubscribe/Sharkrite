@@ -596,7 +596,7 @@ drift_log_clear_doc() {
 # Public API (same naming pattern as the regular drift-log API above):
 #   adr_drift_log_append        — append one ADR drift entry (dedupe by (doc,assertion,PR) triple)
 #   adr_drift_log_entry_count   — count entries (per-doc or total)
-#   adr_drift_log_remove_entry  — remove exactly one (doc, assertion) entry
+#   adr_drift_log_remove_entry  — remove all (doc, assertion) entries (one per distinct PR)
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
@@ -788,7 +788,7 @@ adr_drift_log_entry_count() {
 # ---------------------------------------------------------------------------
 # adr_drift_log_remove_entry DOC ASSERTION
 #
-# Remove exactly the (DOC, ASSERTION) entry from the ADR drift store.
+# Remove all (DOC, ASSERTION) entries from the ADR drift store (one per distinct PR).
 # No-op when the file does not exist or no matching entry is found.
 # Returns 0 always.
 # ---------------------------------------------------------------------------
