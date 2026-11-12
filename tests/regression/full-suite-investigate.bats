@@ -49,6 +49,19 @@ RITE_PROJECT_ROOT="${RITE_PROJECT_ROOT:-$(pwd)}"
 RITE_LIB_DIR="${RITE_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")/../}"
 RITE_PROJECT_NAME="${RITE_PROJECT_NAME:-fake-project}"
 export RITE_DATA_DIR RITE_PROJECT_ROOT RITE_LIB_DIR RITE_PROJECT_NAME
+# Stub wait_pid_with_timeout/kill_process_tree so tests exercise the
+# wait_pid_with_timeout branch in bin/rite-full-suite (the real
+# implementations come from timeout.sh sourced by the real config.sh).
+# The stub behaves identically to the non-timeout path: returns the
+# child's real exit code and never returns 124 (timeout).
+wait_pid_with_timeout() {
+  local _pid="${1:-}"
+  [ -n "$_pid" ] || return 0
+  local _rc=0
+  wait "$_pid" 2>/dev/null || _rc=$?
+  return "$_rc"
+}
+kill_process_tree() { kill "${1:-}" 2>/dev/null || true; }
 STUB
 
   cat > "$_FAKE_PROJECT/lib/utils/colors.sh" << 'STUB'
@@ -733,6 +746,91 @@ EOF
   local _create_count
   _create_count=$(grep -c "issue create" "$_GH_CALL_LOG" || true)
   [ "$_create_count" -eq 1 ] || { echo "expected 1 issue create call, got $_create_count"; false; }
+}
+
+# ---------------------------------------------------------------------------
+# Test 8: wait_pid_with_timeout path — persistent serial re-run proceeds to
+# the next file (loop does not abort on a non-timeout failure exit).
+#
+# Regression for the original `if ! wait_pid_with_timeout` bug: that form
+# treated any non-zero exit (including a real failure exit=1) as a timeout
+# (exit=124), setting _serial_aborted=true and breaking the loop after the
+# first persistently-failing file.  With the fix (_wpt_rc capture + only
+# 124 is a timeout), a persistently-failing file sets _serial_file_exit=1
+# and the loop continues to the next file.
+#
+# The config.sh stub now defines wait_pid_with_timeout/kill_process_tree so
+# this test exercises the real code path, not the plain-wait fallback.
+# ---------------------------------------------------------------------------
+@test "investigate: wait_pid_with_timeout does not abort loop on persistent failure" {
+  _write_lib_stubs
+  _write_make_stub
+
+  local persist_A="wpt-persistent-A"
+  local persist_B="wpt-persistent-B"
+
+  mkdir -p "$_FAKE_PROJECT/bin"
+
+  # Two separate bats files so the serial re-run loop must process both.
+  # If the loop aborted after fileA (the old bug), persist_B would be absent
+  # from the report, making the final grep assertion fail.
+  _write_fake_bats_test "$_FAKE_PROJECT/tests" "wptA.bats" "$persist_A"
+  _write_fake_bats_test "$_FAKE_PROJECT/tests" "wptB.bats" "$persist_B"
+
+  # bats stub:
+  #   parallel run  → both tests fail (with file location hints for the mapper)
+  #   serial re-run → specific file still fails (persistent)
+  cat > "$_FAKE_PROJECT/bin/bats" << EOF
+#!/bin/bash
+if echo "\$*" | grep -q -- "-r tests/"; then
+  printf '1..2\nnot ok 1 %s\n  # (in test file %s/tests/wptA.bats, line 2)\nnot ok 2 %s\n  # (in test file %s/tests/wptB.bats, line 2)\n' \
+    "$persist_A" "$_FAKE_PROJECT" "$persist_B" "$_FAKE_PROJECT"
+  exit 1
+elif echo "\$*" | grep -qF "wptA"; then
+  printf '1..1\nnot ok 1 %s\n  # assertion: false\n' "$persist_A"
+  exit 1
+else
+  printf '1..1\nnot ok 1 %s\n  # assertion: false\n' "$persist_B"
+  exit 1
+fi
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  cat > "$_FAKE_PROJECT/bin/gh" << EOF
+#!/bin/bash
+echo "\$@" >> "$_GH_CALL_LOG"
+if echo "\$*" | grep -q "issue list"; then
+  echo "null"
+  exit 0
+fi
+if echo "\$*" | grep -q "issue create"; then
+  echo "https://github.com/owner/repo/issues/42"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/gh"
+
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash "$_FULL_SUITE_SCRIPT" --investigate
+
+  # Report must name BOTH persistent tests — proving the loop processed both
+  # files and did not abort after the first (non-timeout) failure.
+  local _report
+  _report=$(find "$_FAKE_PROJECT/.rite/reports" -name "full-suite-*.md" | head -1 || true)
+  [ -n "$_report" ]
+  grep -q "$persist_A" "$_report"
+  grep -q "$persist_B" "$_report"
+
+  # Remediation issue must have been filed
+  local _create_count
+  _create_count=$(grep -c "issue create" "$_GH_CALL_LOG" || true)
+  [ "$_create_count" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------

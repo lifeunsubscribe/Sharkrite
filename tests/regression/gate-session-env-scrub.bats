@@ -75,17 +75,18 @@ setup() {
 }
 
 @test "structural: _bats_sandbox is used at both the main and flake-retry invocation sites" {
-  # The main path (6 bats calls in test-gate.sh) and the flake-retry (1 call in
-  # gate-verdict.sh) must all use _bats_sandbox — a single definition in
-  # run_test_gate covers both because _gate_flake_retry_pass is called from within
-  # run_test_gate where _bats_sandbox is defined as a local (bash dynamic scoping).
-  # After the #1236 split, the flake-retry call lives in gate-verdict.sh.
+  # The main path (4 _bats_sandbox + 2 _ser_bats_sandbox in test-gate.sh) and the
+  # flake-retry (1 _bats_sandbox in gate-verdict.sh) must all use a sandbox.
+  # Serial invocations use _ser_bats_sandbox (derived from _bats_sandbox, adds
+  # -u BATS_TEST_TIMEOUT) — both are locally defined within run_test_gate so
+  # _gate_flake_retry_pass sees _bats_sandbox via bash dynamic scoping.
   _uses_main=$(grep -c '"${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh" || true)
+  _uses_ser=$(grep -c '"${_ser_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh" || true)
   _uses_flake=$(grep -c '"${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/gate-verdict.sh" || true)
-  _uses=$(( ${_uses_main:-0} + ${_uses_flake:-0} ))
-  # 6 main + 1 flake-retry = 7 minimum
+  _uses=$(( ${_uses_main:-0} + ${_uses_ser:-0} + ${_uses_flake:-0} ))
+  # 4 _bats_sandbox + 2 _ser_bats_sandbox + 1 flake-retry = 7 minimum
   [ "${_uses:-0}" -ge 7 ] || {
-    echo "FAIL: expected ≥7 _bats_sandbox uses (6 test-gate.sh + 1 gate-verdict.sh), got ${_uses}" >&2
+    echo "FAIL: expected ≥7 sandbox uses (4 _bats_sandbox + 2 _ser_bats_sandbox in test-gate.sh + 1 gate-verdict.sh), got ${_uses}" >&2
     return 1
   }
 }

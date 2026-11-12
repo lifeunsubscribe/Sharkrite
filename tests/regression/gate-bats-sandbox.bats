@@ -57,7 +57,11 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
 
 @test "structural: every bats invocation applies the sandbox and stdin redirect" {
   # 6 invocation sites: full/parallel/serial x pretty/tap-fallback.
-  _sandbox_uses=$(grep -c '"\${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh")
+  # Serial sites use _ser_bats_sandbox (derived from _bats_sandbox, unsets BATS_TEST_TIMEOUT
+  # so a failing serial test doesn't stall for the full per-test ceiling).
+  _sandbox_uses_main=$(grep -c '"\${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh" || true)
+  _sandbox_uses_ser=$(grep -c '"\${_ser_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh" || true)
+  _sandbox_uses=$(( ${_sandbox_uses_main:-0} + ${_sandbox_uses_ser:-0} ))
   [ "$_sandbox_uses" -ge 6 ]
   _stdin_redirects=$(grep -c '< /dev/null' "${RITE_LIB_DIR}/utils/test-gate.sh")
   [ "$_stdin_redirects" -ge 6 ]

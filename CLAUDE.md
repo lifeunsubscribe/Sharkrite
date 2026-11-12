@@ -1002,7 +1002,7 @@ systemctl --user list-timers | grep sharkrite
 
 **Configuration:**
 - `RITE_BATS_JOBS=N` — parallelism override (auto-detects via GNU parallel by default)
-- `RITE_BATS_TEST_TIMEOUT=N` — per-test ceiling in seconds (default: 300 for full-suite; the gate uses 120 — both override via this same var)
+- `RITE_BATS_TEST_TIMEOUT=N` — per-test ceiling in seconds (default: 300 for full-suite; the gate uses 120 — both override via this same var). Applies to the **parallel** lane only; the gate's serial lane and the full-suite investigate serial re-run unset `BATS_TEST_TIMEOUT` and are bounded as a whole by `wait_pid_with_timeout` / `_bats_watchdog` instead (#1749).
 - `RITE_FULL_SUITE_MIN_DEADLINE=N` — floor for the window-end deadline in seconds (default: 1200; set to a small value in tests to exercise the deadline guard without waiting 20 min)
 - `RITE_FULL_SUITE_REPORT_MODEL` — model for the investigation report interpretation (default: `claude-sonnet-4-6`)
 - Parallelism: auto-detected (uses `nproc`/`sysctl hw.ncpu` when GNU parallel is installed)

@@ -776,6 +776,14 @@ run_test_gate() {
       # No --jobs flag: runs each file's tests sequentially. Ensures load-sensitive tests
       # are not starved of CPU/IO by other concurrent bats workers. bats does not require
       # GNU parallel for single-file sequential execution.
+      #
+      # Serial lane strips BATS_TEST_TIMEOUT from the env: bats-core 1.13 waits out
+      # the full per-test ceiling after a FAILING test when run without --jobs
+      # (measured 2026-11-11: `{ false; }` with BATS_TEST_TIMEOUT=120 takes 120s
+      # serially, unset takes 0s).  The parallel lane keeps the timeout for
+      # swallowed-test detection; the serial lane uses the existing _bats_watchdog
+      # (gtimeout/timeout) as the hung-test guard instead.
+      local _ser_bats_sandbox=("${_bats_sandbox[0]}" "-u" "BATS_TEST_TIMEOUT" "${_bats_sandbox[@]:1}")
       local _ser_exit=0
       if [ "$_serial_count" -gt 0 ]; then
         _gate_status "[test-gate] Running bats on ${_serial_count} serial file(s) (no --jobs, load-sensitive)..."
@@ -783,7 +791,7 @@ run_test_gate() {
           local _ser_tap_dir
           _ser_tap_dir=$(mktemp -d "/tmp/rite_gate_ser_tap_${PR_NUMBER:-0}_$$_XXXXXX")
           { (cd "$project_root" && BATS_REPORT_FILENAME=report.tap \
-              "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
+              "${_ser_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
               bats -F pretty --report-formatter tap --output "$_ser_tap_dir" \
               "${_serial_files[@]+"${_serial_files[@]}"}") \
               < /dev/null 2>&1; \
@@ -792,7 +800,7 @@ run_test_gate() {
           cat "$_ser_tap_dir/report.tap" >> "$_tests_raw_file" 2>/dev/null || true
           rm -rf "$_ser_tap_dir"
         else
-          { (cd "$project_root" && "${_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
+          { (cd "$project_root" && "${_ser_bats_sandbox[@]}" "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
               bats "${_serial_files[@]+"${_serial_files[@]}"}" < /dev/null 2>&1); echo $? > "$_bats_exit_file"; } \
             | tee -a "$_tests_raw_file" >> "$_gate_raw_sink" || true
         fi
