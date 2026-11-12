@@ -56,6 +56,6 @@ for _r42_file in "${SHELL_FILES[@]}"; do
       "single-variable echo/printf piped to grep -q: under pipefail, grep exits on first match, producer receives SIGPIPE → exit 141, read as no-match — use: grep -q[flags] 'pattern' <<< \"\$VAR\""
   # sharkrite-lint disable PRODUCER_PIPE_TO_GREP_Q - Reason: the grep below is scanning for the bad pattern in source files; the producer here is a command (grep -nE on a file), not a variable echo
   done < <(grep -nE \
-    '(echo[[:space:]]+"[^"]*\$[^"]*"|printf[[:space:]]+'"'"'%s\\n'"'"'[[:space:]]+"[^"]*\$[^"]*")[[:space:]]*\|[[:space:]]*grep[[:space:]]+-q' \
+    '(echo[[:space:]]+"[^"]*\$[^"]*"|printf[[:space:]]+'"'"'%s(\\n)?'"'"'[[:space:]]+"[^"]*\$[^"]*")[[:space:]]*\|[[:space:]]*grep[[:space:]]+-[[:alpha:]]*q' \
     "$_r42_file" 2>/dev/null || true)
 done

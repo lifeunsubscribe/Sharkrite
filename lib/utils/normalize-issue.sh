@@ -375,15 +375,15 @@ _detect_commit_prefix() {
   local text="$1"
   local prefix="feat"
 
-  if echo "$text" | grep -iqE '(fix|bug|issue|error)'; then
+  if grep -iqE '(fix|bug|issue|error)' <<< "$text"; then
     prefix="fix"
-  elif echo "$text" | grep -iqE '(docs|documentation|readme)'; then
+  elif grep -iqE '(docs|documentation|readme)' <<< "$text"; then
     prefix="docs"
-  elif echo "$text" | grep -iqE '(test|testing|spec)'; then
+  elif grep -iqE '(test|testing|spec)' <<< "$text"; then
     prefix="test"
-  elif echo "$text" | grep -iqE '(refactor|cleanup|improve)'; then
+  elif grep -iqE '(refactor|cleanup|improve)' <<< "$text"; then
     prefix="refactor"
-  elif echo "$text" | grep -iqE '(chore|setup|config)'; then
+  elif grep -iqE '(chore|setup|config)' <<< "$text"; then
     prefix="chore"
   fi
 

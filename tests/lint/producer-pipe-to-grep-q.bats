@@ -92,6 +92,38 @@ EOF
   [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
 }
 
+@test "PRODUCER_PIPE_TO_GREP_Q: fires on echo \"\$VAR\" | grep -iqE (flag order not starting with q)" {
+  cat > "$SH_DIR/bad-echo-iq.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+detect_category() {
+  local text="$1"
+  if echo "$text" | grep -iqE '(fix|bug|issue|error)'; then
+    echo "fix"
+  fi
+}
+EOF
+  SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+}
+
+@test "PRODUCER_PIPE_TO_GREP_Q: fires on printf '%s' \"\$VAR\" | grep -q (printf without newline)" {
+  cat > "$SH_DIR/bad-printf-no-newline.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+check_trusted() {
+  local content="$1"
+  if printf '%s' "$content" | grep -q "has not been trusted"; then
+    echo "untrusted"
+  fi
+}
+EOF
+  SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+}
+
 @test "PRODUCER_PIPE_TO_GREP_Q: fires on echo \"\${VAR:-}\" | grep -q (default form)" {
   cat > "$SH_DIR/bad-echo-default.sh" <<'EOF'
 #!/bin/bash
