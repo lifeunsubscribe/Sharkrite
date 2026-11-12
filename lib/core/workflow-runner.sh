@@ -36,6 +36,13 @@ if [ "${_RITE_WORKFLOW_RUNNER_LOADED:-}" = "true" ]; then
 fi
 _RITE_WORKFLOW_RUNNER_LOADED=true
 
+# Source config and library modules only when this file is used as an
+# executable (not sourced for functions by tests). Functions defined below
+# depend on library helpers — callers must stub those when sourcing with
+# RITE_SOURCE_FUNCTIONS_ONLY=1 (see: CLAUDE.md → "Pattern for executable
+# files that are also sourced by tests").
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" != "1" ]; then
+
 # ===================================================================
 # CONFIGURATION
 # ===================================================================
@@ -104,6 +111,8 @@ source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
 source "$RITE_LIB_DIR/utils/timeout.sh"
 ensure_timeout_cmd
+
+fi  # end RITE_SOURCE_FUNCTIONS_ONLY != "1" guard
 
 # ===================================================================
 # GRACEFUL EXIT HANDLING
@@ -2290,6 +2299,37 @@ handle_pr_number_refused() {
 }
 
 # ---------------------------------------------------------------------------
+# _clear_stale_target_state_file ISSUE_NUMBER NEW_TARGET [STATE_DIR]
+#
+# Removes the per-issue target-branch state file when the recorded tier-2
+# value differs from NEW_TARGET (or when the file is empty). Called by the
+# --base handler in main() to break the loop where a stale state file would
+# cause check_branch_mismatch to refuse the same run on every invocation.
+#
+# Covers both the main-revert scenario (state file holds "integration-A",
+# user passes "--base main") and the non-main-to-non-main case (state file
+# holds "integration-A", user passes "--base integration-B").
+#
+# Returns 0 always (even when no file exists or deletion fails).
+#
+# See: tests/regression/followup-target-inheritance.bats (anti-loop tests)
+# ---------------------------------------------------------------------------
+_clear_stale_target_state_file() {
+  local _cstsf_issue="${1:-}"
+  local _cstsf_new_target="${2:-}"
+  local _cstsf_state_dir="${3:-${RITE_STATE_DIR:-}}"
+
+  [ -n "$_cstsf_state_dir" ] && [ -n "$_cstsf_issue" ] || return 0
+
+  local _cstsf_state_file="${_cstsf_state_dir}/target-branch-${_cstsf_issue}.txt"
+  local _cstsf_recorded
+  _cstsf_recorded=$(cat "$_cstsf_state_file" 2>/dev/null || true)
+  if { [ -n "$_cstsf_recorded" ] && [ "$_cstsf_new_target" != "$_cstsf_recorded" ]; } || [ -z "$_cstsf_recorded" ]; then
+    rm -f "$_cstsf_state_file" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # handle_branch_mismatch ISSUE_NUMBER PR_NUMBER PR_BASE EFFECTIVE_TARGET [MODE_SUFFIX] [SOURCE]
 #
 # Refusal handler when an existing PR's baseRefName differs from the effective
@@ -3863,23 +3903,10 @@ main() {
         RITE_TARGET_BRANCH="$2"
         export RITE_TARGET_BRANCH  # sharkrite-target-transport
         # Clear a stale state file whenever the explicit --base target differs from
-        # the recorded tier-2 value. Covers both the main-revert scenario (the
-        # primary documented case: integration stamp → --base main) and the
-        # non-main-to-non-main case where a poisoned state file containing "A"
-        # would silently defeat "--base B" or loop on exit 19 with no file-system
-        # escape. handle_branch_mismatch() prescribes "rite --branch <pr_base> N"
-        # for state-file mismatches; this handler makes that command effective for
-        # any target, not just main.
-        # Only fires in single-issue mode (batch-process-issues.sh never passes
-        # --base to workflow-runner.sh; the batch uses exported RITE_TARGET_BRANCH).
-        if [ -n "${RITE_STATE_DIR:-}" ] && [ -n "${issue_number:-}" ]; then
-          local _base_state_file="${RITE_STATE_DIR}/target-branch-${issue_number}.txt"
-          local _base_recorded
-          _base_recorded=$(cat "$_base_state_file" 2>/dev/null || true)
-          if [ -n "$_base_recorded" ] && [ "${RITE_TARGET_BRANCH}" != "$_base_recorded" ] || [ -z "$_base_recorded" ]; then
-            rm -f "$_base_state_file" 2>/dev/null || true
-          fi
-        fi
+        # the recorded tier-2 value. Only fires in single-issue mode
+        # (batch-process-issues.sh never passes --base to workflow-runner.sh;
+        # the batch uses exported RITE_TARGET_BRANCH).
+        _clear_stale_target_state_file "${issue_number:-}" "$RITE_TARGET_BRANCH"
         shift  # consume the value (the loop's shift below consumes the flag)
         ;;
       *)
@@ -4121,6 +4148,14 @@ main() {
     exit 1
   fi
 }
+
+# Guard: when sourced with RITE_SOURCE_FUNCTIONS_ONLY=1, stop here so tests
+# can load only the function definitions above without executing the program
+# body (which requires git, gh, full environment setup, etc.).
+# See: CLAUDE.md → "Pattern for executable files that are also sourced by tests"
+if [ "${RITE_SOURCE_FUNCTIONS_ONLY:-}" = "1" ]; then
+  return 0 2>/dev/null || true
+fi
 
 # Run main if executed directly (not sourced)
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
