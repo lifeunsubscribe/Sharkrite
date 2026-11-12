@@ -515,6 +515,7 @@ sync_issue_branch() {
       elif [ "$_resolver_rc" -eq 18 ]; then
         # Auth expired — propagate so the batch halts rather than silently becoming a "conflict" skip.
         print_error "Issue #${_issue_n}: provider auth expired during conflict resolution — run: claude /login"
+        _SYNC_ISSUE_OUTCOME="auth_failure"
         _diag "SYNC_ISSUE issue=${_issue_n} outcome=auth_failure"
         return 18
       fi
