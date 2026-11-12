@@ -113,14 +113,14 @@ while IFS= read -r stash_line; do
 
   # Check if this matches any legacy pattern
   for pattern in "${LEGACY_PATTERNS[@]+"${LEGACY_PATTERNS[@]}"}"; do
-    if echo "$stash_line" | grep -qF "$pattern"; then
+    if grep -qF "$pattern" <<< "$stash_line"; then
       is_legacy=true
       break
     fi
   done
 
   # Also exclude already-marked stashes
-  if echo "$stash_line" | grep -qF "[${RITE_MARKER_STASH}]"; then
+  if grep -qF "[${RITE_MARKER_STASH}]" <<< "$stash_line"; then
     is_legacy=false
   fi
 

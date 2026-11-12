@@ -183,7 +183,7 @@ _compute_bats_jobs() {
   # Explicit override wins unconditionally — census scaling is bypassed.
   if [ -n "${RITE_BATS_JOBS:-}" ]; then
     # Sanitize: must be a positive integer
-    if echo "${RITE_BATS_JOBS}" | grep -qE '^[1-9][0-9]*$'; then
+    if grep -qE '^[1-9][0-9]*$' <<< "${RITE_BATS_JOBS}"; then
       echo "${RITE_BATS_JOBS}"
       return 0
     fi
@@ -445,7 +445,7 @@ _bats_file_matches_changed() {
           for _fn in "${_fns[@]+"${_fns[@]}"}"; do
             _fn="${_fn# }"; _fn="${_fn% }"
             [ -z "$_fn" ] && continue
-            if printf '%s\n' "$_changed_fns" | grep -qxF "$_fn"; then
+            if grep -qxF "$_fn" <<< "$_changed_fns"; then
               return 0
             fi
           done

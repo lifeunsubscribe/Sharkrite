@@ -866,11 +866,11 @@ ${_tag}"
     local _ntag_line _ntag
     while IFS= read -r _ntag_line; do
       # Match "  - tagname:" or "- tagname:" patterns
-      if echo "$_ntag_line" | grep -qE '^[[:space:]]*-[[:space:]]+[a-zA-Z0-9_-]+:'; then
+      if grep -qE '^[[:space:]]*-[[:space:]]+[a-zA-Z0-9_-]+:' <<< "$_ntag_line"; then
         _ntag=$(echo "$_ntag_line" | grep -oE '[a-zA-Z0-9_-]+:' | head -1 | sed 's/:$//' || true)
         [ -z "$_ntag" ] && continue
         # Add only if not already in all_tags
-        if ! printf '%s\n' "$all_tags" | grep -qxF "$_ntag" 2>/dev/null; then
+        if ! grep -qxF "$_ntag" <<< "$all_tags" 2>/dev/null; then
           if [ -z "$all_tags" ]; then
             all_tags="$_ntag"
           else

@@ -100,7 +100,7 @@ _parse_lint_line() {
   local raw_line="$1"
   # gcc format (-f gcc): path/file.sh:LINE:COL: level: message [SCnnnn]
   # E.g.: lib/foo.sh:42:5: warning: Double quote to prevent globbing. [SC2086]
-  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:[0-9]+:.*\[SC[0-9]+\]'; then
+  if grep -qE '^[^:]+:[0-9]+:[0-9]+:.*\[SC[0-9]+\]' <<< "$raw_line"; then
     local file line rule message
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
@@ -118,7 +118,7 @@ _parse_lint_line() {
   fi
   # custom lint tool format: FILE:LINE: [RULE] message
   # E.g.: lib/bar.sh:88: [BARE_MARKER_GREP] Unanchored marker grep
-  if echo "$raw_line" | grep -qE '^[^:]+:[0-9]+:.*\[[a-zA-Z0-9@_/.-]+\]'; then
+  if grep -qE '^[^:]+:[0-9]+:.*\[[a-zA-Z0-9@_/.-]+\]' <<< "$raw_line"; then
     local file line rule message
     file=$(echo "$raw_line" | cut -d: -f1 || true)
     line=$(echo "$raw_line" | cut -d: -f2 || true)
@@ -136,7 +136,7 @@ _parse_lint_line() {
   # E.g. after stripping: ✗ lib/core/docs-command.sh:3109 - RAW_MARKER_LITERAL: some message
   local _pl_stripped
   _pl_stripped=$(printf '%s' "$raw_line" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' || true)
-  if printf '%s\n' "$_pl_stripped" | grep -qE '^✗ [^:]+:[0-9]+ - [A-Z0-9_]+:'; then
+  if grep -qE '^✗ [^:]+:[0-9]+ - [A-Z0-9_]+:' <<< "$_pl_stripped"; then
     local file line rule message
     # Strip the leading "✗ " then split on ":" to get file and line.
     file=$(printf '%s\n' "$_pl_stripped" | sed 's/^✗ //' | cut -d: -f1 || true)
@@ -243,7 +243,7 @@ _gate_flake_retry_pass() {
   while IFS= read -r _fr_name; do
     [ -z "$_fr_name" ] && continue
     local _fr_clean="${_fr_name%% # *}"
-    if printf '%s\n' "$_fr_persist" | grep -qxF "$_fr_clean"; then
+    if grep -qxF "$_fr_clean" <<< "$_fr_persist"; then
       _fr_persisted=$((_fr_persisted + 1))
       continue
     fi
@@ -278,7 +278,7 @@ _gate_flake_retry_pass() {
 _parse_bats_failure_line() {
   local raw_line="$1"
   # bats failure format: "not ok N test description"
-  if echo "$raw_line" | grep -qE '^not ok [0-9]+ '; then
+  if grep -qE '^not ok [0-9]+ ' <<< "$raw_line"; then
     local test_name _stripped _reason
     # Strip the "not ok N " prefix, then ANSI/control bytes + JSON-escape via the
     # shared helper (portable across BSD/GNU sed — the old inline hex-range sed

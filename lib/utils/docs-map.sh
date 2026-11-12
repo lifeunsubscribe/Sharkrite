@@ -866,8 +866,8 @@ docs_map_adr_links() {
     _rel_path="${_resolved#"${project_root}/"}"
 
     # Emit only if in the docs map and not already emitted (dedup).
-    if printf '%s\n' "$_map_paths" | grep -qxF "$_rel_path" 2>/dev/null; then
-      if ! printf '%s\n' "$_emitted" | grep -qxF "$_rel_path" 2>/dev/null; then
+    if grep -qxF "$_rel_path" <<< "$_map_paths" 2>/dev/null; then
+      if ! grep -qxF "$_rel_path" <<< "$_emitted" 2>/dev/null; then
         printf '%s\n' "$_rel_path"
         _emitted="${_emitted}${_rel_path}
 "

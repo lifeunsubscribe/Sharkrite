@@ -1284,7 +1284,7 @@ if [ "$MODE" = "init" ]; then
       if [ -d "$RITE_PROJECT_ROOT/$dir" ]; then
         while IFS= read -r f; do
           _rel="${f#$RITE_PROJECT_ROOT/}"
-          if ! echo "$_rel" | grep -qE "$_skip_pattern"; then
+          if ! grep -qE "$_skip_pattern" <<< "$_rel"; then
             _doc_candidates+=("$_rel")
           fi
         done < <(find "$RITE_PROJECT_ROOT/$dir" -maxdepth 3 -type f \( -name "*.md" -o -name "*.txt" -o -name "*.rst" \) 2>/dev/null | sort)

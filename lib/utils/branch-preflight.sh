@@ -143,7 +143,7 @@ _preflight_has_only_init_commit() {
 
   # Exactly one commit — check if it's the init commit.
   # Trailing ([^0-9]|$) prevents #141 from matching a #1419 commit subject.
-  if echo "$commits_ahead" | grep -qE "chore: initialize work on #${issue_number}([^0-9]|$)"; then
+  if grep -qE "chore: initialize work on #${issue_number}([^0-9]|$)" <<< "$commits_ahead"; then
     return 0
   fi
 
@@ -187,13 +187,13 @@ preflight_auto_recover_empty() {
     pr_state="${pr_state:-}"
 
     # Validate pr_state before checking (protect against paste/gh failures)
-    if [ -z "$pr_state" ] || ! echo "$pr_state" | grep -qE '^(true|false),(OPEN|CLOSED|MERGED)$'; then
+    if [ -z "$pr_state" ] || ! grep -qE '^(true|false),(OPEN|CLOSED|MERGED)$' <<< "$pr_state"; then
       print_warning "Failed to detect PR state for issue #${issue_number:-?} — skipping PR cleanup"
-    elif echo "$pr_state" | grep -qE "(CLOSED|MERGED)"; then
+    elif grep -qE "(CLOSED|MERGED)" <<< "$pr_state"; then
       # PR already closed/merged — safe to proceed with branch deletion
       _preflight_pr_close_ok=true
       print_info "Issue #${issue_number:-?}'s PR is already closed/merged"
-    elif echo "$pr_state" | grep -q "true"; then
+    elif grep -q "true" <<< "$pr_state"; then
       # Draft PR — check if it has zero additions (empty)
       local additions
       additions=$(gh_safe pr view "$pr_number" --json additions --jq '.additions' || true)
@@ -214,7 +214,7 @@ preflight_auto_recover_empty() {
         if [ "${_close_exit:-1}" -eq 0 ]; then
           _preflight_pr_close_ok=true
           print_info "Closed PR for issue #${issue_number:-?}"
-        elif echo "$_close_out" | grep -qiE "already closed|already merged|no open pull request|Pull request .* is already closed"; then
+        elif grep -qiE "already closed|already merged|no open pull request|Pull request .* is already closed" <<< "$_close_out"; then
           # NOTE: "not found" is intentionally excluded — it can match genuine API errors
           # (e.g. wrong PR number, network issue) and would falsely permit branch deletion
           # while the PR is still OPEN, re-introducing the race condition this code guards against.

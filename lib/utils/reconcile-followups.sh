@@ -246,7 +246,7 @@ _reconcile_pool() {
       _skipped=$((_skipped+1)); continue
     fi
     _changed=$(git -C "$RITE_PROJECT_ROOT" diff --name-only "${_sha}..${_target_ref}" -- 2>/dev/null || true)
-    if ! echo "${_changed:-}" | grep -qxF "$_file"; then _skipped=$((_skipped+1)); continue; fi
+    if ! grep -qxF "$_file" <<< "${_changed:-}"; then _skipped=$((_skipped+1)); continue; fi
     if [ "$_ok" -eq 0 ]; then _skipped=$((_skipped+1)); continue; fi
     _region=$(_get_code_region "$_file" "$_loc" 2>/dev/null || true)
     _block=$(followup_pool_entry_block "$_body" "$_key")
@@ -344,7 +344,7 @@ reconcile_batch_followups() {
 
     # ── Deferred-findings pool: reconcile per entry, not per issue ──────────
     # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_FOLLOWUP_POOL is a marker constant defined in lib/utils/markers.sh; not a user config var.
-    if echo "${_issue_body:-}" | grep -qE "${RITE_MARKER_FOLLOWUP_POOL}:[A-Za-z0-9._-]+"; then
+    if grep -qE "${RITE_MARKER_FOLLOWUP_POOL}:[A-Za-z0-9._-]+" <<< "${_issue_body:-}"; then
       if [ "$_provider_ok" = "false" ]; then
         _provider_unavail_list="${_provider_unavail_list}#${_fu_num} "
         _skipped=$(( _skipped + 1 ))
@@ -366,12 +366,12 @@ reconcile_batch_followups() {
     # ── Tier 1: deterministic filter — both markers required ─────────────────
     # Format-anchored guards (BARE_MARKER_GREP rule): require [0-9a-f]+ / [^-]+
     # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_FINDING_SHA is a marker constant defined in lib/utils/markers.sh; not a user config var; must keep RITE_ prefix for naming consistency with the rest of the marker set.
-    if ! echo "${_issue_body:-}" | grep -qE "${RITE_MARKER_FINDING_SHA}:[0-9a-f]{7,}"; then
+    if ! grep -qE "${RITE_MARKER_FINDING_SHA}:[0-9a-f]{7,}" <<< "${_issue_body:-}"; then
       _skipped=$(( _skipped + 1 ))
       continue
     fi
     # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_FINDING_LOCATION is a marker constant defined in lib/utils/markers.sh; not a user config var; must keep RITE_ prefix for naming consistency with the rest of the marker set.
-    if ! echo "${_issue_body:-}" | grep -qE "${RITE_MARKER_FINDING_LOCATION}:[^-]"; then
+    if ! grep -qE "${RITE_MARKER_FINDING_LOCATION}:[^-]" <<< "${_issue_body:-}"; then
       _skipped=$(( _skipped + 1 ))
       continue
     fi
@@ -417,7 +417,7 @@ reconcile_batch_followups() {
     _changed_files=$(git -C "$RITE_PROJECT_ROOT" diff --name-only \
       "${_finding_sha}..${_target_ref}" -- 2>/dev/null || true)
 
-    if ! echo "${_changed_files:-}" | grep -qxF "$_finding_file"; then
+    if ! grep -qxF "$_finding_file" <<< "${_changed_files:-}"; then
       # Finding location unchanged — leave alone, zero LLM calls
       _skipped=$(( _skipped + 1 ))
       continue

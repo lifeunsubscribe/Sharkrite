@@ -90,7 +90,7 @@ assess_pr_review() {
 
   # Validate this is actually a code review (not arbitrary bot comment)
   # Accept: section markers OR sharkrite local review marker
-  if ! echo "$LATEST_REVIEW" | grep -qiE "##? Code Review|##+ Overview|${RITE_MARKER_REVIEW}"; then
+  if ! grep -qiE "##? Code Review|##+ Overview|${RITE_MARKER_REVIEW}" <<< "$LATEST_REVIEW"; then
     echo "⚠️  Comment found but doesn't appear to be a code review"
     echo "   (Missing 'Code Review' or 'Overview' section markers)"
     return 3  # Exit code 3: invalid format

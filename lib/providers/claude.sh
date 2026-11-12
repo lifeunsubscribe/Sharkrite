@@ -637,25 +637,25 @@ claude_provider_detect_error() {
   local exit_code="$2"
 
   # AJV/OAuth bug — GitHub MCP server schema validation failure
-  if echo "$error_output" | grep -qiE "ajv|schema.*validation|oauth.*fail|token.*invalid|mcp.*error"; then
+  if grep -qiE "ajv|schema.*validation|oauth.*fail|token.*invalid|mcp.*error" <<< "$error_output"; then
     echo "PROVIDER_BUG"
     return 0
   fi
 
   # Rate limiting
-  if echo "$error_output" | grep -qiE "rate.?limit|too many requests|429"; then
+  if grep -qiE "rate.?limit|too many requests|429" <<< "$error_output"; then
     echo "RATE_LIMITED"
     return 0
   fi
 
   # Authentication expired
-  if echo "$error_output" | grep -qiE "unauthorized|401|auth.*expired|login required"; then
+  if grep -qiE "unauthorized|401|auth.*expired|login required" <<< "$error_output"; then
     echo "AUTH_EXPIRED"
     return 0
   fi
 
   # Network/connection issues
-  if echo "$error_output" | grep -qiE "connection.*refused|network.*error|timeout|ECONNREFUSED"; then
+  if grep -qiE "connection.*refused|network.*error|timeout|ECONNREFUSED" <<< "$error_output"; then
     echo "NETWORK_ERROR"
     return 0
   fi
