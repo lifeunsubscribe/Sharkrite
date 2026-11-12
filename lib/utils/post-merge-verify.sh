@@ -233,42 +233,6 @@ verify_post_merge() {
     return 0
   fi
 
-  # No-overlap skip: post-merge verification exists to catch SEMANTIC conflicts
-  # where the target's merged-in commits break the branch's work despite a clean
-  # textual merge. That can only happen if the target's new commits and the
-  # branch's own changes touch the SAME files. When they don't overlap, verifying
-  # is pure waste. Compute the overlap and skip when empty.
-  #
-  # pre_merge_ref = origin/<target> (all current callers — #854/#1655):
-  #   _mb = merge-base(origin/<target>, HEAD) = origin/<target> (HEAD is rebased
-  #   on top of it, making origin/<target> the common ancestor).
-  #   _main_files = diff(origin/<target>, HEAD) = files the branch changed.
-  #   _branch_files = diff(origin/<target>, origin/<target>) = empty (same ref).
-  #   Because _branch_files is empty, the [ -n "$_branch_files" ] guard is false
-  #   → always falls through to verification.
-  #
-  # pre_merge_ref = HEAD~1 (legacy default for callers not yet updated):
-  #   _branch_files = diff(HEAD~1, HEAD~1) = empty (same ref) → same fall-through.
-  #
-  # The skip can only fire when pre_merge_ref is a ref that genuinely diverged
-  # from HEAD (e.g., a pre-rebase branch-tip SHA). No current caller passes that.
-  #
-  # Defensive: any git hiccup (_mb empty) falls through to verifying — safe default.
-  local _mb _main_files _branch_files _overlap
-  _mb=$(git -C "$worktree_path" merge-base "$pre_merge_ref" HEAD 2>/dev/null || true)
-  if [ -n "$_mb" ]; then
-    _main_files=$(git -C "$worktree_path" diff --name-only "$pre_merge_ref" HEAD 2>/dev/null | sort -u || true)
-    _branch_files=$(git -C "$worktree_path" diff --name-only "$_mb" "$pre_merge_ref" 2>/dev/null | sort -u || true)
-    if [ -n "$_main_files" ] && [ -n "$_branch_files" ]; then
-      _overlap=$(comm -12 <(printf '%s\n' "$_main_files") <(printf '%s\n' "$_branch_files") 2>/dev/null || true)
-      if [ -z "$_overlap" ]; then
-        echo "Post-merge verification skipped — rebase pulled in no files overlapping this branch's changes (no semantic-conflict risk)" >&2
-        _diag "POST_MERGE_VERIFY skip=no-overlap pre_ref=${pre_merge_ref} pr=${PR_NUMBER:-?}"
-        return 0
-      fi
-    fi
-  fi
-
   # Detect whether this is a Sharkrite repo.
   # Detection: Makefile with both shellcheck: and lint: targets — same
   # check used by run_test_gate so the paths stay in sync.
