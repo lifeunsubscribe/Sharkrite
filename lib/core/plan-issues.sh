@@ -575,6 +575,53 @@ _collect_auto_docs() {
 }
 
 # =============================================================================
+# _collect_security_context
+#
+# Query the target repo for open issues labeled "security" (up to 20) and
+# format them as a compact context block for the planning prompt.
+#
+# Output format (stdout):
+#   ## Open Security Deferrals
+#   <heading + instruction line>
+#   - #N: title [location: path/to/file.sh]  (location omitted when not found)
+#   ...
+#
+# Returns empty string (zero output) when no open security issues exist.
+# Callers must guard: inject the block only when non-empty.
+# =============================================================================
+
+_collect_security_context() {
+  local raw=""
+  raw=$(gh_safe issue list --state open --label security --limit 20 \
+    --json number,title,body \
+    --jq '.[] | "\(.number)\t\(.title)\t\(.body | gsub("\n"; " "))"' 2>/dev/null || true)
+
+  [ -n "$raw" ] || return 0
+
+  local block="## Open Security Deferrals (open issues with the 'security' label)
+Any planned issue whose implementation touches the same files or surfaces listed
+below MUST declare \`Blocked by: #N\` in its Dependencies field, or explicitly
+state why the dependency does not apply.
+"
+  local line num title body location
+  while IFS=$'\t' read -r num title body; do
+    # Extract the first lib/ or bin/ path from the issue body as a location hint.
+    location=$(printf '%s' "$body" | grep -oE '(lib|bin)/[^[:space:]"'"'"'`>)]+' | head -1 || true)
+    if [ -n "$location" ]; then
+      line="- #${num}: ${title} [location: ${location}]"
+    else
+      line="- #${num}: ${title}"
+    fi
+    block="${block}${line}
+"
+  done <<EOF
+$raw
+EOF
+
+  printf '%s' "$block"
+}
+
+# =============================================================================
 # MAIN: plan_issues
 # =============================================================================
 
@@ -703,6 +750,18 @@ $(cat "$doc")
   repo_labels=$(gh_safe label list --limit 100 --json name --jq '.[].name' | tr '\n' ', ' || true)
   repo_labels="${repo_labels:-}"
 
+  # Collect open security deferrals so the planner can emit Blocked-by edges
+  # when planned work touches an affected surface (#1553).
+  local security_context=""
+  security_context=$(_collect_security_context || true)
+  if [ -n "$security_context" ]; then
+    local _sec_numbers
+    _sec_numbers=$(printf '%s' "$security_context" | grep -oE '#[0-9]+' | tr '\n' ' ' || true)
+    local _sec_count
+    _sec_count=$(printf '%s' "$security_context" | grep -c '^- #' || true)
+    print_info "Open security deferrals: ${_sec_count} issue(s) (${_sec_numbers% }) â€” planned work touching affected surfaces MUST declare 'Blocked by: #N'" >&2
+  fi
+
   # Load previous deferrals for continuity across planning sessions
   local deferrals_file="$RITE_PROJECT_ROOT/$RITE_DATA_DIR/deferrals.log"
   local previous_deferrals=""
@@ -752,7 +811,7 @@ $(cat "$doc")
   local _gen_rc=0
   issues_file=$(generate_issues "$doc_content" "$project_context" \
     "$runbook_content" "$existing_issues" "$repo_labels" "$user_instructions" "$max_estimate" \
-    "$accumulated_feedback" "$previous_deferrals" "") || _gen_rc=$?
+    "$accumulated_feedback" "$previous_deferrals" "" "$security_context") || _gen_rc=$?
 
   if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
     if [ "$_gen_rc" -ne 0 ]; then
@@ -851,7 +910,7 @@ ${feedback}"
         local _regen_rc=0
         issues_file=$(generate_issues "$doc_content" "$project_context" \
           "$runbook_content" "$existing_issues" "$repo_labels" "$user_instructions" "$max_estimate" \
-          "$accumulated_feedback" "$previous_deferrals" "$prior_coverage") || _regen_rc=$?
+          "$accumulated_feedback" "$previous_deferrals" "$prior_coverage" "$security_context") || _regen_rc=$?
 
         if [ -z "$issues_file" ] || [ ! -f "$issues_file" ]; then
           if [ "$_regen_rc" -ne 0 ]; then
@@ -999,6 +1058,7 @@ generate_issues() {
   local feedback="${8:-}"
   local previous_deferrals="${9:-}"
   local prior_coverage="${10:-}"
+  local security_context="${11:-}"
 
   local temp_file
   temp_file=$(mktemp)
@@ -1072,6 +1132,11 @@ echo "- Identify any ADR features that were covered before but are now missing â
 echo "- Carry forward 'pre-existing' vs. 'needs creation' classifications for all models, schemas, and migrations"
 echo ""
 echo "$prior_coverage"
+echo ""
+fi)
+
+$(if [ -n "$security_context" ]; then
+echo "$security_context"
 echo ""
 fi)
 
