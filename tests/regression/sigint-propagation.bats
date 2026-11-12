@@ -53,9 +53,10 @@ exec 2>&1
 # Signal handler that kills process group (like workflow-runner.sh)
 cleanup_on_interrupt() {
   echo "Interrupt received, cleaning up..."
-  # Kill entire process group
+  # Kill entire process group. No sleep between TERM and KILL — the sleep is
+  # timing-sensitive on loaded CI runners and unnecessary in a test fixture
+  # (the sub-processes don't need graceful-exit time here).
   kill -TERM -- -$$ 2>/dev/null || true
-  sleep 0.5
   kill -KILL -- -$$ 2>/dev/null || true
   exit 130
 }
@@ -247,8 +248,9 @@ cleanup_on_interrupt() {
 
   echo "First interrupt, cleaning up..."
 
+  # No sleep between TERM and KILL — the sleep is timing-sensitive on loaded
+  # CI runners and unnecessary in this test fixture (no sub-processes here).
   kill -TERM -- -$$ 2>/dev/null || true
-  sleep 0.5
   kill -KILL -- -$$ 2>/dev/null || true
   exit 130
 }
