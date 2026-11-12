@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/assess-review-issues.sh, lib/core/claude-workflow.sh, lib/core/workflow-runner.sh
+# sharkrite-test-covers: lib/core/assess-and-resolve.sh, lib/core/assess-review-issues.sh, lib/core/claude-workflow.sh, lib/core/workflow-runner.sh, lib/utils/scratchpad-manager.sh
 # tests/regression/followup-target-inheritance.bats
 #
 # Regression test: follow-ups filed during a --branch X batch run must NOT
@@ -49,6 +49,7 @@ WORKFLOW_RUNNER="$REPO_ROOT/lib/core/workflow-runner.sh"
 ASSESS_AND_RESOLVE="$REPO_ROOT/lib/core/assess-and-resolve.sh"
 ASSESS_REVIEW_ISSUES="$REPO_ROOT/lib/core/assess-review-issues.sh"
 CLAUDE_WORKFLOW="$REPO_ROOT/lib/core/claude-workflow.sh"
+SCRATCHPAD_MANAGER="$REPO_ROOT/lib/utils/scratchpad-manager.sh"
 
 setup() {
   [ -f "$WORKFLOW_RUNNER" ] || {
@@ -65,6 +66,10 @@ setup() {
   }
   [ -f "$CLAUDE_WORKFLOW" ] || {
     echo "FATAL: $CLAUDE_WORKFLOW not found" >&2
+    return 1
+  }
+  [ -f "$SCRATCHPAD_MANAGER" ] || {
+    echo "FATAL: $SCRATCHPAD_MANAGER not found" >&2
     return 1
   }
 }
@@ -112,6 +117,31 @@ setup() {
   echo "$_creation_block" | grep -qF "followup-no-inherit" || {
     echo "FAIL: followup-no-inherit marker write is not near the NEW_ISSUE confirmation block" >&2
     echo "      It must be written immediately after NEW_ISSUE is confirmed non-empty" >&2
+    return 1
+  }
+}
+
+# =============================================================================
+# STRUCTURAL: scratchpad-manager.sh
+# =============================================================================
+
+@test "structural: scratchpad-manager.sh writes followup-no-inherit marker at encountered-issue creation site" {
+  grep -qF "followup-no-inherit" "$SCRATCHPAD_MANAGER" || {
+    echo "FAIL: 'followup-no-inherit' marker write not found in scratchpad-manager.sh" >&2
+    echo "      create_tech_debt_issues must write followup-no-inherit-N.marker after each new issue" >&2
+    return 1
+  }
+
+  # Marker write must be near the _ei_issue_url capture block (confirmed creation path)
+  _creation_block=$(awk '
+    /_ei_issue_url=\$\(gh_safe issue create/ { found=1 }
+    found { print; count++ }
+    count > 20 { exit }
+  ' "$SCRATCHPAD_MANAGER")
+
+  echo "$_creation_block" | grep -qF "followup-no-inherit" || {
+    echo "FAIL: followup-no-inherit marker write is not inside the _ei_issue_url confirmed creation block" >&2
+    echo "      It must be written after the issue number is extracted from the URL" >&2
     return 1
   }
 }
