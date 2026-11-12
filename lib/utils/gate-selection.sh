@@ -568,7 +568,7 @@ _select_tests_by_changed_paths() {
   # dependency — the fixed-string match is intentionally comment-inclusive.
   (cd "$project_root" && find tests -name "*.bats" -type f 2>/dev/null) \
     | while IFS= read -r _rel; do
-        if echo "$changed_files" | grep -Fxq "$_rel"; then
+        if grep -Fxq "$_rel" <<< "$changed_files"; then
           echo "$_rel"
           continue
         fi

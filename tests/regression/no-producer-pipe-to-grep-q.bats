@@ -17,7 +17,7 @@
 #   grep -rnE "(printf '%s\\n' \"\$...\"|echo \"\$...\") | grep -q" lib/core \
 #     | grep -vE '^\S+:\s*#' | wc -l  # expect 0
 
-_no_producer_grep_q_pattern="(printf '%s\\\\n' \"\\\$\{?[A-Za-z0-9_:-]+\}?\"|echo \"\\\$\{?[A-Za-z0-9_:-]+\}?\") \| grep -q"
+_no_producer_grep_q_pattern="(printf '%s\\\\n' \"\\\$\{?[A-Za-z0-9_:-]+\}?\"|echo \"\\\$\{?[A-Za-z0-9_:-]+\}?\") \| grep -[a-zA-Z]*q[a-zA-Z]*"
 
 @test "no producer-variable pipe into grep -q remains in lib/core" {
   local _repo_root

@@ -80,7 +80,7 @@ triage_classify_diff() {
       [ -n "$_sens" ] && _guard="sensitive"
     elif [ -n "$_paths" ]; then
       _sens_pat="${BLOCKER_INFRASTRUCTURE_PATHS:-infrastructure/|cdk/|terraform/|cloudformation/|\.github/workflows/|\.claude/}|${BLOCKER_MIGRATION_PATHS:-prisma/migrations/|migrations/|db/migrate/|alembic/}|${BLOCKER_AUTH_PATHS:-auth/|Auth|authentication|authorization|cognito|oauth}|${BLOCKER_PROTECTED_SCRIPTS:-workflow-runner.sh|claude-workflow.sh|merge-pr.sh|create-pr.sh|batch-process-issues.sh}"
-      if echo "$_paths" | grep -iqE "$_sens_pat" \
+      if grep -iqE "$_sens_pat" <<< "$_paths" \
          || grep -qiE "${BLOCKER_EXPENSIVE_SERVICES:-\brds\b|\baurora\b|\bnatgateway\b|\bec2\b|\bfargate\b|\bsagemaker\b|\bredshift\b}" <<< "$_diff"; then
         _guard="sensitive"
       fi

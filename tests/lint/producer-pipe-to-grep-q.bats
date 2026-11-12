@@ -94,6 +94,38 @@ EOF
   [[ "$output" == *"bad-printf.sh"* ]]
 }
 
+@test "PRODUCER_PIPE_TO_GREP_Q: fires on echo \"\$sha1\" | grep -q (digit in variable name)" {
+  cat > "$SH_DIR/bad-digit.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+check_sha() {
+  local sha1="$1"
+  if echo "$sha1" | grep -q "^abc"; then
+    echo "matched"
+  fi
+}
+EOF
+  SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+}
+
+@test "PRODUCER_PIPE_TO_GREP_Q: fires on printf '%s\\n' \"\${var:-}\" | grep -q (braced with default)" {
+  cat > "$SH_DIR/bad-printf-default.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+check_title() {
+  local title="${1:-}"
+  if printf '%s\n' "${title:-}" | grep -q "pattern"; then
+    echo "found"
+  fi
+}
+EOF
+  SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+}
+
 @test "PRODUCER_PIPE_TO_GREP_Q: fires on echo \"\${VAR:-}\" | grep -q (braced with default)" {
   cat > "$SH_DIR/bad-braced.sh" <<'EOF'
 #!/bin/bash

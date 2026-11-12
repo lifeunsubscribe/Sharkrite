@@ -41,15 +41,12 @@
 echo "Rule 42: Checking for single-variable producer pipe into grep -q (PRODUCER_PIPE_TO_GREP_Q)..."
 
 # Regex matches:
-#   printf '%s\n' "$VAR"  followed by  | grep -q
-#   echo "$VAR"           followed by  | grep -q
-# where VAR is a plain or braced variable reference.
-# The | grep -q prefix matches -q anywhere at the start of the flag string
-# (grep -q, grep -qE, grep -qiE, grep -qxF, etc.).
-#
-# NOT matched: grep -iqE (i before q) — that class is not captured by the
-# acceptance-criteria sweep and is left for a future rule.
-_r42_pattern="(printf '[%]s[\\\\]n' \"[$][{]?[A-Za-z_]+[}]?\"|echo \"[$][{]?[A-Za-z_:-]+[}]?\") [|] grep -q"
+#   printf '%s\n' "$VAR"  followed by  | grep -[flags]q[flags]
+#   echo "$VAR"           followed by  | grep -[flags]q[flags]
+# where VAR is a plain or braced variable reference (may contain digits).
+# The | grep -[a-zA-Z]*q[a-zA-Z]* suffix matches q anywhere in the flag string
+# (grep -q, grep -qE, grep -iqE, grep -Fxq, etc.).
+_r42_pattern="(printf '[%]s[\\\\]n' \"[$][{]?[A-Za-z0-9_:-]+[}]?\"|echo \"[$][{]?[A-Za-z0-9_:-]+[}]?\") [|] grep -[a-zA-Z]*q[a-zA-Z]*"
 
 for _r42_file in "${SHELL_FILES[@]}"; do
   # grep -n to get line numbers; then filter
