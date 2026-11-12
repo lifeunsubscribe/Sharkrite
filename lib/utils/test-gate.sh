@@ -944,7 +944,45 @@ run_test_gate() {
       [ -n "$_nonsr_src" ] && _nonsr_source_touched=true
     fi
 
-    if [ -f "$project_root/Makefile" ] && grep -q "^test:" "$project_root/Makefile" 2>/dev/null; then
+    # Runner homes one level down (freshup 2026-11-12: package.json in
+    # frontend/, pytest at the root — 3h30m of root pytest on frontend-only
+    # PRs, zero vitest). Detect root + immediate subdirectories, run only the
+    # subdirectory homes the diff touches, and let the root chain below run
+    # only when the diff touches root-level files. A failed subdirectory run
+    # is already a block (block-on-any), so the root chain is skipped then too.
+    # RITE_GATE_SUBDIR_RUNNERS=false restores root-only detection.
+    local _nonsr_sub_lines="" _nonsr_touched="" _nonsr_sub_ran=false _nonsr_sub_exit=0
+    local _nonsr_sub_raw _nonsr_skip_root=false _nonsr_sub_k _nonsr_sub_d _nonsr_sub_rc
+    _nonsr_sub_raw=$(mktemp "/tmp/rite_gate_nonsr_sub_${PR_NUMBER:-0}_$$_XXXXXX")
+    if [ "${RITE_GATE_SUBDIR_RUNNERS:-true}" != "false" ] && [ -n "$_nonsr_changed_files" ]; then
+      _nonsr_sub_lines=$(_gate_runner_dirs "$project_root" | awk -F'\t' '$2 != "."' || true)
+    fi
+    if [ -n "$_nonsr_sub_lines" ]; then
+      _nonsr_touched=$(_gate_touched_runner_dirs "$project_root" "$_nonsr_changed_files")
+      local _nonsr_detected_s _nonsr_touched_s
+      _nonsr_detected_s=$(_gate_runner_dirs "$project_root" | awk -F'\t' '{printf "%s%s:%s", (NR>1?",":""), $2, $1}' || true)
+      _nonsr_touched_s=$(printf '%s\n' "$_nonsr_touched" | awk -F'\t' 'NF {printf "%s%s:%s", (n++?",":""), $2, $1}' || true)
+      _diag "GATE_RUNNERS detected=${_nonsr_detected_s} touched=${_nonsr_touched_s} pr=${PR_NUMBER:-?}"
+      while IFS=$'\t' read -r _nonsr_sub_k _nonsr_sub_d; do
+        [ -n "$_nonsr_sub_k" ] && [ "$_nonsr_sub_d" != "." ] || continue
+        _nonsr_sub_rc=$(_gate_run_runner_dir "$_nonsr_sub_k" "$_nonsr_sub_d" "$project_root" "$_nonsr_sub_raw" "$_gate_raw_sink")
+        [ "${_nonsr_sub_rc:-1}" -ne 0 ] && _nonsr_sub_exit="$_nonsr_sub_rc"
+        _nonsr_sub_ran=true
+      done <<< "$_nonsr_touched"
+      if [ "$_nonsr_sub_ran" = true ]; then
+        if ! printf '%s\n' "$_nonsr_touched" | grep -q $'\t\.$'; then
+          _nonsr_skip_root=true
+        elif [ "$_nonsr_sub_exit" -ne 0 ]; then
+          _nonsr_skip_root=true
+        fi
+      fi
+    fi
+
+    if [ "$_nonsr_skip_root" = true ]; then
+      # Subdirectory runners covered this diff (or one of them already failed).
+      cat "$_nonsr_sub_raw" > "$_tests_raw_file"
+      _tests_exit="$_nonsr_sub_exit"
+    elif [ -f "$project_root/Makefile" ] && grep -q "^test:" "$project_root/Makefile" 2>/dev/null; then
       echo "[test-gate] Running make test..."
       # Capture to raw file for JSON parsing AND append to sink (summary → log;
       # verbose → live terminal). Two-channel convention: raw appended directly.
@@ -1517,6 +1555,12 @@ run_test_gate() {
       return 0
     fi
     rm -f "${_nonsr_exit_file:-}"
+    # Subdirectory runner output rides along with the root runner's when both ran.
+    if [ "$_nonsr_sub_ran" = true ] && [ "$_nonsr_skip_root" != true ]; then
+      cat "$_nonsr_sub_raw" >> "$_tests_raw_file"
+      [ "${_tests_exit:-0}" -eq 0 ] && [ "$_nonsr_sub_exit" -ne 0 ] && _tests_exit="$_nonsr_sub_exit"
+    fi
+    rm -f "${_nonsr_sub_raw:-}"
 
     # --- 127 = runner-unavailable HARD BLOCK (issue #784) ---
     # Shared guard for the non-Sharkrite runner branches that actually ran a
