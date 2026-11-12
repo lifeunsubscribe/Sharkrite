@@ -180,10 +180,58 @@ EOF
 
   # Must carry outcome= field
   grep -q 'outcome=' "$_written_log"
-  # Must carry lint_count= and test_count= and duration_s=
+  # Must carry lint_count=, test_count=, skipped=, and duration_s=
   grep -q 'lint_count=' "$_written_log"
   grep -q 'test_count=' "$_written_log"
+  grep -q 'skipped=' "$_written_log"
   grep -q 'duration_s=' "$_written_log"
+}
+
+# ---------------------------------------------------------------------------
+# Test 2b: Skip count — skipped=N reflects ok ... # skip lines in TAP output
+#
+# The full-suite diag previously omitted skip counts (the #1593-class blind
+# spot). After the fix, skipped=N must equal the count of "ok N … # skip …"
+# lines in the bats TAP stream.
+# ---------------------------------------------------------------------------
+@test "full-suite: diag skipped=N counts bats skip directives" {
+  _write_lib_stubs
+
+  mkdir -p "$_FAKE_PROJECT/bin" "$_FAKE_PROJECT/tests"
+
+  printf '#!/bin/bash\nexit 0\n' > "$_FAKE_PROJECT/bin/make"
+  chmod +x "$_FAKE_PROJECT/bin/make"
+
+  # Stub bats: emits two passing tests, two skipped tests, zero failures
+  cat > "$_FAKE_PROJECT/bin/bats" << 'EOF'
+#!/bin/bash
+echo "1..4"
+echo "ok 1 always passes"
+echo "ok 2 also passes"
+echo "ok 3 platform not available # skip requires Linux"
+echo "ok 4 flock unavailable # skip flock not installed"
+exit 0
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash "$_FULL_SUITE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+
+  # skipped=2 must appear in the FULL_SUITE_RUN diag line
+  grep -q 'skipped=2' "$_log"
+  # test_count=0 (no failures) must also be present
+  grep -q 'test_count=0' "$_log"
 }
 
 # ---------------------------------------------------------------------------

@@ -956,7 +956,7 @@ Runs the **unfiltered** test suite — `make check` + `bats -r tests/` — bypas
 
 **What it writes:**
 - Full transcript to `.rite/logs/full-suite-YYYYMMDD.log` (header with date/host/branch; one log per day, appended)
-- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed|aborted lint_count=N test_count=N duration_s=N` to the same log for health-report aggregation
+- Structured `[diag] FULL_SUITE_RUN outcome=passed|failed|aborted lint_count=N test_count=N skipped=N duration_s=N` to the same log for health-report aggregation
 - `.rite/state/full-suite-failure.flag` on failure (lists failing tests); deleted on next successful run
 
 **`--scheduled` flag (used by the scheduled plist):** Enables three guards that only apply to automated/scheduled runs; a manual `rite --full-suite` is completely unaffected and always runs regardless of hour, lock state, or deadline.
@@ -1061,7 +1061,7 @@ Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points f
 - `FOLLOWUP_CREATED` — a follow-up issue was filed (source issue, PR, new issue number). Emitted by BOTH per-issue creation sites (`assess-and-resolve.sh` rollup, `assess-review-issues.sh` ACTIONABLE_LATER per-item); the batch reporter harvests these for its `Issues Created` line. The promote path has its own `PROMOTE_FOLLOWUP_CREATED` / `PROMOTE_ASSESSED_FOLLOWUP_CREATED` and is deliberately excluded from a batch's total.
 - `PHASE_FAILED` — which phase failed and for which issue
 - `SESSION` — Claude session mode and exit code
-- `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`); `outcome=passed|failed|aborted` (`aborted` = killed by deadline guard before a verdict, neither pass nor fail)
+- `FULL_SUITE_RUN` — periodic safety net run outcome, lint/test/skip counts, duration (written to `.rite/logs/full-suite-YYYYMMDD.log`); `outcome=passed|failed|aborted` (`aborted` = killed by deadline guard before a verdict, neither pass nor fail); `skipped=N` is the count of `ok … # skip` TAP lines from the full bats run
 - `FULL_SUITE_SKIPPED` — scheduled run skipped without running the suite; `reason=outside_window` (clock outside 02:00–05:00) or `reason=batch_active` (live rite lock detected); `hour=<H>`. Health-report aggregation reads only `FULL_SUITE_RUN` lines, so a skipped night is neither a pass nor a failure — a missing nightly report is explainable, not an alarm.
 - `FULL_SUITE_INVESTIGATE_ABORTED` — serial re-run phase inside `--investigate --scheduled` aborted before all failing files were processed; `reason=window_end`. Emitted when remaining seconds to 05:00 ≤ `BATS_TEST_TIMEOUT` at the start of a file iteration. Does not change the already-emitted `FULL_SUITE_RUN outcome=failed` verdict. Persistent findings from already-processed files still trigger remediation issue creation.
 - `GATE_SCOPE_UNSCOPED` — target repo gate exceeded `RITE_GATE_SCOPE_WARN_SECONDS`; full suite ran unscoped (duration_s, pr); ≥3 in a week → health-report WARNING recommending scoped selection (#975)
