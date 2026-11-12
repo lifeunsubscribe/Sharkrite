@@ -367,7 +367,7 @@ _extract_dep_issues_from_body() {
 
     # Detect the canonical Dependencies: header (with or without ** markdown bold).
     # This is the form produced by the generator (PR #964) and the authoring standard.
-    if echo "$_bline" | grep -qiE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:'; then
+    if grep -qiE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:' <<< "$_bline"; then
       _in_deps=true
       # Strip parallel-with annotations before harvesting inline refs
       local _clean
@@ -386,7 +386,7 @@ _extract_dep_issues_from_body() {
     # Issues authored before PR #964 used this style; deps appear on following
     # lines as "After: #N" / "Blocked by: #N". The header line itself carries
     # no inline refs, so just enter dep-collection mode and continue.
-    if echo "$_bline" | grep -qiE '^##+ Dependencies[[:space:]]*$'; then
+    if grep -qiE '^##+ Dependencies[[:space:]]*$' <<< "$_bline"; then
       _in_deps=true
       continue
     fi
@@ -1437,7 +1437,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   # inner extraction, which returns empty, which under set -e + pipefail kills
   # the script silently. Live bug: issue #34's body listed the marker as an
   # example and the entire batch died mid-stream with no error output.
-  if echo "$ISSUE_BODY" | grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+"; then
+  if grep -qE "${RITE_MARKER_PARENT_PR}:[0-9]+" <<< "$ISSUE_BODY"; then
     # Extract parent PR number from body marker
     PARENT_PR=$(echo "$ISSUE_BODY" | grep -oE "${RITE_MARKER_PARENT_PR}:[0-9]+" | cut -d: -f2 || true)
 
@@ -1719,8 +1719,8 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
   if [ -n "$_active_wt" ]; then
     # Check if a rite or claude process is running for this issue
     _loop_procs=$(ps -eo pid,command 2>/dev/null || true)
-    if echo "$_loop_procs" | grep -qE "workflow-runner\.sh ${ISSUE_NUM}( |$)" || \
-       echo "$_loop_procs" | grep -qE "claude-workflow\.sh ${ISSUE_NUM}( |$)"; then
+    if grep -qE "workflow-runner\.sh ${ISSUE_NUM}( |$)" <<< "$_loop_procs" || \
+       grep -qE "claude-workflow\.sh ${ISSUE_NUM}( |$)" <<< "$_loop_procs"; then
       # Deliberate divergence from single-issue mode: batch skips issues that
       # are actively running in a concurrent rite/claude process. This is a
       # safety guard to prevent two sessions from racing on the same issue and

@@ -1146,7 +1146,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
         # never buried in an inbox). If the pool is unavailable (create/edit
         # failed) fall through to the individual path so nothing is lost.
         if declare -f followup_pool_enabled >/dev/null 2>&1 && followup_pool_enabled && \
-           ! echo "${ITEM_CATEGORY:-}" | grep -qi "security"; then
+           ! grep -qi "security" <<< "${ITEM_CATEGORY:-}"; then
           if followup_pool_append "${PR_NUMBER:-}" "${RITE_ISSUE_NUMBER:-}" \
                "${ITEM_SEVERITY:-MEDIUM}" "${ITEM_CATEGORY:-}" "$ITEM_TITLE" \
                "${ITEM_LOCATION:-}" "${_assessment_head_sha:-}" "${ITEM_REASONING:-}" \
@@ -1157,7 +1157,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
               pooled-duplicate) print_info "  Already pooled in #${_pool_num}: $ITEM_TITLE" >&2 ;;
               tracked:*)        print_info "  Already tracked in #${FOLLOWUP_POOL_LAST_ACTION#tracked:}: $ITEM_TITLE" >&2 ;;
             esac
-            if [ -n "${_pool_num:-}" ] && ! echo "${POOLED_ISSUES:-}" | grep -qF "#${_pool_num} "; then
+            if [ -n "${_pool_num:-}" ] && ! grep -qF "#${_pool_num} " <<< "${POOLED_ISSUES:-}"; then
               POOLED_ISSUES="${POOLED_ISSUES:-}#${_pool_num} "
               # Passback: assess-and-resolve.sh treats a filed pool like filed
               # per-item issues and skips its own consolidated rollup.
@@ -1178,7 +1178,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             EXISTING_WORDS=$(echo "$issue_title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ')
             MATCH_COUNT=0
             for word in $TITLE_WORDS; do
-              if [ ${#word} -gt 3 ] && echo "$EXISTING_WORDS" | grep -qw "$word"; then
+              if [ ${#word} -gt 3 ] && grep -qw "$word" <<< "$EXISTING_WORDS"; then
                 MATCH_COUNT=$((MATCH_COUNT + 1))
               fi
             done
@@ -1214,7 +1214,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
             if [ -n "$_dup_candidate" ] && [ -n "${RITE_ISSUE_NUMBER:-}" ]; then
               _dup_body=$(gh_safe issue view "$_dup_candidate" --json body --jq '.body' || true)
               _dup_body="${_dup_body:-}"
-              if echo "$_dup_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+              if grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${RITE_ISSUE_NUMBER}([^[:alnum:]_-]|$)" <<< "$_dup_body"; then
                 DUPLICATE_ISSUE="$_dup_candidate"
               fi
             elif [ -n "$_dup_candidate" ]; then
@@ -1228,7 +1228,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           EXISTING_BODY=$(gh_safe issue view "$DUPLICATE_ISSUE" --json body --jq '.body' || true)
           EXISTING_BODY="${EXISTING_BODY:-}"
           REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60 || true)
-          if echo "$EXISTING_BODY" | grep -qF "$REASONING_SIGNATURE" 2>/dev/null; then
+          if grep -qF "$REASONING_SIGNATURE" <<< "$EXISTING_BODY" 2>/dev/null; then
             print_info "  Already tracked in #$DUPLICATE_ISSUE (skipping): $ITEM_TITLE"
             # Passback: write issue number so assess-and-resolve.sh can skip consolidated rollup.
             if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then
@@ -1542,7 +1542,7 @@ _Parent PR: #${PR_NUMBER}_"
     CURRENT_BODY="${CURRENT_BODY:-}"
 
     # Check if follow-up section already exists
-    if echo "$CURRENT_BODY" | grep -q "## Follow-up Issues"; then
+    if grep -q "## Follow-up Issues" <<< "$CURRENT_BODY"; then
       # Append to existing section
       NEW_ISSUES_LINE=""
       [ -n "$CREATED_ISSUES" ] && NEW_ISSUES_LINE="Created: ${CREATED_ISSUES}"

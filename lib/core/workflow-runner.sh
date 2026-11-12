@@ -2728,7 +2728,7 @@ handle_closed_issue() {
       # A token is valid when preceded by _b or - and followed by - or end-of-string.
       # Pattern (_b|-)<N>(-|$) handles all positions: first (_b319), middle (-320),
       # and last (-328) — and still rejects substring collisions (_b2010 != #201).
-      if echo "$_basename" | grep -qE "(_b|-)${issue_number}(-|\$)"; then
+      if grep -qE "(_b|-)${issue_number}(-|\$)" <<< "$_basename"; then
         _batch_candidates+=("$_wt_path")
       fi
     done <<< "$_wt_list"
@@ -2752,7 +2752,7 @@ handle_closed_issue() {
         [ "$_wt_path" = "$_main_wt" ] && continue
         local _basename
         _basename=$(basename "$_wt_path" || true)
-        if echo "$_basename" | grep -qF "$_title_slug"; then
+        if grep -qF "$_title_slug" <<< "$_basename"; then
           _slug_candidates+=("$_wt_path")
         fi
       done <<< "$_wt_list"
@@ -3046,7 +3046,7 @@ run_workflow() {
   # so a closed PR number is also caught. See: exit code 15 in exit-codes.md.
   local _issue_url
   _issue_url=$(echo "$issue_data" | jq -r '.url // ""' || true)
-  if echo "$_issue_url" | grep -qF '/pull/'; then
+  if grep -qF '/pull/' <<< "$_issue_url"; then
     set +e
     handle_pr_number_refused "$issue_number" "$issue_data"
     set -e

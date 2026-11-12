@@ -378,7 +378,7 @@ if [ -n "$PR_NUMBER" ] && [ "$PR_STATE" = "OPEN" ]; then
     rm -f "$_undoready_stderr"
     if [ "$_undoready_rc" -eq 0 ]; then
       print_success "Reverted issue #$ISSUE_NUMBER's PR to draft"
-    elif echo "$_undoready_msg" | grep -qi "already"; then
+    elif grep -qi "already" <<< "$_undoready_msg"; then
       print_info "Issue #$ISSUE_NUMBER's PR may already be a draft"
     else
       print_warning "Failed to revert PR #${PR_NUMBER} to draft${_undoready_msg:+ — ${_undoready_msg}}"

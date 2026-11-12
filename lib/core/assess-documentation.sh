@@ -1088,7 +1088,7 @@ COVERAGE_EOF
 
             # Anti-hallucination guard: the tag MUST be one of THIS PR's new tags.
             # _new_tags is newline-separated; match a whole line exactly.
-            _is_new_tag=$(printf '%s\n' "$_new_tags" | grep -qxF "$_cov_tag" && echo "yes" || true)
+            _is_new_tag=$(grep -qxF "$_cov_tag" <<< "$_new_tags" && echo "yes" || true)
             if [ "$_is_new_tag" != "yes" ]; then
               print_warning "  tag-index: skipping coverage pointer for unknown tag '${_cov_tag}' (not a new tag in this PR)" >&2
               continue

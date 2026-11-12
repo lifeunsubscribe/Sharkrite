@@ -25,7 +25,7 @@ setup() {
 
 @test "per-item LATER path: security findings bypass the pool (security floor)" {
   grep -q 'declare -f followup_pool_enabled >/dev/null 2>&1 && followup_pool_enabled && \\' "$ARI"
-  grep -q '! echo "${ITEM_CATEGORY:-}" | grep -qi "security"; then' "$ARI"
+  grep -q '! grep -qi "security" <<< "${ITEM_CATEGORY:-}"; then' "$ARI"
 }
 
 @test "per-item LATER path: pool failure falls through to the individual issue (no silent drop)" {
