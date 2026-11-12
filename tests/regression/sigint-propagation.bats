@@ -10,6 +10,21 @@
 # Expected behavior: Ctrl-C (SIGINT) should terminate the entire rite session
 # including all child processes (tee, perl, etc.) within ~3 seconds.
 
+# Launch a fixture with INT/TERM/HUP/QUIT reset to SIG_DFL. The post-commit
+# gate is backgrounded with `&` from a non-interactive bash
+# (workflow-runner.sh: `run_test_gate … &`), which makes bats and every
+# descendant inherit SIGINT as SIG_IGN — and "signals ignored upon entry to the
+# shell cannot be trapped or reset", so the fixture's `trap … INT` would be
+# inert and the process would survive the test's Ctrl-C. Resetting through
+# perl's exec keeps the PID (and so the process group under `set -m`).
+# Live: #1640 failed at the retry cap on exactly this (2026-11-11, #1756).
+# Always call it with a trailing `&`: the `exec` replaces the forked subshell,
+# so `$!` is the fixture's own PID (a plain function call would leave a bash
+# subshell in between that swallows a PID-targeted SIGINT).
+_launch_with_default_signals() {
+  exec perl -e '$SIG{INT} = "DEFAULT"; $SIG{TERM} = "DEFAULT"; $SIG{HUP} = "DEFAULT"; $SIG{QUIT} = "DEFAULT"; exec { $ARGV[0] } @ARGV or die "exec failed: $!\n";' -- "$@"
+}
+
 setup() {
   # Create minimal test environment
   export RITE_TEST_ROOT="${BATS_TEST_TMPDIR}/rite-test"
@@ -86,7 +101,7 @@ SCRIPT_EOF
   # causing bats to block waiting for EOF and eventually fire BATS_TEST_TIMEOUT=120.
   # Redirecting FDs 1+2 alone does not prevent the leak — FD 3 must be explicit.
   set -m
-  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
+  _launch_with_default_signals "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
   WORKFLOW_PID=$!
   set +m
 
@@ -183,7 +198,7 @@ SCRIPT_EOF
   # FD 3 is bats' TAP channel (exec 3<&1 in bats-exec-test); without this redirect,
   # tee+perl grandchildren hold FD 3 open and bats blocks waiting for EOF on it.
   set -m
-  "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
+  _launch_with_default_signals "$TEST_SCRIPT" "$RITE_LIB_DIR" "$LOG_FILE" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
   WORKFLOW_PID=$!
   set +m
 
@@ -266,7 +281,7 @@ SCRIPT_EOF
   # (exec 3<&1 in bats-exec-test) and must be explicit to prevent the child
   # from holding bats' pipe open after being killed (FD 1+2 alone is insufficient).
   set -m
-  "$TEST_SCRIPT" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
+  _launch_with_default_signals "$TEST_SCRIPT" </dev/null >/dev/null 2>/dev/null 3>/dev/null &
   PID=$!
   set +m
 
