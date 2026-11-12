@@ -594,7 +594,7 @@ drift_log_clear_doc() {
 # when the ADR itself is audited via `rite align-docs`.
 #
 # Public API (same naming pattern as the regular drift-log API above):
-#   adr_drift_log_append        — accumulate-in-place one ADR observation
+#   adr_drift_log_append        — append one ADR drift entry (dedupe by (doc,assertion,PR) triple)
 #   adr_drift_log_entry_count   — count entries (per-doc or total)
 #   adr_drift_log_remove_entry  — remove exactly one (doc, assertion) entry
 # ===========================================================================
@@ -616,7 +616,9 @@ _adr_drift_entry_path() {
 # ---------------------------------------------------------------------------
 # adr_drift_log_append DOC PR ISSUE ASSERTION KIND EVIDENCE
 #
-# Append or accumulate-in-place one ADR drift entry.
+# Append one ADR drift entry, deduped by the (doc, assertion, PR) triple.
+# Same semantics as drift_log_append: a later promote PR with the same
+# (doc, assertion) gets its own entry preserving its issue and evidence.
 # Reuses the same entry schema and lock protocol as drift_log_append but
 # writes to the ADR namespace (doc-drift-adr/) with no branch field.
 #
@@ -686,6 +688,9 @@ adr_drift_log_append() {
   local _adla_tmp="${_adla_entry_file}.tmp.$$"
 
   if [ -f "$_adla_entry_file" ]; then
+    # Idempotent re-record: scan for the exact (doc, assertion, PR) triple.
+    # awk exits 0 when the triple already exists (no-op); exits 1 when no
+    # matching triple exists (new entry appended below); exits >1 on I/O error.
     local _adla_awk_exit=0
     awk -F'\t' 'BEGIN{OFS="\t"; matched=0}
     {
@@ -698,10 +703,10 @@ adr_drift_log_append() {
       if (hasdoc && hasassert && prfldidx > 0) {
         _prnums = substr($prfldidx, 4)
         _check  = "," _prnums ","
-        if (index(_check, "," _newpr ",") == 0) {
-          $prfldidx = $prfldidx "," _newpr
+        if (index(_check, "," _newpr ",") > 0) {
+          matched=1
         }
-        matched=1
+        # else: same (doc,assertion) but a different PR — treat as new entry
       }
       print
     }
@@ -714,8 +719,11 @@ adr_drift_log_append() {
       mv "$_adla_tmp" "$_adla_entry_file"
     elif [ "$_adla_awk_exit" -eq 1 ]; then
       rm -f "$_adla_tmp"
+      # _adla_found stays 0; new entry appended below
     else
       rm -f "$_adla_tmp"
+      printf 'adr_drift_log_append: awk error (exit %s) for "%s" — skipping\n' \
+        "$_adla_awk_exit" "$_adla_entry_file" >&2
       lock_release "$_adla_lock_path"
       trap - RETURN
       return 0
