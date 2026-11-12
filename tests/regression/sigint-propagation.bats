@@ -53,10 +53,12 @@ exec 2>&1
 # Signal handler that kills process group (like workflow-runner.sh)
 cleanup_on_interrupt() {
   echo "Interrupt received, cleaning up..."
-  # Kill entire process group. No sleep between TERM and KILL — the sleep is
-  # timing-sensitive on loaded CI runners and unnecessary in a test fixture
-  # (the sub-processes don't need graceful-exit time here).
+  # Kill entire process group. Sleep between TERM and KILL gives tee/perl
+  # time to die from SIGTERM so they are not alive when the shell dies from
+  # SIGKILL — without this pause the orphan-check window (5 × 0.1s) can
+  # catch tee/perl transiently before the kernel records them as dead.
   kill -TERM -- -$$ 2>/dev/null || true
+  sleep 0.5
   kill -KILL -- -$$ 2>/dev/null || true
   exit 130
 }
@@ -248,9 +250,12 @@ cleanup_on_interrupt() {
 
   echo "First interrupt, cleaning up..."
 
-  # No sleep between TERM and KILL — the sleep is timing-sensitive on loaded
-  # CI runners and unnecessary in this test fixture (no sub-processes here).
+  # Sleep between TERM and KILL: bash defers SIGTERM while the INT trap is
+  # active; without the pause the shell may receive SIGKILL before SIGTERM is
+  # re-delivered, causing exit 130 to never run and leaving the cleanup
+  # incomplete on some macOS scheduler timings.
   kill -TERM -- -$$ 2>/dev/null || true
+  sleep 0.5
   kill -KILL -- -$$ 2>/dev/null || true
   exit 130
 }
