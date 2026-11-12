@@ -216,9 +216,27 @@ _followup_pool_split_tsv() {
   _f4="${_l#*$'\t'}"
 }
 
-# _followup_pool_loc_file LOCATION — the file part of "path:line — text".
+# _followup_pool_loc_norm LOCATION — "path[:line]" from an LLM-written location.
+# Assessments write locations as `` `lib/x.sh`, ~line 206 — the preflight block ``
+# or `lib/x.sh:42 — text`: strip the backticks, take the first token, drop a
+# trailing comma/semicolon/colon, and keep a ":N" line when present. Live
+# (2026-11-12, freshup pool #553): the raw strings failed the marker allowlist,
+# entries were written with no location marker, and reconcile skipped all 27.
+_followup_pool_loc_norm() {
+  local _l="${1:-}"
+  _l="${_l//\`/}"
+  _l="${_l#"${_l%%[![:space:]]*}"}"
+  _l="${_l%%[[:space:]]*}"
+  _l="${_l%%[,;]*}"
+  _l="${_l%:}"
+  case "$_l" in */*|*.*) printf '%s' "$_l" ;; *) printf '' ;; esac
+}
+
+# _followup_pool_loc_file LOCATION — the file part of a location (no line).
 _followup_pool_loc_file() {
-  printf '%s' "${1:-}" | sed -E 's/[[:space:]].*//; s/:[0-9]+.*$//' || true
+  local _n
+  _n=$(_followup_pool_loc_norm "${1:-}")
+  printf '%s' "${_n%%:*}"
 }
 
 # followup_pool_entries BODY — TSV of key, sha, location, title for each entry.
@@ -377,8 +395,10 @@ followup_pool_append() {
   local _markers="<!-- ${_FP_M_ENTRY}:${_key} -->"
   [ -n "$_src" ] && _markers="${_markers}<!-- ${_FP_M_SRC}:${_src} -->"
   [ -n "$_pr" ]  && _markers="${_markers}<!-- ${_FP_M_PR}:${_pr} -->"
-  if [ -n "$_loc" ] && printf '%s' "$_loc" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
-    _markers="${_markers}<!-- ${_FP_M_LOC}:${_loc} -->"
+  local _loc_norm
+  _loc_norm=$(_followup_pool_loc_norm "$_loc")
+  if [ -n "$_loc_norm" ] && printf '%s' "$_loc_norm" | grep -qE '^[A-Za-z0-9/._:#-]+$'; then
+    _markers="${_markers}<!-- ${_FP_M_LOC}:${_loc_norm} -->"
   fi
   [ -n "$_sha" ] && _markers="${_markers}<!-- ${_FP_M_SHA}:${_sha} -->"
 
