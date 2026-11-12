@@ -581,3 +581,33 @@ RUNEOF
   ! sed -n '/^sync_integration_branch()/,/^}/p' "$_lib" | \
     grep -v '^#\|^ *#' | grep -nE 'git rebase|push --force|push -f'
 }
+
+# ---------------------------------------------------------------------------
+# Tests N: auth-failure (exit 18) propagation contracts in integration-sync.sh
+# ---------------------------------------------------------------------------
+
+@test "sync_integration_branch: exit 18 from resolver propagates (not masked as conflict)" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  # The region between resolver success block and the "fall through to manual" comment
+  # must contain an explicit exit-18 check that returns 18 (not falls to manual).
+  local _region
+  _region=$(sed -n '/^sync_integration_branch()/,/^sync_issue_branch()/p' "$_lib")
+  [ -n "$_region" ]
+  echo "$_region" | grep -qE '_resolver_rc.*-eq 18'
+  echo "$_region" | grep -qE 'return 18'
+  # The old "fall through to manual" comment must NOT be the only handling — there
+  # must be an explicit 18-check before it.
+  echo "$_region" | grep -qE 'outcome=auth_failure'
+}
+
+@test "sync_issue_branch: exit 18 from resolver propagates (not silently becomes conflict skip)" {
+  local _lib="$RITE_REPO_ROOT/lib/utils/integration-sync.sh"
+  [ -f "$_lib" ]
+  local _region
+  _region=$(sed -n '/^sync_issue_branch()/,/^sync_all_repos()/p' "$_lib")
+  [ -n "$_region" ]
+  echo "$_region" | grep -qE '_resolver_rc.*-eq 18'
+  echo "$_region" | grep -qE 'return 18'
+  echo "$_region" | grep -qE 'outcome=auth_failure'
+}

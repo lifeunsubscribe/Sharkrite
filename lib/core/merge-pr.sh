@@ -843,6 +843,13 @@ if [ "$PR_MERGEABLE" != "MERGEABLE" ]; then
           exit 5
         fi
 
+        if [ "$_mpr_resolver_exit" -eq 18 ]; then
+          # Auth expired — propagate so the batch halts rather than continuing
+          # with VALIDATION_FAILED=true and attempting a doomed merge.
+          print_error "Provider auth expired during conflict resolution — run: claude /login"
+          exit 18
+        fi
+
         if [ "$_mpr_resolver_exit" -eq 0 ]; then
           # The resolver writes resolutions but cannot stage or commit them
           # (#1317) — the caller completes the handoff.

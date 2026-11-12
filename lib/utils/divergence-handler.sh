@@ -578,6 +578,11 @@ _do_rebase_and_push() {
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         _div_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
+      elif [ "$_resolver_result" -eq 18 ]; then
+        _diag "CONFLICT_RESOLVER context=divergence outcome=auth_failure issue=${_issue_number:-} pr=${_pr_number:-} duration_s=${_cr_duration}"
+        # Auth expired — propagate so batch halts rather than treating this as a resolution failure
+        _div_error "Provider auth expired during conflict resolution — run: claude /login"
+        return 18
       else
         _diag "CONFLICT_RESOLVER context=divergence outcome=failed issue=${_issue_number:-} pr=${_pr_number:-} duration_s=${_cr_duration}"
         # Resolver could not resolve (exit 1) — fall through to auto bail below

@@ -3333,6 +3333,9 @@ run_workflow() {
     elif [ $stale_result -eq 5 ]; then
       # Usage cap hit during conflict resolution — propagate so batch can abort cleanly
       return 5
+    elif [ $stale_result -eq 18 ]; then
+      # Auth failure during conflict resolution — propagate so batch can abort cleanly
+      return 18
     elif [ $stale_result -eq 1 ]; then
       return 1
     fi

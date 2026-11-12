@@ -1131,8 +1131,13 @@ if [ "$MODE" = "sync" ]; then
     for _sync_n in ${SYNC_ARGS[@]+"${SYNC_ARGS[@]}"}; do
       _sync_item_rc=0
       sync_issue_branch "$_sync_n" || _sync_item_rc=$?
-      [ "$_sync_item_rc" -ne 0 ] && _sync_overall_rc=1
       _sync_report+=("  issue #${_sync_n}: ${_SYNC_ISSUE_OUTCOME:-?}")
+      if [ "$_sync_item_rc" -eq 18 ]; then
+        _sync_overall_rc=18
+        break
+      elif [ "$_sync_item_rc" -ne 0 ]; then
+        _sync_overall_rc=1
+      fi
     done
     echo ""
     print_header "Sync Report"

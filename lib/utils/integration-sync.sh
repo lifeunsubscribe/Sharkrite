@@ -273,6 +273,15 @@ sync_integration_branch() {
       git worktree remove --force "$_sync_wt" 2>/dev/null || true
       return 0
     fi
+    if [ "$_resolver_rc" -eq 18 ]; then
+      # Auth expired — propagate so the caller halts rather than printing manual instructions.
+      print_error "Provider auth expired during conflict resolution — run: claude /login"
+      _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=auth_failure"
+      git -C "$_sync_wt" merge --abort 2>/dev/null || true
+      trap - EXIT
+      git worktree remove --force "$_sync_wt" 2>/dev/null || true
+      return 18
+    fi
     # Resolver failed (exit 1) or usage-cap (exit 5) — fall through to manual.
     print_warning "Claude could not resolve conflicts — manual resolution required"
   fi
@@ -503,6 +512,12 @@ sync_issue_branch() {
           _diag "SYNC_ISSUE issue=${_issue_n} outcome=conflict"
           return 0
         fi
+      elif [ "$_resolver_rc" -eq 18 ]; then
+        # Auth expired — propagate so the batch halts rather than silently becoming a "conflict" skip.
+        print_error "Issue #${_issue_n}: provider auth expired during conflict resolution — run: claude /login"
+        _SYNC_ISSUE_OUTCOME="auth_failure"
+        _diag "SYNC_ISSUE issue=${_issue_n} outcome=auth_failure"
+        return 18
       fi
     fi
 
@@ -645,10 +660,13 @@ sync_all_repos() {
       print_status "Phase B — issue #${_issue_from_lock} worktree: ${_wt_from_cwd}"
       local _wt_rc=0
       sync_issue_branch "$_issue_from_lock" || _wt_rc=$?
-      if [ "$_wt_rc" -ne 0 ]; then
+      _report+=("  issue #${_issue_from_lock}: ${_SYNC_ISSUE_OUTCOME:-?}")
+      if [ "$_wt_rc" -eq 18 ]; then
+        _overall_rc=18
+        break
+      elif [ "$_wt_rc" -ne 0 ]; then
         _overall_rc=1
       fi
-      _report+=("  issue #${_issue_from_lock}: ${_SYNC_ISSUE_OUTCOME:-?}")
     done
   fi
 

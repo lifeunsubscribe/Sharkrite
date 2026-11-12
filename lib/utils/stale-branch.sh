@@ -421,6 +421,7 @@ check_stale_branch() {
     0|2) return "$_auto_rebase_result" ;;  # rebase succeeded or foreign commits integrated
     11)  return 11 ;;                       # small-branch conflict fast-path already restarted
     5)   return 5 ;;                        # usage cap — propagate batch-blocking
+    18)  return 18 ;;                       # auth expired — propagate batch-blocking
     7)
       # Push rejected (force-with-lease): remote has foreign commits the lease refused to overwrite.
       # Do NOT call _stale_close_and_cleanup — deleting the remote branch would destroy those
@@ -1090,7 +1091,7 @@ _stale_rebase_onto_main() {
 
     # In auto mode, attempt Claude-assisted conflict resolution before bailing.
     # attempt_claude_merge_resolution is provided by conflict-resolver.sh (issue #21).
-    # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
+    # Exit codes: 0=resolved, 1=failure, 5=usage-cap, 18=auth-failure (both batch-blocking).
     if [ "$workflow_mode" != "supervised" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
       print_status "Attempting Claude-assisted conflict resolution..."
       local _resolver_result=0 _cr_start _cr_duration
@@ -1144,6 +1145,11 @@ _stale_rebase_onto_main() {
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         print_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
+      elif [ "$_resolver_result" -eq 18 ]; then
+        _diag "CONFLICT_RESOLVER context=stale_rebase outcome=auth_failure issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        # Auth expired — propagate so batch halts instead of triggering destructive close-and-restart
+        print_error "Provider auth expired during conflict resolution — run: claude /login"
+        return 18
       else
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
@@ -1254,7 +1260,7 @@ _stale_merge_main_legacy() {
 
     # In auto mode, attempt Claude-assisted conflict resolution before bailing.
     # attempt_claude_merge_resolution is provided by conflict-resolver.sh (issue #21).
-    # Exit codes: 0=resolved, 1=failure, 5=usage-cap (batch-blocking — propagate up).
+    # Exit codes: 0=resolved, 1=failure, 5=usage-cap, 18=auth-failure (both batch-blocking).
     if [ "$workflow_mode" != "supervised" ] && declare -f attempt_claude_merge_resolution >/dev/null 2>&1; then
       print_status "Attempting Claude-assisted conflict resolution..."
       local _resolver_result=0 _cr_start _cr_duration
@@ -1303,6 +1309,11 @@ _stale_merge_main_legacy() {
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         print_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
+      elif [ "$_resolver_result" -eq 18 ]; then
+        _diag "CONFLICT_RESOLVER context=stale_merge outcome=auth_failure issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        # Auth expired — propagate so batch halts instead of triggering destructive close-and-restart
+        print_error "Provider auth expired during conflict resolution — run: claude /login"
+        return 18
       else
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
         # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
