@@ -594,7 +594,7 @@ _collect_security_context() {
   local raw=""
   raw=$(gh_safe issue list --state open --label security --limit 20 \
     --json number,title,body \
-    --jq '.[] | "\(.number)\t\(.title)\t\(.body)"' 2>/dev/null || true)
+    --jq '.[] | "\(.number)\t\(.title)\t\(.body | gsub("\n"; " "))"' 2>/dev/null || true)
 
   [ -n "$raw" ] || return 0
 

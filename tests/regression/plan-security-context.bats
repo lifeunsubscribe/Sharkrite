@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/plan-issues.sh::_collect_security_context
+# sharkrite-test-covers: lib/core/plan-issues.sh::_collect_security_context|generate_issues
 # tests/regression/plan-security-context.bats
 #
 # Regression tests for the open-security-deferrals injection feature (#1553).
@@ -133,6 +133,53 @@ teardown() {
     echo "FAIL: issue #99 not found in security context output" >&2
     echo "--- output ---" >&2
     echo "$result" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Fixture A2: multi-line issue body does not corrupt the block
+# ---------------------------------------------------------------------------
+
+@test "Fixture A2: multi-line issue body produces exactly one entry (no TSV corruption)" {
+  # gh_safe stub simulates the fixed jq output: .body | gsub("\n"; " ") collapses
+  # a runbook-formatted multi-paragraph body to a single TSV line.
+  # Without gsub in the jq filter the body newlines would produce extra read
+  # iterations, turning prose into garbled extra entries (#1553 regression).
+  gh_safe() {
+    case "$*" in
+      *"--label security"*)
+        printf '%s\t%s\t%s\n' \
+          "42" "Session fixation in auth flow" \
+          "## Description Affects lib/core/claude-workflow.sh line 300 ## Steps 1. See session init 2. Note missing invalidation"
+        ;;
+      *) echo "" ;;
+    esac
+  }
+
+  local result
+  result=$(_collect_security_context)
+
+  echo "$result" | grep -q "Open Security Deferrals" || {
+    echo "FAIL: 'Open Security Deferrals' heading not found" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+
+  local entry_count
+  entry_count=$(echo "$result" | grep -c '^- #42:' || true)
+  [ "$entry_count" -eq 1 ] || {
+    echo "FAIL: expected exactly 1 entry for #42, got $entry_count (multi-line body corruption?)" >&2
+    echo "--- output ---" >&2
+    echo "$result" >&2
+    false
+  }
+}
+
+@test "Fixture A3: jq filter uses gsub to collapse body newlines into spaces" {
+  grep -q 'gsub.*\\n' "${RITE_REPO_ROOT}/lib/core/plan-issues.sh" || {
+    echo "FAIL: gsub newline-collapse not found in _collect_security_context jq filter" >&2
     false
   }
 }
