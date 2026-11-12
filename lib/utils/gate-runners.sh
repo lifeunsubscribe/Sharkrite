@@ -492,11 +492,14 @@ _extract_node_lint_flags() {
 
         # Denylist: drop flags that mutate the worktree or corrupt output parsing
         case "$_tok" in
-          --fix|--fix-dry-run|--color|--no-color|--fix=*|--fix-dry-run=*)
+          --fix|--fix-dry-run|--color|--no-color|--fix=*|--fix-dry-run=*|\
+          --cache|--no-cache)
             # Boolean denylist: skip flag only
             ;;
           -f|--format|--format=*|-o|--output-file|--output-file=*|\
-          --fix-type|--fix-type=*)
+          --fix-type|--fix-type=*|\
+          --cache-location|--cache-location=*|\
+          --cache-strategy|--cache-strategy=*)
             # Value-taking denylist: skip flag and following value token (space form)
             case "$_tok" in *=*) ;; *) _skip_next=true ;; esac
             ;;
@@ -508,7 +511,8 @@ _extract_node_lint_flags() {
               --ignore-path|--ignore-pattern|--parser|--parser-options|\
               --plugin|-p|--rule|--resolve-plugins-relative-to|\
               --rulesdir|--max-warnings|--stdin-filename|\
-              --report-unused-disable-directives-severity)
+              --report-unused-disable-directives-severity|\
+              --flag)
                 _tok_vtf=true
                 ;;
               *)
