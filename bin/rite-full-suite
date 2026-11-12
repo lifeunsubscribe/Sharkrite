@@ -532,14 +532,22 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
     _serial_bats_pid=$!
     _serial_file_exit=0
     if declare -f wait_pid_with_timeout >/dev/null 2>&1; then
-      if ! wait_pid_with_timeout "$_serial_bats_pid" "$_sr_per_file_bound"; then
+      # Capture the return value explicitly: wait_pid_with_timeout returns 124
+      # on timeout OR the child's real exit code on normal completion.
+      # Using `if ! wait_pid_with_timeout` treats ANY non-zero return (including
+      # the child's real failure exit 1) as a timeout — that sets _serial_file_exit=124
+      # for every persistently-failing bats re-run, causing _serial_aborted=true and
+      # breaking the investigate loop before TAP parsing or remediation issue filing.
+      _wpt_rc=0
+      wait_pid_with_timeout "$_serial_bats_pid" "$_sr_per_file_bound" || _wpt_rc=$?
+      if [ "$_wpt_rc" -eq 124 ]; then
         declare -f kill_process_tree >/dev/null 2>&1 \
           && kill_process_tree "$_serial_bats_pid" 2>/dev/null \
           || kill "$_serial_bats_pid" 2>/dev/null || true
         wait "$_serial_bats_pid" 2>/dev/null || true
         _serial_file_exit=124
       else
-        wait "$_serial_bats_pid" || _serial_file_exit=$?
+        _serial_file_exit="$_wpt_rc"
       fi
     else
       wait "$_serial_bats_pid" || _serial_file_exit=$?

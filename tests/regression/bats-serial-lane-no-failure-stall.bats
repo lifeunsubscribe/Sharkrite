@@ -76,6 +76,7 @@ _proj_git_commit() {
     export RITE_BATS_TEST_TIMEOUT='10'
     export RITE_TEST_GATE_DIFF_BASE='${_EMPTY_TREE}'
     export RITE_GATE_BATS_TIMEOUT='60'
+    export RITE_GATE_FLAKE_RETRY='false'
     RITE_LOG_FILE=''
     _diag() { true; }
     export -f _diag 2>/dev/null || true
@@ -124,6 +125,7 @@ _proj_git_commit() {
     export RITE_BATS_TEST_TIMEOUT='10'
     export RITE_TEST_GATE_DIFF_BASE='${_EMPTY_TREE}'
     export RITE_GATE_BATS_TIMEOUT='5'
+    export RITE_GATE_FLAKE_RETRY='false'
     RITE_LOG_FILE=''
     _diag() { true; }
     export -f _diag 2>/dev/null || true
