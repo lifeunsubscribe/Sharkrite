@@ -839,12 +839,26 @@ _build_gate_prepend_items() {
       else
         _gate_failure_desc="gate failure: non-zero exit (exit_code=${_gate_exit_code}) with no parseable findings"
       fi
+      # Runner error lines captured by the gate (gate-verdict.sh::_gate_runner_excerpt),
+      # quoted so the fix session reads the actual failure instead of hunting for it
+      # in a 20k-line log (freshup #549: two rounds for one TS6133).
+      local _gate_excerpt _gate_excerpt_block=""
+      _gate_excerpt=$(jq -r '.excerpt // ""' "$_f" 2>/dev/null || true)
+      if [ -n "$_gate_excerpt" ]; then
+        _gate_excerpt_block="**Runner output (error lines, verbatim):**
+\`\`\`
+${_gate_excerpt}
+\`\`\`
+Fix what these lines name first; they are the gate's actual failure.
+"
+      fi
       GATE_PREPEND_ITEMS+="### [GATE] ${_gate_failure_desc} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Gate failure (objective — no LLM categorization needed)
 **Fix Effort:** Medium (investigate why the test runner produced no parseable output)
 **Reasoning:** The post-commit gate exited non-zero (exit_code=${_gate_exit_code}) but produced zero parseable lint or test findings. This means verification did not complete — the gate CANNOT confirm the suite passed. A non-zero exit with no findings is still a blocking failure; merging unverified code is not acceptable. Investigate the runner (check for missing dependencies, bootstrap failures, or non-TAP output) and resolve the underlying issue before merging.
 
+${_gate_excerpt_block}
 "
       GATE_NOW_COUNT=$(( GATE_NOW_COUNT + 1 ))
     fi
