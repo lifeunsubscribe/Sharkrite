@@ -2309,7 +2309,15 @@ case "$_DISPATCH_KEY" in
       FIX_EXIT=$?
       set -e
 
-      if [ $FIX_EXIT -ne 0 ]; then
+      if [ $FIX_EXIT -eq 5 ]; then
+        print_warning "Usage cap reached during fix session — aborting"
+        FINAL_EXIT=5
+        break
+      elif [ $FIX_EXIT -eq 18 ]; then
+        print_warning "Provider auth failure during fix session — aborting"
+        FINAL_EXIT=18
+        break
+      elif [ $FIX_EXIT -ne 0 ]; then
         print_error "Fix cycle failed (exit code: $FIX_EXIT)"
         FINAL_EXIT=1
         break
@@ -2324,7 +2332,15 @@ case "$_DISPATCH_KEY" in
       PUSH_EXIT=$?
       set -e
 
-      if [ $PUSH_EXIT -ne 0 ] && [ $PUSH_EXIT -ne 2 ]; then
+      if [ $PUSH_EXIT -eq 5 ]; then
+        print_warning "Usage cap reached during fix-loop review regeneration — aborting"
+        FINAL_EXIT=5
+        break
+      elif [ $PUSH_EXIT -eq 18 ]; then
+        print_warning "Provider auth failure during fix-loop review regeneration — aborting"
+        FINAL_EXIT=18
+        break
+      elif [ $PUSH_EXIT -ne 0 ] && [ $PUSH_EXIT -ne 2 ]; then
         print_error "Push/review failed (exit code: $PUSH_EXIT)"
         FINAL_EXIT=1
         break
@@ -2340,7 +2356,22 @@ case "$_DISPATCH_KEY" in
       cd "$WORKTREE_PATH"
       set +e
       "$CREATE_PR" --auto "$ISSUE_NUMBER"
+      STALE_PUSH_EXIT=$?
       set -e
+
+      if [ $STALE_PUSH_EXIT -eq 5 ]; then
+        print_warning "Usage cap reached during stale-review reroute — aborting"
+        FINAL_EXIT=5
+        break
+      elif [ $STALE_PUSH_EXIT -eq 18 ]; then
+        print_warning "Provider auth failure during stale-review reroute — aborting"
+        FINAL_EXIT=18
+        break
+      elif [ $STALE_PUSH_EXIT -ne 0 ] && [ $STALE_PUSH_EXIT -ne 2 ]; then
+        print_error "Failed to regenerate review during stale reroute (exit code: $STALE_PUSH_EXIT)"
+        FINAL_EXIT=1
+        break
+      fi
 
     else
       # Exit 1 or other — manual intervention needed

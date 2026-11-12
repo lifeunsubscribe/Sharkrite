@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/create-pr.sh, lib/core/workflow-runner.sh::phase_create_pr|phase_assess_and_resolve|run_workflow
+# sharkrite-test-covers: lib/core/create-pr.sh, lib/core/workflow-runner.sh::phase_create_pr|phase_assess_and_resolve|run_workflow, bin/rite
 #
 # Regression tests for the review-failure exit-code chain.
 #
@@ -19,6 +19,7 @@ setup() {
   PROJECT_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
   CREATE_PR_SH="$PROJECT_ROOT/lib/core/create-pr.sh"
   RUNNER_SH="$PROJECT_ROOT/lib/core/workflow-runner.sh"
+  BINRITE="$PROJECT_ROOT/bin/rite"
 }
 
 # Run the REAL review-trigger block from create-pr.sh (extracted via
@@ -100,4 +101,61 @@ _run_trigger_block() {
   eighteen=$(grep -cE '_create_pr_rc -eq 18|create_pr_exit -eq 18' "$RUNNER_SH" || true)
   [ "$five" -gt 0 ]
   [ "$five" -eq "$eighteen" ]
+}
+
+# ---------------------------------------------------------------------------
+# bin/rite --assess-and-fix: PUSH_EXIT and stale-review consumers handle 5/18
+# ---------------------------------------------------------------------------
+
+@test "bin/rite fix-loop PUSH_EXIT 5 propagates to FINAL_EXIT=5" {
+  run grep -nE '\$PUSH_EXIT -eq 5' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/\$PUSH_EXIT -eq 5/{f=1} f&&/FINAL_EXIT=5/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
+}
+
+@test "bin/rite fix-loop PUSH_EXIT 18 propagates to FINAL_EXIT=18" {
+  run grep -nE '\$PUSH_EXIT -eq 18' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/\$PUSH_EXIT -eq 18/{f=1} f&&/FINAL_EXIT=18/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
+}
+
+@test "bin/rite fix-loop FIX_EXIT 5 propagates to FINAL_EXIT=5" {
+  run grep -nE '\$FIX_EXIT -eq 5' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/\$FIX_EXIT -eq 5/{f=1} f&&/FINAL_EXIT=5/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
+}
+
+@test "bin/rite fix-loop FIX_EXIT 18 propagates to FINAL_EXIT=18" {
+  run grep -nE '\$FIX_EXIT -eq 18' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/\$FIX_EXIT -eq 18/{f=1} f&&/FINAL_EXIT=18/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
+}
+
+@test "bin/rite stale-review STALE_PUSH_EXIT 2 is tolerated (not fatal)" {
+  run grep -nE 'STALE_PUSH_EXIT -ne 2' "$BINRITE"
+  [ "$status" -eq 0 ]
+}
+
+@test "bin/rite stale-review branch captures CREATE_PR exit code" {
+  # Must assign the exit code (not discard it) after the stale-review CREATE_PR call
+  run grep -nE 'STALE_PUSH_EXIT=\$\?' "$BINRITE"
+  [ "$status" -eq 0 ]
+}
+
+@test "bin/rite stale-review STALE_PUSH_EXIT 5 propagates to FINAL_EXIT=5" {
+  run grep -nE 'STALE_PUSH_EXIT -eq 5' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/STALE_PUSH_EXIT -eq 5/{f=1} f&&/FINAL_EXIT=5/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
+}
+
+@test "bin/rite stale-review STALE_PUSH_EXIT 18 propagates to FINAL_EXIT=18" {
+  run grep -nE 'STALE_PUSH_EXIT -eq 18' "$BINRITE"
+  [ "$status" -eq 0 ]
+  run awk '/STALE_PUSH_EXIT -eq 18/{f=1} f&&/FINAL_EXIT=18/{print; exit}' "$BINRITE"
+  [ -n "$output" ]
 }
