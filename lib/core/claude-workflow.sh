@@ -2941,7 +2941,7 @@ If the changes are unrelated work, answer UNRELATED."
     # files (git mode 120000) so "foo/" won't match them. "foo" matches both.
     ensure_symlinks_gitignored() {
       local gitignore="$WORKTREE_PATH/.gitignore"
-      local patterns=(".rite" ".claude" "node_modules" "backend/node_modules")
+      local patterns=(".rite" ".claude" "node_modules" "backend/node_modules" ".venv" "venv")
       local updated=0
 
       for pattern in "${patterns[@]}"; do
@@ -2964,6 +2964,17 @@ If the changes are unrelated work, answer UNRELATED."
       fi
     }
     ensure_symlinks_gitignored
+
+    # Toolchain for the worktree's runner homes: node_modules CLONED (never
+    # symlinked — #844 below), venvs linked. See _link_worktree_toolchain.
+    if ! declare -f _link_worktree_toolchain >/dev/null 2>&1 && [ -f "${RITE_LIB_DIR:-}/utils/test-gate.sh" ]; then
+      source "${RITE_LIB_DIR}/utils/test-gate.sh"
+    fi
+    if declare -f _link_worktree_toolchain >/dev/null 2>&1; then
+      _link_worktree_toolchain "$MAIN_WORKTREE" "$WORKTREE_PATH" 2>/dev/null | while IFS= read -r _tc_line; do
+        print_info "$_tc_line"
+      done
+    fi
 
     # node_modules: no symlink created (#844). The old "symlink to save disk
     # space" pattern was removed because:

@@ -1435,3 +1435,162 @@ _cienv_gnu_prefix() {
   done
   printf '%s' "$_prefix"
 }
+
+# ---------------------------------------------------------------------------
+# Runner homes one level down (2026-11-12)
+#
+# Live (freshup batch 2026-11-12): package.json lives in frontend/, pytest
+# config at the root. The root-only detector ran 3h30m of pytest across 25
+# gate runs on eleven frontend-only PRs and never ran vitest or tsc; 8 of 11
+# branches reached merge with their own tests red, and a backend timing flake
+# became a fix item a frontend fix session could not fix. These helpers find
+# every runner home at the root and one level down, decide which ones a diff
+# touches, and run exactly those.
+# ---------------------------------------------------------------------------
+
+# _gate_dir_runner_kinds DIR — "node" and/or "pytest", one per line, for DIR.
+_gate_dir_runner_kinds() {
+  local _d="${1:-}"
+  [ -d "$_d" ] || return 0
+  if [ -f "$_d/package.json" ] && command -v jq >/dev/null 2>&1 \
+     && [ -n "$(jq -r '.scripts.test // empty' "$_d/package.json" 2>/dev/null)" ]; then
+    echo node
+  fi
+  if [ -f "$_d/pytest.ini" ] \
+     || { [ -f "$_d/pyproject.toml" ] && grep -q '^\[tool\.pytest' "$_d/pyproject.toml" 2>/dev/null; } \
+     || { [ -f "$_d/setup.cfg" ] && grep -q '^\[tool:pytest\]' "$_d/setup.cfg" 2>/dev/null; } \
+     || { [ -d "$_d/tests" ] && find "$_d/tests" -maxdepth 2 \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit 2>/dev/null | grep -q .; }; then
+    echo pytest
+  fi
+  return 0
+}
+
+# _gate_runner_dirs ROOT — "kind<TAB>relpath" lines for the root (".") and
+# each immediate subdirectory that is a runner home. Hidden dirs, dependency
+# trees, build output and venvs are never runner homes.
+_gate_runner_dirs() {
+  local _root="${1:-}" _k _sub _name
+  [ -d "$_root" ] || return 0
+  for _k in $(_gate_dir_runner_kinds "$_root"); do printf '%s\t.\n' "$_k"; done
+  for _sub in "$_root"/*/; do
+    [ -d "$_sub" ] || continue
+    _name=$(basename "$_sub")
+    case "$_name" in
+      node_modules|dist|build|coverage|venv|.venv|env|__pycache__|target|vendor|tests|test|docs) continue ;;
+    esac
+    for _k in $(_gate_dir_runner_kinds "${_sub%/}"); do printf '%s\t%s\n' "$_k" "$_name"; done
+  done
+  return 0
+}
+
+# _gate_touched_runner_dirs ROOT CHANGED_FILES — the runner lines a diff
+# touches. A subdirectory home is touched by any changed file under it. The
+# root is touched by any changed file that is NOT under some subdirectory home
+# (so a frontend-only diff leaves root pytest alone, while a change to a root
+# script runs the root runners — unknown changes err toward running more).
+_gate_touched_runner_dirs() {
+  local _root="${1:-}" _files="${2:-}" _lines _k _d _f _sub_dirs _touched_root=false _in_sub
+  _lines=$(_gate_runner_dirs "$_root")
+  [ -n "$_lines" ] && [ -n "$_files" ] || return 0
+  _sub_dirs=$(printf '%s\n' "$_lines" | awk -F'\t' '$2 != "." {print $2}' | sort -u || true)
+  while IFS= read -r _f; do
+    [ -n "$_f" ] || continue
+    _in_sub=false
+    for _d in $_sub_dirs; do
+      case "$_f" in "$_d"/*) _in_sub=true; break ;; esac
+    done
+    [ "$_in_sub" = false ] && _touched_root=true
+  done <<< "$_files"
+  while IFS=$'\t' read -r _k _d; do
+    [ -n "$_k" ] || continue
+    if [ "$_d" = "." ]; then
+      [ "$_touched_root" = true ] && printf '%s\t.\n' "$_k"
+    elif printf '%s\n' "$_files" | grep -q "^${_d}/"; then
+      printf '%s\t%s\n' "$_k" "$_d"
+    fi
+  done <<< "$_lines"
+  return 0
+}
+
+# _gate_run_runner_dir KIND DIR ROOT RAW_FILE SINK — run one subdirectory
+# runner home; append its output to RAW_FILE and SINK; print the exit code.
+# node: bootstrap deps when the runner is not resolvable, then `<pm> test`.
+# pytest: the resolved interpreter (`_resolve_pytest_python`), `-m pytest`;
+# no-tests / missing-deps outcomes print 0 with a warning, as the root branch does.
+_gate_run_runner_dir() {
+  local _k="${1:-}" _d="${2:-}" _root="${3:-}" _raw="${4:-/dev/null}" _sink="${5:-/dev/null}"
+  local _abs="$_root/$_d" _xf _tmp _rc=0
+  _xf=$(mktemp "${TMPDIR:-/tmp}/rite_gate_sub_exit_XXXXXX")
+  _tmp=$(mktemp "${TMPDIR:-/tmp}/rite_gate_sub_raw_XXXXXX")
+  case "$_k" in
+    node)
+      local _pm
+      _pm=$(_node_pkg_manager "$_abs")
+      if ! _node_runner_resolvable "$_abs" "$(_resolve_node_test_runner "$_abs" 2>/dev/null || true)" 2>/dev/null; then
+        echo "[test-gate] $_d: test runner not resolvable — bootstrapping dependencies..." >> "$_sink"
+        _node_desymlink_node_modules "$_abs"
+        _node_install_deps "$_abs" "$_sink"
+      fi
+      echo "[test-gate] $_d: running $_pm test..." >> "$_sink"
+      { (cd "$_abs" && "$_pm" test 2>&1); echo $? > "$_xf"; } | tee "$_tmp" >> "$_sink" || true
+      ;;
+    pytest)
+      local _py
+      _py=$(_resolve_pytest_python "$_abs")
+      echo "[test-gate] $_d: running $_py -m pytest..." >> "$_sink"
+      { (cd "$_abs" && "$_py" -m pytest 2>&1); echo $? > "$_xf"; } | tee "$_tmp" >> "$_sink" || true
+      ;;
+    *)
+      rm -f "$_xf" "$_tmp"; echo 0; return 0 ;;
+  esac
+  _rc=$(cat "$_xf" 2>/dev/null || echo 1); _rc=${_rc:-1}
+  { echo "[test-gate] --- $_d ($_k) ---"; cat "$_tmp"; } >> "$_raw"
+  if [ "$_k" = pytest ] && [ "$_rc" -ne 0 ]; then
+    local _outcome
+    _outcome=$(_classify_pytest_outcome "$_rc" "$(cat "$_tmp")")
+    case "$_outcome" in
+      skipped:*) echo "[test-gate] WARNING: $_d pytest ${_outcome#skipped:} — not counted as a failure" >&2; _rc=0 ;;
+    esac
+  fi
+  rm -f "$_xf" "$_tmp"
+  echo "$_rc"
+}
+
+# _link_worktree_toolchain MAIN WT — give a fresh worktree the toolchain its
+# runner homes need, so sessions and the gate can run the project's own tests
+# without `npm ci` ("the worktree has no node_modules by design" was a dev
+# session's reason for skipping tsc, freshup #546). node_modules is CLONED —
+# APFS clonefile (`cp -c`) on macOS, reflink on Linux — never symlinked: #844
+# removed the symlink because installs resolve through it and destroyed the
+# primary checkout's tree. A clone is instant, copy-on-write and the
+# worktree's own. Python venvs are symlinked: the gate already resolves the
+# primary checkout's .venv (_resolve_pytest_python), the link only makes the
+# same interpreter visible to sessions. Best-effort: when nothing can be
+# cloned the gate's bootstrap (#784) still runs.
+_link_worktree_toolchain() {
+  local _main="${1:-}" _wt="${2:-}" _k _d _p _src _dst _v
+  [ -d "$_main" ] && [ -d "$_wt" ] || return 0
+  while IFS=$'\t' read -r _k _d; do
+    [ -n "$_k" ] || continue
+    _p="$_d/"; [ "$_d" = "." ] && _p=""
+    case "$_k" in
+      node)
+        _src="$_main/${_p}node_modules"; _dst="$_wt/${_p}node_modules"
+        { [ -d "$_src" ] && [ ! -L "$_src" ] && [ ! -e "$_dst" ]; } || continue
+        if cp -cR "$_src" "$_dst" 2>/dev/null || cp -R --reflink=always "$_src" "$_dst" 2>/dev/null; then
+          echo "[toolchain] cloned ${_d}/node_modules into the worktree"
+        fi ;;
+      pytest)
+        for _v in .venv venv env; do
+          _src="$_main/${_p}${_v}"; _dst="$_wt/${_p}${_v}"
+          { [ -d "$_src" ] && [ ! -e "$_dst" ]; } || continue
+          if ln -s "$_src" "$_dst" 2>/dev/null; then
+            echo "[toolchain] linked ${_d}/${_v} to the primary checkout"
+            break
+          fi
+        done ;;
+    esac
+  done <<< "$(_gate_runner_dirs "$_wt")"
+  return 0
+}
+

@@ -191,6 +191,13 @@
 # known persistent failures on main that are not your change's to fix).
 # RITE_GATE_REPO_LINT=true
 
+# Runner homes one level down (2026-11-12). The gate detects test runners at the
+# repo root AND in each immediate subdirectory (frontend/package.json,
+# backend/pytest.ini, ...) and runs only the homes the PR's diff touches; the
+# root runners run only when root-level files changed. Set to false to restore
+# root-only detection.
+# RITE_GATE_SUBDIR_RUNNERS=true
+
 # Green-main preflight behavior when main is red (default: not set — halt).
 # When unset or "0", a batch run halts with exit 20 if the full gate on
 # origin/main finds failures. This guards gate block-on-any soundness:
