@@ -130,16 +130,31 @@ teardown() {
   [ "$cnt" -eq 0 ]
 }
 
-@test "adr_drift_log_append: accumulate-in-place for same (doc, assertion)" {
-  adr_drift_log_append "docs/adr.md" "10" "-" "Same assertion" "addition" "a.sh"
-  adr_drift_log_append "docs/adr.md" "20" "-" "Same assertion" "addition" "a.sh"
+@test "adr_drift_log_append: different PRs with same (doc, assertion) produce separate entries" {
+  adr_drift_log_append "docs/adr.md" "10" "7" "Same assertion" "addition" "a.sh"
+  adr_drift_log_append "docs/adr.md" "20" "8" "Same assertion" "addition" "b.sh"
 
   local entry_file="$RITE_STATE_DIR/doc-drift-adr/docs--adr.md.log"
   local line_count
   line_count="$(grep -c '^doc=' "$entry_file" || true)"
-  # Accumulate-in-place: still one line, PR appended
+  # Each distinct PR gets its own entry preserving its issue and evidence fields
+  [ "$line_count" -eq 2 ]
+  grep -q 'pr=10' "$entry_file"
+  grep -q 'pr=20' "$entry_file"
+  grep -q 'issue=7' "$entry_file"
+  grep -q 'issue=8' "$entry_file"
+  grep -q 'evidence=a.sh' "$entry_file"
+  grep -q 'evidence=b.sh' "$entry_file"
+}
+
+@test "adr_drift_log_append: same (doc, assertion, PR) triple is idempotent" {
+  adr_drift_log_append "docs/adr.md" "10" "7" "Same assertion" "addition" "a.sh"
+  adr_drift_log_append "docs/adr.md" "10" "7" "Same assertion" "addition" "a.sh"
+
+  local entry_file="$RITE_STATE_DIR/doc-drift-adr/docs--adr.md.log"
+  local line_count
+  line_count="$(grep -c '^doc=' "$entry_file" || true)"
   [ "$line_count" -eq 1 ]
-  grep -q 'pr=10,20' "$entry_file"
 }
 
 @test "adr_drift_log_remove_entry: removes the matching entry" {
@@ -164,18 +179,16 @@ teardown() {
 
 # AC4: entries NOT cleared during promote (only on reconcile or ADR audit)
 @test "AC4: adr entries are not removed by promote writes — only by remove_entry" {
-  # Simulate a promote observation: write then write again (PR accumulated, not removed)
+  # Two promotes with different PRs produce two separate entries (triple-dedupe)
   adr_drift_log_append "docs/architecture/adr-001.md" "50" "-" "Scope may be outdated" "contradiction" "lib/core/foo.sh"
-
-  # Simulate a second promote (different PR) — accumulate-in-place
   adr_drift_log_append "docs/architecture/adr-001.md" "51" "-" "Scope may be outdated" "contradiction" "lib/core/bar.sh"
 
-  # Entry still present after two promote writes
+  # Both entries present after two promote writes
   local cnt
   cnt="$(adr_drift_log_entry_count --doc "docs/architecture/adr-001.md")"
-  [ "$cnt" -eq 1 ]
+  [ "$cnt" -eq 2 ]
 
-  # Explicit remove clears it
+  # Explicit remove clears all entries for the assertion (regardless of PR)
   adr_drift_log_remove_entry "docs/architecture/adr-001.md" "Scope may be outdated"
   cnt="$(adr_drift_log_entry_count --doc "docs/architecture/adr-001.md")"
   [ "$cnt" -eq 0 ]
