@@ -325,6 +325,9 @@ _make_body() {
 # ---------------------------------------------------------------------------
 @test "empty follow-up list: diag emitted with all zeros" {
   _batch_followups_created() { printf ''; }
+  # The candidate list also unions every open pool (#1737); without a stub this
+  # test reached real GitHub and counted the live pool as skipped=1.
+  gh_safe() { return 0; }
 
   run reconcile_batch_followups
   [ "$status" -eq 0 ]

@@ -234,9 +234,12 @@ _do_verify() {
 _reconcile_pool() {
   local _pool="$1" _body="$2" _target_ref="$3" _model="$4"
   local _closed=0 _annotated=0 _verified=0 _skipped=0 _ok=1
-  local _key _sha _loc _title _file _changed _region _block _verdict _rc
-  while IFS=$'\t' read -r _key _sha _loc _title; do
-    [ -z "${_key:-}" ] && continue
+  local _key _sha _loc _title _file _changed _region _block _verdict _rc _f1 _f2 _f3 _f4 _eline
+  # Explicit split: IFS=$'\t' read collapses an empty sha/location column.
+  while IFS= read -r _eline; do
+    [ -z "${_eline:-}" ] && continue
+    _followup_pool_split_tsv "$_eline"
+    _key="$_f1"; _sha="$_f2"; _loc="$_f3"; _title="$_f4"
     _file=$(echo "${_loc:-}" | sed 's/[[:space:]].*//; s/:[0-9]*$//' || true)
     if [ -z "${_sha:-}" ] || [ -z "${_file:-}" ]; then _skipped=$((_skipped+1)); continue; fi
     if ! git -C "$RITE_PROJECT_ROOT" cat-file -e "${_sha}^{commit}" 2>/dev/null; then
