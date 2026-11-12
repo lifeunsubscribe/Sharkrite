@@ -960,6 +960,46 @@ EOF_FOREIGN_SHAS
 # INTERNAL: Rebase branch onto main
 # ===================================================================
 
+# ---------------------------------------------------------------------------
+# Deferred stash across conflict resolution (freshup #549, 2026-11-12)
+#
+# The rebase/merge sites stash the operator's uncommitted work, try the
+# rebase, and on conflict abort and POP the stash back before invoking the
+# resolver — deliberately, so WIP stays uncommitted (commit_resolved_conflicts
+# stages only the conflict paths). That is correct unless the WIP touches a
+# file the incoming base changes too: git then refuses the resolver's merge
+# ("Your local changes ... would be overwritten"), the resolver fails in one
+# second, and auto mode closes the PR and deletes the branch. In that overlap
+# case the stash stays put through resolution and is re-applied afterwards —
+# by SHA, never `stash pop`, because every worktree shares the stash stack.
+# ---------------------------------------------------------------------------
+
+# _stale_stash_overlaps_incoming STASH_SHA BASE — 0 when any file in the stash
+# is also changed between HEAD and origin/BASE.
+_stale_stash_overlaps_incoming() {
+  local _sha="${1:-}" _base="${2:-main}" _stashed_files _incoming
+  [ -n "$_sha" ] || return 1
+  _stashed_files=$(git stash show --name-only "$_sha" 2>/dev/null || true)
+  _incoming=$(git diff --name-only HEAD "origin/$_base" 2>/dev/null || true)
+  [ -n "$_stashed_files" ] && [ -n "$_incoming" ] || return 1
+  grep -qxF -f <(printf '%s\n' "$_stashed_files") <(printf '%s\n' "$_incoming")
+}
+
+# _stale_restore_stash_by_sha STASH_SHA — apply and drop that exact entry; on
+# an apply conflict keep the entry and say so.
+_stale_restore_stash_by_sha() {
+  local _sha="${1:-}" _ref
+  [ -n "$_sha" ] || return 0
+  if git stash apply --quiet "$_sha" 2>/dev/null; then
+    _ref=$(git stash list --format='%H %gd' 2>/dev/null | awk -v s="$_sha" '$1 == s { print $2; exit }' || true)
+    [ -n "$_ref" ] && git stash drop --quiet "$_ref" 2>/dev/null || true
+    print_info "Restored the uncommitted changes stashed before the rebase"
+  else
+    print_warning "Could not re-apply the uncommitted changes stashed before the rebase — stash ${_sha:0:8} preserved (git stash list; git stash apply ${_sha:0:8})"
+  fi
+  return 0
+}
+
 # _stale_rebase_onto_main WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER] [BASE_BRANCH]
 #
 # Rebases the feature branch onto the PR's base branch (defaults to "main").
@@ -994,11 +1034,12 @@ _stale_rebase_onto_main() {
   pre_rebase_head=$(git rev-parse HEAD)
 
   # Stash dirty worktree if needed
-  local _stashed=false
+  local _stashed=false _stash_sha="" _stash_deferred=false
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     print_status "Stashing uncommitted changes before rebase..."
     if create_sharkrite_stash "stale-branch: auto-stash before rebase $base_branch"; then
       _stashed=true
+      _stash_sha=$(git rev-parse --verify --quiet refs/stash 2>/dev/null || true)
     fi
   fi
 
@@ -1058,9 +1099,16 @@ _stale_rebase_onto_main() {
     print_warning "Rebase onto $base_branch had conflicts"
     git rebase --abort 2>/dev/null || true
 
-    # Restore stash
+    # Restore stash — unless the WIP overlaps the incoming changes, in which
+    # case it would make the resolver's merge impossible; keep it stashed
+    # through resolution and re-apply afterwards (see helpers above).
     if [ "$_stashed" = true ]; then
-      git stash pop 2>/dev/null || true
+      if _stale_stash_overlaps_incoming "$_stash_sha" "$base_branch"; then
+        _stash_deferred=true
+        print_info "Uncommitted changes overlap the incoming $base_branch changes — keeping them stashed (${_stash_sha:0:8}) through conflict resolution"
+      else
+        git stash pop 2>/dev/null || true
+      fi
     fi
 
     # Small-branch fast-path (issue #855): in auto mode, rebase conflicts on a branch
@@ -1119,8 +1167,10 @@ _stale_rebase_onto_main() {
         # accordingly, and aborts context-correctly with git's stderr surfaced on failure.
         if ! commit_resolved_conflicts "$worktree_path"; then
           print_error "Failed to commit resolved conflicts"
+          [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
           return 1
         fi
+        [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
         if ! verify_post_merge "$worktree_path" "origin/main"; then
@@ -1142,6 +1192,7 @@ _stale_rebase_onto_main() {
         fi
       elif [ "$_resolver_result" -eq 5 ]; then
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         print_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
@@ -1152,6 +1203,7 @@ _stale_rebase_onto_main() {
         return 18
       else
         _diag "CONFLICT_RESOLVER context=stale_rebase outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
         # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
         print_warning "Claude could not resolve conflicts — supervised mode required"
       fi
@@ -1200,11 +1252,12 @@ _stale_merge_main_legacy() {
   cd "$worktree_path" || return 1
 
   # Stash dirty worktree if needed
-  local _stashed=false
+  local _stashed=false _stash_sha="" _stash_deferred=false
   if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
     print_status "Stashing uncommitted changes before merge..."
     if create_sharkrite_stash "stale-branch: auto-stash before merge $base_branch"; then
       _stashed=true
+      _stash_sha=$(git rev-parse --verify --quiet refs/stash 2>/dev/null || true)
     fi
   fi
 
@@ -1253,9 +1306,15 @@ _stale_merge_main_legacy() {
     print_warning "Merge with $base_branch had conflicts"
     git merge --abort 2>/dev/null || true
 
-    # Restore stash
+    # Restore stash — deferred when the WIP overlaps the incoming changes (see
+    # _stale_stash_overlaps_incoming).
     if [ "$_stashed" = true ]; then
-      git stash pop 2>/dev/null || true
+      if _stale_stash_overlaps_incoming "$_stash_sha" "$base_branch"; then
+        _stash_deferred=true
+        print_info "Uncommitted changes overlap the incoming $base_branch changes — keeping them stashed (${_stash_sha:0:8}) through conflict resolution"
+      else
+        git stash pop 2>/dev/null || true
+      fi
     fi
 
     # In auto mode, attempt Claude-assisted conflict resolution before bailing.
@@ -1288,8 +1347,10 @@ _stale_merge_main_legacy() {
         # accordingly, and aborts context-correctly with git's stderr surfaced on failure.
         if ! commit_resolved_conflicts "$worktree_path"; then
           print_error "Failed to commit resolved conflicts"
+          [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
           return 1
         fi
+        [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         if ! verify_post_merge "$worktree_path" "origin/$base_branch"; then
           print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
@@ -1306,6 +1367,7 @@ _stale_merge_main_legacy() {
         fi
       elif [ "$_resolver_result" -eq 5 ]; then
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=cap_hit issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
         # Usage cap reached — propagate so batch can abort cleanly (do NOT fall back to supervised)
         print_error "Claude usage cap reached during conflict resolution — aborting batch"
         return 5
@@ -1316,6 +1378,7 @@ _stale_merge_main_legacy() {
         return 18
       else
         _diag "CONFLICT_RESOLVER context=stale_merge outcome=failed issue=${issue_number:-} pr=${pr_number:-} duration_s=${_cr_duration}"
+        [ "$_stash_deferred" = true ] && _stale_restore_stash_by_sha "$_stash_sha"
         # Resolver could not resolve (exit 1) — fall through to supervised/auto bail
         print_warning "Claude could not resolve conflicts — supervised mode required"
       fi

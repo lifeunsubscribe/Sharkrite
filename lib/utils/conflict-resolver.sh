@@ -530,6 +530,18 @@ attempt_claude_merge_resolution() {
       # overwrite collision class (issue #783), NOT a true unexpected state.
       # The authoritative signal is a stash holding an untracked file that now
       # collides with a tracked path; the git output signature corroborates it.
+      # A dirty tree is NOT an add/add collision. Live (freshup #549,
+      # 2026-11-12): the stale-branch path popped the operator's stash back
+      # before calling us, git refused the merge for those files, and this was
+      # misread as "could not identify a stashed colliding path" — auto mode
+      # then closed the PR and deleted the branch. Name the real cause; the
+      # caller keeps its stash across the resolver now (stale-branch.sh).
+      if echo "$_cr_merge_output" | grep -q "Your local changes to the following files would be overwritten"; then
+        _cr_error "Merge refused: uncommitted changes in the working tree would be overwritten. Commit or stash them and retry."
+        echo "$_cr_merge_output" | grep -E '^[[:space:]]+' | head -10 >&2 || true
+        git merge --abort 2>/dev/null || true
+        return 1
+      fi
       local _cr_addadd_paths=""
       _cr_addadd_paths=$(_cr_stash_untracked_collision_paths || true)
       if [ -z "$_cr_addadd_paths" ] && _cr_output_signals_overwrite_collision "$_cr_merge_output"; then
