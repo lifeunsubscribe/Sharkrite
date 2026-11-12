@@ -71,7 +71,7 @@ fastpath_parse_issue() {
 
   # Require the explicit opt-in marker. A pure presence marker (no value), so a
   # plain grep is correct here (the BARE_MARKER_GREP rule targets value markers).
-  echo "$_body" | grep -q "${RITE_MARKER_FASTPATH}" || return 1
+  grep -q "${RITE_MARKER_FASTPATH}" <<< "$_body" || return 1
 
   # Extract the FIRST fenced ```diff block (everything between ```diff and the
   # next ``` fence). awk: set flag on the opening fence, stop at the closing one.

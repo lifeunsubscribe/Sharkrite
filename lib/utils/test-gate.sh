@@ -471,7 +471,7 @@ run_test_gate() {
       while IFS= read -r _pf; do
         [ -z "$_pf" ] && continue
         [ -f "$project_root/$_pf" ] || continue
-        if ! printf '%s\n' "$_selection" | grep -qxF "$_pf"; then
+        if ! grep -qxF "$_pf" <<< "$_selection"; then
           _selection="${_selection:+$_selection
 }$_pf"
           _prior_injected=$((_prior_injected + 1))
@@ -973,7 +973,7 @@ run_test_gate() {
       local _make_recipe
       _make_recipe=$(awk '/^test:/{found=1;next} found && /^\t/{print;next} found{exit}' \
         "$project_root/Makefile" 2>/dev/null || true)
-      if echo "$_make_recipe" | grep -qiE '(pytest|python3?[[:space:]]+-m[[:space:]]+pytest|python3?)'; then
+      if grep -qiE '(pytest|python3?[[:space:]]+-m[[:space:]]+pytest|python3?)' <<< "$_make_recipe"; then
         _make_is_pytest_context=true
       elif [ -f "$_tests_raw_file" ] && \
            grep -qE '(=====.*test session starts|platform .* pytest|collected [0-9]+ item)' \
@@ -1337,7 +1337,7 @@ run_test_gate() {
           local _node_lint_src_files=""
           local _node_lint_eslint_noop=false
           if [ "$_node_lint_runner" = "eslint" ] \
-             || printf '%s\n' "$_node_lint_script" | grep -q '\beslint\b'; then
+             || grep -q '\beslint\b' <<< "$_node_lint_script"; then
             _node_lint_src_files=$(printf '%s\n' "${_nonsr_changed_files:-}" \
               | grep -E '\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$' | grep -v '^$' || true)
             if [ -n "$_node_lint_src_files" ]; then

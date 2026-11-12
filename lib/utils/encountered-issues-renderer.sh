@@ -486,7 +486,7 @@ _render_body_sections() {
 
   # ── Strategy 2: Canonical ## headings ────────────────────────────────────
   # Used when the issue was written with explicit structure (## Root Cause etc.)
-  if echo "$body" | grep -qE '^## (Description|Root Cause|Variants|Mitigation|Related)$'; then
+  if grep -qE '^## (Description|Root Cause|Variants|Mitigation|Related)$' <<< "$body"; then
     echo "$body" | awk '
       /^## (Description|Root Cause|Variants|Mitigation|Related)$/ {
         if (buf != "" && current != "") {
