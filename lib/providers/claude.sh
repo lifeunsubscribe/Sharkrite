@@ -95,7 +95,7 @@ claude_provider_healthcheck() {
   _stderr_content=$(cat "$_stderr_file" || true)
   rm -f "$_stderr_file"
 
-  if grep -q "has not been trusted" <<< "$_stderr_content"; then
+  if [[ "$_stderr_content" == *"has not been trusted"* ]]; then
     # Extract the repo path from the CLI's own error message; fall back to
     # RITE_PROJECT_ROOT so the fix command is always copy-pasteable.
     local _repo_path
