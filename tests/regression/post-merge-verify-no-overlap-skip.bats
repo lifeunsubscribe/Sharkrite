@@ -1,12 +1,18 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/utils/post-merge-verify.sh
 #
-# verify_post_merge skips the targeted gate when a stale-branch rebase pulled in
-# only files that do NOT overlap the branch's own changes — a semantic conflict
-# is impossible there, so verifying is pure waste (and the wasted minutes let
-# main advance, putting the branch behind again: the treadmill). Added 2026-06-16
-# after #649/#631 resumes re-ran a 33-file gate on a 2-commit rebase that could
-# not have introduced any conflict.
+# Regression tests for the no-overlap skip removal (#1743).
+#
+# The no-overlap skip block was removed because it was unreachable for all
+# production callers (#854/#1655 updated callers to pass origin/<target>,
+# making merge-base(origin/<target>, HEAD) = origin/<target> after a rebase,
+# so diff(_mb, pre_merge_ref) was always empty — the guard could never fire).
+# The _main_files/_branch_files variable names were also inverted relative to
+# their actual contents on the live caller path. Both issues are resolved by
+# the removal.
+#
+# These tests confirm the gate ALWAYS runs regardless of file overlap, and
+# preserve the safe-default (bad-ref) and overlapping-rebase behaviors.
 
 setup() {
   REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
@@ -36,8 +42,10 @@ setup() {
   git -C "$WT" update-ref refs/remotes/origin/main main
 }
 
-@test "no-overlap rebase: verification skipped, gate never runs" {
-  # branch adds B.txt; main adds C.txt — disjoint files.
+@test "non-overlapping rebase: gate still runs (no-overlap skip was removed in #1743)" {
+  # branch adds B.txt; main adds C.txt — disjoint files. With the old code the
+  # skip block would have fired (when passed the pre-rebase SHA). After #1743 the
+  # block is gone: the gate must always run regardless of file overlap.
   git -C "$WT" checkout -q -b feat
   echo b > "$WT/B.txt"; git -C "$WT" add -A; git -C "$WT" commit -qm "branch B"
   PRE=$(git -C "$WT" rev-parse HEAD)
@@ -50,8 +58,8 @@ setup() {
   rm -f "$GATE_MARK"
   run verify_post_merge "$WT" "$PRE"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"skipped"* ]] || { echo "expected skip message; got: $output" >&2; false; }
-  [ ! -f "$GATE_MARK" ] || { echo "gate ran despite no overlap" >&2; false; }
+  [[ "$output" != *"skipped"* ]] || { echo "gate was skipped but no-overlap skip block was removed" >&2; false; }
+  [ -f "$GATE_MARK" ] || { echo "gate did not run despite no-overlap skip removal" >&2; false; }
 }
 
 @test "overlapping rebase: verification runs the gate" {
