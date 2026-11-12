@@ -493,7 +493,6 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
   # --- Serial re-run each failing .bats file ---
   _serial_results_raw=$(mktemp "${TMPDIR:-/tmp}/rite_fs_serial_$$_XXXXXX")
   _serial_aborted=false
-  _sr_watchdog=()
 
   while IFS= read -r _bats_file; do
     [ -z "$_bats_file" ] && continue
@@ -504,6 +503,8 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
     # hours — the same "defers into working hours" bug as the main bats deadline.
     # Uses BATS_TEST_TIMEOUT as the floor: if we can't complete a single test
     # before the window closes, don't start another file.
+    # Also compute the per-file bound: for scheduled runs use the remaining window
+    # budget; for manual runs use RITE_GATE_BATS_TIMEOUT (default 1800s).
     if [ "$_scheduled" = "true" ]; then
       _sr_h_raw=$(date '+%H'); _sr_m_raw=$(date '+%M'); _sr_s_raw=$(date '+%S')
       _sr_h=$(( 10#${_sr_h_raw} ))
@@ -515,22 +516,36 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
         _serial_aborted=true
         break
       fi
-      # Build in-flight watchdog using remaining window budget (same pattern as lines 315–320)
-      _sr_watchdog=()
-      if command -v gtimeout >/dev/null 2>&1; then
-        _sr_watchdog=(gtimeout -k 30 "$_sr_remaining")
-      elif command -v timeout >/dev/null 2>&1; then
-        _sr_watchdog=(timeout -k 30 "$_sr_remaining")
-      fi
+      _sr_per_file_bound="$_sr_remaining"
+    else
+      _sr_per_file_bound="${RITE_GATE_BATS_TIMEOUT:-1800}"
     fi
 
     print_info "  Serial re-run: ${_bats_file#"$_PROJECT_ROOT/"}"
-    set +e
-    (cd "$_PROJECT_ROOT" && "${_sr_watchdog[@]+"${_sr_watchdog[@]}"}" bats "$_bats_file") > "$_serial_results_raw" 2>&1
-    _serial_file_exit=$?
-    set -e
+    # Run without BATS_TEST_TIMEOUT — bats-core 1.13 waits out the full per-test
+    # ceiling after a failing test without --jobs (measured 2026-11-11: `{ false; }`
+    # with BATS_TEST_TIMEOUT=300 takes 300s serially, unset takes 0s).  The whole
+    # file is bounded by wait_pid_with_timeout instead, so a genuinely hung test
+    # is still killed.  Same pattern as _pmv_serial_rerun_clears (#1742).
+    (cd "$_PROJECT_ROOT" && exec env -u BATS_TEST_TIMEOUT bats "$_bats_file") \
+      > "$_serial_results_raw" 2>&1 &
+    _serial_bats_pid=$!
+    _serial_file_exit=0
+    if declare -f wait_pid_with_timeout >/dev/null 2>&1; then
+      if ! wait_pid_with_timeout "$_serial_bats_pid" "$_sr_per_file_bound"; then
+        declare -f kill_process_tree >/dev/null 2>&1 \
+          && kill_process_tree "$_serial_bats_pid" 2>/dev/null \
+          || kill "$_serial_bats_pid" 2>/dev/null || true
+        wait "$_serial_bats_pid" 2>/dev/null || true
+        _serial_file_exit=124
+      else
+        wait "$_serial_bats_pid" || _serial_file_exit=$?
+      fi
+    else
+      wait "$_serial_bats_pid" || _serial_file_exit=$?
+    fi
 
-    # Timeout exit codes — watchdog killed in-flight file; treat as deadline abort
+    # Timeout exit codes — wait_pid_with_timeout or watchdog killed the file; treat as deadline abort
     if [ "$_serial_file_exit" -eq 124 ] || [ "$_serial_file_exit" -eq 137 ]; then
       _serial_aborted=true
       break
