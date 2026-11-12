@@ -307,6 +307,25 @@ TOTAL=$(echo "$lines" | awk '{sum += $1} END {print sum+0}' || true)
 
 Lint rule `GREP_C_ECHO_ZERO` (Rule 1) enforces this for `grep -c`, `wc -l` as final stage, and `awk` with an `END` block as final stage (same-line detection only).
 
+### producer | grep -q under pipefail (CRITICAL)
+
+Under `set -o pipefail`, `grep -q` exits on the first match without consuming the rest of its stdin. The still-writing producer receives SIGPIPE and exits non-zero; pipefail propagates that non-zero exit, so a successful match becomes exit 141 — read as "no match". The bug is macOS-specific, contention-dependent, and random (~1-in-7500 reproduction locally under CPU load), making it very hard to notice until it silently corrupts a merge-gate or review-staleness check.
+
+**Live failure (#1633, PR #1634):** Rule 36's membership check used `echo "$VAR" | grep -q`, which false-fired on macOS CI in 5 runs with large `$VAR` inputs (3 KB+, delivered in multiple pipe chunks). The fix was confirmed by a `pipefail + sleep` reproduction that consistently yields exit 141.
+
+Use here-strings instead — there is no pipe, so there is no producer to SIGPIPE:
+
+```bash
+# BAD: grep -q exits on first match; producer receives SIGPIPE → exit 141 under pipefail
+if echo "$BODY" | grep -q "pattern"; then
+if printf '%s\n' "$BODY" | grep -q "pattern"; then
+
+# GOOD: here-string has no producer process — no SIGPIPE possible
+if grep -q "pattern" <<< "$BODY"; then
+```
+
+The `<<<` here-string is available in bash 2.05b+, well within the bash 3.2 minimum. Single-variable inputs only: when the producer is a **command** (`cmd | grep -q`) the here-string form is not applicable — the pipeline is intentional and the SIGPIPE risk is accepted.
+
 ### Structured header matching (CRITICAL)
 
 Assessment output uses `### Title - STATE` format. Always match the structured header, never bare keywords.

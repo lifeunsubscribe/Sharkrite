@@ -139,7 +139,7 @@ _reconcile_followup_issues_on_merge() {
       [ -z "$_candidate" ] && continue
       local _cbody=""
       _cbody=$(gh_safe issue view "$_candidate" --json body --jq '.body' 2>/dev/null || true)
-      if echo "${_cbody:-}" | grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)"; then
+      if grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)" <<< "${_cbody:-}"; then
         _direct_hits="${_direct_hits}${_candidate}"$'\n'
       fi
     done <<< "$_raw_direct_hits"
@@ -157,7 +157,7 @@ _reconcile_followup_issues_on_merge() {
   # Format-anchored guard on _src_issue: it comes from the "Closes #N" extraction
   # in merge-pr.sh (always a number), but guard defensively anyway.
   local _lineage_hits=""
-  if echo "${_src_issue:-}" | grep -qE '^[0-9]+$'; then
+  if grep -qE '^[0-9]+$' <<< "${_src_issue:-}"; then
     # Find open issues that share this source issue but point at a DIFFERENT
     # parent PR.  One gh issue list call; filter locally via grep.
     # Fetch numbers only (not body) to avoid multi-line body mis-parse:
@@ -176,7 +176,7 @@ _reconcile_followup_issues_on_merge() {
       while IFS= read -r _inum; do
         [ -z "$_inum" ] && continue
         # Validate: must be a bare number (guard against jq formatting noise).
-        echo "$_inum" | grep -qE '^[0-9]+$' || continue
+        grep -qE '^[0-9]+$' <<< "$_inum" || continue
 
         # Fetch the body per-candidate (mirrors Path 1's re-verification approach)
         # to avoid mutating unrelated issues from superstring search hits.
@@ -186,13 +186,13 @@ _reconcile_followup_issues_on_merge() {
         # Re-verify: body must actually carry the source-issue marker with
         # a boundary anchor to prevent superstring false positives
         # (e.g. source-issue:1000 leaking in when searching source-issue:100).
-        if ! echo "${_ibody:-}" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${_src_issue}([^[:alnum:]_-]|$)"; then
+        if ! grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${_src_issue}([^[:alnum:]_-]|$)" <<< "${_ibody:-}"; then
           continue
         fi
 
         # Only include if this issue does NOT already point at the merged PR
         # (those are captured by Path 1 already).
-        if ! echo "${_ibody:-}" | grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)"; then
+        if ! grep -qE "${RITE_MARKER_PARENT_PR}:${_pr_num}([^0-9]|$)" <<< "${_ibody:-}"; then
           _lineage_hits="${_lineage_hits}${_inum}"$'\n'
         fi
       done <<< "$_src_hits"
@@ -517,7 +517,7 @@ ANALYSIS_EOF
   fi
 
   # Check if Claude found actionable updates
-  if ! echo "$SECURITY_ANALYSIS" | grep -qE "^### (NEW|UPDATE):"; then
+  if ! grep -qE "^### (NEW|UPDATE):" <<< "$SECURITY_ANALYSIS"; then
     print_info "No actionable security guide updates identified"
     return 0
   fi
@@ -897,9 +897,9 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
   # not null) — `select(. != null and . != "")` filters it out so .state/.status
   # fill in. StatusContext uses .context (not .name) and .state (not .conclusion).
   echo "$ALL_CI_CHECKS" | jq -r '.[] | "  - \(.name // .context): \([.conclusion, .state, .status] | map(select(. != null and . != "")) | first // "PENDING")"' | while read -r line; do
-    if echo "$line" | grep -q "SUCCESS"; then
+    if grep -q "SUCCESS" <<< "$line"; then
       echo -e "  ${GREEN}✓${NC} $(echo "$line" | sed 's/: SUCCESS//')"
-    elif echo "$line" | grep -q "FAILURE\|ERROR"; then
+    elif grep -q "FAILURE\|ERROR" <<< "$line"; then
       echo -e "  ${RED}✗${NC} $(echo "$line" | sed 's/: FAILURE//' | sed 's/: ERROR//')"
     else
       echo -e "  ${YELLOW}⏳${NC} $line"
@@ -955,9 +955,9 @@ if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then
 
   if [ -z "$CRITICAL_COUNT" ]; then
     # Fallback: check for "### ❌ CRITICAL" sections with actual content
-    if echo "$LATEST_CLAUDE_REVIEW" | grep -q "### ❌ CRITICAL"; then
+    if grep -q "### ❌ CRITICAL" <<< "$LATEST_CLAUDE_REVIEW"; then
       CRITICAL_SECTION=$(echo "$LATEST_CLAUDE_REVIEW" | sed -n '/### ❌ CRITICAL/,/###/p' || true)
-      if echo "$CRITICAL_SECTION" | grep -q "#### "; then
+      if grep -q "#### " <<< "$CRITICAL_SECTION"; then
         CRITICAL_COUNT=1
       else
         CRITICAL_COUNT=0
@@ -983,9 +983,9 @@ if [ -n "$LATEST_CLAUDE_REVIEW" ] && [ "$LATEST_CLAUDE_REVIEW" != "null" ]; then
       print_error "Found $CRITICAL_COUNT CRITICAL issue(s) - must be addressed"
       VALIDATION_FAILED=true
     fi
-  elif echo "$REVIEW_VERDICT" | grep -qi "APPROVE"; then
+  elif grep -qi "APPROVE" <<< "$REVIEW_VERDICT"; then
     print_success "Review passed (APPROVE)"
-  elif echo "$REVIEW_VERDICT" | grep -qi "NEEDS WORK"; then
+  elif grep -qi "NEEDS WORK" <<< "$REVIEW_VERDICT"; then
     print_warning "Review verdict: NEEDS WORK"
   else
     print_success "Review passed (CRITICAL: 0)"
@@ -1110,7 +1110,7 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
     -f sha="$EXPECTED_HEAD"
 
   # Check for SHA mismatch (API returns error when head changed)
-  if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "Head branch was modified|409"; then
+  if [ $MERGE_EXIT_CODE -ne 0 ] && grep -qiE "Head branch was modified|409" <<< "$MERGE_OUTPUT"; then
     print_error "PR head changed during merge — someone pushed commits after assessment"
     print_info "Expected HEAD: ${EXPECTED_HEAD:0:12}"
 
@@ -1140,7 +1140,7 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
   fi
 
   # Handle "not mergeable" — branch may be behind the PR base; try updating and retry once
-  if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable|405"; then
+  if [ $MERGE_EXIT_CODE -ne 0 ] && grep -qiE "not mergeable|405" <<< "$MERGE_OUTPUT"; then
     print_warning "PR is not mergeable — attempting branch update against $PR_BASE"
     # Fetch with retries — reading origin/$PR_BASE immediately after; stale data = wrong merge base
     if ! git_fetch_safe origin "$PR_BASE"; then
@@ -1164,7 +1164,7 @@ else
   _do_merge gh_safe pr merge "$PR_NUMBER" "--$MERGE_METHOD"
 
   # Handle "not mergeable" in fallback path — branch may be behind the PR base
-  if [ $MERGE_EXIT_CODE -ne 0 ] && echo "$MERGE_OUTPUT" | grep -qiE "not mergeable"; then
+  if [ $MERGE_EXIT_CODE -ne 0 ] && grep -qiE "not mergeable" <<< "$MERGE_OUTPUT"; then
     print_warning "PR is not mergeable — attempting branch update against $PR_BASE"
     # Fetch with retries — reading origin/$PR_BASE immediately after; stale data = wrong merge base
     if ! git_fetch_safe origin "$PR_BASE"; then
@@ -1886,7 +1886,7 @@ EOF
                 WT_PROTECTED=false
                 for batch_issue in $BATCH_ISSUE_LIST; do
                   # Check if this worktree's branch references a batch issue number
-                  if echo "$WT_BRANCH" | grep -qE "(^|[^0-9])${batch_issue}([^0-9]|$)"; then
+                  if grep -qE "(^|[^0-9])${batch_issue}([^0-9]|$)" <<< "$WT_BRANCH"; then
                     WT_PROTECTED=true
                     break
                   fi

@@ -231,13 +231,13 @@ _followup_dedup_check() {
           # NEW issues alike while preserving finding-level specificity.  This
           # mirrors Source 4 (line ~249), which already keys on _clean_title.
           if [ -n "$_s2_num" ] && [ -n "${_clean_title:-}" ] && \
-             echo "$_s2_title" | grep -qF "$_clean_title"; then
+             grep -qF "$_clean_title" <<< "$_s2_title"; then
             # Verify the marker is actually in the body — GitHub search can return
             # approximate matches; direct body inspection is the ground truth.
             local _candidate_body
             _candidate_body=$(gh_safe issue view "$_s2_num" --json body --jq '.body' || true)
             _candidate_body="${_candidate_body:-}"
-            if echo "$_candidate_body" | grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}([^[:alnum:]_-]|$)"; then
+            if grep -qE "${RITE_MARKER_SOURCE_ISSUE}:${ISSUE_NUMBER}([^[:alnum:]_-]|$)" <<< "$_candidate_body"; then
               EXISTING_ISSUE="$_s2_num"
               break
             fi
@@ -354,7 +354,7 @@ _resolve_issue_labels() {
   local _cat="${3:-}"
   local _priority
   _priority=$(_resolve_priority_label "$_sev")
-  if echo "${_cat}" | grep -qiE "(^|[^[:alnum:]])security([^[:alnum:]]|$)"; then
+  if grep -qiE "(^|[^[:alnum:]])security([^[:alnum:]]|$)" <<< "${_cat}"; then
     _priority="priority-high"
     echo "${_base},${_priority},security"
   else
@@ -570,7 +570,7 @@ _resolve_location_path() {
   # pointer class). Root-level files like CLAUDE.md or README.md have no slash
   # but do have a dot; extensionless root files like Makefile have neither, so
   # the filesystem existence check catches them.
-  if echo "${_loc_path:-}" | grep -qE '^[A-Za-z0-9/._-]+$' && { echo "${_loc_path:-}" | grep -qF '/' || echo "${_loc_path:-}" | grep -qF '.' || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
+  if grep -qE '^[A-Za-z0-9/._-]+$' <<< "${_loc_path:-}" && { grep -qF '/' <<< "${_loc_path:-}" || grep -qF '.' <<< "${_loc_path:-}" || [ -e "${RITE_PROJECT_ROOT:-.}/${_loc_path}" ]; }; then
     _loc_path_safe="$_loc_path"
   fi
 }
@@ -736,7 +736,7 @@ _build_gate_prepend_items() {
         _lint_is_inherited=false
         if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_lint_keys" ]; then
           _lint_key="${_lint_file}:${_lint_rule}"
-          if printf '%s\n' "$_gate_main_baseline_lint_keys" | grep -qxF "$_lint_key" 2>/dev/null; then
+          if grep -qxF "$_lint_key" <<< "$_gate_main_baseline_lint_keys" 2>/dev/null; then
             _lint_is_inherited=true
           fi
         fi
@@ -777,7 +777,7 @@ _build_gate_prepend_items() {
         # Attribution check: is this test name also failing on main?
         _test_is_inherited=false
         if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_tests" ]; then
-          if printf '%s\n' "$_gate_main_baseline_tests" | grep -qxF "$_test_name" 2>/dev/null; then
+          if grep -qxF "$_test_name" <<< "$_gate_main_baseline_tests" 2>/dev/null; then
             _test_is_inherited=true
           fi
         fi
@@ -1594,7 +1594,7 @@ if [ "$_review_is_stale" = "true" ]; then
   if [ -n "$CURRENT_HEAD_SHA" ]; then
     # SHA-based: check if any existing review's commit: attribute matches current HEAD
     _all_review_bodies=$(echo "$ALL_REVIEWS" | jq -r '.[].body' 2>/dev/null || true)
-    if echo "$_all_review_bodies" | grep -qE "${RITE_MARKER_REVIEW}[^>]*commit:${CURRENT_HEAD_SHA}"; then
+    if grep -qE "${RITE_MARKER_REVIEW}[^>]*commit:${CURRENT_HEAD_SHA}" <<< "$_all_review_bodies"; then
       _found_current_review=true
       # Load the review whose SHA matches HEAD
       REVIEW_JSON=$(echo "$ALL_REVIEWS" | \
@@ -2558,7 +2558,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     case "$_fh_line" in
       *" - ACTIONABLE_LATER"*)
         if declare -f followup_pool_enabled >/dev/null 2>&1 && followup_pool_enabled && \
-           ! echo "${_f_category:-}" | grep -qi "security"; then
+           ! grep -qi "security" <<< "${_f_category:-}"; then
           if declare -f followup_pool_append >/dev/null 2>&1 && \
              followup_pool_append "${PR_NUMBER:-}" "${ISSUE_NUMBER:-}" "${_f_severity:-MEDIUM}" \
                "${_f_category:-}" "$_clean_title" "${_f_location:-}" "${_assessment_head_sha:-}" \

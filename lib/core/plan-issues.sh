@@ -360,7 +360,7 @@ _collect_auto_docs_via_map() {
     case "${_dtype:-other}" in
       adr)
         # Collect unique ADR file paths (each file may produce multiple section rows)
-        if ! printf '%s\n' "$_adr_files_seen" | grep -qxF "$_f" 2>/dev/null; then
+        if ! grep -qxF "$_f" <<< "$_adr_files_seen" 2>/dev/null; then
           _adr_files_seen="${_adr_files_seen}${_f}"$'\n'
           adr_files+=("$_abs")
         fi
@@ -1680,8 +1680,8 @@ _lint_issues() {
       if [ "$_in_issue" = true ]; then
         _issue_block+="$line"$'\n'
         [[ "$line" =~ ^TITLE:\ (.+) ]] && _issue_title="${BASH_REMATCH[1]}"
-        echo "$line" | grep -qiE "routers/.*\.py|router.*\.py" && _has_router=true
-        echo "$line" | grep -qiE "services/.*\.py|service.*\.py" && _has_service=true
+        grep -qiE "routers/.*\.py|router.*\.py" <<< "$line" && _has_router=true
+        grep -qiE "services/.*\.py|service.*\.py" <<< "$line" && _has_service=true
 
         if [[ "$line" == "---END---" ]]; then
           _in_issue=false
@@ -1786,7 +1786,7 @@ _lint_provenance_flags() {
         # Match with optional leading whitespace to support placement within
         # an indented block (e.g. inside the Claude Context section), which
         # the runbook (docs/issue-runbook.md) explicitly permits.
-        if ! echo "$_issue_block" | grep -qE '^[[:space:]]*\*\*Field provenance:\*\*'; then
+        if ! grep -qE '^[[:space:]]*\*\*Field provenance:\*\*' <<< "$_issue_block"; then
           _issue_block=""
           continue
         fi
@@ -1799,7 +1799,7 @@ _lint_provenance_flags() {
         local _files_to_read_basenames=""
         local _in_files_to_read=false
         while IFS= read -r _fline; do
-          if echo "$_fline" | grep -qF "Files to Read:"; then
+          if grep -qF "Files to Read:" <<< "$_fline"; then
             _in_files_to_read=true
             continue
           fi
@@ -1833,7 +1833,7 @@ _lint_provenance_flags() {
           # Match **Field provenance:** with optional leading whitespace so that
           # placement within an indented block (e.g. inside Claude Context) is
           # handled correctly — the runbook explicitly permits this layout.
-          if echo "$_pline" | grep -qE '^[[:space:]]*\*\*Field provenance:\*\*'; then
+          if grep -qE '^[[:space:]]*\*\*Field provenance:\*\*' <<< "$_pline"; then
             _in_prov=true
             continue
           fi
@@ -1850,7 +1850,7 @@ _lint_provenance_flags() {
               "- "*)
                 # This is a provenance entry line.
                 # Check if UNVERIFIED
-                if echo "$_pline" | grep -qF "UNVERIFIED"; then
+                if grep -qF "UNVERIFIED" <<< "$_pline"; then
                   _total_unverified=$((_total_unverified + 1))
                   print_warning "Provenance lint: UNVERIFIED field provenance in '${_issue_title}': ${_pline}" >&2
                 fi
@@ -1875,7 +1875,7 @@ _lint_provenance_flags() {
                   _prov_source=$(echo "$_pline" | sed 's/^[^:]*: //' | sed 's/ —.*//' | sed 's/ - .*//' || true)
                   while IFS= read -r _bn; do
                     [ -z "$_bn" ] && continue
-                    if echo "$_prov_source" | grep -qF "$_bn"; then
+                    if grep -qF "$_bn" <<< "$_prov_source"; then
                       _is_obvious=true
                       break
                     fi
@@ -2126,7 +2126,7 @@ _transform_dep_line() {
   # \{0,1\} makes the closing ')' optional so unbalanced groups like
   # "(parallel with #8" (no ')') are also stripped before the presence check.
   _tdl_check=$(echo "$_tdl_content" | sed 's/([^)]*[Pp]arallel[^)]*)\{0,1\}//g' || true)
-  if ! echo "$_tdl_check" | grep -qE "#${_tdl_after_num}([^0-9]|$)"; then
+  if ! grep -qE "#${_tdl_after_num}([^0-9]|$)" <<< "$_tdl_check"; then
     case "$_tdl_content" in
       None|"None "*|"None,")
         # Replace "None" keyword with the After tag, preserving trailing content
@@ -2181,7 +2181,7 @@ _autochain_rewrite_deps() {
     fi
 
     if [ "$_ard_in_target" = true ] && [ "$_ard_dep_rewritten" = false ] && \
-       echo "$_ard_line" | grep -qE '^\*\*Dependencies\*\*:'; then
+       grep -qE '^\*\*Dependencies\*\*:' <<< "$_ard_line"; then
       _ard_dep_rewritten=true
       _ard_line=$(_transform_dep_line "$_ard_line" "$_ard_after_num")
     fi
@@ -2224,7 +2224,7 @@ _autochain_remove_par_annotation() {
     fi
 
     if [ "$_arpa_in_target" = true ] && [ "$_arpa_dep_done" = false ] && \
-       echo "$_arpa_line" | grep -qE '^\*\*Dependencies\*\*:'; then
+       grep -qE '^\*\*Dependencies\*\*:' <<< "$_arpa_line"; then
       _arpa_dep_done=true
       _arpa_line=$(_strip_par_ref "$_arpa_line" "$_arpa_par_ref")
     fi
@@ -2365,7 +2365,7 @@ _lint_issues_strict() {
 
         # --- Extract Split rationale presence ---
         local _issue_has_rationale="false"
-        if echo "$_issue_block" | grep -qiE '^\**Split rationale\**:'; then
+        if grep -qiE '^\**Split rationale\**:' <<< "$_issue_block"; then
           _issue_has_rationale="true"
         fi
         _has_rationale+=("${_issue_has_rationale}")
@@ -2379,11 +2379,11 @@ _lint_issues_strict() {
           local _rule=""
           local _has_reason=false
           # Match: <!-- sharkrite-plan-lint disable RULE - Reason: ... -->
-          if echo "$_sline" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+[[:space:]]+-[[:space:]]+Reason:"; then
+          if grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+[[:space:]]+-[[:space:]]+Reason:" <<< "$_sline"; then
             _rule=$(echo "$_sline" | grep -oE 'disable[[:space:]]+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=true
           # Match: <!-- sharkrite-plan-lint disable RULE --> (no Reason)
-          elif echo "$_sline" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+"; then
+          elif grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+[a-z0-9-]+" <<< "$_sline"; then
             _rule=$(echo "$_sline" | grep -oE 'disable[[:space:]]+[a-z0-9-]+' | sed 's/disable[[:space:]]*//' || true)
             _has_reason=false
           fi
@@ -2411,7 +2411,7 @@ _lint_issues_strict() {
         local _in_deps=false
         while IFS= read -r _dline; do
           # Start at "**Dependencies**:" or "Dependencies:" header
-          if echo "$_dline" | grep -qE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:'; then
+          if grep -qE '^(\*\*)?Dependencies(\*\*)?[[:space:]]*:' <<< "$_dline"; then
             _in_deps=true
             # Fix 1: harvest parallel refs from this line BEFORE stripping
             # parens — scoped to the Dependencies section so prose mentions
@@ -2486,7 +2486,7 @@ _lint_issues_strict() {
         local _issue_modify=""
         local _in_modify=false
         while IFS= read -r _fline; do
-          if echo "$_fline" | grep -qF "Files to Modify:"; then
+          if grep -qF "Files to Modify:" <<< "$_fline"; then
             _in_modify=true
             continue
           fi
@@ -2512,7 +2512,7 @@ _lint_issues_strict() {
         local _in_verif_block=false
         local _in_fenced=false
         while IFS= read -r _vline; do
-          if echo "$_vline" | grep -qE '^\*\*Verification Commands\*\*'; then
+          if grep -qE '^\*\*Verification Commands\*\*' <<< "$_vline"; then
             _in_verif_block=true
             continue
           fi
@@ -2530,7 +2530,7 @@ _lint_issues_strict() {
           fi
           # Also capture backtick commands from acceptance criteria lines
           # Format: - [ ] criterion: `command`
-          if echo "$_vline" | grep -qE '^[[:space:]]*-[[:space:]]*\['; then
+          if grep -qE '^[[:space:]]*-[[:space:]]*\[' <<< "$_vline"; then
             local _backtick_cmds
             _backtick_cmds=$(echo "$_vline" | grep -oE '`[^`]+`' | sed 's/`//g' || true)
             [ -n "$_backtick_cmds" ] && _issue_verif="${_issue_verif}${_backtick_cmds}"$'\n'
@@ -2621,7 +2621,7 @@ _lint_issues_strict() {
       # Warn when the target title matches multiple issues in this batch.
       # We still resolve to the first match so other checks can proceed,
       # but the ambiguity is a planarity issue that should be surfaced.
-      if echo "$_dup_titles" | grep -qxF "$_tref_lower"; then
+      if grep -qxF "$_tref_lower" <<< "$_dup_titles"; then
         print_warning "strict-lint: WARNING: ambiguous title ref: #[${_tref}] in '${_referencing_title}' matches multiple batch issues (resolves to first ordinal match)" >&2
         _warning_count=$((_warning_count + 1))
       fi
@@ -2684,7 +2684,7 @@ _lint_issues_strict() {
     local _issue_supps="${_suppressions[$_idx]}"
 
     # Check if dangling-ref is suppressed for this issue
-    if echo "$_issue_supps" | grep -qw "dangling-ref"; then
+    if grep -qw "dangling-ref" <<< "$_issue_supps"; then
       continue
     fi
 
@@ -2706,7 +2706,7 @@ _lint_issues_strict() {
 
       # Check: is it an existing open issue?
       local _in_existing=false
-      if echo "$_existing_nums" | grep -qxF "$_refnum" 2>/dev/null; then
+      if grep -qxF "$_refnum" <<< "$_existing_nums" 2>/dev/null; then
         _in_existing=true
       fi
 
@@ -2743,7 +2743,7 @@ _lint_issues_strict() {
     local _issue_supps="${_suppressions[$_i]}"
 
     # Skip cycle check for suppressed issues: treat them as if they have no deps
-    if echo "$_issue_supps" | grep -qw "cycle-check"; then
+    if grep -qw "cycle-check" <<< "$_issue_supps"; then
       continue
     fi
 
@@ -2805,7 +2805,7 @@ _lint_issues_strict() {
   # Count how many issues participated in cycle-check (non-suppressed)
   local _cycle_eligible=0
   for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
-    if ! echo "${_suppressions[$_i]}" | grep -qw "cycle-check"; then
+    if ! grep -qw "cycle-check" <<< "${_suppressions[$_i]}"; then
       _cycle_eligible=$((_cycle_eligible + 1))
     fi
   done
@@ -2815,7 +2815,7 @@ _lint_issues_strict() {
     # Identify cycle participants: non-suppressed nodes still with pred_count > 0
     local _cycle_nodes=""
     for _i in $([ "$_issue_count" -gt 0 ] && seq 0 $((_issue_count - 1)) || true); do
-      if ! echo "${_suppressions[$_i]}" | grep -qw "cycle-check" && \
+      if ! grep -qw "cycle-check" <<< "${_suppressions[$_i]}" && \
          [ "${_pred_count[$_i]:-0}" -gt 0 ]; then
         _cycle_nodes="${_cycle_nodes} #${_arr_to_nonspike[$_i]} (${_titles[$_i]})"
       fi
@@ -2835,7 +2835,7 @@ _lint_issues_strict() {
     local _issue_verif="${_verif_cmds[$_idx]}"
     local _issue_modify="${_files_modify[$_idx]}"
 
-    if echo "$_issue_supps" | grep -qw "verification-path"; then
+    if grep -qw "verification-path" <<< "$_issue_supps"; then
       continue
     fi
 
@@ -2859,7 +2859,7 @@ _lint_issues_strict() {
         if [ -n "$_issue_modify" ]; then
           while IFS= read -r _mp; do
             [ -z "$_mp" ] && continue
-            if [ "$_mp" = "$_pt" ] || echo "$_pt" | grep -qF "$_mp" || echo "$_mp" | grep -qF "$_pt"; then
+            if [ "$_mp" = "$_pt" ] || grep -qF "$_mp" <<< "$_pt" || grep -qF "$_pt" <<< "$_mp"; then
               _in_modify_list=true
               break
             fi
@@ -2898,7 +2898,7 @@ _lint_issues_strict() {
       # A stray deferral-citation marker on one issue must NOT suppress other lines.
       # Format: <!-- sharkrite-plan-lint disable deferral-citation - Reason: ... -->
       local _deferral_suppressed=false
-      if echo "$_def_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+deferral-citation[[:space:]]+-[[:space:]]+Reason:"; then
+      if grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+deferral-citation[[:space:]]+-[[:space:]]+Reason:" <<< "$_def_line"; then
         _deferral_suppressed=true
         local _def_reason
         _def_reason=$(echo "$_def_line" | sed 's/.*Reason:[[:space:]]*//' | sed 's/[[:space:]]*-->[[:space:]]*//' | sed 's/[[:space:]]*$//' || true)
@@ -2915,13 +2915,13 @@ _lint_issues_strict() {
       #      deferral in the ADR. Without this, "(ADR D7, follow-up #4)" is flagged
       #      as uncited even though it cites a specific ADR decision.
       local _has_citation=false
-      if echo "$_def_text" | grep -qE '>[[:space:]]+\S'; then
+      if grep -qE '>[[:space:]]+\S' <<< "$_def_text"; then
         _has_citation=true
-      elif echo "$_def_text" | grep -qE '[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,6}:[0-9]+'; then
+      elif grep -qE '[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,6}:[0-9]+' <<< "$_def_text"; then
         _has_citation=true
-      elif echo "$_def_text" | grep -qE '"[^"]{4,}"|'"'"'[^'"'"']{4,}'"'"; then
+      elif grep -qE '"[^"]{4,}"|' <<< "$_def_text""'"'[^'"'"']{4,}'"'"; then
         _has_citation=true
-      elif echo "$_def_text" | grep -qiE 'ADR[[:space:]]+[A-Za-z]*[0-9]+|follow-up[[:space:]]+#?[0-9]+'; then
+      elif grep -qiE 'ADR[[:space:]]+[A-Za-z]*[0-9]+|follow-up[[:space:]]+#?[0-9]+' <<< "$_def_text"; then
         _has_citation=true
       fi
 
@@ -2957,7 +2957,7 @@ _lint_issues_strict() {
     while IFS= read -r _lbl; do
       _lbl=$(echo "$_lbl" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
       [ -z "$_lbl" ] && continue
-      if echo "$_CATEGORY_LABELS" | grep -qw "$_lbl"; then
+      if grep -qw "$_lbl" <<< "$_CATEGORY_LABELS"; then
         echo "$_lbl"
         return 0
       fi
@@ -2976,7 +2976,7 @@ _lint_issues_strict() {
 
     # Skip if category label absent (can't determine conflict) or suppressed
     [ -z "$_ci_cat_label" ] && continue
-    if echo "$_ci_supps" | grep -qw "label-consistency"; then
+    if grep -qw "label-consistency" <<< "$_ci_supps"; then
       continue
     fi
 
@@ -2992,7 +2992,7 @@ _lint_issues_strict() {
       _cj_cat_label=$(_extract_category_label "${_labels[$_cj]}")
 
       [ -z "$_cj_cat_label" ] && continue
-      if echo "$_cj_supps" | grep -qw "label-consistency"; then
+      if grep -qw "label-consistency" <<< "$_cj_supps"; then
         continue
       fi
       [ -z "$_cj_modify" ] && continue
@@ -3004,7 +3004,7 @@ _lint_issues_strict() {
       local _shared_path=""
       while IFS= read -r _pA; do
         [ -z "$_pA" ] && continue
-        if echo "$_cj_modify" | grep -qxF "$_pA"; then
+        if grep -qxF "$_pA" <<< "$_cj_modify"; then
           _shared_path="$_pA"
           break
         fi
@@ -3097,11 +3097,11 @@ _lint_issues_strict() {
           # pi is ancestor of pj; check if pj has a contradictory parallel annotation
           local _ch7_pj_pars="${_parallel_with[$_ch7_pj]:-}"
           local _ch7_pi_ord_s="${_arr_to_nonspike[$_ch7_pi]}"
-          if echo "$_ch7_pj_pars" | grep -qxF "#${_ch7_pi_ord_s}"; then
+          if grep -qxF "#${_ch7_pi_ord_s}" <<< "$_ch7_pj_pars"; then
             local _ch7_seq_shared=""
             while IFS= read -r _ch7_pA; do
               [ -z "$_ch7_pA" ] && continue
-              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+              if grep -qxF "$_ch7_pA" <<< "$_ch7_pj_modify"; then
                 _ch7_seq_shared="$_ch7_pA"
                 break
               fi
@@ -3119,11 +3119,11 @@ _lint_issues_strict() {
           # pj is ancestor of pi; check if pi has a contradictory parallel annotation
           local _ch7_pi_pars="${_parallel_with[$_ch7_pi]:-}"
           local _ch7_pj_ord_s="${_arr_to_nonspike[$_ch7_pj]}"
-          if echo "$_ch7_pi_pars" | grep -qxF "#${_ch7_pj_ord_s}"; then
+          if grep -qxF "#${_ch7_pj_ord_s}" <<< "$_ch7_pi_pars"; then
             local _ch7_sq2_shared=""
             while IFS= read -r _ch7_pA; do
               [ -z "$_ch7_pA" ] && continue
-              if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+              if grep -qxF "$_ch7_pA" <<< "$_ch7_pj_modify"; then
                 _ch7_sq2_shared="$_ch7_pA"
                 break
               fi
@@ -3142,7 +3142,7 @@ _lint_issues_strict() {
         local _ch7_shared=""
         while IFS= read -r _ch7_pA; do
           [ -z "$_ch7_pA" ] && continue
-          if echo "$_ch7_pj_modify" | grep -qxF "$_ch7_pA"; then
+          if grep -qxF "$_ch7_pA" <<< "$_ch7_pj_modify"; then
             _ch7_shared="$_ch7_pA"
             break
           fi
@@ -3170,11 +3170,11 @@ _lint_issues_strict() {
         # Suppress logic (disjoint-functions escape hatch):
         #   both sides suppressed → skip silently (mutual acknowledgement)
         #   one side suppressed  → warn-only, deduped across fixpoint passes
-        if echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" && \
-           echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
+        if grep -qw "parallel-file-overlap" <<< "$_ch7_pi_supps" && \
+           grep -qw "parallel-file-overlap" <<< "$_ch7_pj_supps"; then
           : # both sides suppressed — skip silently
-        elif echo "$_ch7_pi_supps" | grep -qw "parallel-file-overlap" || \
-             echo "$_ch7_pj_supps" | grep -qw "parallel-file-overlap"; then
+        elif grep -qw "parallel-file-overlap" <<< "$_ch7_pi_supps" || \
+             grep -qw "parallel-file-overlap" <<< "$_ch7_pj_supps"; then
           local _ch7_pair_key="${_ch7_pi}_${_ch7_pj}"
           case "$_ch7_warned_pairs" in *"|${_ch7_pair_key}|"*) : ;; *)
             print_warning "strict-lint: WARNING: parallel-file-overlap: '${_ch7_earlier_title}' and '${_ch7_later_title}' are concurrent but both modify '${_ch7_shared}' — chain the later one (After #${_ch7_after_num}) or add a plan-lint suppress marker with Reason if they edit disjoint functions" >&2
@@ -3278,7 +3278,7 @@ pytest"
     local _vi_cmds="${_verif_cmds[$_vi]}"
     local _vi_supps="${_suppressions[$_vi]}"
 
-    if echo "$_vi_supps" | grep -qw "duplicate-verification"; then
+    if grep -qw "duplicate-verification" <<< "$_vi_supps"; then
       continue
     fi
     [ -z "$_vi_cmds" ] && continue
@@ -3289,7 +3289,7 @@ pytest"
       local _vj_cmds="${_verif_cmds[$_vj]}"
       local _vj_supps="${_suppressions[$_vj]}"
 
-      if echo "$_vj_supps" | grep -qw "duplicate-verification"; then
+      if grep -qw "duplicate-verification" <<< "$_vj_supps"; then
         continue
       fi
       [ -z "$_vj_cmds" ] && continue
@@ -3317,7 +3317,7 @@ pytest"
 
         # Skip allowlisted commands — fallback for small slates where the frequency
         # threshold cannot fire
-        if echo "$_VERIF_ALLOWLIST" | grep -qxF "$_vcmd_norm"; then
+        if grep -qxF "$_vcmd_norm" <<< "$_VERIF_ALLOWLIST"; then
           continue
         fi
 
@@ -3347,7 +3347,7 @@ pytest"
     local _issue_time="${_times[$_i]:-}"
     local _issue_has_rat="${_has_rationale[$_i]:-false}"
 
-    if echo "$_issue_supps" | grep -qw "2hr-split-rationale"; then
+    if grep -qw "2hr-split-rationale" <<< "$_issue_supps"; then
       continue
     fi
 
@@ -3372,7 +3372,7 @@ pytest"
     local _issue_title="${_titles[$_i]}"
     local _issue_supps="${_suppressions[$_i]}"
 
-    if echo "$_issue_supps" | grep -qw "title-length"; then
+    if grep -qw "title-length" <<< "$_issue_supps"; then
       continue
     fi
 
@@ -3469,10 +3469,10 @@ _lint_negative_existence_claims() {
         local _negex_marker_line
         while IFS= read -r _negex_marker_line; do
           [ -z "$_negex_marker_line" ] && continue
-          if echo "$_negex_marker_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence[[:space:]]+-[[:space:]]+Reason:"; then
+          if grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence[[:space:]]+-[[:space:]]+Reason:" <<< "$_negex_marker_line"; then
             _negex_suppressed=true
             _negex_has_reason=true
-          elif echo "$_negex_marker_line" | grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence"; then
+          elif grep -qE "<!--[[:space:]]*${RITE_MARKER_PLAN_LINT}[[:space:]]+disable[[:space:]]+negative-existence" <<< "$_negex_marker_line"; then
             _negex_suppressed=true
             _negex_has_reason=false
           fi
@@ -3690,7 +3690,7 @@ _check_block_sections() {
   # **Bug Class Analysis** — required only when labels include the word "bug"
   local _blk_labels
   _blk_labels=$(printf '%s' "$_blk_text" | grep -E "^LABELS:[[:space:]]+" | head -1 | sed 's/^LABELS:[[:space:]]*//' || true)
-  if echo "$_blk_labels" | grep -qiw "bug"; then
+  if grep -qiw "bug" <<< "$_blk_labels"; then
     if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Bug Class Analysis\*\*"; then
       _missing="${_missing}Bug Class Analysis, "
     fi
@@ -4052,7 +4052,7 @@ _coverage_missing_titles() {
     [ -z "$_ref_canon" ] && continue
     # -x (whole-line) match: a checklist title that is a substring of an emitted
     # title must not be falsely treated as matched.
-    if ! echo "$_canon_index" | grep -qxF "$_ref_canon"; then
+    if ! grep -qxF "$_ref_canon" <<< "$_canon_index"; then
       printf '%s\n' "$_ref_title"
     fi
   done <<< "$_checklist_titles"
@@ -4326,7 +4326,7 @@ _persist_feedback_deferrals() {
     # Skip empty lines
     [ -z "$line" ] && continue
     # Match "defer X to Phase Y" patterns
-    if echo "$line" | grep -qiE "(defer|deferred|drop|remove|cut|kill|skip|exclude)"; then
+    if grep -qiE "(defer|deferred|drop|remove|cut|kill|skip|exclude)" <<< "$line"; then
       new_deferrals="${new_deferrals}
 - ⏭️ (user feedback, $date_str) $line"
     fi
@@ -4681,7 +4681,7 @@ _build_grounded_hosts() {
       # alphanumeric-or-hyphen, and the final label (TLD) must be 2+ letters.
       while IFS= read -r _entry; do
         _name=$(basename "$_entry")
-        echo "$_name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' \
+        grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' <<< "$_name" \
           && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done < <(find "$_dir" -mindepth 1 -type d 2>/dev/null || true)
       # Also capture fixture files at any depth like api.example.com.json.
@@ -4691,7 +4691,7 @@ _build_grounded_hosts() {
         _name="${_name%.*}"  # strip extension
         # Only treat it as a hostname if it matches the hostname-shaped regex
         # (same criteria as directory names above — TLD must be 2+ letters).
-        echo "$_name" | grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' \
+        grep -qE '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$' <<< "$_name" \
           && echo "$_name" | tr '[:upper:]' '[:lower:]' || true
       done < <(find "$_dir" -mindepth 1 \( -name "*.json" -o -name "*.yaml" -o -name "*.yml" \) -type f 2>/dev/null || true)
     fi
@@ -4722,7 +4722,7 @@ _normalize_host_to_registrable_domain() {
 
   # IP literals: all dot-separated labels are numeric (e.g. 10.0.0.5).
   # No registrable-domain concept applies — return unchanged.
-  if echo "$_h" | grep -qE '^[0-9]+(\.[0-9]+)*$'; then
+  if grep -qE '^[0-9]+(\.[0-9]+)*$' <<< "$_h"; then
     echo "$_h"
     return
   fi
@@ -4733,7 +4733,7 @@ _normalize_host_to_registrable_domain() {
   for _tld in co.uk com.au co.jp com.br co.in co.nz co.za net.au org.au org.uk \
               vercel.app herokuapp.com github.io netlify.app; do
     _tld_escaped=$(echo "$_tld" | sed 's/\./\\./g' || true)
-    if echo "$_h" | grep -qE "\\.$_tld_escaped$"; then
+    if grep -qE "\\.$_tld_escaped$" <<< "$_h"; then
       # Extract registrar-label + multi-part TLD (e.g. foo.co.uk from api.foo.co.uk)
       _reg=$(echo "$_h" | grep -oE "[a-zA-Z0-9][a-zA-Z0-9-]*\\.$_tld_escaped$" || true)
       echo "${_reg:-$_h}"
@@ -4747,7 +4747,7 @@ _normalize_host_to_registrable_domain() {
   # unchanged rather than guessing — defects 1-3 all stem from this fallback
   # firing on input the list does not cover.
   _reg=$(echo "$_h" | grep -oE '[a-zA-Z0-9][a-zA-Z0-9-]*\.[a-zA-Z0-9][a-zA-Z0-9-]*$' || true)
-  if [ -n "$_reg" ] && echo "$_reg" | grep -qE '^(co|com|net|org|gov|edu|ac|sch|go|or|ne|gob|mil|govt)\.[a-z]{2}$'; then
+  if [ -n "$_reg" ] && grep -qE '^(co|com|net|org|gov|edu|ac|sch|go|or|ne|gob|mil|govt)\.[a-z]{2}$' <<< "$_reg"; then
     echo "$_h"
     return
   fi
@@ -4844,7 +4844,7 @@ _detect_unverified_integrations() {
             # api.foo.co and auth.foo.co (all normalize to foo.co before the check).
             local _host_reg
             _host_reg=$(_normalize_host_to_registrable_domain "$_host")
-            if ! echo "$grounded_hosts_norm" | grep -qxF "${_host_reg:-$_host}" 2>/dev/null; then
+            if ! grep -qxF "${_host_reg:-$_host}" <<< "$grounded_hosts_norm" 2>/dev/null; then
               # Check if the vendor token (first label of the registrable domain,
               # e.g. "supabase" from supabase.co) appears as a word-boundary token
               # in any grounded package name (e.g. @supabase/supabase-js).
@@ -4875,7 +4875,7 @@ _detect_unverified_integrations() {
             _pkg_norm=$(echo "$_pkg" | tr '_' '-')
             local _grounded_norm
             _grounded_norm=$(echo "$grounded_packages" | tr '_' '-')
-            if ! echo "$_grounded_norm" | grep -qxF "$_pkg_norm" 2>/dev/null; then
+            if ! grep -qxF "$_pkg_norm" <<< "$_grounded_norm" 2>/dev/null; then
               echo "pkg${TAB_CHAR}$_pkg" >> "$candidates_file"
             fi
           done <<< "$_pkgs"
@@ -4948,7 +4948,7 @@ _detect_unverified_integrations() {
     fi
     # Title-space collision guard: if truncation produces a display name already used,
     # fall back to the sanitized key (which is unique per the seen_spike_keys guard).
-    if printf '%s\n' "$seen_spike_titles" | grep -qxF "$_display_name" 2>/dev/null; then
+    if grep -qxF "$_display_name" <<< "$seen_spike_titles" 2>/dev/null; then
       _display_name="$_key"
       if [ "${#_display_name}" -gt "$_spike_name_budget" ]; then
         _display_name="${_display_name:0:$((_spike_name_budget - 3))}..."
@@ -4957,7 +4957,7 @@ _detect_unverified_integrations() {
       # candidates produce an identical truncated key prefix), add a numeric suffix
       # until the display name is unique within the title budget.
       local _sfx_n=2
-      while printf '%s\n' "$seen_spike_titles" | grep -qxF "$_display_name" 2>/dev/null; do
+      while grep -qxF "$_display_name" <<< "$seen_spike_titles" 2>/dev/null; do
         local _sfx="-${_sfx_n}"
         local _base_budget=$((_spike_name_budget - ${#_sfx}))
         if [ "${#_key}" -gt "$_base_budget" ]; then
@@ -4976,7 +4976,7 @@ _detect_unverified_integrations() {
 
     # Skip if a spike with this key was already emitted (key collision).
     # The downstream #SPIKE-<key> placeholder will resolve to the first spike.
-    if echo "$seen_spike_keys" | grep -qxF "$_key" 2>/dev/null; then
+    if grep -qxF "$_key" <<< "$seen_spike_keys" 2>/dev/null; then
       print_warning "spike key collision: '$_name' maps to key '$_key' which is already emitted — skipping duplicate spike" >&2
       continue
     fi
@@ -5116,11 +5116,11 @@ No documentation updates required — the fixture artifact is this spike's deliv
                 _context_match=true
             else
               # pkg: match import/require patterns only
-              echo "$_current_block" | grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" && _context_match=true
+              grep -qiE "(import|require|from)[[:space:]]+(\"|\\')?${_name}(\"|\\'|[[:space:]]|$)" <<< "$_current_block" && _context_match=true
             fi
             if [ "$_context_match" = true ]; then
               # Check if block already has a Dependencies line
-              if echo "$_current_block" | grep -q "^\*\*Dependencies\*\*:"; then
+              if grep -q "^\*\*Dependencies\*\*:" <<< "$_current_block"; then
                 # Append to existing Dependencies line.
                 # Command substitution strips the trailing newline; restore it
                 # explicitly so the ---END--- separator stays on its own line.
