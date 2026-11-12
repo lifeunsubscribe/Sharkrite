@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: tools/sharkrite-lint.sh, lib/utils/gate-selection.sh::_select_lint_by_changed_paths
-# sharkrite-gate-serial — the unscoped full scan test at the top of the file scopes to
-# rules 7,13 (the two fixture rules) which is multi-rule but fast; the serial marker
-# remains because the fixture dir is shared state across the file's @test blocks.
+# sharkrite-gate-serial — contains genuine all-rules sweeps testing the RITE_LINT_FILES
+# targeting mechanism; SHARKRITE_LINT_ONLY would narrow the violation set and defeat
+# the multi-rule coverage assertions.
 #
 # Regression test: targeted lint selection via RITE_LINT_FILES.
 #
@@ -61,7 +61,7 @@ set -euo pipefail
 gh pr list
 EOF
 
-  SHARKRITE_LINT_ONLY=7,13 run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=07,13 run "$LINT_SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" =~ "a-bad.sh" ]] || { echo "$output" >&2; return 1; }
   [[ "$output" =~ "b-bad.sh" ]] || { echo "$output" >&2; return 1; }
