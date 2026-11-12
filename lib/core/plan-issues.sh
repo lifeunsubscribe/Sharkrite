@@ -2919,7 +2919,7 @@ _lint_issues_strict() {
         _has_citation=true
       elif grep -qE '[a-zA-Z0-9_./-]+\.[a-zA-Z]{2,6}:[0-9]+' <<< "$_def_text"; then
         _has_citation=true
-      elif grep -qE '"[^"]{4,}"|' <<< "$_def_text""'"'[^'"'"']{4,}'"'"; then
+      elif grep -qE '"[^"]{4,}"|'"'"'[^'"'"']{4,}'"'" <<< "$_def_text"; then
         _has_citation=true
       elif grep -qiE 'ADR[[:space:]]+[A-Za-z]*[0-9]+|follow-up[[:space:]]+#?[0-9]+' <<< "$_def_text"; then
         _has_citation=true

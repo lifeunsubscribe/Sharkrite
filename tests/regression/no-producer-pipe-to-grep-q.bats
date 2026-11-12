@@ -22,7 +22,7 @@
   # Count echo/printf "$VAR" | grep -q patterns in lib/core (non-comment lines only)
   local _count
   _count=$(grep -rnE \
-    "(printf '%s\\n' \"\\\$\{?[A-Za-z_]+\}?\"|echo \"\\\$\{?[A-Za-z_:-]+\}?\") \| grep -q" \
+    "(printf '%s\\n' \"\\\$\{?[A-Za-z0-9_]+\}?\"|echo \"\\\$\{?[A-Za-z0-9_:-]+\}?\") \| grep -q" \
     "${_repo_root}/lib/core" \
     | grep -vE '^[^[:space:]]+:[[:space:]]*#' \
     | wc -l \
@@ -32,7 +32,7 @@
   if [ "$_count" -ne 0 ]; then
     echo "Found $_count producer-variable pipe into grep -q in lib/core (expected 0):" >&2
     grep -rnE \
-      "(printf '%s\\n' \"\\\$\{?[A-Za-z_]+\}?\"|echo \"\\\$\{?[A-Za-z_:-]+\}?\") \| grep -q" \
+      "(printf '%s\\n' \"\\\$\{?[A-Za-z0-9_]+\}?\"|echo \"\\\$\{?[A-Za-z0-9_:-]+\}?\") \| grep -q" \
       "${_repo_root}/lib/core" \
       | grep -vE '^[^[:space:]]+:[[:space:]]*#' >&2 || true
   fi

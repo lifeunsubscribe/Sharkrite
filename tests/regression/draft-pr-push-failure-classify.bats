@@ -126,6 +126,6 @@ fatal: unable to access 'https://github.com/org/repo.git/': The requested URL re
   # silently take the force-push path. The elif must reference one of the
   # known divergence keywords; without it, the new "git push failed" else
   # branch is unreachable.
-  run grep -F 'elif echo "$push_output"' "$CLAUDE_WORKFLOW"
+  run grep -F '<<< "$push_output"; then' "$CLAUDE_WORKFLOW"
   [ "$status" -eq 0 ]
 }
