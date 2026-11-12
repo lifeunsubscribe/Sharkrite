@@ -5,10 +5,6 @@
 # wait out the full per-test ceiling.  bats-core 1.13 stalls the full ceiling
 # after a failing test without --jobs (measured 2026-11-11); issue #1749.
 
-# Empty-tree SHA — used as RITE_TEST_GATE_DIFF_BASE so all committed files
-# appear as "changed" in git diff, triggering selection of our serial fixture.
-_EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   _diag() { true; }
@@ -22,7 +18,7 @@ setup() {
   printf '.PHONY: shellcheck lint\nshellcheck:\n\t@true\nlint:\n\t@true\n' \
     > "$_PROJ/Makefile"
 
-  # Source file that the covers header points to — must be in the diff
+  # Source file that the covers header points to
   touch "$_PROJ/lib/fake.sh"
 
   export _PROJ
@@ -33,7 +29,15 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Helper: commit all files so git diff base → HEAD shows them as changed
+# Helper: initial commit of everything currently in _PROJ (Makefile + lib/).
+# Returns the resulting commit SHA via stdout.
+# Tests call this BEFORE creating the bats fixture file, then capture the SHA
+# as the diff base.  After this call they add the bats file and make a second
+# commit so the gate sees it as a new changed file (self-diff Rule 1 selects it).
+# Using a real commit SHA as RITE_TEST_GATE_DIFF_BASE is required: the gate
+# rejects tree-object SHAs (the former _EMPTY_TREE trick) via
+# `git rev-parse --verify ^{commit}` at test-gate.sh:441 — a tree is not a
+# commit, so bats selection would be skipped and the gate would exit 0.
 # ---------------------------------------------------------------------------
 _proj_git_commit() {
   (cd "$_PROJ" \
@@ -42,6 +46,7 @@ _proj_git_commit() {
     && git config user.name "Test" \
     && git add . \
     && git commit -q -m "init")
+  git -C "$_PROJ" rev-parse HEAD
 }
 
 # ---------------------------------------------------------------------------
@@ -53,7 +58,12 @@ _proj_git_commit() {
   command -v make >/dev/null 2>&1 || skip "make not available"
   command -v git  >/dev/null 2>&1 || skip "git not available"
 
-  # Serial-marked bats file with one failing test
+  # Base commit: Makefile + lib/fake.sh only (no bats file yet).
+  local _base_sha
+  _base_sha=$(_proj_git_commit)
+
+  # Serial-marked bats file added AFTER the base commit so git-diff
+  # base→HEAD reports it as new, selecting it via the self-diff rule.
   printf '%s\n%s\n%s\n%s\n' \
     '#!/usr/bin/env bats' \
     '# sharkrite-gate-serial' \
@@ -61,7 +71,9 @@ _proj_git_commit() {
     '@test "deliberate fail" { false; }' \
     > "$_PROJ/tests/regression/serial-failing.bats"
 
-  _proj_git_commit
+  (cd "$_PROJ" \
+    && git add tests/regression/serial-failing.bats \
+    && git commit -q -m "add serial bats")
 
   _gate_out="$_PROJ/gate.json"
   _start=$SECONDS
@@ -74,7 +86,7 @@ _proj_git_commit() {
     export RITE_PROJECT_ROOT='${_PROJ}'
     export PR_NUMBER='0'
     export RITE_BATS_TEST_TIMEOUT='10'
-    export RITE_TEST_GATE_DIFF_BASE='${_EMPTY_TREE}'
+    export RITE_TEST_GATE_DIFF_BASE='${_base_sha}'
     export RITE_GATE_BATS_TIMEOUT='60'
     export RITE_GATE_FLAKE_RETRY='false'
     RITE_LOG_FILE=''
@@ -105,7 +117,11 @@ _proj_git_commit() {
   command -v gtimeout >/dev/null 2>&1 || command -v timeout >/dev/null 2>&1 \
     || skip "no timeout command available — whole-lane watchdog inactive"
 
-  # Serial-marked bats file with a test that hangs
+  # Base commit: Makefile + lib/fake.sh only (no bats file yet).
+  local _base_sha
+  _base_sha=$(_proj_git_commit)
+
+  # Serial-marked bats file with a test that hangs — added after base commit.
   printf '%s\n%s\n%s\n%s\n' \
     '#!/usr/bin/env bats' \
     '# sharkrite-gate-serial' \
@@ -113,7 +129,9 @@ _proj_git_commit() {
     '@test "hang forever" { sleep 9999; }' \
     > "$_PROJ/tests/regression/serial-hanging.bats"
 
-  _proj_git_commit
+  (cd "$_PROJ" \
+    && git add tests/regression/serial-hanging.bats \
+    && git commit -q -m "add serial bats")
 
   _gate_out="$_PROJ/gate.json"
   _start=$SECONDS
@@ -123,7 +141,7 @@ _proj_git_commit() {
     export RITE_PROJECT_ROOT='${_PROJ}'
     export PR_NUMBER='0'
     export RITE_BATS_TEST_TIMEOUT='10'
-    export RITE_TEST_GATE_DIFF_BASE='${_EMPTY_TREE}'
+    export RITE_TEST_GATE_DIFF_BASE='${_base_sha}'
     export RITE_GATE_BATS_TIMEOUT='5'
     export RITE_GATE_FLAKE_RETRY='false'
     RITE_LOG_FILE=''
