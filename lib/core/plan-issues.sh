@@ -3512,7 +3512,7 @@ _lint_negative_existence_claims() {
           esac
 
           # Does this line match a negative-existence phrase?
-          if ! echo "$_negex_bline" | grep -iqE "$_NEGEX_RE"; then
+          if ! grep -iqE "$_NEGEX_RE" <<< "$_negex_bline"; then
             continue
           fi
 
@@ -3629,37 +3629,37 @@ _check_block_sections() {
   local _missing=""
 
   # LABELS: non-empty
-  if ! printf '%s' "$_blk_text" | grep -qE "^LABELS:[[:space:]]+\S"; then
+  if ! grep -qE "^LABELS:[[:space:]]+\S" <<< "$_blk_text"; then
     _missing="${_missing}Labels, "
   fi
 
   # TIME: non-empty
-  if ! printf '%s' "$_blk_text" | grep -qE "^TIME:[[:space:]]+\S"; then
+  if ! grep -qE "^TIME:[[:space:]]+\S" <<< "$_blk_text"; then
     _missing="${_missing}Time Estimate, "
   fi
 
   # **Description**
-  if ! printf '%s' "$_blk_text" | grep -qE "^\*\*Description\*\*"; then
+  if ! grep -qE "^\*\*Description\*\*" <<< "$_blk_text"; then
     _missing="${_missing}Description, "
   fi
 
   # **Claude Context** with "Files to Read:" subsection
-  if ! printf '%s' "$_blk_text" | grep -q "Files to Read:"; then
+  if ! grep -q "Files to Read:" <<< "$_blk_text"; then
     _missing="${_missing}Claude Context (Files to Read), "
   fi
 
   # **Claude Context** with "Files to Modify:" subsection
-  if ! printf '%s' "$_blk_text" | grep -q "Files to Modify:"; then
+  if ! grep -q "Files to Modify:" <<< "$_blk_text"; then
     _missing="${_missing}Claude Context (Files to Modify), "
   fi
 
   # **Acceptance Criteria**
-  if ! printf '%s' "$_blk_text" | grep -qE "^\*\*Acceptance Criteria\*\*"; then
+  if ! grep -qE "^\*\*Acceptance Criteria\*\*" <<< "$_blk_text"; then
     _missing="${_missing}Acceptance Criteria, "
   fi
 
   # **Done Definition**
-  if ! printf '%s' "$_blk_text" | grep -qE "^\*\*Done Definition\*\*"; then
+  if ! grep -qE "^\*\*Done Definition\*\*" <<< "$_blk_text"; then
     _missing="${_missing}Done Definition, "
   fi
 
@@ -3678,12 +3678,12 @@ _check_block_sections() {
   fi
 
   # **Dependencies**
-  if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Dependencies\*\*|^Dependencies:"; then
+  if ! grep -qiE "^\*\*Dependencies\*\*|^Dependencies:" <<< "$_blk_text"; then
     _missing="${_missing}Dependencies, "
   fi
 
   # **Documentation Impact**
-  if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Documentation Impact\*\*"; then
+  if ! grep -qiE "^\*\*Documentation Impact\*\*" <<< "$_blk_text"; then
     _missing="${_missing}Documentation Impact, "
   fi
 
@@ -3691,7 +3691,7 @@ _check_block_sections() {
   local _blk_labels
   _blk_labels=$(printf '%s' "$_blk_text" | grep -E "^LABELS:[[:space:]]+" | head -1 | sed 's/^LABELS:[[:space:]]*//' || true)
   if grep -qiw "bug" <<< "$_blk_labels"; then
-    if ! printf '%s' "$_blk_text" | grep -qiE "^\*\*Bug Class Analysis\*\*"; then
+    if ! grep -qiE "^\*\*Bug Class Analysis\*\*" <<< "$_blk_text"; then
       _missing="${_missing}Bug Class Analysis, "
     fi
   fi
@@ -3877,7 +3877,7 @@ _lint_issues_sections() {
           # always preserved (mismatch is rejected above), so insert SPIKE_KEY after it.
           local _sorig_spike_key_line
           _sorig_spike_key_line=$(printf '%s' "$_sblk" | grep "^SPIKE_KEY: " | head -1 || true)
-          if [ -n "$_sorig_spike_key_line" ] && ! printf '%s' "$_snew_blk" | grep -q "^SPIKE_KEY: "; then
+          if [ -n "$_sorig_spike_key_line" ] && ! grep -q "^SPIKE_KEY: " <<< "$_snew_blk"; then
             _snew_blk=$(printf '%s\n' "$_snew_blk" | awk -v spike="$_sorig_spike_key_line" \
               '/^TITLE: / { print; print spike; next } { print }' || true)
           fi
@@ -4189,7 +4189,7 @@ Output ONLY one complete ---ISSUE--- ... ${_end_token} block for EACH missing is
         _blk_title=$(printf '%s' "$_blk_buf" | grep "^TITLE: " | head -1 | sed 's/^TITLE: //' || true)
         local _blk_canon
         _blk_canon=$(printf '%s' "$_blk_title" | _canon_title || true)
-        if [ -n "$_blk_canon" ] && printf '%s' "$_missing_canon" | grep -qxF "$_blk_canon"; then
+        if [ -n "$_blk_canon" ] && grep -qxF "$_blk_canon" <<< "$_missing_canon"; then
           _filtered_blocks="${_filtered_blocks}${_blk_buf}"
         else
           print_warning "Targeted completion: block TITLE '${_blk_title:-<empty>}' not in missing list — rejecting to prevent echo" >&2

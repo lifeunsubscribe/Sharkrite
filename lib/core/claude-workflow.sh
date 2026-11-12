@@ -2198,15 +2198,15 @@ else
 
     # Smart prefix detection
     PREFIX="feat"
-    if echo "$ISSUE_DESC" | grep -iqE '(fix|bug|issue|error)'; then
+    if grep -iqE '(fix|bug|issue|error)' <<< "$ISSUE_DESC"; then
       PREFIX="fix"
-    elif echo "$ISSUE_DESC" | grep -iqE '(docs|documentation|readme)'; then
+    elif grep -iqE '(docs|documentation|readme)' <<< "$ISSUE_DESC"; then
       PREFIX="docs"
-    elif echo "$ISSUE_DESC" | grep -iqE '(test|testing|spec)'; then
+    elif grep -iqE '(test|testing|spec)' <<< "$ISSUE_DESC"; then
       PREFIX="test"
-    elif echo "$ISSUE_DESC" | grep -iqE '(refactor|cleanup|improve)'; then
+    elif grep -iqE '(refactor|cleanup|improve)' <<< "$ISSUE_DESC"; then
       PREFIX="refactor"
-    elif echo "$ISSUE_DESC" | grep -iqE '(chore|setup|config)'; then
+    elif grep -iqE '(chore|setup|config)' <<< "$ISSUE_DESC"; then
       PREFIX="chore"
     fi
 
@@ -3850,15 +3850,15 @@ if grep -qE "^(fix|feat|docs|test|refactor|chore|build|ci|perf|style)(\(.*\))?:"
 else
   # Detect prefix from keywords if branch didn't provide one
   if [ "$COMMIT_TYPE" = "feat" ]; then
-    if echo "$COMMIT_SOURCE" | grep -iqE '(fix|bug|issue|error)'; then
+    if grep -iqE '(fix|bug|issue|error)' <<< "$COMMIT_SOURCE"; then
       COMMIT_TYPE="fix"
-    elif echo "$COMMIT_SOURCE" | grep -iqE '(docs|documentation|readme)'; then
+    elif grep -iqE '(docs|documentation|readme)' <<< "$COMMIT_SOURCE"; then
       COMMIT_TYPE="docs"
-    elif echo "$COMMIT_SOURCE" | grep -iqE '(test|testing|spec)'; then
+    elif grep -iqE '(test|testing|spec)' <<< "$COMMIT_SOURCE"; then
       COMMIT_TYPE="test"
-    elif echo "$COMMIT_SOURCE" | grep -iqE '(refactor|cleanup|improve)'; then
+    elif grep -iqE '(refactor|cleanup|improve)' <<< "$COMMIT_SOURCE"; then
       COMMIT_TYPE="refactor"
-    elif echo "$COMMIT_SOURCE" | grep -iqE '(chore|setup|config)'; then
+    elif grep -iqE '(chore|setup|config)' <<< "$COMMIT_SOURCE"; then
       COMMIT_TYPE="chore"
     fi
   fi

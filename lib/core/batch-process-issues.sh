@@ -1477,7 +1477,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
           # defer into. See behavioral-design.md → "Dependency Detection".
           _parent_live_lock_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
           _parent_live_lock_max="${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
-          if ! printf '%s' "$_parent_live_lock_max" | grep -qE '^[0-9]+$'; then
+          if ! grep -qE '^[0-9]+$' <<< "$_parent_live_lock_max"; then
             print_warning "RITE_LIVE_LOCK_MAX_DEFERS='$_parent_live_lock_max' is not a non-negative integer — ignoring, using default 10"
             _parent_live_lock_max=10
           fi
@@ -1495,7 +1495,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
             _DEFER_COUNT[$ISSUE_NUM]=$(( ${_DEFER_COUNT[$ISSUE_NUM]:-0} + 1 ))
             print_info "Parent issue #$PARENT_ISSUE is live in another batch session — deferring issue #$ISSUE_NUM to end of queue (defer #${_DEFER_COUNT[$ISSUE_NUM]})"
             _live_lock_wait="${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
-            if ! printf '%s' "$_live_lock_wait" | grep -qE '^[0-9]+$'; then
+            if ! grep -qE '^[0-9]+$' <<< "$_live_lock_wait"; then
               print_warning "RITE_LIVE_LOCK_DEFER_WAIT='$_live_lock_wait' is not a non-negative integer — ignoring, using default 30"
               _live_lock_wait=30
             fi
@@ -1590,7 +1590,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         if [ "$DEP_IN_QUEUE" = false ]; then
           _live_lock_defer_count="${_DEFER_COUNT[$ISSUE_NUM]:-0}"
           _live_lock_max="${RITE_LIVE_LOCK_MAX_DEFERS:-10}"
-          if ! printf '%s' "$_live_lock_max" | grep -qE '^[0-9]+$'; then
+          if ! grep -qE '^[0-9]+$' <<< "$_live_lock_max"; then
             print_warning "RITE_LIVE_LOCK_MAX_DEFERS='$_live_lock_max' is not a non-negative integer — ignoring, using default 10"
             _live_lock_max=10
           fi
@@ -1627,7 +1627,7 @@ while [ "$_batch_qi" -lt "${#ISSUE_LIST[@]}" ]; do
         # from blocking issues unrelated to this dep. The queue-later path omits
         # the sleep because natural issue-processing time provides the buffer.
         _live_lock_wait="${RITE_LIVE_LOCK_DEFER_WAIT:-30}"
-        if ! printf '%s' "$_live_lock_wait" | grep -qE '^[0-9]+$'; then
+        if ! grep -qE '^[0-9]+$' <<< "$_live_lock_wait"; then
           print_warning "RITE_LIVE_LOCK_DEFER_WAIT='$_live_lock_wait' is not a non-negative integer — ignoring, using default 30"
           _live_lock_wait=30
         fi

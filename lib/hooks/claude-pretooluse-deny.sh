@@ -64,11 +64,11 @@ _rite_hook_denial_reason() {
   # open; the nested shell's own tool calls are still hook-gated).
   _cmd_pos='(^|[;&|(]|[$][(]|`)[[:space:]]*((env|command|npx|nohup|time|xargs|sudo)[[:space:]]+|g?timeout[[:space:]]+(-[^[:space:]]+[[:space:]]+)*[0-9]+[smhd]?[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
   # git commit / git push (read-only git is allowed: status, diff, log, add, ...)
-  if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])git[[:space:]]+(commit|push)([^[:alnum:]_]|$)'; then
+  if grep -qE '(^|[^[:alnum:]_])git[[:space:]]+(commit|push)([^[:alnum:]_]|$)' <<< "$_cmd"; then
     echo "git commit/push is handled by the rite workflow after this session"; return 0
   fi
   # gh — the workflow owns all GitHub interaction
-  if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])gh([[:space:]]|$)'; then
+  if grep -qE '(^|[^[:alnum:]_])gh([[:space:]]|$)' <<< "$_cmd"; then
     echo "gh commands are handled by the rite workflow, not the session"; return 0
   fi
   # test/lint runners — these run in the post-commit gate, not in-session.
@@ -79,25 +79,25 @@ _rite_hook_denial_reason() {
   # keeps path-INVOKED runners denied (/usr/local/bin/bats, node_modules/.bin/
   # bats); direct-exec of a test file (./tests/foo.bats) is deliberately
   # allowed — the rule targets the runner, not test files named like it.
-  if printf '%s' "$_cmd" | grep -qE "${_cmd_pos}([^[:space:];&|]*/)?(make|bats|pytest|python[0-9.]*[[:space:]]+-m[[:space:]]+pytest)([[:space:]]|$)"; then
+  if grep -qE "${_cmd_pos}([^[:space:];&|]*/)?(make|bats|pytest|python[0-9.]*[[:space:]]+-m[[:space:]]+pytest)([[:space:]]|$)" <<< "$_cmd"; then
     echo "test/lint runners run in the post-commit gate; do not run them in-session"; return 0
   fi
   # rm -rf / rm -fr (any flag bundle containing both r and f)
-  if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])rm[[:space:]]+(-[[:alnum:]]*r[[:alnum:]]*f|-[[:alnum:]]*f[[:alnum:]]*r)'; then
+  if grep -qE '(^|[^[:alnum:]_])rm[[:space:]]+(-[[:alnum:]]*r[[:alnum:]]*f|-[[:alnum:]]*f[[:alnum:]]*r)' <<< "$_cmd"; then
     echo "rm -rf is blocked in-session"; return 0
   fi
   # remote access / network
-  if printf '%s' "$_cmd" | grep -qE '(^|[^[:alnum:]_])(ssh|scp|curl|wget)([[:space:]]|$)'; then
+  if grep -qE '(^|[^[:alnum:]_])(ssh|scp|curl|wget)([[:space:]]|$)' <<< "$_cmd"; then
     echo "remote/network access is blocked in-session"; return 0
   fi
   # environment / credential dumps (env / printenv as a command). Shares the
   # command-position anchor — strict superset of the old bespoke (^|[;&|]…)
   # anchor (additionally denies "FOO=1 env"; allows nothing new).
-  if printf '%s' "$_cmd" | grep -qE "${_cmd_pos}(env|printenv)([[:space:]]|$)"; then
+  if grep -qE "${_cmd_pos}(env|printenv)([[:space:]]|$)" <<< "$_cmd"; then
     echo "environment dumps are blocked in-session"; return 0
   fi
   # sensitive paths (shells rc, ssh keys, system config)
-  if printf '%s' "$_cmd" | grep -qE '(/etc/|/var/|~/\.ssh|~/\.zsh|~/\.bash|~/\.[[:alnum:]]*rc)'; then
+  if grep -qE '(/etc/|/var/|~/\.ssh|~/\.zsh|~/\.bash|~/\.[[:alnum:]]*rc)' <<< "$_cmd"; then
     echo "access to sensitive paths (/etc, /var, ~/.ssh, shell rc) is blocked in-session"; return 0
   fi
   return 1
