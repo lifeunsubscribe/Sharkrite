@@ -401,6 +401,160 @@ _resolve_node_lint_runner() {
 }
 
 # ---------------------------------------------------------------------------
+# _extract_node_lint_flags PROJECT_ROOT
+#
+# Extract flag arguments from scripts.lint, preserving --flag and --flag value
+# pairs while dropping the binary name and positional file/glob arguments.
+#
+# Args: $1=project_root
+# Echoes one token per line; callers read into an array with a while+read loop
+# (bash 3.2 portable — no mapfile/readarray).
+# Returns 0 always.
+#
+# Examples (scripts.lint → extracted flags):
+#   "eslint . --max-warnings 0"                  → "--max-warnings" / "0"
+#   "eslint --config .eslintrc.js src/"          → "--config" / ".eslintrc.js"
+#   "eslint . --ext .ts,.tsx"                    → "--ext" / ".ts,.tsx"
+#   "npx --no-install eslint . --max-warnings 0" → "--max-warnings" / "0"
+#   "eslint ."                                   → (empty)
+#
+# Token classification after locating the eslint binary:
+#   Denylist flags (--fix, --fix-dry-run, --color, --no-color, -f/--format,
+#                  -o/--output-file, --fix-type) → skipped; value-taking forms
+#                  also consume and discard the following value token
+#   Known-value-taking flags (--config, --ext, --max-warnings, etc.)
+#                  followed by their value → both emitted atomically (even when
+#                  the value looks like a path, e.g. --config ./ci/.eslintrc.js)
+#   Other flags (treated as boolean) → flag emitted; following non-flag token
+#                  is treated as a positional (skipped, never emitted as a value)
+#   Positional file/glob arguments → skipped
+#
+# Resolves one level of `npm run <X>` delegation (mirrors _resolve_node_lint_runner).
+# Scans for the literal "eslint" token (or any token whose basename is "eslint")
+# so wrapper prefixes like `npx --no-install` are ignored.
+# ---------------------------------------------------------------------------
+_extract_node_lint_flags() {
+  local _pr="$1"
+  local _pkg="$_pr/package.json"
+  [ -f "$_pkg" ] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+
+  local _script
+  _script=$(jq -r '.scripts.lint // ""' "$_pkg" 2>/dev/null || echo "")
+  [ -n "$_script" ] || return 0
+
+  # Resolve one level of `npm run <X>` delegation — mirrors _resolve_node_lint_runner.
+  local _first
+  _first=$(printf '%s\n' "$_script" | awk '{print $1}' || echo "")
+  if [ "$_first" = "npm" ]; then
+    local _second _target _delegated
+    _second=$(printf '%s\n' "$_script" | awk '{print $2}' || echo "")
+    if [ "$_second" = "lint" ]; then
+      return 0  # self-referential loop guard
+    fi
+    if [ "$_second" = "run" ] || [ "$_second" = "run-script" ]; then
+      _target=$(printf '%s\n' "$_script" | awk '{print $3}' || echo "")
+    else
+      _target="$_second"
+    fi
+    if [ -n "$_target" ]; then
+      _delegated=$(jq -r --arg k "$_target" '.scripts[$k] // ""' "$_pkg" 2>/dev/null || echo "")
+      [ -n "$_delegated" ] && _script="$_delegated"
+    fi
+  fi
+
+  # Scan tokens: skip wrapper prefix by finding the eslint binary, then collect
+  # flags and their values. awk tokenizes without shell glob expansion.
+  #
+  # _buffered_flag holds a pending flag whose value-taking status (_tok_vtf)
+  # determines whether the next non-flag token is emitted as its value or
+  # skipped as a positional.  _skip_next consumes a denylisted flag's value.
+  local _found_binary=false _buffered_flag="" _skip_next=false _tok _tok_base _tok_vtf
+  _tok_vtf=false
+  while IFS= read -r _tok; do
+    [ -n "$_tok" ] || continue
+    _tok_base="${_tok##*/}"
+    if [ "$_found_binary" = "false" ]; then
+      if [ "$_tok" = "eslint" ] || [ "$_tok_base" = "eslint" ]; then
+        _found_binary=true
+      fi
+      continue
+    fi
+
+    case "$_tok" in
+      -*)
+        # Emit any pending buffered flag (a new flag arrived → prior was boolean)
+        if [ -n "$_buffered_flag" ]; then
+          printf '%s\n' "$_buffered_flag"
+          _buffered_flag=""
+        fi
+        _skip_next=false  # new flag begins; resolve any prior denylist skip
+
+        # Denylist: drop flags that mutate the worktree or corrupt output parsing
+        case "$_tok" in
+          --fix|--fix-dry-run|--color|--no-color|--fix=*|--fix-dry-run=*|\
+          --cache|--no-cache)
+            # Boolean denylist: skip flag only
+            ;;
+          -f|--format|--format=*|-o|--output-file|--output-file=*|\
+          --fix-type|--fix-type=*|\
+          --cache-location|--cache-location=*|\
+          --cache-strategy|--cache-strategy=*)
+            # Value-taking denylist: skip flag and following value token (space form)
+            case "$_tok" in *=*) ;; *) _skip_next=true ;; esac
+            ;;
+          *)
+            # Classify: value-taking flags emit their value atomically;
+            # all other flags are boolean (following token is a positional)
+            case "$_tok" in
+              --config|-c|--env|-e|--ext|--global|-g|\
+              --ignore-path|--ignore-pattern|--parser|--parser-options|\
+              --plugin|-p|--rule|--resolve-plugins-relative-to|\
+              --rulesdir|--max-warnings|--stdin-filename|\
+              --report-unused-disable-directives-severity|\
+              --flag)
+                _tok_vtf=true
+                ;;
+              *)
+                _tok_vtf=false
+                ;;
+            esac
+            _buffered_flag="$_tok"
+            ;;
+        esac
+        ;;
+      *)
+        # Consume the value of a denylisted value-taking flag
+        if [ "$_skip_next" = "true" ]; then
+          _skip_next=false
+          continue
+        fi
+        if [ -n "$_buffered_flag" ]; then
+          if [ "$_tok_vtf" = "true" ]; then
+            # Value-taking flag: emit both atomically (value may look like a path)
+            printf '%s\n' "$_buffered_flag"
+            printf '%s\n' "$_tok"
+          else
+            # Boolean flag: emit flag only; this token is a positional (skip it)
+            printf '%s\n' "$_buffered_flag"
+          fi
+          _buffered_flag=""
+          _tok_vtf=false
+        fi
+        # Non-flag non-value positionals are silently skipped
+        ;;
+    esac
+  done < <(printf '%s\n' "$_script" | awk '{for(i=1;i<=NF;i++) print $i}' || true)
+
+  # Emit any trailing buffered flag (boolean at end of script)
+  if [ -n "$_buffered_flag" ]; then
+    printf '%s\n' "$_buffered_flag"
+  fi
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # _normalize_eslint_output — convert eslint output to _parse_lint_line format
 # Args: $1 = raw eslint output file (read)
 #       $2 = lint findings file (APPEND normalized lines)
