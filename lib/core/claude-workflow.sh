@@ -441,6 +441,52 @@ count_changed_files() {
 }
 
 # ===================================================================
+# _set_project_verification_vocab — the dev and fix prompts name the
+# PROJECT's gate commands, not sharkrite's. Live (freshup #551, 2026-11-12):
+# a React repo's fix prompt said "run bash -n on the shell files you touched"
+# and "Do NOT run make check, bats, pytest"; sessions either ignored it (ran
+# the backend suite for 1h28m) or followed it (ran nothing). Sets:
+#   _RITE_PROJ_IS_SHARKRITE   true|false (same test as test-gate.sh)
+#   _RITE_PROJ_GATE_CMDS      e.g. '`npm test`, `pytest`'  — what NOT to run
+#   _RITE_PROJ_GATE_DESC      what the workflow runs after the session
+#   _RITE_PROJ_SYNTAX_STEP    the cheap per-file check the session MAY run
+# ===================================================================
+# sharkrite-extract: project-vocab-start
+_set_project_verification_vocab() {
+  local _root="${RITE_PROJECT_ROOT:-$PWD}"
+  _RITE_PROJ_IS_SHARKRITE=false
+  if [ -f "$_root/Makefile" ] \
+     && grep -q "^shellcheck:" "$_root/Makefile" 2>/dev/null \
+     && grep -q "^lint:" "$_root/Makefile" 2>/dev/null; then
+    _RITE_PROJ_IS_SHARKRITE=true
+  fi
+  if [ "$_RITE_PROJ_IS_SHARKRITE" = true ]; then
+    _RITE_PROJ_GATE_CMDS='`make check`, `bats tests/`, `pytest tests/`'
+    _RITE_PROJ_GATE_DESC='`make check` + `bats -r tests/`'
+    _RITE_PROJ_SYNTAX_STEP='run `bash -n <file>` on every shell file you edited and confirm zero output'
+    return 0
+  fi
+  local _kinds="" _cmds=""
+  if ! declare -f _gate_runner_dirs >/dev/null 2>&1 && [ -f "${RITE_LIB_DIR:-}/utils/test-gate.sh" ]; then
+    source "${RITE_LIB_DIR}/utils/test-gate.sh"
+  fi
+  if declare -f _gate_runner_dirs >/dev/null 2>&1; then
+    _kinds=$(_gate_runner_dirs "$_root" 2>/dev/null | cut -f1 | sort -u | tr '\n' ' ' || true)
+  fi
+  case " $_kinds " in *" node "*) _cmds='`npm test`' ;; esac
+  case " $_kinds " in *" pytest "*) _cmds="${_cmds:+$_cmds, }"'`pytest`' ;; esac
+  if [ -n "${RITE_TEST_COMMAND:-}" ]; then
+    _cmds="${_cmds:+$_cmds, }\`${RITE_TEST_COMMAND}\`"
+  fi
+  [ -n "$_cmds" ] || _cmds="the project's test suite"
+  _RITE_PROJ_GATE_CMDS="$_cmds"
+  _RITE_PROJ_GATE_DESC="the project's own test command(s) — ${_cmds}"
+  _RITE_PROJ_SYNTAX_STEP='run only a cheap per-file check on the files you touched (`npx tsc --noEmit -p <tsconfig>` for TypeScript, `python -m py_compile <file>` for Python, `bash -n <file>` for shell) and confirm zero output'
+  return 0
+}
+# sharkrite-extract: project-vocab-end
+
+# ===================================================================
 # _regen_lockfiles_if_needed — regenerate package-lock.json after dev sessions
 #
 # When the dev session modifies a package.json, `npm ci` (used by the #784 node
@@ -1304,7 +1350,7 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
   if [ "${_fix_gate_count:-0}" -gt 0 ] && [ "${_fix_review_count:-0}" -gt 0 ]; then
     _fix_items_section="### Failing tests — fix the code or the test (${_fix_gate_count} items)
 
-These are **objective gate failures**: \`make check\` or \`bats -r tests/\` returned non-zero.
+These are **objective gate failures**: ${_RITE_PROJ_GATE_DESC} returned non-zero.
 Fix the underlying code bug OR fix a broken/stale test assertion — whichever is correct.
 Do NOT suppress or skip failing tests.
 
@@ -1332,6 +1378,7 @@ $ACTIONABLE_NOW_ITEMS
   fi
 
   # Build fix prompt - tool restrictions are enforced by --disallowedTools flag
+  _set_project_verification_vocab
   FIX_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) fix-review session.
 Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
 
@@ -1352,14 +1399,14 @@ ${_fix_items_section}
 2. **Make the necessary code changes** at the locations specified in each item
 3. **After all fixes, re-read every file you modified from top to bottom** - verify no new issues were introduced and that the fix didn't leave a parallel instance of the same vulnerability elsewhere in the file
 4. **Check for partial fixes** - for each issue, confirm the vulnerable pattern doesn't appear in any other location in the same file (e.g. if you fixed role assignment in one function, check every other function that writes role)
-5. **SYNTAX-CHECK EVERY FILE YOU TOUCHED.** Before declaring done, run \`bash -n <file>\` on every shell file you edited and confirm zero output. Do NOT run \`make check\`, \`bats tests/\`, \`pytest tests/\`, or any broader test/lint commands — those run automatically after you commit, in parallel with the next review. Your job in this session is to make the code right; verification is the workflow's job.
+5. **CHECK EVERY FILE YOU TOUCHED.** Before declaring done, ${_RITE_PROJ_SYNTAX_STEP}. Do NOT run ${_RITE_PROJ_GATE_CMDS}, or any broader test/lint commands — those run automatically after you commit, in parallel with the next review. Your job in this session is to make the code right; verification is the workflow's job.
 
-The workflow will automatically commit, push, and request a new review. Post-commit, \`make check\` and \`bats -r tests/\` run in parallel with review generation — any failures appear as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle.
+The workflow will automatically commit, push, and request a new review. Post-commit, ${_RITE_PROJ_GATE_DESC} run in parallel with review generation — any failures appear as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle.
 
 ## Scope
 - Read and edit source code files to fix the listed issues
-- Run \`bash -n <file>\` syntax checks only on the shell files you touched
-- Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any project test/lint commands
+- Per-file checks only on the files you touched: ${_RITE_PROJ_SYNTAX_STEP}
+- Do NOT run ${_RITE_PROJ_GATE_CMDS}, or any project test/lint commands
 - Do NOT modify workflow, config, or CI files (.rite/, .github/workflows/, .claude/)
 
 ${_fix_test_runbook_section}
@@ -3435,6 +3482,26 @@ _PROVIDER_EXIT_NOTE=$(provider_exit_instructions "$AUTO_MODE")
 _lint_sh='tools/sharkrite'
 _lint_sh="${_lint_sh}-lint.sh"
 
+# Phase 4 names the project's own tools (#1768). Sharkrite keeps its linter
+# carve-out; other repos get their runner's cheapest per-file check and their
+# own lint script, and are told not to run THEIR suite.
+_set_project_verification_vocab
+if [ "$_RITE_PROJ_IS_SHARKRITE" = true ]; then
+_PHASE4_BLOCK="\
+### Phase 4: Test Authoring & Syntax Check & Lint
+1. Write or update unit tests for the code you changed
+2. Syntax-check shell files you touched with \`bash -n <file>\` — zero output means OK
+3. Run the custom linter on your changed files: \`${_lint_sh}\` (or \`SHARKRITE_LINT_ONLY=<N> ${_lint_sh}\` for a specific rule). Fix any violations and re-run until clean — capped at 3 passes.
+4. Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any test runners in-session — only \`${_lint_sh}\` is permitted among the project's check tools. The rite workflow runs \`make check\` + \`bats -r tests/\` in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours."
+else
+_PHASE4_BLOCK="\
+### Phase 4: Test Authoring & Syntax Check & Lint
+1. Write or update unit tests for the code you changed, in the project's own test framework
+2. Check only the files you touched: ${_RITE_PROJ_SYNTAX_STEP}
+3. If the project defines a lint script (package.json \`scripts.lint\`, ruff, flake8, ...), run it on your changed files only. Fix any violations and re-run until clean — capped at 3 passes.
+4. Do NOT run ${_RITE_PROJ_GATE_CMDS}, or any test runner in-session. The rite workflow runs ${_RITE_PROJ_GATE_DESC} in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours."
+fi
+
 CLAUDE_PROMPT="${_PROVIDER_PREAMBLE}
 ${SECURITY_PROMPT}${RELEVANT_PRIOR_ART_PROMPT}${ENCOUNTERED_ISSUES_PROMPT}
 ## Workflow Instructions
@@ -3487,11 +3554,7 @@ ${PHASE_0_INSTRUCTIONS}
 4. Include comments for complex logic
 5. Ensure multi-tenant isolation if applicable
 
-### Phase 4: Test Authoring & Syntax Check & Lint
-1. Write or update unit tests for the code you changed
-2. Syntax-check shell files you touched with \`bash -n <file>\` — zero output means OK
-3. Run the custom linter on your changed files: \`${_lint_sh}\` (or \`SHARKRITE_LINT_ONLY=<N> ${_lint_sh}\` for a specific rule). Fix any violations and re-run until clean — capped at 3 passes.
-4. Do NOT run \`make check\`, \`bats\`, \`pytest\`, or any test runners in-session — only \`${_lint_sh}\` is permitted among the project's check tools. The rite workflow runs \`make check\` + \`bats -r tests/\` in parallel with review generation after this session. Running them here (or kicking them off in the background and polling) only burns your timeout budget; any failures will surface as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle. Verification is the workflow's job, not yours.
+${_PHASE4_BLOCK}
 
 ### Phase 5: Code Comments
 1. Add inline comments and JSDoc/TSDoc for complex logic only
