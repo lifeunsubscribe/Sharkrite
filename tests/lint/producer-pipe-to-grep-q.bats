@@ -157,7 +157,7 @@ check_log() {
 EOF
   SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" != *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+  [[ "$output" != *"ok-cmd.sh"* ]]
 }
 
 @test "PRODUCER_PIPE_TO_GREP_Q: does not fire on here-string (already fixed)" {
@@ -173,7 +173,7 @@ check_body() {
 EOF
   SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" != *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+  [[ "$output" != *"ok-herestring.sh"* ]]
 }
 
 @test "PRODUCER_PIPE_TO_GREP_Q: does not fire on full-line comment" {
@@ -189,7 +189,7 @@ check_body() {
 EOF
   SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" != *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+  [[ "$output" != *"ok-comment.sh"* ]]
 }
 
 @test "PRODUCER_PIPE_TO_GREP_Q: suppression comment disables the rule" {
@@ -206,5 +206,5 @@ check_body() {
 EOF
   SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" != *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+  [[ "$output" != *"suppressed.sh"* ]]
 }
