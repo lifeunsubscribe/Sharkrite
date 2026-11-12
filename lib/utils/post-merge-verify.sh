@@ -374,11 +374,11 @@ verify_post_merge() {
   fi
 
   # Optimize pytest: parallelize if xdist available, suppress noise
-  if echo "$test_cmd" | grep -q "pytest"; then
+  if grep -q "pytest" <<< "$test_cmd"; then
     local _py_bin
     _py_bin=$(echo "$test_cmd" | sed 's/ -m pytest.*//' || true)
     # Parallel execution
-    if ! echo "$test_cmd" | grep -qE "\-n " && $_py_bin -c "import xdist" 2>/dev/null; then
+    if ! grep -qE "\-n " <<< "$test_cmd" && $_py_bin -c "import xdist" 2>/dev/null; then
       test_cmd="$test_cmd -n auto"
     fi
     # Short tracebacks, suppress deprecation warnings, quiet output
@@ -494,7 +494,7 @@ verify_post_merge() {
   # declare -f guard keeps the call safe in test sandboxes that stub run_test_gate
   # without sourcing the full test-gate.sh.
   if [ "$test_exit" -ne 0 ] \
-     && echo "$test_cmd" | grep -q "pytest" \
+     && grep -q "pytest" <<< "$test_cmd" \
      && declare -f _classify_pytest_outcome >/dev/null 2>&1; then
     local _pmv_raw _pmv_outcome
     _pmv_raw=$(cat "$_pmv_out_file" 2>/dev/null || true)

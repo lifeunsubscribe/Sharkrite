@@ -589,7 +589,7 @@ AWKEOF
   # Reject branch names with unsafe characters or path-traversal sequences.
   # Only alphanumeric, '-', '_', '.', '/' are valid git ref characters.
   # Also explicitly reject '..' sequences (path traversal, e.g. "../evil").
-  if ! echo "$base_branch" | grep -qE '^[a-zA-Z0-9_./-]+$' || echo "$base_branch" | grep -qF '..'; then
+  if ! grep -qE '^[a-zA-Z0-9_./-]+$' <<< "$base_branch" || grep -qF '..' <<< "$base_branch"; then
     # Visualize newlines in the raw value so the diag log is parseable as a
     # single line without embedding literal control characters.
     local base_branch_raw_vis

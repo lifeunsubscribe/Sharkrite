@@ -123,7 +123,7 @@ _cr_check_no_unexpected_unmerged() {
   local _cnuu_u_path
   while IFS= read -r _cnuu_u_path; do
     [ -z "$_cnuu_u_path" ] && continue
-    if ! printf '%s\n' "$_cnuu_known_files" | grep -qxF "$_cnuu_u_path"; then
+    if ! grep -qxF "$_cnuu_u_path" <<< "$_cnuu_known_files"; then
       _cnuu_unexpected="${_cnuu_unexpected}${_cnuu_u_path}
 "
     fi
@@ -285,7 +285,7 @@ _cr_check_resolution_gates() {
 _cr_output_signals_overwrite_collision() {
   local _out="${1:-}"
   [ -z "$_out" ] && return 1
-  echo "$_out" | grep -qiE 'already exists, no checkout|would be overwritten by (merge|checkout)|untracked working tree files would be overwritten'
+  grep -qiE 'already exists, no checkout|would be overwritten by (merge|checkout)|untracked working tree files would be overwritten' <<< "$_out"
 }
 
 # _cr_stash_untracked_collision_paths

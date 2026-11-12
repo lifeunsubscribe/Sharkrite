@@ -61,7 +61,7 @@ refuse_if_pr_number() {
   _rpn_url=$(echo "$_rpn_data" | jq -r '.url // ""' 2>/dev/null || true)
 
   # Not a PR — return 0 so the caller continues normally.
-  if ! echo "$_rpn_url" | grep -qF '/pull/'; then
+  if ! grep -qF '/pull/' <<< "$_rpn_url"; then
     return 0
   fi
 

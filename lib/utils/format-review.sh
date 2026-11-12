@@ -85,7 +85,7 @@ strip_pre_review_narration() {
   local body="$1"
   # Check for a structured Code Review heading (case-insensitive "Code Review").
   # Using printf + awk for portability (no bash-specific extensions).
-  if printf '%s\n' "$body" | grep -qE "^## .*[Cc]ode [Rr]eview"; then
+  if grep -qE "^## .*[Cc]ode [Rr]eview" <<< "$body"; then
     # Drop every line before the first matching heading; emit from that line on.
     printf '%s\n' "$body" | awk '/^## .*[Cc]ode [Rr]eview/{found=1} found{print}'
   else

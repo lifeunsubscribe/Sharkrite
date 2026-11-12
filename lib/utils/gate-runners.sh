@@ -233,7 +233,7 @@ _classify_pytest_outcome() {
   # The output signature covers cases where pytest prints the collection error
   # but exits with a code other than 2 (e.g. some plugin wrappers).
   if [ "$_exit_code" -eq 2 ] \
-     || echo "$_output" | grep -qE '(errors during collection|ERROR collecting)'; then
+     || grep -qE '(errors during collection|ERROR collecting)' <<< "$_output"; then
     echo "failed"
     return 0
   fi
@@ -242,7 +242,7 @@ _classify_pytest_outcome() {
   # Must be checked BEFORE the missing-dep check: a traceback that mentions
   # ModuleNotFoundError inside a test that also raises AssertionError is still
   # a real failure and must NOT be silently skipped (the v1 false-skip bug).
-  if echo "$_output" | grep -qE '(^FAILED |AssertionError)'; then
+  if grep -qE '(^FAILED |AssertionError)' <<< "$_output"; then
     echo "failed"
     return 0
   fi
@@ -256,7 +256,7 @@ _classify_pytest_outcome() {
   # "No module named" on a pytest error line covers both:
   #   E  ModuleNotFoundError: No module named 'pytest'
   #   E  ImportError: No module named 'mymodule'
-  if echo "$_output" | grep -qE '^E[[:space:]]+(ModuleNotFoundError|.*No module named)'; then
+  if grep -qE '^E[[:space:]]+(ModuleNotFoundError|.*No module named)' <<< "$_output"; then
     echo "skipped:missing_deps"
     return 0
   fi
@@ -271,7 +271,7 @@ _classify_pytest_outcome() {
   # (covers both `pytest` and `pytest.__main__` variants).  The preceding checks
   # (collection-error, FAILED, AssertionError) guarantee we only reach here when
   # there is no real test failure — so matching this narrow pattern is safe.
-  if echo "$_output" | grep -qE "No module named '?pytest'?"; then
+  if grep -qE "No module named '?pytest'?" <<< "$_output"; then
     echo "skipped:missing_deps"
     return 0
   fi
@@ -1380,7 +1380,7 @@ _changed_files_to_workspace_dirs() {
     [ -d "$_cfd_dir" ] || continue
     [ -f "$_cfd_dir/package.json" ] || continue
     _cfd_rel="${_cfd_dir#"$_cfd_root/"}"
-    if printf '%s\n' "$_cfd_files" | grep -q "^${_cfd_rel}/"; then
+    if grep -q "^${_cfd_rel}/" <<< "$_cfd_files"; then
       echo "$_cfd_rel"
     fi
   done < <(_expand_workspace_dirs "$_cfd_root" "$_cfd_patterns")

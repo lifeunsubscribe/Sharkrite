@@ -3512,7 +3512,7 @@ _lint_negative_existence_claims() {
           esac
 
           # Does this line match a negative-existence phrase?
-          if ! echo "$_negex_bline" | grep -iqE "$_NEGEX_RE"; then
+          if ! grep -iqE "$_NEGEX_RE" <<< "$_negex_bline"; then
             continue
           fi
 
