@@ -504,6 +504,13 @@ The old section argued that having Claude run tests INSIDE the session is defens
 **What still files individual issues:** unresolved `ACTIONABLE_NOW` items at the retry cap and CRITICAL/[GATE] escalations (failures that need a human, not deferrals); Security findings; the promote path's aggregated NOW issue. The promote path's LATER items run through `assess-review-issues.sh` and are therefore pooled.
 
 **Entry shape:** `### <title>` + one marker line (`sharkrite-pool-entry:KEY`, `sharkrite-source-issue`, `sharkrite-parent-pr`, `sharkrite-finding-location`, `sharkrite-finding-sha`) + Severity/Category/From, Location, Finding, Suggested fix, Why deferred. Diags: `FOLLOWUP_POOL_CREATED`, `FOLLOWUP_POOLED`, `FOLLOWUP_POOL_DEDUP`, `FOLLOWUP_POOL_CLOSED`; one `FOLLOWUP_CREATED` per pool so the batch reporter's "Issues Created" counts it once and reconcile discovers it.
+### Gate Verdict Reuse on Identical Trees (2026-11-11)
+
+**Live:** batch `20261111-095317`, every resumed issue: the stale-branch path rebased the branch and ran post-rebase verification (targeted gate, 82–175 s, serial), then Phase 2 started ~60 s later and ran the initial gate on the same tree with the same selection. Two identical runs per issue; the first one on the critical path.
+
+**Contract:** `run_test_gate` keys a passing verdict on `(HEAD^{tree}, resolved diff-base SHA)` under `RITE_STATE_DIR/gate-verdicts/` and reuses it when the same pair recurs, emitting `[diag] TEST_GATE outcome=passed cached=true`. The key is the tree hash, never the commit or the issue: a rebase or amend with identical content hits, any content change misses. Only passing, non-skipped verdicts are stored — a failure always re-runs. On a hit the `head_sha` field is refreshed to the current HEAD so the #986 SHA-pin check in `assess-and-resolve.sh` still matches the PR head. When the diff base cannot be resolved to a commit (range forms, missing ref) the cache is bypassed. Entries older than 7 days are pruned on store.
+
+**Why not key on the issue or PR:** Pilot's 2026-07-06 red merge (#689) came from an assessment reused because "this issue already has a passing assessment" — no SHA in the key, so a gate failure at a new commit was skipped. The tree hash is the only key that cannot be stale.
 
 ### Gate Block-on-Any (CRITICAL)
 

@@ -79,6 +79,19 @@ run_test_gate() {
     return 0
   fi
 
+  # --- Verdict cache lookup (tree SHA + diff-base SHA, passes only) ---
+  # The post-rebase verification and the Phase 2 initial gate test the same
+  # tree ~60s apart; the second run is a pure repeat. See gate-verdict.sh
+  # "Gate verdict cache" for the key and the Pilot 2026-07-06 caution.
+  local _gate_cache_path=""
+  # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cold-start default mirrors the _diff_base default below; run_workflow seeds origin/<target>, operator env still wins
+  _gate_cache_path=$(_gate_verdict_cache_path "$project_root" "${RITE_TEST_GATE_DIFF_BASE:-origin/main}" || true)
+  if _gate_verdict_cache_hit "$_gate_cache_path" "$output_file" "$project_root"; then
+    echo "[test-gate] verdict reused: identical tree already passed against this diff base (cache $(basename "$_gate_cache_path"))"
+    _diag "TEST_GATE outcome=passed cached=true lint_count=0 test_count=0 duration_s=0 pr=${PR_NUMBER:-?}"
+    return 0
+  fi
+
   # --- Summary mode vs verbose mode ---
   # In summary mode (the default), raw test-runner output is routed directly to
   # RITE_LOG_FILE (the two-channel direct-append path, like [diag] lines) so the
@@ -1640,6 +1653,8 @@ run_test_gate() {
   rm -f "${_tests_raw_file:-}"
 
   _diag "TEST_GATE outcome=${_outcome} lint_count=${_lint_count} test_count=${_tests_count} duration_s=${_duration} pr=${PR_NUMBER:-?}"
+  # Store a passing verdict for reuse by the next run on the identical tree.
+  [ "$_outcome" = "passed" ] && _gate_verdict_cache_store "$_gate_cache_path" "$output_file"
 
   # --- Unscoped suite warning (target repos only) ---
   # Sharkrite's own runs always use targeted selection and are exempt by construction
