@@ -189,6 +189,15 @@ _body() { cat "$FAKE_GH/issues/$1.body"; }
   [ "$(cat "$RITE_STATE_DIR/followup-pool-batch-test-1.num")" = "100" ]
 }
 
+@test "sources under set -u when an older markers.sh is already loaded (reloads the marker constants)" {
+  # A batch shell that loaded markers.sh before #1741 keeps it (function-sentinel
+  # guard) and never defines RITE_MARKER_FOLLOWUP_POOL; the 2026-11-11 batch died
+  # here at its end and never ran reconcile (#1758).
+  run bash -c 'set -euo pipefail; export RITE_LIB_DIR="$1"; rite_markers_loaded() { return 0; }; source "$RITE_LIB_DIR/utils/followup-pool.sh"; echo "$_FP_M_POOL $_FP_M_ENTRY $_FP_M_LOC $_FP_M_SHA $_FP_M_SRC $_FP_M_PR"' _ "$RITE_LIB_DIR"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sharkrite-followup-pool sharkrite-pool-entry sharkrite-finding-location sharkrite-finding-sha sharkrite-source-issue sharkrite-parent-pr" ]
+}
+
 @test "entries parser returns key, sha, location, title per entry" {
   followup_pool_append 55 42 HIGH Reliability "First finding here" "lib/a.sh:1" aaaaaaa "r" "" "" key-one
   followup_pool_append 55 42 LOW Style "Second different thing" "lib/b.sh:2" bbbbbbb "r" "" "" key-two

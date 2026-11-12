@@ -339,3 +339,16 @@ _make_body() {
   [[ "$_diag_line" == *"verified=0"* ]]
   [[ "$_diag_line" == *"skipped=0"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# The batch-end call is isolated in a subshell: a crash inside the pass must not
+# change the batch's exit code (#1758: set -u death at batch end → exit 1).
+# ---------------------------------------------------------------------------
+@test "batch-end reconcile call runs in a subshell with a warning fallback" {
+  local _src="${RITE_LIB_DIR}/core/batch-process-issues.sh"
+  local _block
+  _block=$(sed -n '/RITE_BATCH_RECONCILE:-true/,/^fi$/p' "$_src")
+  [[ "$_block" == *"("*"reconcile_batch_followups"*")"*"|| _reconcile_rc="* ]]
+  [[ "$_block" == *"print_warning"*"reconcile pass failed"* ]]
+}
+
