@@ -504,6 +504,14 @@ The old section argued that having Claude run tests INSIDE the session is defens
 **What still files individual issues:** unresolved `ACTIONABLE_NOW` items at the retry cap and CRITICAL/[GATE] escalations (failures that need a human, not deferrals); Security findings; the promote path's aggregated NOW issue. The promote path's LATER items run through `assess-review-issues.sh` and are therefore pooled.
 
 **Entry shape:** `### <title>` + one marker line (`sharkrite-pool-entry:KEY`, `sharkrite-source-issue`, `sharkrite-parent-pr`, `sharkrite-finding-location`, `sharkrite-finding-sha`) + Severity/Category/From, Location, Finding, Suggested fix, Why deferred. Diags: `FOLLOWUP_POOL_CREATED`, `FOLLOWUP_POOLED`, `FOLLOWUP_POOL_DEDUP`, `FOLLOWUP_POOL_CLOSED`; one `FOLLOWUP_CREATED` per pool so the batch reporter's "Issues Created" counts it once and reconcile discovers it.
+### Provider Timeouts Sweep Descendants; Review Timeout Retries Once (2026-11-12)
+
+**Live (freshup #551, 2026-11-12):** a fix session under `gtimeout -k 30 540` logged "Fix timeout reached (540s)" 99 minutes after it started. gtimeout kills only its direct child; the session's Bash tool had started `pytest`, the orphaned pytest kept the session's stdout pipe open, and `| tee | filter` waited for it. 2h52m of a 4h23m issue was two such sessions.
+
+**Contract:** `run_with_timeout` (`lib/utils/timeout.sh`) runs the command in the background, samples its descendants every 0.5s while it lives, and after it exits kills every survivor children-first (TERM, then KILL). The command's exit code is preserved; a leaked background child can no longer hold a pipeline open. Orphans are unreachable through `pgrep -P` once their parent is gone, which is why the set is sampled during the run rather than computed after it. Pinned by `tests/regression/run-with-timeout-orphan-sweep.bats`.
+
+**Review timeout (freshup #549, same day):** a single 600s review timeout failed the issue, leaving a non-draft PR open and 34 minutes of good dev work needing a full rerun. `local-review.sh` now retries a timed-out review exactly once; a second timeout still aborts with 124. The retry doubles the worst case for a review that is genuinely too slow, which is cheaper than the rerun. Pinned in `tests/regression/local-review-error-path.bats`.
+
 ### Gate Verdict Reuse on Identical Trees (2026-11-11)
 
 **Live:** batch `20261111-095317`, every resumed issue: the stale-branch path rebased the branch and ran post-rebase verification (targeted gate, 82–175 s, serial), then Phase 2 started ~60 s later and ran the initial gate on the same tree with the same selection. Two identical runs per issue; the first one on the critical path.

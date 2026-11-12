@@ -315,6 +315,39 @@ _run_review_loop() {
   [ "$(cat "$CALLF")" -eq 1 ]   # called exactly once — no retries burned
 }
 
+# ---------------------------------------------------------------------------
+# Timeout (exit 124): retried exactly once. freshup #549 (2026-11-12) lost a
+# rerun to a single 600s review timeout on a branch that needed a one-line fix.
+# ---------------------------------------------------------------------------
+
+@test "review retry: one timeout then success returns the review (two calls)" {
+  CALLF="$BATS_TEST_TMPDIR/calls-t1"; echo 0 > "$CALLF"
+  _run_review_loop "
+    provider_run_prompt() {
+      _n=\$(cat '$CALLF'); _n=\$((_n+1)); echo \$_n > '$CALLF'
+      if [ \$_n -lt 2 ]; then return 124; fi
+      echo '## Review'; echo 'Findings: [CRITICAL: 0 | HIGH: 0]'
+    }
+  "
+  [ "$status" -eq 0 ] || { echo "expected exit 0, got $status: $output" >&2; false; }
+  [[ "$output" == *"REVIEW_CAPTURED"* ]]
+  [[ "$output" == *"retrying once"* ]]
+  [ "$(cat "$CALLF")" -eq 2 ]
+}
+
+@test "review retry: a second timeout aborts with 124 after exactly two calls" {
+  CALLF="$BATS_TEST_TMPDIR/calls-t2"; echo 0 > "$CALLF"
+  _run_review_loop "
+    provider_run_prompt() {
+      _n=\$(cat '$CALLF'); _n=\$((_n+1)); echo \$_n > '$CALLF'
+      return 124
+    }
+  "
+  [ "$status" -eq 124 ]
+  [[ "$output" != *"REVIEW_CAPTURED"* ]]
+  [ "$(cat "$CALLF")" -eq 2 ]
+}
+
 @test "codebase-wide: local-review.sh specific lint check passes" {
   # Run the canonical LOCAL_OUTSIDE_FUNCTION lint rule against local-review.sh
   # only. This uses the same brace-counting logic as tools/sharkrite-lint.sh

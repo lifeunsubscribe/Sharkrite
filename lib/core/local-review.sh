@@ -652,11 +652,19 @@ while [ $REVIEW_ATTEMPT -lt $MAX_REVIEW_ATTEMPTS ] && [ -z "$REVIEW_OUTPUT" ]; d
   # (five times per attempt) while saying nothing about the failure.
   CLAUDE_ERROR=$(printf '%s\n' "$CLAUDE_ERROR" | grep -v '^Permission allow rule .* has a wildcard' || true)
 
-  # Timeout: the full per-call timeout already elapsed, so retrying would just
-  # double the wall-clock for no benefit. Abort.
+  # Timeout: retry exactly once. A timed-out review used to fail the issue
+  # outright; freshup #549 (2026-11-12) lost 34 minutes of good dev work and a
+  # whole rerun to one 600s timeout on a branch that needed a one-line test
+  # fix. One retry doubles the worst case for a review that is genuinely too
+  # slow, which is cheaper than the rerun; a second timeout still aborts.
   if [ "${REVIEW_EXIT:-0}" -eq 124 ]; then
-    print_warning "Claude review timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s — aborting"
-    exit 124
+    if [ "$REVIEW_ATTEMPT" -ge 2 ]; then
+      print_warning "Claude review timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s on attempt ${REVIEW_ATTEMPT} — aborting"
+      exit 124
+    fi
+    print_warning "Claude review timed out after ${RITE_CLAUDE_TIMEOUT_PROMPT:-600}s — retrying once"
+    REVIEW_OUTPUT=""
+    continue
   fi
 
   # Usage cap (exit 5) or auth failure (exit 18): retrying cannot recover
