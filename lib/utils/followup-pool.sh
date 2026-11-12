@@ -366,7 +366,7 @@ followup_pool_append() {
   local _markers="<!-- ${_FP_M_ENTRY}:${_key} -->"
   [ -n "$_src" ] && _markers="${_markers}<!-- ${_FP_M_SRC}:${_src} -->"
   [ -n "$_pr" ]  && _markers="${_markers}<!-- ${_FP_M_PR}:${_pr} -->"
-  if [ -n "$_loc" ] && printf '%s' "$_loc" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+  if [ -n "$_loc" ] && grep -qE '^[A-Za-z0-9 /._:#()-]+$' <<< "$_loc"; then
     _markers="${_markers}<!-- ${_FP_M_LOC}:${_loc} -->"
   fi
   [ -n "$_sha" ] && _markers="${_markers}<!-- ${_FP_M_SHA}:${_sha} -->"

@@ -22,7 +22,7 @@ _no_producer_grep_q() {
   local _repo_root="$2"
   local _count
   _count=$(grep -rnE \
-    "(printf '%s\\\\n' \"\\\$\{?[A-Za-z0-9_:-]+\}?\"|echo \"\\\$\{?[A-Za-z0-9_:-]+\}?\") \| grep -q" \
+    "(printf '%s(\\\\n)?' \"[^\"]*\\\$[^\"]*\"|echo \"[^\"]*\\\$[^\"]*\") \| grep -[a-zA-Z]*q" \
     "${_repo_root}/${_dir}" \
     | grep -vE '^[^[:space:]]+:[[:space:]]*#' \
     | wc -l \
@@ -31,7 +31,7 @@ _no_producer_grep_q() {
   if [ "$_count" -ne 0 ]; then
     echo "Found $_count producer-variable pipe into grep -q in ${_dir} (expected 0):" >&2
     grep -rnE \
-      "(printf '%s\\\\n' \"\\\$\{?[A-Za-z0-9_:-]+\}?\"|echo \"\\\$\{?[A-Za-z0-9_:-]+\}?\") \| grep -q" \
+      "(printf '%s(\\\\n)?' \"[^\"]*\\\$[^\"]*\"|echo \"[^\"]*\\\$[^\"]*\") \| grep -[a-zA-Z]*q" \
       "${_repo_root}/${_dir}" \
       | grep -vE '^[^[:space:]]+:[[:space:]]*#' >&2 || true
   fi

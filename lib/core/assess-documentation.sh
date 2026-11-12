@@ -986,7 +986,7 @@ SIMILARITY_EOF
             *[!0-9.]* | "" ) continue ;;        # non-numeric chars or empty
           esac
           # Must match ^[0-9]+(\.[0-9]+)?$ (single optional decimal point).
-          if ! printf '%s' "$_conf" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+          if ! grep -qE '^[0-9]+(\.[0-9]+)?$' <<< "$_conf"; then
             continue
           fi
           # Numerically <= 1.0 (awk handles the decimal comparison portably).

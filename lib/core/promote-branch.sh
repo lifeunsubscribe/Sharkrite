@@ -118,7 +118,7 @@ _promote_title_matches_open_issue() {
     _ei_words=$(printf '%s' "$_ei_title" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' ' ' || true)
     _mc=0
     for _w in $_ft_words; do
-      if [ "${#_w}" -gt 3 ] && printf '%s' "$_ei_words" | grep -qw "$_w" 2>/dev/null; then
+      if [ "${#_w}" -gt 3 ] && grep -qw "$_w" <<< "$_ei_words" 2>/dev/null; then
         _mc=$((_mc + 1))
       fi
     done
@@ -439,7 +439,7 @@ run_promote() {
     local _lsremote_exit=0
     local _lsremote_out=""
     _lsremote_out=$(git ls-remote --heads origin "$BRANCH" 2>/dev/null) || _lsremote_exit=$?
-    if [ "$_lsremote_exit" -ne 0 ] || printf '%s' "${_lsremote_out:-}" | grep -q "refs/heads/${BRANCH}$"; then
+    if [ "$_lsremote_exit" -ne 0 ] || grep -q "refs/heads/${BRANCH}$" <<< "${_lsremote_out:-}"; then
       print_error "Failed to fetch '$BRANCH' from origin — network error?"
       echo "  Re-run after checking network:  rite --promote $BRANCH" >&2
     else
@@ -1172,7 +1172,7 @@ ${_promo_review_body}"
     -f sha="$_expected_head" 2>&1) || _merge_exit=$?
 
   if [ "$_merge_exit" -ne 0 ]; then
-    if printf '%s' "${_merge_output:-}" | grep -qiE "Head branch was modified|409"; then
+    if grep -qiE "Head branch was modified|409" <<< "${_merge_output:-}"; then
       print_error "Merge aborted: '$BRANCH' was pushed to during promotion (SHA mismatch)"
       echo "  Re-run: rite --promote $BRANCH" >&2
     else

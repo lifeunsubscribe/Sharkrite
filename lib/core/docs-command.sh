@@ -523,7 +523,7 @@ _docs_proposal_guards() {
     local _pg_name
     while IFS= read -r _pg_name || [ -n "$_pg_name" ]; do
       [ -n "$_pg_name" ] || continue
-      if printf '%s' "$_pg_content" | grep -qF "$_pg_name" 2>/dev/null; then
+      if grep -qF "$_pg_name" <<< "$_pg_content" 2>/dev/null; then
         _pg_name_hits="${_pg_name_hits}${_pg_name}"$'\n'
       fi
     done <<NAMES_EOF
@@ -2013,7 +2013,7 @@ _adr_approval_history_lookup() {
   while IFS= read -r _aahl_line || [ -n "$_aahl_line" ]; do
     case "$_aahl_line" in
       "<!-- adrhist doc=${_aahl_doc} "*)
-        if printf '%s' "$_aahl_line" | grep -qF "assertion=${_aahl_norm} decision=" 2>/dev/null; then
+        if grep -qF "assertion=${_aahl_norm} decision=" <<< "$_aahl_line" 2>/dev/null; then
           return 0
         fi
         ;;

@@ -93,7 +93,7 @@ _rite_branch_name_safe() {
       return 1 ;;
   esac
   # Validate charset: only alphanumeric, '-', '_', '.', '/' are safe git ref chars
-  if ! printf '%s' "$_name" | grep -qE '^[a-zA-Z0-9_./-]+$'; then
+  if ! grep -qE '^[a-zA-Z0-9_./-]+$' <<< "$_name"; then
     return 1
   fi
   return 0

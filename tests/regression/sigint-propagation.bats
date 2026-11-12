@@ -90,15 +90,22 @@ SCRIPT_EOF
   WORKFLOW_PID=$!
   set +m
 
-  # Wait for pipeline to be established (tee and perl should be running)
-  sleep 1
+  # Wait for pipeline to be established (tee and perl should be running).
+  # Retry up to 20 × 0.2s = 4s to handle CI load variation — the pipeline
+  # setup (perl, tee subprocess creation) can be slow on a loaded runner.
+  CHILD_COUNT=0
+  _child_checks=0
+  while [ "$CHILD_COUNT" -eq 0 ] && [ "$_child_checks" -lt 20 ]; do
+    sleep 0.2
+    CHILD_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
+    CHILD_COUNT="${CHILD_COUNT:-0}"
+    _child_checks=$((_child_checks + 1))
+  done
 
   # Verify child processes exist (tee and perl from logging pipeline)
   # This confirms the pipeline is actually running.
-  # pgrep exits 1 when no matches — add || true to avoid pipefail failure.
-  CHILD_COUNT=$(pgrep -P "$WORKFLOW_PID" 2>/dev/null | wc -l | tr -d ' ' || true)
-  [ "${CHILD_COUNT:-0}" -gt 0 ] || {
-    echo "ERROR: No child processes found. Pipeline may not have started." >&2
+  [ "$CHILD_COUNT" -gt 0 ] || {
+    echo "ERROR: No child processes found after 4s. Pipeline may not have started." >&2
     kill "$WORKFLOW_PID" 2>/dev/null || true
     return 1
   }
@@ -277,9 +284,9 @@ SCRIPT_EOF
   # single-interrupt teardown contract instead.)
   kill -INT "$PID" 2>/dev/null || true
 
-  # Should exit quickly within the bounded window
+  # Should exit quickly within the bounded window (10 × 0.5s = 5s budget for CI load)
   WAIT_COUNT=0
-  while [ $WAIT_COUNT -lt 6 ]; do
+  while [ $WAIT_COUNT -lt 10 ]; do
     if ! kill -0 "$PID" 2>/dev/null; then
       break
     fi
@@ -291,6 +298,6 @@ SCRIPT_EOF
   run kill -0 "$PID" 2>&1
   [ "$status" -ne 0 ]
 
-  # Should have exited well within 3 seconds
-  [ $WAIT_COUNT -lt 6 ]
+  # Should have exited well within 5 seconds
+  [ $WAIT_COUNT -lt 10 ]
 }

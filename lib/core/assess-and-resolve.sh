@@ -2458,7 +2458,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
   # unbounded behavior — the exact failure mode this cap exists to prevent.
   # Validate once here and fall back to default 20 with a warning.
   _findings_cap_raw="${RITE_MAX_FINDINGS_PER_RUN:-20}"
-  if ! printf '%s' "$_findings_cap_raw" | grep -qE '^[0-9]+$'; then
+  if ! grep -qE '^[0-9]+$' <<< "$_findings_cap_raw"; then
     print_warning "RITE_MAX_FINDINGS_PER_RUN='${_findings_cap_raw}' is not a non-negative integer — falling back to default 20."
     _findings_cap_validated=20
   else
@@ -2665,7 +2665,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
       # metacharacters (backtick, dollar, semicolon, pipe, ampersand, redirections)
       # before embedding in generated issue bodies.  Degrade to prose on failure so
       # the finding is never silently lost.  Aligns with _loc_path sanitization above.
-      if printf '%s' "${_f_verification}" | grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$'; then
+      if grep -qE '^[A-Za-z0-9 /._*=:@#!()\[\]{},~^-]+$' <<< "${_f_verification}"; then
         _verification_cmd="${_f_verification}"
       else
         _verification_cmd="# TODO: verify manually — assessor suggested: ${_f_verification}"
@@ -2715,7 +2715,7 @@ if [ "${CREATE_FOLLOWUP_ISSUES:-false}" = true ]; then
     # so that a value containing --> cannot terminate the comment early and corrupt the
     # parent-pr marker on the same line (same contract as ITEM_VERIFICATION, above).
     _finding_location_marker=""
-    if [ -n "${_f_location:-}" ] && printf '%s' "${_f_location}" | grep -qE '^[A-Za-z0-9 /._:#()-]+$'; then
+    if [ -n "${_f_location:-}" ] && grep -qE '^[A-Za-z0-9 /._:#()-]+$' <<< "${_f_location}"; then
       # sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: internal marker constant from lib/utils/markers.sh, not operator config; sibling of ledgered RITE_MARKER_PARENT_PR
       _finding_location_marker="<!-- ${RITE_MARKER_FINDING_LOCATION}:${_f_location} -->"
     fi

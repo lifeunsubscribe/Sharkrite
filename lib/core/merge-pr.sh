@@ -675,8 +675,8 @@ PR_HEAD=$(echo "$PR_DETAILS" | jq -r '.headRefName' || true)
 # Charset-validate PR_BASE before interpolating into any git command.
 # Reuses the same safe-charset pattern as _rite_branch_name_safe in stale-branch.sh
 # (alphanumeric, '-', '_', '.', '/'; rejects '..', meta-characters, multi-line values).
-if ! printf '%s' "$PR_BASE" | grep -qE '^[a-zA-Z0-9_./-]+$' \
-    || printf '%s' "$PR_BASE" | grep -q '\.\.'; then
+if ! grep -qE '^[a-zA-Z0-9_./-]+$' <<< "$PR_BASE" \
+    || grep -q '\.\.' <<< "$PR_BASE"; then
   print_error "PR base branch name contains invalid characters: '$PR_BASE'"
   exit 1
 fi

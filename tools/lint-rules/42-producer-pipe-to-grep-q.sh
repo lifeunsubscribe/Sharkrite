@@ -51,5 +51,5 @@ for _r42_file in "${SHELL_FILES[@]}"; do
     print_violation "$_r42_file" "$_r42_lnum" "PRODUCER_PIPE_TO_GREP_Q" \
       "single-variable producer piped into grep -q: under pipefail, grep exits early and SIGPIPE kills the producer (exit 141 = false 'no match') — replace with a here-string: grep -q ... <<< \"\$VAR\""
   # sharkrite-lint disable BSD_LENIENT_REGEX - Reason: scan trigger that searches FOR the producer-pipe-to-grep-q pattern in source files; \\\\n is the target pattern (literal \n in the file), not a BSD-lenient \s or \` regex usage
-  done < <(grep -nE "(printf '%s\\\\n' \"\\\$\{?[A-Za-z0-9_:-]+\}?\"|echo \"\\\$\{?[A-Za-z0-9_:-]+\}?\") \| grep -q" "$_r42_file" 2>/dev/null || true)
+  done < <(grep -nE "(printf '%s(\\\\n)?' \"[^\"]*\\\$[^\"]*\"|echo \"[^\"]*\\\$[^\"]*\") \| grep -[a-zA-Z]*q" "$_r42_file" 2>/dev/null || true)
 done

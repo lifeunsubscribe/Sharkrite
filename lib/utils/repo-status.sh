@@ -740,7 +740,7 @@ repo_wide_status() {
         local label_count=0
 
         for i in "${!issue_numbers[@]}"; do
-          if echo ", ${issue_labels_list[$i]}, " | grep -q ", ${label}, \|, ${label}$\|^${label}, "; then
+          if grep -q ", ${label}, \|, ${label}$\|^${label}, " <<< ", ${issue_labels_list[$i]}, "; then
             label_count=$((label_count + 1))
             local _display_title
             _display_title=$(strip_label_prefix_from_title "${issue_titles[$i]}" "${issue_labels_list[$i]}")

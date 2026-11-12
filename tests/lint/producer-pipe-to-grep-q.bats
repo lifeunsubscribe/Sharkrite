@@ -118,6 +118,57 @@ EOF
 # Negative cases — rule should NOT fire
 # ---------------------------------------------------------------------------
 
+@test "PRODUCER_PIPE_TO_GREP_Q: fires on printf '%s' \"\$VAR\" | grep -q (no \\n in format)" {
+  cat > "$SH_DIR/bad-printf-no-nl.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+check_trusted() {
+  local content="$1"
+  if printf '%s' "$content" | grep -q "has not been trusted"; then
+    return 0
+  fi
+  return 1
+}
+EOF
+  SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+}
+
+@test "PRODUCER_PIPE_TO_GREP_Q: fires on echo \"\$VAR\" | grep -iqE (i before q)" {
+  cat > "$SH_DIR/bad-echo-iqe.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+detect_prefix() {
+  local text="$1"
+  if echo "$text" | grep -iqE '(fix|bug|issue)'; then
+    echo "fix"
+  fi
+}
+EOF
+  SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+}
+
+@test "PRODUCER_PIPE_TO_GREP_Q: fires on echo \"\$VAR\" | grep -Fxq (q buried in flags)" {
+  cat > "$SH_DIR/bad-echo-fxq.sh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+check_file() {
+  local changed_files="$1"
+  local rel="$2"
+  if echo "$changed_files" | grep -Fxq "$rel"; then
+    return 0
+  fi
+  return 1
+}
+EOF
+  SHARKRITE_LINT_ONLY=42 run bash "$LINT_SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"PRODUCER_PIPE_TO_GREP_Q"* ]]
+}
+
 @test "PRODUCER_PIPE_TO_GREP_Q: does NOT fire on command producer (cmd | grep -q)" {
   cat > "$SH_DIR/good-cmd.sh" <<'EOF'
 #!/bin/bash
