@@ -61,8 +61,7 @@ set -euo pipefail
 gh pr list
 EOF
 
-  # sharkrite-lint disable UNSCOPED_LINTER_IN_BATS - Reason: tests that RITE_LINT_FILES unset runs full scan reporting violations from multiple rules (7 and 13); SHARKRITE_LINT_ONLY would defeat the multi-rule coverage assertion; serial-marked
-  run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=7,13 run "$LINT_SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" =~ "a-bad.sh" ]] || { echo "$output" >&2; return 1; }
   [[ "$output" =~ "b-bad.sh" ]] || { echo "$output" >&2; return 1; }

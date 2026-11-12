@@ -396,21 +396,27 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "state-file write: non-main RITE_TARGET_BRANCH → write gated by != main check" {
-  # Structural pin: the write block in claude-workflow.sh must be gated on
-  # RITE_TARGET_BRANCH != "main" AND carry the sharkrite-target-transport marker.
-  _src=$(grep -n 'target-branch-' "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" || true)
+  # The write logic lives in _write_target_branch_state_if_eligible(); extract its body.
+  _func_body=$(awk '
+    /^_write_target_branch_state_if_eligible[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print }
+  ' "$RITE_REPO_ROOT/lib/core/claude-workflow.sh")
 
-  # The path must use ${RITE_STATE_DIR}/ prefix (absolute)
-  echo "$_src" | grep -q '${RITE_STATE_DIR}' || {
-    echo "FAIL: write does not use \${RITE_STATE_DIR}/ prefix"
+  [ -n "$_func_body" ] || {
+    echo "FAIL: _write_target_branch_state_if_eligible not found in claude-workflow.sh"
+    return 1
+  }
+
+  # The write path must reference the state-dir arg (_wtse_state_dir)
+  echo "$_func_body" | grep -q '_wtse_state_dir' || {
+    echo "FAIL: write does not use the _wtse_state_dir parameter"
     return 1
   }
 
   # Must be gated on != "main"
-  _guard_line=$(grep -n '"main"' "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" | \
-    grep 'RITE_TARGET_BRANCH' | grep '!=' | head -1 || true)
-  [ -n "$_guard_line" ] || {
-    echo "FAIL: no != main guard found near state-file write"
+  echo "$_func_body" | grep -qE '!= "main"' || {
+    echo "FAIL: no != main guard found in _write_target_branch_state_if_eligible"
     return 1
   }
 }

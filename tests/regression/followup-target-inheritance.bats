@@ -161,11 +161,24 @@ setup() {
     return 1
   }
 
-  # The marker check must appear in the sharkrite-target-transport block
-  _transport_block=$(grep -A 15 "sharkrite-target-transport" "$CLAUDE_WORKFLOW" | head -40 || true)
-  echo "$_transport_block" | grep -qF "followup-no-inherit" || {
-    echo "FAIL: followup-no-inherit check is not inside the sharkrite-target-transport block" >&2
-    echo "      The no-inherit guard must gate the state-file write, not run elsewhere" >&2
+  # The marker check must be inside _write_target_branch_state_if_eligible (the function
+  # that owns the state-file write; extracted from the transport block to enable direct testing).
+  _func_body=$(awk '
+    /^_write_target_branch_state_if_eligible[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print }
+  ' "$CLAUDE_WORKFLOW")
+  echo "$_func_body" | grep -qF "followup-no-inherit" || {
+    echo "FAIL: followup-no-inherit check is not inside _write_target_branch_state_if_eligible" >&2
+    echo "      The no-inherit guard must gate the state-file write" >&2
+    return 1
+  }
+
+  # The sharkrite-target-transport block must call the function (not inline the write)
+  _transport_block=$(grep -A 5 "# sharkrite-target-transport" "$CLAUDE_WORKFLOW" | head -10 || true)
+  echo "$_transport_block" | grep -qF "_write_target_branch_state_if_eligible" || {
+    echo "FAIL: sharkrite-target-transport block does not call _write_target_branch_state_if_eligible" >&2
+    echo "      The transport call site must invoke the function" >&2
     return 1
   }
 }
@@ -288,9 +301,8 @@ setup() {
 }
 
 @test "structural: workflow-runner.sh --base handler removes stale state file when target differs" {
-  # The --base handler in main() must rm -f the stale target-branch file whenever
-  # the explicit target differs from the recorded state-file value. This escapes
-  # both --base main (primary scenario) and --base B when state file holds A (non-main loop).
+  # The --base handler in main() calls _clear_stale_target_state_file, which owns the
+  # stale-file removal logic. It was extracted from the handler to enable direct testing.
   _base_handler=$(awk '
     /^[[:space:]]+--base[)]$/ { in_handler=1 }
     in_handler { print; count++ }
@@ -298,26 +310,34 @@ setup() {
     count > 40 { exit }
   ' "$WORKFLOW_RUNNER")
 
-  echo "$_base_handler" | grep -qE '_base_state_file=.*target-branch' || {
-    echo "FAIL: --base handler does not assign _base_state_file from a target-branch-N.txt path" >&2
+  echo "$_base_handler" | grep -qF "_clear_stale_target_state_file" || {
+    echo "FAIL: --base handler does not call _clear_stale_target_state_file" >&2
     echo "      Without this, 'rite --branch <target> N' still hits the old state-file tier-2" >&2
     echo "      and loops on the same mismatch it was supposed to fix" >&2
     return 1
   }
 
-  echo "$_base_handler" | grep -qE 'rm -f[[:space:]]+"?\$_base_state_file' || {
-    echo "FAIL: --base handler does not rm -f \$_base_state_file" >&2
-    echo "      Without this, 'rite --branch <target> N' still hits the old state-file tier-2" >&2
-    echo "      and loops on the same mismatch it was supposed to fix" >&2
+  # The function itself must contain the actual stale-file cleanup logic
+  _cstsf_body=$(awk '
+    /^_clear_stale_target_state_file[(][)]/ { in_func=1; next }
+    in_func && /^\}$/ { exit }
+    in_func { print }
+  ' "$WORKFLOW_RUNNER")
+
+  echo "$_cstsf_body" | grep -qE '_cstsf_state_file=.*target-branch' || {
+    echo "FAIL: _clear_stale_target_state_file does not assign _cstsf_state_file from a target-branch-N.txt path" >&2
     return 1
   }
 
-  # The guard must compare the explicit target against the recorded value (not just == main).
-  # Look for the pattern that reads the state file AND does a != comparison on the same line.
-  echo "$_base_handler" | grep -qE '!=.*_base_recorded|_base_recorded.*!=' || {
-    echo "FAIL: --base handler does not perform a != comparison against the recorded state-file value" >&2
-    echo "      The guard must clear when RITE_TARGET_BRANCH != recorded, not only when == main" >&2
-    echo "      (The non-main-to-non-main loop case is unbreakable with the old == main guard)" >&2
+  echo "$_cstsf_body" | grep -qE 'rm -f' || {
+    echo "FAIL: _clear_stale_target_state_file does not contain rm -f" >&2
+    return 1
+  }
+
+  # The function must check that the new target != the recorded value
+  echo "$_cstsf_body" | grep -qE '!=.*_cstsf_recorded|_cstsf_recorded.*!=' || {
+    echo "FAIL: _clear_stale_target_state_file does not perform a != comparison against the recorded state-file value" >&2
+    echo "      The guard must clear when new_target != recorded, not only when == main" >&2
     return 1
   }
 }
