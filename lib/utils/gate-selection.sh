@@ -460,44 +460,63 @@ _bats_file_matches_changed() {
 # appears in the bats file body as a fixed-string.
 # Args: $1=bats_file (absolute), $2=changed_files (newline-separated)
 # A changed path is a shell source when it matches lib/**/*.sh, bin/*, or
-# tools/**/*.sh. Two fixed-string patterns are tried per changed path:
+# tools/**/*.sh. Two pattern rules are applied per changed path:
 #   1. The full relative path (e.g. "lib/providers/claude.sh") — catches
 #      variable assignments like CLAUDE_SH="$ROOT/lib/providers/claude.sh"
 #   2. A leading-slash-prefixed suffix (e.g. "/providers/claude.sh") — catches
 #      $RITE_LIB_DIR-style references like source "$RITE_LIB_DIR/providers/claude.sh"
+#
+# Fan-out reduction (#1676): patterns are built from all changed paths once,
+# then applied in two grep passes per bats file — O(files) instead of
+# O(files × paths) process spawns.
 _bats_file_has_body_reference() {
   local bats_file="$1"
   local changed_files="$2"
-  local _changed _suffix _changed_re
+
+  # Build combined grep patterns from all changed shell-source paths once.
+  local _rule1_pattern="" _rule2_patterns="" _changed _suffix _changed_re
   while IFS= read -r _changed; do
     [ -z "$_changed" ] && continue
     case "$_changed" in
       lib/*.sh|bin/*|tools/*.sh) ;;
       *) continue ;;
     esac
-    # Rule 1: full relative path, whole-token match
-    # Escape regex metacharacters in the path (only '.' in .sh extensions
-    # matters in practice). Trailing anchor prevents bin/rite from matching
-    # bin/rite-full-suite: the char after the path must not be in [-_./a-zA-Z0-9].
+    # Rule 1: full relative path with trailing whole-token anchor.
+    # Escape '.' (only metachar in practice for shell paths).
     _changed_re=$(printf '%s' "$_changed" | sed 's/\./\\./g' || true)
-    if grep -qE -- "${_changed_re}([^-_./a-zA-Z0-9]|$)" "$bats_file" 2>/dev/null; then
-      return 0
+    if [ -n "$_rule1_pattern" ]; then
+      _rule1_pattern="${_rule1_pattern}|${_changed_re}([^-_./a-zA-Z0-9]|$)"
+    else
+      _rule1_pattern="${_changed_re}([^-_./a-zA-Z0-9]|$)"
     fi
     # Rule 2: strip the leading path component and anchor with /
-    # Only apply when the suffix still contains a directory separator — a bare
-    # name (e.g. "rite" from "bin/rite") would match /rite-full-suite and
-    # similar substrings in 20%+ of bats files, recreating full-suite conditions.
-    # Paths that need this rule (e.g. $RITE_LIB_DIR/providers/claude.sh) always
-    # have at least one '/' in the stripped suffix.
+    # Only apply when the suffix still contains a directory separator.
     _suffix="${_changed#*/}"
     case "$_suffix" in
       */*)
-        if grep -qF -- "/$_suffix" "$bats_file" 2>/dev/null; then
-          return 0
-        fi
+        _rule2_patterns="${_rule2_patterns}/${_suffix}
+"
         ;;
     esac
   done <<< "$changed_files"
+
+  [ -n "$_rule1_pattern" ] || return 1
+
+  # Rule 1: single grep pass with combined alternation pattern.
+  if grep -qE -- "$_rule1_pattern" "$bats_file" 2>/dev/null; then
+    return 0
+  fi
+
+  # Rule 2: single grep pass with all /$_suffix patterns from stdin.
+  # here-string avoids the printf | grep -q SIGPIPE race under pipefail.
+  # Strip the trailing newline so <<< doesn't append an extra blank pattern
+  # (a blank pattern in -Ff makes grep match every line).
+  if [ -n "$_rule2_patterns" ]; then
+    if grep -qFf - "$bats_file" 2>/dev/null <<< "${_rule2_patterns%$'\n'}"; then
+      return 0
+    fi
+  fi
+
   return 1
 }
 
