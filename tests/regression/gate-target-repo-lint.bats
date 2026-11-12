@@ -442,7 +442,7 @@ RAW
   echo "$_args" | grep -q -- '--max-warnings'
   echo "$_args" | grep -q '^0$'
   echo "$_args" | grep -q -- '--ext'
-  echo "$_args" | grep -q '\.ts'
+  echo "$_args" | grep -q '^\.ts$'
 
   # The changed file must also be present (scoping still works)
   echo "$_args" | grep -q 'index\.ts'
