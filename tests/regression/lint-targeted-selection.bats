@@ -61,7 +61,7 @@ set -euo pipefail
 gh pr list
 EOF
 
-  SHARKRITE_LINT_ONLY=7,13 run "$LINT_SCRIPT"
+  SHARKRITE_LINT_ONLY=07,13 run "$LINT_SCRIPT"
   [ "$status" -ne 0 ]
   [[ "$output" =~ "a-bad.sh" ]] || { echo "$output" >&2; return 1; }
   [[ "$output" =~ "b-bad.sh" ]] || { echo "$output" >&2; return 1; }
