@@ -20,6 +20,8 @@
 #   9. Static: assess-and-resolve.sh calls _resolve_issue_labels for the rollup path
 #  10. Static: promote-branch.sh NOW aggregate path routes through _resolve_issue_labels
 #  11. Static: promote-branch.sh fallback unassessed path routes through _resolve_issue_labels
+#  12. Static: promote-branch.sh fallback has JSON-block second-pass detection
+#  13. Unit: fallback JSON-only Security item sets _promo_fb_sec_cat to "Security"
 
 load '../helpers/setup.bash'
 
@@ -210,6 +212,121 @@ _run_resolve() {
   [ "$status" -eq 0 ] || {
     echo "FAIL: _promo_fb_labels=\$(_resolve_issue_labels ...) not found in $PROMOTE_SCRIPT"
     echo "Expected: _promo_fb_labels=\$(_resolve_issue_labels ...)"
+    false
+  }
+}
+
+# ─── Test 12: Static — fallback has JSON-block second-pass detection ──────────
+
+@test "promote-branch.sh: fallback has JSON-block second-pass security detection" {
+  # Structural pin: the fallback security-category detection must include a second
+  # pass that checks items[].category in the sharkrite-review-data JSON block when
+  # the markdown **Category:** scan returns nothing (#1745). Without this pass,
+  # MEDIUM/LOW security findings that only appear in the JSON block miss the floor.
+  run grep -n 'RITE_MARKER_REVIEW_DATA' "$PROMOTE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: JSON-block second-pass detection code not found in $PROMOTE_SCRIPT"
+    echo "Expected: sed -n \"/<!-- \${RITE_MARKER_REVIEW_DATA}/\" block after the markdown scan"
+    false
+  }
+  # Verify the jq select((.category // "") ...) call is present in the fallback block.
+  run grep -n 'select((.category // "")' "$PROMOTE_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: jq select((.category // \"\") ...) not found in $PROMOTE_SCRIPT"
+    echo "Expected a null-safe jq filter that checks items[].category for Security"
+    false
+  }
+}
+
+# ─── Test 13: Unit — JSON-only Security item fires detection ──────────────────
+
+@test "promote-branch.sh fallback: JSON-only Security item sets sec_cat to Security" {
+  # Verifies the JSON-block second pass: a review with no markdown **Category:**
+  # line but with an items[].category="Security" JSON entry must produce
+  # _promo_fb_sec_cat="Security" (#1745).
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+
+  # Inline the detection logic from promote-branch.sh in a subshell.
+  run bash -c '
+    set -euo pipefail
+    export RITE_MARKER_REVIEW_DATA="sharkrite-review-data"
+
+    # Review body: no markdown **Category:** Security line, but JSON items[].category=Security
+    _promo_review="## Code Review
+
+Findings: CRITICAL: 0 | HIGH: 0 | MEDIUM: 1 | LOW: 0
+
+#### 1. Unvalidated input passed to exec
+
+**Severity:** MEDIUM
+
+**Location:** lib/utils/foo.sh:42
+
+<!-- sharkrite-review-data
+{\"summary\":{\"critical\":0,\"high\":0,\"medium\":1,\"low\":0,\"verdict\":\"APPROVE_WITH_COMMENTS\"},\"items\":[{\"id\":1,\"severity\":\"MEDIUM\",\"category\":\"Security\",\"title\":\"Unvalidated input passed to exec\",\"file\":\"lib/utils/foo.sh\",\"line\":42,\"problem\":\"desc\",\"impact\":\"impact\",\"recommendation\":\"fix\"}],\"positive\":[]}
+-->"
+
+    # --- reproduce the two-stage detection from promote-branch.sh ---
+    _promo_fb_sec_cat=""
+    _promo_fb_sec_cat=$(echo "${_promo_review:-}" \
+      | grep -iE "^\*\*Category:\*\*.*[Ss]ecurity" | head -1 \
+      | sed "s/\*\*Category:\*\* *//" || true)
+
+    if [ -z "${_promo_fb_sec_cat:-}" ] && command -v jq >/dev/null 2>&1; then
+      _promo_fb_json=""
+      _promo_fb_json=$(printf "%s" "${_promo_review:-}" \
+        | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed "1d;\$d" || true)
+      if [ -n "${_promo_fb_json:-}" ] && printf "%s" "${_promo_fb_json}" | jq empty 2>/dev/null; then
+        if printf "%s" "${_promo_fb_json}" \
+            | jq -e "[.items[]? | select((.category // \"\") | test(\"(?i)security\"))] | length > 0" \
+            >/dev/null 2>&1; then
+          _promo_fb_sec_cat="Security"
+        fi
+      fi
+    fi
+
+    echo "${_promo_fb_sec_cat:-}"
+  '
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: subshell exited non-zero ($status): $output"
+    false
+  }
+  [ "$output" = "Security" ] || {
+    echo "FAIL: expected 'Security', got: '$output'"
+    false
+  }
+}
+
+# ─── Test 14: Unit — null category field does not abort jq or mask Security ───
+
+@test "promote-branch.sh fallback: null-category item does not mask Security item in same array" {
+  # Regression guard for the null-category abort: a jq filter without (.category // "")
+  # program-aborts on a null/missing category field, silently skipping ALL items in the
+  # array including real Security ones. Verify that the fixed filter returns "Security"
+  # even when one item in the array has no category field (#1745).
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+
+  run bash -c '
+    set -euo pipefail
+
+    # Mixed array: first item has no category field, second has category=Security.
+    _json="{\"items\":[{\"id\":1,\"severity\":\"LOW\",\"title\":\"style nit\"},{\"id\":2,\"severity\":\"MEDIUM\",\"category\":\"Security\",\"title\":\"Unvalidated input\"}]}"
+
+    if printf "%s" "${_json}" \
+        | jq -e "[.items[]? | select((.category // \"\") | test(\"(?i)security\"))] | length > 0" \
+        >/dev/null 2>&1; then
+      echo "Security"
+    else
+      echo ""
+    fi
+  '
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: subshell exited non-zero ($status): $output"
+    false
+  }
+  [ "$output" = "Security" ] || {
+    echo "FAIL: expected 'Security', got: '$output'"
+    echo "A null/missing category field aborted jq and masked the Security item"
     false
   }
 }
