@@ -1120,6 +1120,22 @@ ${_promo_review_body}"
     _promo_fb_sec_cat=$(echo "${_promo_review:-}" \
       | grep -iE "^\*\*Category:\*\*.*[Ss]ecurity" | head -1 \
       | sed 's/\*\*Category:\*\* *//' || true)
+    # Second pass: when markdown has no Security category line, check the JSON
+    # block's items[].category field (MEDIUM/LOW findings may omit the markdown
+    # Category line and only appear as Security in the JSON — the same gap that
+    # #1562 fixed for the assessed path, now closed for the fallback path).
+    if [ -z "${_promo_fb_sec_cat:-}" ] && command -v jq >/dev/null 2>&1; then
+      local _promo_fb_json=""
+      _promo_fb_json=$(printf '%s' "${_promo_review:-}" \
+        | sed -n "/<!-- ${RITE_MARKER_REVIEW_DATA}/,/-->/p" | sed '1d;$d' || true)
+      if [ -n "${_promo_fb_json:-}" ] && printf '%s' "${_promo_fb_json}" | jq empty 2>/dev/null; then
+        if printf '%s' "${_promo_fb_json}" \
+            | jq -e '[.items[]? | select(.category | test("(?i)security"))] | length > 0' \
+            >/dev/null 2>&1; then
+          _promo_fb_sec_cat="Security"
+        fi
+      fi
+    fi
     local _promo_fb_labels="from-review,needs-re-triage"
     if declare -f _resolve_issue_labels >/dev/null 2>&1; then
       _promo_fb_labels=$(_resolve_issue_labels "from-review,needs-re-triage" "$_promo_fb_sev" "$_promo_fb_sec_cat")
