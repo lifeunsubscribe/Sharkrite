@@ -598,6 +598,7 @@ run_test_gate() {
     # to supervised, ~26 min of cumulative work lost from the session-hours cap).
     # Applied by _bats_sandbox below; also dynamic-scoped into _gate_flake_retry_pass.
     local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
+      -u _RITE_PROVIDER_PREFLIGHT_OK \
       -u SESSION_STATE_FILE -u RITE_BATCH_ID -u BATCH_MODE -u SESSION_START_TIME \
       -u RITE_TARGET_BRANCH -u RITE_TEST_GATE_SKIP_TRIGGERS \
       -u RITE_STALE_BRANCH_THRESHOLD -u RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \

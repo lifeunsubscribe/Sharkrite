@@ -52,7 +52,7 @@ setup() {
   for _var in RITE_TARGET_BRANCH RITE_TEST_GATE_SKIP_TRIGGERS \
       RITE_STALE_BRANCH_THRESHOLD RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
       RITE_ACCEPT_RED_MAIN \
-      RITE_TEST_GATE_DIFF_BASE \
+      RITE_TEST_GATE_DIFF_BASE _RITE_PROVIDER_PREFLIGHT_OK \
       SESSION_STATE_FILE RITE_BATCH_ID BATCH_MODE SESSION_START_TIME; do
     echo "$_def" | grep -q -- "-u $_var" || {
       echo "FAIL: _bats_sandbox deny-list missing -u $_var (_GATE_BATS_SCRUB_VARS)" >&2
@@ -153,6 +153,22 @@ EOF
       BATCH_MODE=true SESSION_START_TIME=1 \
       "${_SANDBOX_ARGS[@]}" \
       bats "$_d/batch-env-probe.bats" < /dev/null
+  rm -rf "$_d"
+  [ "$status" -eq 0 ]
+}
+
+@test "behavioral: the provider preflight sentinel is unset inside gate-scrubbed bats run" {
+  # The batch preflight exports _RITE_PROVIDER_PREFLIGHT_OK=true; a gated test
+  # asserting healthcheck does NOT export it failed four gate rounds on #1640
+  # (2026-11-12) because the gate's bats inherited the batch's own sentinel.
+  command -v bats >/dev/null 2>&1 || skip "bats not installed"
+  _d=$(mktemp -d)
+  cat > "$_d/sentinel-probe.bats" <<'EOF'
+@test "probe: preflight sentinel is unset" {
+  [ -z "${_RITE_PROVIDER_PREFLIGHT_OK:-}" ]
+}
+EOF
+  run env _RITE_PROVIDER_PREFLIGHT_OK=true "${_SANDBOX_ARGS[@]}" bats "$_d/sentinel-probe.bats" < /dev/null
   rm -rf "$_d"
   [ "$status" -eq 0 ]
 }
