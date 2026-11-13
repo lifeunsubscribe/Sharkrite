@@ -1774,7 +1774,7 @@ phase_assess_and_resolve() {
     # Export PR_NUMBER so run_test_gate can include it in the [diag] line
     export PR_NUMBER="$pr_number"
 
-    print_info "Starting post-commit gate in background (make check + bats -r tests/)..."
+    print_info "Starting post-commit gate in background ($(_gate_describe "${WORKTREE_PATH:-$RITE_PROJECT_ROOT}" 2>/dev/null || echo "post-commit gate"))..."
     # RITE_GATE_BACKGROUND=1: runs concurrent with review generation → route raw
     # output to the log (not the terminal) so it can't interleave with the review.
     # Incremental selection: diff against the pre-fix HEAD (not origin/target) so the
@@ -3641,7 +3641,7 @@ run_workflow() {
     if declare -f run_test_gate >/dev/null 2>&1 \
        && [ -n "${WORKTREE_PATH:-}" ] && [ -d "${WORKTREE_PATH:-}" ]; then
       _init_gate_file="$(mktemp "/tmp/rite_gate_init_${issue_number}_$$_XXXXXX")"
-      print_info "Starting post-commit gate in background (parallel with review)..."
+      print_info "Starting post-commit gate in background, parallel with review ($(_gate_describe "${WORKTREE_PATH:-$RITE_PROJECT_ROOT}" 2>/dev/null || echo "post-commit gate"))..."
       # RITE_GATE_BACKGROUND=1: parallel with review generation → route raw output
       # to the log (not the terminal) so it can't interleave with the review.
       # Seed RITE_TEST_GATE_DIFF_BASE so the gate's targeted selection diffs against

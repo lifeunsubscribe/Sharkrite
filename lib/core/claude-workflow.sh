@@ -1400,6 +1400,7 @@ ${_fix_items_section}
 3. **After all fixes, re-read every file you modified from top to bottom** - verify no new issues were introduced and that the fix didn't leave a parallel instance of the same vulnerability elsewhere in the file
 4. **Check for partial fixes** - for each issue, confirm the vulnerable pattern doesn't appear in any other location in the same file (e.g. if you fixed role assignment in one function, check every other function that writes role)
 5. **CHECK EVERY FILE YOU TOUCHED.** Before declaring done, ${_RITE_PROJ_SYNTAX_STEP}. Do NOT run ${_RITE_PROJ_GATE_CMDS}, or any broader test/lint commands — those run automatically after you commit, in parallel with the next review. Your job in this session is to make the code right; verification is the workflow's job.
+6. **Never change an expected value to match the observed output** (e.g. \`== 4\` → \`== 5\`, widening a timing bound) unless you can name the specific behaviour or statement that makes the old expectation wrong — write that reason in a comment next to the assertion. If you cannot name it, the code is what is wrong, not the test.  (freshup #568, 2026-11-12: a fix session changed \`assert total[0] == 4\` to \`== 5\`; the fifth statement was a measurement artefact the next review caught.)
 
 The workflow will automatically commit, push, and request a new review. Post-commit, ${_RITE_PROJ_GATE_DESC} run in parallel with review generation — any failures appear as \`[GATE]\` ACTIONABLE_NOW items in the next assessment cycle.
 

@@ -46,6 +46,30 @@ source "$RITE_LIB_DIR/utils/gate-verdict.sh"
 # run_test_gate — main entry point
 # Args: $1=output_file [required] $2=project_root [optional, defaults to cwd]
 # ---------------------------------------------------------------------------
+# _gate_describe PROJECT_ROOT — one line naming what the gate will run there,
+# for the "Starting post-commit gate" message. It used to say "make check +
+# bats -r tests/" in every repo, including ones whose gate ran a
+# RITE_TEST_COMMAND wrapper or vitest (freshup report 2026-11-12b §3.6).
+_gate_describe() {
+  local _root="${1:-${RITE_PROJECT_ROOT:-$PWD}}"
+  if [ -f "$_root/Makefile" ] && grep -q "^shellcheck:" "$_root/Makefile" 2>/dev/null \
+     && grep -q "^lint:" "$_root/Makefile" 2>/dev/null; then
+    echo "make check + targeted bats"; return 0
+  fi
+  if [ -n "${RITE_TEST_COMMAND:-}" ]; then
+    echo "RITE_TEST_COMMAND: ${RITE_TEST_COMMAND}"; return 0
+  fi
+  local _homes=""
+  if declare -f _gate_runner_dirs >/dev/null 2>&1; then
+    _homes=$(_gate_runner_dirs "$_root" 2>/dev/null | awk -F'\t' '{printf "%s%s:%s", (NR>1?", ":""), $2, $1}' || true)
+  fi
+  if [ -n "$_homes" ]; then
+    echo "project runners for the homes this diff touches (${_homes})"
+  else
+    echo "project test runner"
+  fi
+}
+
 run_test_gate() {
   local output_file="$1"
   local project_root="${2:-$(pwd)}"
