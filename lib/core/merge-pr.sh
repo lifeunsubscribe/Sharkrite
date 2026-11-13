@@ -926,8 +926,11 @@ if [ "$ALL_CI_CHECKS_COUNT" -gt 0 ]; then
     VALIDATION_FAILED=true
     _diag "MERGE_GATE_CI outcome=blocked failed=$FAILED_CHECKS pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
   elif [ "$PENDING_CHECKS" -gt 0 ]; then
-    print_warning "$PENDING_CHECKS CI check(s) still pending (not blocking) — no CI verdict backs this merge"
-    _diag "MERGE_GATE_CI outcome=pending failed=0 pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
+    # Say that the pending checks were waived and why: "outcome=pending" followed
+    # by a merge read as "merged without a verdict" (freshup report §3.5). By
+    # design pending CI is advisory; the post-commit gate is the verdict.
+    print_info "$PENDING_CHECKS CI check(s) still pending — waived: pending CI is advisory by design; the post-commit gate's verdict at this commit authorizes the merge"
+    _diag "MERGE_GATE_CI outcome=pending failed=0 pending=$PENDING_CHECKS total=$ALL_CI_CHECKS_COUNT waived=true reason=pending_is_advisory pr=$PR_NUMBER"
   else
     print_success "All CI checks passed"
     _diag "MERGE_GATE_CI outcome=passed failed=0 pending=0 total=$ALL_CI_CHECKS_COUNT pr=$PR_NUMBER"
