@@ -475,14 +475,16 @@ DRIVER_EOF
   # After the #1236 split, _gate_write_json lives in gate-verdict.sh (not test-gate.sh).
   local _script="${BATS_TEST_DIRNAME}/../../lib/utils/gate-verdict.sh"
 
-  # Look for the elif branch that handles the non-skipped+reason case.
-  run grep -n 'elif \[ -n "\$reason" \]' "$_script"
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: 'elif [ -n \"\$reason\" ]' branch not found in _gate_write_json (gate-verdict.sh)"
-    echo "      The function must include a non-skipped+reason path that emits"
-    echo "      the reason field into the JSON for assess-and-resolve.sh to read."
+  # Behavioral (the branch structure changed when the excerpt field was added):
+  # a non-skipped failure with a reason must emit that reason in the JSON.
+  command -v jq >/dev/null 2>&1 || skip "jq not available"
+  local _out="${BATS_TEST_TMPDIR}/reason.json"
+  _gate_write_json "$_out" "[]" "[]" 1 false runner_unavailable
+  [ "$(jq -r '.reason' "$_out")" = "runner_unavailable" ] || {
+    echo "FAIL: _gate_write_json (gate-verdict.sh, $_script) did not emit the reason field for a non-skipped failure"
     false
   }
+  [ "$(jq -r '.skipped // false' "$_out")" = "false" ]
 }
 
 @test "test-gate.sh: _gate_write_json called with _gate_reason at end of run_test_gate" {

@@ -47,25 +47,42 @@ _gate_write_json() {
   local skipped="${5:-false}"
   local reason="${6:-}"
   local head_sha="${7:-}"
+  # Optional 8th arg: a JSON STRING (already quoted/escaped, e.g. from jq -Rs)
+  # holding the runner's error lines when the failure produced no parseable
+  # findings. assess-and-resolve.sh quotes it in the synthesized [GATE] item so
+  # the fix session sees WHAT failed (freshup #549: two rounds for one TS6133
+  # because the item said only "non-zero exit with no parseable findings").
+  local excerpt_json="${8:-}"
 
   if [ "$skipped" = "true" ]; then
     printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"%s"}\n' "$reason" > "$output_file"
-  elif [ -n "$reason" ] && [ -n "$head_sha" ]; then
-    # Non-skipped failure with a named reason and SHA.
-    printf '{"lint":%s,"tests":%s,"exit_code":%s,"reason":"%s","head_sha":"%s"}\n' \
-      "$lint_json" "$tests_json" "$exit_code" "$reason" "$head_sha" > "$output_file"
-  elif [ -n "$reason" ]; then
-    # Non-skipped failure with a named reason (e.g. runner_unavailable).
-    # Include the reason field so assess-and-resolve.sh can synthesize a
-    # descriptive blocking [GATE] item even when lint[] and tests[] are empty.
-    printf '{"lint":%s,"tests":%s,"exit_code":%s,"reason":"%s"}\n' \
-      "$lint_json" "$tests_json" "$exit_code" "$reason" > "$output_file"
-  elif [ -n "$head_sha" ]; then
-    printf '{"lint":%s,"tests":%s,"exit_code":%s,"head_sha":"%s"}\n' \
-      "$lint_json" "$tests_json" "$exit_code" "$head_sha" > "$output_file"
-  else
-    printf '{"lint":%s,"tests":%s,"exit_code":%s}\n' "$lint_json" "$tests_json" "$exit_code" > "$output_file"
+    return 0
   fi
+  # Field order is stable: reason, head_sha, excerpt — each only when present.
+  local _extra=""
+  [ -n "$reason" ] && _extra="${_extra},\"reason\":\"${reason}\""
+  [ -n "$head_sha" ] && _extra="${_extra},\"head_sha\":\"${head_sha}\""
+  [ -n "$excerpt_json" ] && _extra="${_extra},\"excerpt\":${excerpt_json}"
+  printf '{"lint":%s,"tests":%s,"exit_code":%s%s}\n' \
+    "$lint_json" "$tests_json" "$exit_code" "$_extra" > "$output_file"
+}
+
+# _gate_runner_excerpt RAW_FILE — the runner's error lines as a JSON string
+# (jq -Rs), for a failure that yielded no parseable findings. Prefers lines
+# that name an error (tsc codes, FAIL/failed, Error:, AssertionError,
+# Traceback, vitest/jest markers, npm ERR); falls back to the last 30 lines.
+# ANSI stripped, lines clipped to 300 chars, at most 40 lines.
+_gate_runner_excerpt() {
+  local _f="${1:-}" _lines
+  [ -s "$_f" ] || { printf ''; return 0; }
+  _lines=$(sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$_f" 2>/dev/null \
+    | grep -iE 'error TS[0-9]+|(^|[^a-z])FAIL([^a-z]|$)|failed|Error:|AssertionError|Traceback|not ok|npm ERR|✗|●|×' \
+    | tail -40 || true)
+  if [ -z "$_lines" ]; then
+    _lines=$(sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$_f" 2>/dev/null | tail -30 || true)
+  fi
+  [ -n "$_lines" ] || { printf ''; return 0; }
+  printf '%s\n' "$_lines" | cut -c1-300 | jq -Rs . 2>/dev/null || printf ''
 }
 
 # ---------------------------------------------------------------------------
@@ -643,8 +660,16 @@ _gate_build_verdict() {
     _gbv_reason="lint_infrastructure_error"
   fi
 
+  # Tests failed but nothing parsed (tsc, vitest, pytest -q, a wrapper script):
+  # carry the runner's own error lines so the fix session is not sent to
+  # "investigate why the runner produced no parseable output".
+  local _gbv_excerpt=""
+  if [ "$_gbv_tests_exit" -ne 0 ] && [ "$_gbv_tests_items" = "[]" ]; then
+    _gbv_excerpt=$(_gate_runner_excerpt "$_gbv_tests_file")
+  fi
+
   _gate_write_json "$_gbv_output" "$_gbv_lint_items" "$_gbv_tests_items" \
-    "$_gbv_overall_exit" "false" "$_gbv_reason" "$_gbv_head_sha"
+    "$_gbv_overall_exit" "false" "$_gbv_reason" "$_gbv_head_sha" "$_gbv_excerpt"
   return "$_gbv_overall_exit"
 }
 
