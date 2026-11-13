@@ -1505,7 +1505,7 @@ _gate_touched_runner_dirs() {
     [ -n "$_k" ] || continue
     if [ "$_d" = "." ]; then
       [ "$_touched_root" = true ] && printf '%s\t.\n' "$_k"
-    elif printf '%s\n' "$_files" | grep -q "^${_d}/"; then
+    elif grep -q "^${_d}/" <<< "$_files"; then
       printf '%s\t%s\n' "$_k" "$_d"
     fi
   done <<< "$_lines"

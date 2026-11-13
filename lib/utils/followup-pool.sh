@@ -241,15 +241,31 @@ _followup_pool_loc_file() {
 
 # followup_pool_entries BODY — TSV of key, sha, location, title for each entry.
 followup_pool_entries() {
+  # Location comes from the finding-location marker when present; otherwise
+  # from the entry's human "- **Location:**" line (entries written before the
+  # marker was normalized carry none — freshup #553 and every sharkrite pool
+  # reconciled skipped=N for exactly this reason, 2026-11-12). The raw line is
+  # returned; callers normalize it with _followup_pool_loc_file.
   printf '%s\n' "${1:-}" | awk -v em="${_FP_M_ENTRY}" \
     -v sm="${_FP_M_SHA}" -v lm="${_FP_M_LOC}" '
-    /^### / { title=$0; sub(/^### /, "", title); next }
+    function emit() {
+      if (key != "") {
+        if (loc == "") loc = human
+        gsub(/\t/, " ", loc)
+        printf "%s\t%s\t%s\t%s\n", key, sha, loc, title
+      }
+      key=""; sha=""; loc=""; human=""
+    }
+    /^### / { emit(); title=$0; sub(/^### /, "", title); next }
+    /^## /  { emit(); title=""; next }
     index($0, "<!-- " em ":") {
       key=$0; sub(".*<!-- " em ":", "", key); sub(/ -->.*/, "", key)
       sha=""; if (index($0, "<!-- " sm ":")) { sha=$0; sub(".*<!-- " sm ":", "", sha); sub(/ -->.*/, "", sha) }
       loc=""; if (index($0, "<!-- " lm ":")) { loc=$0; sub(".*<!-- " lm ":", "", loc); sub(/ -->.*/, "", loc) }
-      printf "%s\t%s\t%s\t%s\n", key, sha, loc, title
-    }'
+      next
+    }
+    key != "" && human == "" && /^- \*\*Location:\*\*/ { human=$0; sub(/^- \*\*Location:\*\*[[:space:]]*/, "", human) }
+    END { emit() }'
 }
 
 # followup_pool_entry_block BODY KEY — the markdown block of one entry.

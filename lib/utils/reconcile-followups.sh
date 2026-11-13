@@ -231,9 +231,21 @@ _do_verify() {
 # verdict moves it to "Resolved during run" (the pool closes itself when no
 # entries remain). Prints "closed annotated verified skipped providerok" so the
 # caller can fold the counts into the batch totals.
+# _reconcile_pool_skip POOL KEY REASON [FILE] — count one skipped pool entry
+# (in the caller's _skipped) and say why, one diag line per entry. Dace asked
+# twice what "skipped=38" meant (freshup, 2026-11-12); the per-entry reason is
+# the answer. "unchanged" is the healthy case: the finding's file has not
+# changed since the finding was recorded, so there is nothing to re-classify.
+_reconcile_pool_skip() {
+  _skipped=$((_skipped+1))
+  declare -f _diag >/dev/null 2>&1 && \
+    _diag "FOLLOWUP_RECONCILE_SKIP pool=${1:-} entry=${2:-} reason=${3:-unknown}${4:+ file=$4}"
+  return 0
+}
+
 _reconcile_pool() {
   local _pool="$1" _body="$2" _target_ref="$3" _model="$4"
-  local _closed=0 _annotated=0 _verified=0 _skipped=0 _ok=1
+  local _closed=0 _annotated=0 _verified=0 _skipped=0 _ok=1 _unchanged=0
   local _key _sha _loc _title _file _changed _region _block _verdict _rc _f1 _f2 _f3 _f4 _eline
   # Explicit split: IFS=$'\t' read collapses an empty sha/location column.
   while IFS= read -r _eline; do
@@ -241,20 +253,25 @@ _reconcile_pool() {
     _followup_pool_split_tsv "$_eline"
     _key="$_f1"; _sha="$_f2"; _loc="$_f3"; _title="$_f4"
     _file=$(_followup_pool_loc_file "${_loc:-}")
-    if [ -z "${_sha:-}" ] || [ -z "${_file:-}" ]; then _skipped=$((_skipped+1)); continue; fi
+    if [ -z "${_sha:-}" ]; then _reconcile_pool_skip "$_pool" "$_key" no_sha; continue; fi
+    if [ -z "${_file:-}" ]; then _reconcile_pool_skip "$_pool" "$_key" no_location; continue; fi
     if ! git -C "$RITE_PROJECT_ROOT" cat-file -e "${_sha}^{commit}" 2>/dev/null; then
-      _skipped=$((_skipped+1)); continue
+      _reconcile_pool_skip "$_pool" "$_key" sha_unreachable; continue
     fi
     _changed=$(git -C "$RITE_PROJECT_ROOT" diff --name-only "${_sha}..${_target_ref}" -- 2>/dev/null || true)
-    if ! grep -qxF "$_file" <<< "${_changed:-}"; then _skipped=$((_skipped+1)); continue; fi
-    if [ "$_ok" -eq 0 ]; then _skipped=$((_skipped+1)); continue; fi
+    if ! grep -qxF "$_file" <<< "${_changed:-}"; then
+      # Not a skip in any meaningful sense: the code the finding names has not
+      # changed since it was recorded, so it is still open by construction.
+      _unchanged=$((_unchanged+1)); _reconcile_pool_skip "$_pool" "$_key" unchanged "$_file"; continue
+    fi
+    if [ "$_ok" -eq 0 ]; then _reconcile_pool_skip "$_pool" "$_key" provider_unavailable; continue; fi
     _region=$(_get_code_region "$_file" "$_loc" 2>/dev/null || true)
     _block=$(followup_pool_entry_block "$_body" "$_key")
     _rc=0
     _verdict=$(_classify_finding "${_pool}/${_key}" "$_block" "$_region" "$_model") || _rc=$?
     if [ "$_rc" -ne 0 ]; then
       if [ "$_rc" -eq 5 ] || [ "$_rc" -eq 18 ]; then _ok=0; fi
-      _skipped=$((_skipped+1)); continue
+      _reconcile_pool_skip "$_pool" "$_key" "classify_failed_rc${_rc}"; continue
     fi
     case "${_verdict:-}" in
       resolved)
@@ -263,14 +280,14 @@ _reconcile_pool() {
           # Body changed on GitHub — re-read so later entries are addressed in the new body.
           _body=$(gh_safe issue view "$_pool" --json body --jq '.body' 2>/dev/null || echo "$_body")
         else
-          _skipped=$((_skipped+1))
+          _reconcile_pool_skip "$_pool" "$_key" resolve_write_failed
         fi ;;
       partially-resolved) _annotated=$((_annotated+1)) ;;
       still-open)         _verified=$((_verified+1)) ;;
-      *)                  _skipped=$((_skipped+1)) ;;
+      *)                  _reconcile_pool_skip "$_pool" "$_key" "unclassified_${_verdict:-empty}" ;;
     esac
   done <<< "$(followup_pool_entries "$_body")"
-  echo "$_closed $_annotated $_verified $_skipped $_ok"
+  echo "$_closed $_annotated $_verified $_skipped $_ok $_unchanged"
 }
 
 reconcile_batch_followups() {
@@ -319,7 +336,7 @@ reconcile_batch_followups() {
   local _provider_ok=true
   local _provider_unavail_list=""
 
-  local _closed=0 _annotated=0 _verified=0 _skipped=0
+  local _closed=0 _annotated=0 _verified=0 _skipped=0 _pool_unchanged=0
 
   local _fu_num=""
   while IFS= read -r _fu_num; do
@@ -350,11 +367,12 @@ reconcile_batch_followups() {
         _skipped=$(( _skipped + 1 ))
         continue
       fi
-      local _pool_counts _pc _pa _pv _ps _pok
+      local _pool_counts _pc _pa _pv _ps _pok _pu
       _pool_counts=$(_reconcile_pool "$_fu_num" "$_issue_body" "$_target_ref" "$_triage_model")
-      read -r _pc _pa _pv _ps _pok <<< "$_pool_counts"
+      read -r _pc _pa _pv _ps _pok _pu <<< "$_pool_counts"
       _closed=$(( _closed + ${_pc:-0} )); _annotated=$(( _annotated + ${_pa:-0} ))
       _verified=$(( _verified + ${_pv:-0} )); _skipped=$(( _skipped + ${_ps:-0} ))
+      _pool_unchanged=$(( _pool_unchanged + ${_pu:-0} ))
       if [ "${_pok:-1}" = "0" ]; then
         _provider_ok=false
         _provider_unavail_list="${_provider_unavail_list}#${_fu_num} "
@@ -474,7 +492,7 @@ reconcile_batch_followups() {
 
   # Emit diag for health-report aggregation
   declare -f _diag >/dev/null 2>&1 && \
-    _diag "FOLLOWUP_RECONCILED closed=${_closed} annotated=${_annotated} verified=${_verified} skipped=${_skipped}"
+    _diag "FOLLOWUP_RECONCILED closed=${_closed} annotated=${_annotated} verified=${_verified} skipped=${_skipped} unchanged=${_pool_unchanged}"
 
   local _actioned=$(( _closed + _annotated + _verified ))
   if [ "$_actioned" -gt 0 ]; then

@@ -979,7 +979,7 @@ run_test_gate() {
         _nonsr_sub_ran=true
       done <<< "$_nonsr_touched"
       if [ "$_nonsr_sub_ran" = true ]; then
-        if ! printf '%s\n' "$_nonsr_touched" | grep -q $'\t\.$'; then
+        if ! grep -q $'\t\.$' <<< "$_nonsr_touched"; then
           _nonsr_skip_root=true
         elif [ "$_nonsr_sub_exit" -ne 0 ]; then
           _nonsr_skip_root=true
