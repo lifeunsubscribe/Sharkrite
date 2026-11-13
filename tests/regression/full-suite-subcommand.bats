@@ -229,7 +229,7 @@ EOF
   [ -n "$_log" ]
 
   # skipped=2 must appear in the FULL_SUITE_RUN diag line
-  grep -q 'skipped=2' "$_log"
+  grep -q 'FULL_SUITE_RUN.*skipped=2' "$_log"
   # test_count=0 (no failures) must also be present
   grep -q 'test_count=0' "$_log"
 }
