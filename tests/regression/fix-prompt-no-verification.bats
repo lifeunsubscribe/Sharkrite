@@ -67,12 +67,16 @@ setup() {
 # FIX_PROMPT must contain bash -n syntax-check instruction
 # ---------------------------------------------------------------------------
 
-@test "FIX_PROMPT step 5 instructs Claude to run bash -n syntax checks" {
+@test "FIX_PROMPT step 5 instructs Claude to run the project's per-file check (bash -n for sharkrite)" {
+  # Project-aware since #1768: the step names the project's own cheap per-file
+  # check through _RITE_PROJ_SYNTAX_STEP; for sharkrite that is bash -n.
   _fix_prompt_block=$(sed -n '/FIX_PROMPT+="## Instructions/,/\$EXIT_INSTRUCTION"/p' "$WORKFLOW_FILE" || true)
-  if ! echo "$_fix_prompt_block" | grep -q 'bash -n'; then
-    echo "FAIL: FIX_PROMPT does not instruct Claude to run 'bash -n'"
+  if ! echo "$_fix_prompt_block" | grep -q '_RITE_PROJ_SYNTAX_STEP'; then
+    echo "FAIL: FIX_PROMPT step 5 does not reference the project per-file check"
     return 1
   fi
+  _vocab=$(sed -n '/sharkrite-extract: project-vocab-start/,/sharkrite-extract: project-vocab-end/p' "$WORKFLOW_FILE" || true)
+  echo "$_vocab" | grep -q 'bash -n <file>' || { echo "FAIL: sharkrite vocabulary lost bash -n"; return 1; }
   true
 }
 
