@@ -132,13 +132,61 @@ B
     esac
   }
   out=$(_reconcile_pool 900 "$(cat "$POOL_BODY_FILE")" target triage-model)
-  [ "$out" = "1 0 0 1 1" ]
+  [ "$out" = "1 0 0 1 1 1" ]
   [ "$(wc -l < "$CLASSIFY_CALLS" | tr -d ' ')" = "1" ]
   grep -q '^900/k-changed$' "$CLASSIFY_CALLS"
   grep -qF -- '- ~~Changed file finding~~ — resolved in' "$POOL_BODY_FILE"
   grep -q '^### Unchanged file finding$' "$POOL_BODY_FILE"
   ! grep -q '^### Changed file finding$' "$POOL_BODY_FILE"
   [ "$(cat "$STATE_FILE")" = open ]
+}
+
+@test "_reconcile_pool: an entry with only a human Location line (no marker) is classified, and every skip names its reason" {
+  # freshup #553 and every sharkrite pool reconciled skipped=N on 2026-11-12:
+  # entries written before the location marker was normalized carry only the
+  # "- **Location:**" line, so the parser returned no file and every entry was
+  # skipped silently.
+  export RITE_STATE_DIR="$BATS_TEST_TMPDIR/state"; mkdir -p "$RITE_STATE_DIR"
+  export RITE_PROJECT_ROOT="$BATS_TEST_TMPDIR/repo"; mkdir -p "$RITE_PROJECT_ROOT"
+  git -C "$RITE_PROJECT_ROOT" init -q
+  git -C "$RITE_PROJECT_ROOT" config user.email t@t; git -C "$RITE_PROJECT_ROOT" config user.name t
+  mkdir -p "$RITE_PROJECT_ROOT/lib"; echo a > "$RITE_PROJECT_ROOT/lib/a.sh"; echo b > "$RITE_PROJECT_ROOT/lib/b.sh"
+  git -C "$RITE_PROJECT_ROOT" add .; git -C "$RITE_PROJECT_ROOT" commit -qm base
+  sha=$(git -C "$RITE_PROJECT_ROOT" rev-parse --short HEAD)
+  echo a2 > "$RITE_PROJECT_ROOT/lib/a.sh"; git -C "$RITE_PROJECT_ROOT" commit -qam change-a
+  git -C "$RITE_PROJECT_ROOT" branch -q target
+
+  source "$RITE_LIB_DIR/utils/followup-pool.sh"
+  source "$RCF"
+  set +u; set +o pipefail
+  DIAG="$BATS_TEST_TMPDIR/diag.log"; : > "$DIAG"
+  _diag() { echo "[diag] $*" >> "$DIAG"; }
+  print_warning() { :; }
+  CLASSIFY_CALLS="$BATS_TEST_TMPDIR/calls"; : > "$CLASSIFY_CALLS"
+  _classify_finding() { echo "$1" >> "$CLASSIFY_CALLS"; echo still-open; }
+  _get_code_region() { echo region; }
+  body=$(printf '%s\n' \
+    '## Entries' '' \
+    '### Changed via human line' \
+    "<!-- sharkrite-pool-entry:k-human --><!-- sharkrite-source-issue:1 --><!-- sharkrite-finding-sha:${sha} -->" \
+    '- **Severity:** MEDIUM' \
+    '- **Location:** ``lib/a.sh` lines 1–3 (the thing)`' \
+    '' \
+    '### Unchanged via human line' \
+    "<!-- sharkrite-pool-entry:k-same --><!-- sharkrite-finding-sha:${sha} -->" \
+    '- **Location:** `lib/b.sh:1`' \
+    '' \
+    '### Prose location' \
+    "<!-- sharkrite-pool-entry:k-prose --><!-- sharkrite-finding-sha:${sha} -->" \
+    '- **Location:** the retry loop somewhere' \
+    '' '## Resolved during run' '')
+  run followup_pool_entries "$body"
+  [ "$(printf '%s\n' "$output" | cut -f1 | tr '\n' ' ')" = "k-human k-same k-prose " ]
+  out=$(_reconcile_pool 900 "$body" target triage-model)
+  [ "$out" = "0 0 1 2 1 1" ]
+  grep -q '^900/k-human$' "$CLASSIFY_CALLS"
+  grep -q 'FOLLOWUP_RECONCILE_SKIP pool=900 entry=k-same reason=unchanged file=lib/b.sh' "$DIAG"
+  grep -q 'FOLLOWUP_RECONCILE_SKIP pool=900 entry=k-prose reason=no_location' "$DIAG"
 }
 
 @test "all three call sites consult the operator toggle before pooling (disabled pool is silent)" {

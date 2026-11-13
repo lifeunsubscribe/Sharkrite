@@ -536,7 +536,7 @@ attempt_claude_merge_resolution() {
       # misread as "could not identify a stashed colliding path" — auto mode
       # then closed the PR and deleted the branch. Name the real cause; the
       # caller keeps its stash across the resolver now (stale-branch.sh).
-      if echo "$_cr_merge_output" | grep -q "Your local changes to the following files would be overwritten"; then
+      if grep -q "Your local changes to the following files would be overwritten" <<< "$_cr_merge_output"; then
         _cr_error "Merge refused: uncommitted changes in the working tree would be overwritten. Commit or stash them and retry."
         echo "$_cr_merge_output" | grep -E '^[[:space:]]+' | head -10 >&2 || true
         git merge --abort 2>/dev/null || true
