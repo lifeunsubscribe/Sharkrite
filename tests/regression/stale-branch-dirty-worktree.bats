@@ -256,6 +256,55 @@ teardown() {
   git push origin --delete "$branch_name" >/dev/null 2>&1 || true
 }
 
+@test "dirty worktree - WIP overlapping the conflicting file stays stashed through resolution, resolver sees a clean tree" {
+  # freshup #549 (2026-11-12): the stash was popped back before the resolver,
+  # git refused the resolver's merge for the dirty conflicting file, and auto
+  # mode closed the PR. Overlapping WIP must now stay stashed until after the
+  # resolution is committed; non-overlapping WIP keeps the old pop-first path.
+  attempt_claude_merge_resolution() {
+    git status --porcelain --untracked-files=no > "$RITE_TEST_TMPDIR/tree-at-resolver.txt"
+    git merge origin/main --no-edit >/dev/null 2>&1 || true
+    printf 'resolved by stub\n' > shared.txt
+    export _RITE_RESOLVER_CONFLICT_PATHS="shared.txt"
+    return 0
+  }
+  verify_post_merge() { return 0; }
+
+  local branch_name="fix/dirty-overlap-test"
+  git checkout -b "$branch_name" main >/dev/null 2>&1
+  echo "feature version" > shared.txt
+  git add shared.txt; git commit -m "Feature modifies shared.txt" >/dev/null 2>&1
+  git push -u origin "$branch_name" >/dev/null 2>&1
+  git checkout main >/dev/null 2>&1
+  local worktree_path="$RITE_WORKTREE_DIR/issue-dirty-overlap"
+  git worktree add "$worktree_path" "$branch_name" >/dev/null 2>&1
+  # WIP on the very file main also changes
+  printf 'feature version\noperator WIP\n' > "$worktree_path/shared.txt"
+  git checkout main >/dev/null 2>&1
+  echo "main version (conflicts with feature)" > shared.txt
+  git add shared.txt; git commit -m "Main modifies shared.txt" >/dev/null 2>&1
+  git push origin main >/dev/null 2>&1
+
+  run _stale_rebase_onto_main "$worktree_path" "$branch_name" "auto"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"keeping them stashed"* ]]
+  # The resolver ran against a clean tree
+  [ ! -s "$RITE_TEST_TMPDIR/tree-at-resolver.txt" ]
+  # The WIP was not destroyed: either re-applied, or preserved as a stash with a warning
+  if git -C "$worktree_path" stash list | grep -q "sharkrite-managed-stash"; then
+    [[ "$output" == *"preserved"* ]]
+  else
+    grep -q "operator WIP" "$worktree_path/shared.txt"
+  fi
+  [[ "$output" != *"could not identify a stashed colliding path"* ]]
+
+  cd "$FIXTURE_REPO"
+  git -C "$worktree_path" stash list --format='%gd' | while read -r r; do git -C "$worktree_path" stash drop "$r" >/dev/null 2>&1 || true; done
+  git worktree remove "$worktree_path" --force >/dev/null 2>&1 || true
+  git branch -D "$branch_name" >/dev/null 2>&1 || true
+  git push origin --delete "$branch_name" >/dev/null 2>&1 || true
+}
+
 # =============================================================================
 # force-with-lease rejection semantics
 # =============================================================================
