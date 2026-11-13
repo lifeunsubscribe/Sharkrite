@@ -198,6 +198,17 @@ _body() { cat "$FAKE_GH/issues/$1.body"; }
   [ "$output" = "sharkrite-followup-pool sharkrite-pool-entry sharkrite-finding-location sharkrite-finding-sha sharkrite-source-issue sharkrite-parent-pr" ]
 }
 
+@test "location normalizer: backticked prose locations yield path[:line]; the marker carries the normalized form" {
+  [ "$(_followup_pool_loc_norm '`lib/utils/scratchpad-lock.sh`, ~line 206 — the portable path preflight')" = "lib/utils/scratchpad-lock.sh" ]
+  [ "$(_followup_pool_loc_norm 'lib/core/plan-issues.sh:42 — _collect_security_context()')" = "lib/core/plan-issues.sh:42" ]
+  [ "$(_followup_pool_loc_norm 'frontend/src/hooks/useScraper.test.ts, line 12')" = "frontend/src/hooks/useScraper.test.ts" ]
+  [ "$(_followup_pool_loc_norm 'the retry loop in the provider')" = "" ]
+  [ "$(_followup_pool_loc_file 'lib/core/plan-issues.sh:42 — text')" = "lib/core/plan-issues.sh" ]
+  followup_pool_append 55 42 HIGH Reliability "Preflight deletes a live lockfile" '`lib/utils/scratchpad-lock.sh`, ~line 206 — the preflight block' abc1234 "r"
+  _body "$(followup_pool_issue)" | grep -q "<!-- sharkrite-finding-location:lib/utils/scratchpad-lock.sh -->"
+  followup_pool_entries "$(_body "$(followup_pool_issue)")" | cut -f3 | grep -qx "lib/utils/scratchpad-lock.sh"
+}
+
 @test "entries parser returns key, sha, location, title per entry" {
   followup_pool_append 55 42 HIGH Reliability "First finding here" "lib/a.sh:1" aaaaaaa "r" "" "" key-one
   followup_pool_append 55 42 LOW Style "Second different thing" "lib/b.sh:2" bbbbbbb "r" "" "" key-two

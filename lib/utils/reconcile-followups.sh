@@ -240,7 +240,7 @@ _reconcile_pool() {
     [ -z "${_eline:-}" ] && continue
     _followup_pool_split_tsv "$_eline"
     _key="$_f1"; _sha="$_f2"; _loc="$_f3"; _title="$_f4"
-    _file=$(echo "${_loc:-}" | sed 's/[[:space:]].*//; s/:[0-9]*$//' || true)
+    _file=$(_followup_pool_loc_file "${_loc:-}")
     if [ -z "${_sha:-}" ] || [ -z "${_file:-}" ]; then _skipped=$((_skipped+1)); continue; fi
     if ! git -C "$RITE_PROJECT_ROOT" cat-file -e "${_sha}^{commit}" 2>/dev/null; then
       _skipped=$((_skipped+1)); continue
