@@ -138,12 +138,45 @@ ensure_timeout_cmd() {
 # GNU coreutils `timeout`/`gtimeout` both support -k; this helper only ever
 # resolves to one of those two (see ensure_timeout_cmd above), so -k is always
 # available when RITE_TIMEOUT_CMD is set.
+# _rite_list_descendants PID — every live descendant of PID, one per line.
+_rite_list_descendants() {
+  local _p="${1:-}" _c
+  [ -n "$_p" ] || return 0
+  for _c in $(pgrep -P "$_p" 2>/dev/null || true); do
+    echo "$_c"
+    _rite_list_descendants "$_c"
+  done
+}
+
 run_with_timeout() {
   local timeout_secs="$1"
   shift
 
   if [ -n "${RITE_TIMEOUT_CMD:-}" ]; then
-    "$RITE_TIMEOUT_CMD" -k "${RITE_TIMEOUT_KILL_AFTER:-30}" "$timeout_secs" "$@"
+    # The command runs in the background so its descendants can be tracked
+    # while it lives and swept once it is gone. gtimeout kills only its direct
+    # child: when claude's own Bash tool had started pytest, the orphaned
+    # pytest kept the session's stdout pipe open and the `| tee | filter`
+    # pipeline waited for it — "Fix timeout reached (540s)" was logged 99
+    # minutes after the session started (freshup #551, 2026-11-12). Orphans
+    # are unreachable through pgrep -P after their parent dies, so the set of
+    # descendants is sampled while the parent is alive and every survivor is
+    # killed afterwards, children first.
+    local _pid _rc=0 _seen="" _p
+    "$RITE_TIMEOUT_CMD" -k "${RITE_TIMEOUT_KILL_AFTER:-30}" "$timeout_secs" "$@" &
+    _pid=$!
+    while kill -0 "$_pid" 2>/dev/null; do
+      _seen=$(printf '%s\n%s\n' "$_seen" "$(_rite_list_descendants "$_pid")" | sort -un | grep -v '^$' || true)
+      sleep 0.5
+    done
+    wait "$_pid" 2>/dev/null || _rc=$?
+    for _p in $_seen; do
+      kill -0 "$_p" 2>/dev/null && kill_process_tree "$_p" TERM
+    done
+    for _p in $_seen; do
+      if kill -0 "$_p" 2>/dev/null; then sleep 1; kill_process_tree "$_p" KILL; fi
+    done
+    return "$_rc"
   else
     # No timeout command: the command runs UNBOUNDED. Say so once per process
     # rather than letting a missing deadline look like a slow call — the
