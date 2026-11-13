@@ -268,13 +268,8 @@ check_scope_boundary() {
     local _ftm_path
     while IFS= read -r _ftm_path; do
       [ -z "$_ftm_path" ] && continue
-      # Lowercase and strip leading ./ to match the normalisation applied to
-      # changed-file paths inside the violation loop below.
-      _ftm_path=$(echo "$_ftm_path" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
-      if _is_path_shaped "$_ftm_path"; then
-        _do_patterns+=("$_ftm_path")
-      fi
-    done <<< "$(parse_files_to_modify "$issue_body")"
+      _do_patterns+=("$_ftm_path")
+    done <<< "$( { parse_files_to_modify "$issue_body"; parse_documentation_impact "$issue_body"; } | _scope_path_tokens)"
   fi
 
   # Prose-only guard: when DO bullets exist but neither DO bullets nor Files to
@@ -533,6 +528,50 @@ _is_strong_path_token() {
 }
 
 # ---------------------------------------------------------------------------
+# _scope_path_tokens — read entries on stdin, print every STRONG path token
+# (path-shaped, contains a slash, extension/trailing-slash/glob leaf) found in
+# them, one per line, lowercased, leading ./ stripped.
+#
+# Runbook bullets carry descriptions: `src/schemas/recipe.py` (RecipeList…: …)
+# and `tests/a.py`, `tests/b.py` (extend). The whole bullet contains a slash,
+# so the old whole-line check added "src/schemas/recipe.py (recipelist…" as a
+# pattern that could never match a changed file — every listed file was then
+# reported as a scope violation (freshup 2026-11-12: 10 of 11 PRs warned,
+# 0 real). Tokens are split on whitespace, commas, semicolons and parens, and
+# trimmed of backticks, quotes and trailing punctuation.
+# ---------------------------------------------------------------------------
+_scope_path_tokens() {
+  local _line _tok
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _line=$(printf '%s' "$_line" | tr '`"(),;' '      ' || true)
+    for _tok in $_line; do
+      _tok="${_tok#\'}"; _tok="${_tok%\'}"
+      _tok="${_tok%.}"; _tok="${_tok%:}"
+      _tok="${_tok#./}"
+      if _is_strong_path_token "$_tok"; then
+        printf '%s\n' "$_tok" | tr '[:upper:]' '[:lower:]'
+      fi
+    done
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# parse_documentation_impact ISSUE_BODY — the raw text of the runbook's
+# "Documentation Impact" section (heading or bold-label form), which names the
+# doc files the issue asserts it will update. Those files are declared intent,
+# exactly like Files to Modify (freshup #567 flagged docs/FreshUp-ADR.md, the
+# file its Documentation Impact told it to edit).
+# ---------------------------------------------------------------------------
+parse_documentation_impact() {
+  printf '%s\n' "${1:-}" | \
+    awk '/^#+[[:space:]]*Documentation Impact|^\*\*Documentation Impact\*\*/{found=1; next}
+         found && /^(#|\*\*[A-Z])/{found=0}
+         found{print}' || true
+}
+
+# ---------------------------------------------------------------------------
 # parse_files_to_modify ISSUE_BODY
 #
 # Extracts the raw bullet text listed under the "Files to Modify:" sub-heading
@@ -666,7 +705,7 @@ scope_boundary_is_enforceable() {
     else
       if _is_strong_path_token "$_ftm_path"; then return 0; fi
     fi
-  done <<< "$(parse_files_to_modify "$issue_body")"
+  done <<< "$( { parse_files_to_modify "$issue_body"; parse_documentation_impact "$issue_body"; } | _scope_path_tokens)"
 
   return 1
 }
