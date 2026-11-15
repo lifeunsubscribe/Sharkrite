@@ -471,6 +471,99 @@ GHSTUB
   echo "$output" | grep -qi "ambiguous\|cannot be combined"
 }
 
+# ---------------------------------------------------------------------------
+# Malformed issue argument in a multi-issue run (live: "rite 591 594 598 593."
+# in freshup, 2026-11-15, printed "Batch processing 4 issues" and ran three).
+# ---------------------------------------------------------------------------
+@test "bad batch arg: resolve_dispatch_key returns batch-bad-args when one argument is not a number" {
+  eval "$(sed -n '/^# --- resolve_dispatch_key (pure)/,/^# --- end resolve_dispatch_key/p' "$RITE_REPO_ROOT/bin/rite")"
+  set +u; set +o pipefail
+
+  run resolve_dispatch_key "full" "" "" 591 594 598 "593."
+  [ "$status" -eq 0 ]; [ "$output" = "batch-bad-args" ]
+
+  run resolve_dispatch_key "full" "" "" fix the login bug
+  [ "$status" -eq 0 ]; [ "$output" = "batch-bad-args" ]
+
+  # All numeric stays a batch; one text argument stays a text issue.
+  run resolve_dispatch_key "full" "" "" 591 594 598 593
+  [ "$status" -eq 0 ]; [ "$output" = "batch-multi" ]
+
+  run resolve_dispatch_key "full" "" "" "fix the login bug"
+  [ "$status" -eq 0 ]; [ "$output" = "single-issue-text" ]
+}
+
+@test "bad batch arg: the message names the argument and prints the corrected command with its flags" {
+  eval "$(sed -n '/^# --- resolve_dispatch_plan (pure)/,/^# --- end resolve_dispatch_plan/p' "$RITE_REPO_ROOT/bin/rite")"
+  set +u; set +o pipefail
+
+  run batch_bad_args_message 591 594 598 "593."
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "not an issue number: '593.'" ]
+  [ "${lines[2]}" = "Run: rite 591 594 598 593" ]
+
+  _INVOCATION_FLAGS=(--branch feat-x --supervised)
+  run batch_bad_args_message 12 "#13" "14,"
+  [ "${lines[0]}" = "not an issue number: '#13' '14,'" ]
+  [ "${lines[2]}" = "Run: rite 12 13 14 --branch feat-x --supervised" ]
+}
+
+@test "bad batch arg: an argument that is not a punctuated number gets no guessed command" {
+  eval "$(sed -n '/^# --- resolve_dispatch_plan (pure)/,/^# --- end resolve_dispatch_plan/p' "$RITE_REPO_ROOT/bin/rite")"
+  set +u; set +o pipefail
+
+  run batch_bad_args_message 12 "1a3" 14
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "not an issue number: '1a3'" ]
+  ! grep -q "^Run: " <<< "$output"
+  grep -q "one quoted argument" <<< "$output"
+}
+
+@test "bad batch arg: real execution refuses with exit 1, dispatches nothing, creates no log" {
+  _run_rite 591 594 598 "593."
+  [ "$status" -eq 1 ]
+  grep -q "not an issue number: '593.'" <<< "$output"
+  grep -q "Run: rite 591 594 598 593$" <<< "$output"
+  ! grep -q "Batch processing" <<< "$output"
+  _assert_no_dispatch_calls
+  [ -z "$(ls "$_FAKE_PROJECT/.rite/logs" 2>/dev/null)" ]
+}
+
+@test "bad batch arg: dry-run refuses with the same wording and exit code" {
+  _run_rite --dry-run 591 594 598 "593."
+  [ "$status" -eq 1 ]
+  grep -q "not an issue number: '593.'" <<< "$output"
+  # The suggestion keeps --dry-run, so copying it cannot start a real batch.
+  grep -q "Run: rite 591 594 598 593 --dry-run" <<< "$output"
+  ! grep -q "Would execute" <<< "$output"
+  _assert_no_dispatch_calls
+}
+
+@test "bad batch arg: batch-process-issues.sh called directly refuses instead of dropping the argument" {
+  run env -u RITE_LOG_FILE -u RITE_DRY_RUN \
+    PATH="$_FAKE_BIN:$PATH" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$RITE_REPO_ROOT/lib" \
+    "$RITE_REPO_ROOT/lib/core/batch-process-issues.sh" 591 "593." --auto < /dev/null
+
+  [ "$status" -eq 1 ]
+  grep -q "Not an issue number: '593.'" <<< "$output"
+  [ ! -f "$_FAKE_BIN/gh.calls" ]
+}
+
+@test "bad batch arg: sourcing batch-process-issues.sh with a non-numeric argument does not exit" {
+  run bash -c "
+    set -euo pipefail
+    unset RITE_DRY_RUN
+    export _RITE_BATCH_PROCESS_LOADED=true
+    set -- not-a-number
+    source '${RITE_REPO_ROOT}/lib/core/batch-process-issues.sh' 2>/dev/null
+    echo OK
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == "OK" ]]
+}
+
 @test "parity: dispatch section has no independent routing conditionals (structural)" {
   # After resolve_dispatch_key() is called in the dispatch section, there must
   # be zero old-style 'elif [...MODE...ARGS...]' routing guards in the

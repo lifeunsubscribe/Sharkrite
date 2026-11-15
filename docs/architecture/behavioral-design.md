@@ -142,6 +142,20 @@ Concrete implementation: `handle_closed_issue()` returns exit code 12 (sentinel)
 - Issue #274 — bare `continue` for closed issues bypassed all cleanup. Fixed by extracting `handle_closed_issue()`.
 - Issue #316 — batch's post-issue gh calls fired even for already-closed issues (exit-12 path missing). Fixed by sentinel exit code + batch routing.
 
+### A Malformed Issue Argument Refuses The Whole Batch (2026-11-15)
+
+**Contract:** `rite N1 N2 ...` runs only when every positional argument is an issue number. One argument that is not (`593.`, `#593`, a stray word) refuses the invocation with exit 1 before the log bootstrap. Nothing runs, no log file is created.
+
+**Why:** the batch runner kept the arguments matching `^[0-9]+$` and dropped the rest without a word. `rite 591 594 598 593.` in freshup printed "Batch processing 4 issues", ran three, and reported a clean batch. A missing issue behind a normal-looking run is worse than a refusal.
+
+**Mechanism:** `resolve_dispatch_key` returns `batch-bad-args` for a full-mode tuple with more than one argument when any is non-numeric. `batch_bad_args_message` (shared by the dry-run printer and the real refusal) names each bad argument. When every bad argument is a number with stray punctuation it prints the corrected command, carrying the invocation's flags and `--dry-run` when the run was a dry run. Otherwise it prints no guess and says a text description is one quoted argument. `batch-process-issues.sh` exits 1 on a non-numeric positional as the backstop for a direct call, gated to direct execution because a sourcing test's own arguments reach its parser.
+
+**Not changed:** a single non-numeric argument is still a text description (`single-issue-text`). Issue numbers beside `--label` are still replaced by the filter's list; a non-numeric argument there reaches the backstop and is refused.
+
+**Rejected:** dropping the bad argument with a warning and running the rest. The operator asked for N issues; running N-1 and saying so in a line that scrolls away is the same failure.
+
+**Enforcement:** `tests/regression/dry-run-no-side-effects.bats` → the "bad batch arg:" tests.
+
 ### Active Process Filtering
 
 Before processing, the batch checks for already-running rite processes:
