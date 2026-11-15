@@ -293,7 +293,13 @@ run_test_gate() {
     _maybe_warn_unscoped_suite "$_duration_cmd" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "false"
     # Console digest for the RITE_TEST_COMMAND path (summary mode hides raw output above).
     if [ "$_cmd_overall_exit" -ne 0 ]; then
-      echo "[test-gate] RITE_TEST_COMMAND: ${_cmd_tests_count} failure(s) — full output in ${RITE_LOG_FILE:-run log}"
+      # A non-zero exit that parsed into no findings is still a failure —
+      # never print "0 failure(s)" on a red gate (freshup #591, 2026-11-15).
+      if [ "$_cmd_tests_count" -gt 0 ]; then
+        echo "[test-gate] RITE_TEST_COMMAND: ${_cmd_tests_count} failure(s) — full output in ${RITE_LOG_FILE:-run log}"
+      else
+        echo "[test-gate] RITE_TEST_COMMAND: failed (exit ${_cmd_overall_exit}, no test names parsed) — full output in ${RITE_LOG_FILE:-run log}"
+      fi
       if [ "$_cmd_tests_count" -gt 0 ]; then
         local _cmd_fail_names
         _cmd_fail_names=$(_extract_tap_failure_names "$_tests_raw_file_cmd")

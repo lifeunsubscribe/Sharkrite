@@ -228,6 +228,9 @@ frontend/src/pages/Schedule.test.tsx"
   [ "$status" -eq 1 ]
   [ "$(cat "$CMD_DIR/runs")" = "1" ]
   [ "$(jq -r '.tests | length' "$CMD_DIR/gate.json")" = "0" ]
+  # A red gate with nothing parsed says "failed", never "0 failure(s)".
+  [[ "$output" == *"RITE_TEST_COMMAND: failed (exit 1, no test names parsed)"* ]]
+  [[ "$output" != *"0 failure(s)"* ]]
   run jq -r '.excerpt' "$CMD_DIR/gate.json"
   [[ "$output" == *"error TS6133"* ]]
   _head=$(git -C "$TARGET_REPO" rev-parse HEAD)
