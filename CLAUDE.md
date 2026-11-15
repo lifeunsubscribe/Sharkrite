@@ -586,13 +586,14 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
-rite align-docs [doc ...]  # Audit docs against code (runs in every state, never prompts);
+rite align-docs [doc ...]  # Audit docs against code; ends by offering pending entries for approval
+                           # via the existing y/n/f loop (interactive only, mode unchanged);
                            # pass doc names to scope the audit to specific docs
 rite align-docs --enable   # Record sync (enable per-merge drift recording)
 rite align-docs --disable  # Record off (disable per-merge drift recording)
-rite docs                  # Doc audit: audit drift entries or run a directed update;
-                           # if drift entries exist, offers to reconcile them
-                           # via the same per-entry preview loop (zero entries → no-op)
+rite docs                  # Reconcile pending drift entries (tracking off / never-run);
+                           # zero pending entries → prints pointer to 'rite align-docs';
+                           # if drift entries exist, runs the per-entry approval loop
 rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file creations;
                            # per-proposal preview → (y)approve / (n)skip / (f)eedback loop;
                            # approved changes applied as a dedicated docs PR on
