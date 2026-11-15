@@ -152,3 +152,33 @@ _run_gate() {
   [ "$(readlink "$WT/.venv")" = "$TEST_REPO/.venv" ]
   rm -rf "$WT"
 }
+
+@test "toolchain: a failed node_modules copy leaves nothing behind (no partial tree for the bootstrap check to trust)" {
+  _make_two_home_fixture 0
+  mkdir -p "$TEST_REPO/frontend/node_modules/.bin"; echo x > "$TEST_REPO/frontend/node_modules/.bin/vitest"
+  WT=$(mktemp -d); mkdir -p "$WT/frontend"
+  cp "$TEST_REPO/frontend/package.json" "$WT/frontend/"
+  # A cp that creates the target directory and then fails, as GNU cp does on
+  # a filesystem that cannot honour the requested copy mode.
+  mkdir -p "$TEST_REPO/fakebin"
+  cat > "$TEST_REPO/fakebin/cp" <<'STUB'
+#!/bin/sh
+for _a in "$@"; do _last="$_a"; done
+[ "$1" = "--version" ] && exit 1
+mkdir -p "$_last/.bin"
+exit 1
+STUB
+  chmod +x "$TEST_REPO/fakebin/cp"
+  PATH="$TEST_REPO/fakebin:$PATH" run _link_worktree_toolchain "$TEST_REPO" "$WT"
+  [ "$status" -eq 0 ]
+  [ ! -e "$WT/frontend/node_modules" ]
+  [[ "$output" != *"cloned"* ]]
+  rm -rf "$WT"
+}
+
+@test "toolchain: exactly one cp form is used per userland (never BSD -c handed to GNU cp)" {
+  _body=$(declare -f _link_worktree_toolchain)
+  grep -q 'cp --version' <<< "$_body"
+  grep -q 'reflink=auto' <<< "$_body"
+  ! grep -q 'cp -cR .*||[[:space:]]*cp -R' <<< "$_body"
+}

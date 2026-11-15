@@ -33,11 +33,33 @@ _pass_json()  { printf '{"lint":[],"tests":[],"exit_code":0,"head_sha":"%s"}\n' 
 _fail_json()  { printf '{"lint":[],"tests":[{"file":"bats","test_name":"x","reason":"assertion failed"}],"exit_code":1,"head_sha":"%s"}\n' "$1" > "$OUT"; }
 _skip_json()  { printf '{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"missing_deps"}\n' > "$OUT"; }
 
-@test "cache path: keyed on HEAD tree + resolved base commit, under RITE_STATE_DIR/gate-verdicts" {
+@test "cache path: keyed on HEAD tree + resolved base commit + checkout path, under RITE_STATE_DIR/gate-verdicts" {
   run _gate_verdict_cache_path "$REPO" base-mark
   [ "$status" -eq 0 ]
   tree=$(git -C "$REPO" rev-parse 'HEAD^{tree}'); base=$(git -C "$REPO" rev-parse base-mark)
-  [ "$output" = "$RITE_STATE_DIR/gate-verdicts/${tree}-${base}.json" ]
+  where=$(printf '%s' "$(cd "$REPO" && pwd -P)" | cksum | awk '{print $1}')
+  [ "$output" = "$RITE_STATE_DIR/gate-verdicts/${tree}-${base}-${where}.json" ]
+}
+
+@test "two checkouts with identical tree and base get different keys (no verdict shared across fixtures)" {
+  # Main CI went red on 2026-11-13 because gate tests build near-identical
+  # fixture repos: same-second commits give identical SHAs, and a later test
+  # reused an earlier test's passing verdict instead of running its own gate.
+  TWIN="${BATS_TEST_TMPDIR}/twin"
+  git clone -q "$REPO" "$TWIN"
+  git -C "$TWIN" branch -q base-mark "$(git -C "$REPO" rev-parse base-mark)"
+  [ "$(git -C "$TWIN" rev-parse 'HEAD^{tree}')" = "$(git -C "$REPO" rev-parse 'HEAD^{tree}')" ]
+  k1=$(_gate_verdict_cache_path "$REPO" base-mark)
+  k2=$(_gate_verdict_cache_path "$TWIN" base-mark)
+  [ -n "$k1" ] && [ -n "$k2" ]
+  [ "$k1" != "$k2" ]
+}
+
+@test "the same checkout reached through a symlink keeps its key (physical path)" {
+  ln -s "$REPO" "${BATS_TEST_TMPDIR}/alias"
+  k1=$(_gate_verdict_cache_path "$REPO" base-mark)
+  k2=$(_gate_verdict_cache_path "${BATS_TEST_TMPDIR}/alias" base-mark)
+  [ "$k1" = "$k2" ]
 }
 
 @test "cache path: unresolvable diff base (range form / missing ref) returns 1 and prints nothing" {

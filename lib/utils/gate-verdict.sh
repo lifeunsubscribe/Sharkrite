@@ -754,7 +754,7 @@ _gate_build_verdict() {
 }
 
 # ---------------------------------------------------------------------------
-# Gate verdict cache — keyed on (tree SHA, diff-base SHA), passes only.
+# Gate verdict cache — keyed on (tree SHA, diff-base SHA, checkout path), passes only.
 #
 # Live (batch 20261111-095317): every resumed issue ran the targeted gate
 # twice on the same tree within ~60s — once as post-rebase verification on
@@ -768,20 +768,32 @@ _gate_build_verdict() {
 # verdicts are stored — a failure must always re-run to be confirmed.
 # Pilot's 2026-07-06 red merge came from an assessment cached on "this issue
 # already passed" with no SHA in the key; this cache has no such path.
+#
+# The checkout path is part of the key because a verdict also depends on what
+# is NOT in the tree: installed dependencies, untracked config, the runners on
+# PATH. Both production reuses happen in one worktree, so the path costs no
+# hits. Without it, two checkouts with the same tree and base share a verdict:
+# gate tests build near-identical fixture repos, and fixtures committed in the
+# same second have identical SHAs, so a later test got "verdict reused" instead
+# of a run (main CI red 2026-11-13, 13 tests across 7 files on Linux).
 # ---------------------------------------------------------------------------
 
 # _gate_verdict_cache_path PROJECT_ROOT DIFF_BASE
 # Prints the cache file path for the worktree's current tree + the resolved
-# diff base, or nothing (return 1) when either cannot be resolved (detached
-# fixtures, "A...B" range forms, missing remote ref) — callers then skip the
-# cache entirely.
+# diff base + the checkout's physical path, or nothing (return 1) when any of
+# them cannot be resolved (detached fixtures, "A...B" range forms, missing
+# remote ref) — callers then skip the cache entirely.
 _gate_verdict_cache_path() {
   local _pr="$1" _base="$2"
-  local _tree _base_sha
+  local _tree _base_sha _phys _where
   _tree=$(git -C "$_pr" rev-parse --verify -q 'HEAD^{tree}' 2>/dev/null || true)
   _base_sha=$(git -C "$_pr" rev-parse --verify -q "${_base}^{commit}" 2>/dev/null || true)
   [ -n "$_tree" ] && [ -n "$_base_sha" ] || return 1
-  echo "${RITE_STATE_DIR:-$_pr/.rite/state}/gate-verdicts/${_tree}-${_base_sha}.json"
+  _phys=$(cd "$_pr" 2>/dev/null && pwd -P || true)
+  [ -n "$_phys" ] || return 1
+  _where=$(printf '%s' "$_phys" | cksum | awk '{print $1}' || true)
+  [ -n "$_where" ] || return 1
+  echo "${RITE_STATE_DIR:-$_pr/.rite/state}/gate-verdicts/${_tree}-${_base_sha}-${_where}.json"
 }
 
 # _gate_verdict_cache_hit CACHE_PATH OUTPUT_FILE PROJECT_ROOT

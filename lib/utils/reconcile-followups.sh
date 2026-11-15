@@ -51,7 +51,8 @@ fi
 # Returns empty string when the file does not exist (deleted by the fix).
 # ---------------------------------------------------------------------------
 # Deferred-findings pool: pool issues are reconciled per entry.
-source "$RITE_LIB_DIR/utils/followup-pool.sh"
+_rf_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_rf_self_dir/followup-pool.sh"
 
 _get_code_region() {
   local _file="$1"

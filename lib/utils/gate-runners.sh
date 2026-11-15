@@ -1572,12 +1572,14 @@ _gate_run_runner_dir() {
 # APFS clonefile (`cp -c`) on macOS, reflink on Linux — never symlinked: #844
 # removed the symlink because installs resolve through it and destroyed the
 # primary checkout's tree. A clone is instant, copy-on-write and the
-# worktree's own. Python venvs are symlinked: the gate already resolves the
+# worktree's own; on a filesystem without clone support (ext4) both commands
+# fall back to a plain copy, which still beats an install. Python venvs are
+# symlinked: the gate already resolves the
 # primary checkout's .venv (_resolve_pytest_python), the link only makes the
 # same interpreter visible to sessions. Best-effort: when nothing can be
 # cloned the gate's bootstrap (#784) still runs.
 _link_worktree_toolchain() {
-  local _main="${1:-}" _wt="${2:-}" _k _d _p _src _dst _v
+  local _main="${1:-}" _wt="${2:-}" _k _d _p _src _dst _v _cloned
   [ -d "$_main" ] && [ -d "$_wt" ] || return 0
   while IFS=$'\t' read -r _k _d; do
     [ -n "$_k" ] || continue
@@ -1586,8 +1588,23 @@ _link_worktree_toolchain() {
       node)
         _src="$_main/${_p}node_modules"; _dst="$_wt/${_p}node_modules"
         { [ -d "$_src" ] && [ ! -L "$_src" ] && [ ! -e "$_dst" ]; } || continue
-        if cp -cR "$_src" "$_dst" 2>/dev/null || cp -R --reflink=always "$_src" "$_dst" 2>/dev/null; then
+        _cloned=true
+        # One copy command per userland, never one as the other's fallback
+        # (GNU cp has no clone -c). reflink=auto, not always: on a filesystem
+        # without reflink (ext4) `always` creates the directory skeleton and
+        # fails every file (Linux CI 2026-11-13: node_modules present, its
+        # binaries missing). Both forms clone where the filesystem supports
+        # it and copy otherwise.
+        if cp --version >/dev/null 2>&1; then
+          cp -R --reflink=auto "$_src" "$_dst" 2>/dev/null || _cloned=false
+        else
+          cp -cR "$_src" "$_dst" 2>/dev/null || _cloned=false
+        fi
+        if [ "$_cloned" = "true" ]; then
           echo "[toolchain] cloned ${_d}/node_modules into the worktree"
+        else
+          # A partial copy would pass the bootstrap's "node_modules exists" check.
+          rm -rf "$_dst"
         fi ;;
       pytest)
         for _v in .venv venv env; do
