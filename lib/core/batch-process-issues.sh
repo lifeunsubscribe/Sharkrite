@@ -257,9 +257,21 @@ while [[ $# -gt 0 ]]; do
       FILTER_VALUE="$2"
       shift 2
       ;;
+    --*)
+      # Flags owned by bin/rite (--auto) are accepted and ignored here.
+      shift
+      ;;
     *)
       if [[ "$1" =~ ^[0-9]+$ ]]; then
         ISSUE_LIST+=("$1")
+      elif [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+        # bin/rite refuses a malformed issue argument before dispatch. This is
+        # the backstop for a direct call: dropping the argument and running the
+        # rest hides a missing issue behind a normal-looking batch. Gated to
+        # direct execution, since a sourcing test's own arguments land here.
+        print_error "Not an issue number: '$1'"
+        echo "A batch takes issue numbers only. Nothing was run." >&2
+        exit 1
       fi
       shift
       ;;
