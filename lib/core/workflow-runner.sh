@@ -2129,6 +2129,10 @@ phase_merge_pr() {
     # Usage cap reached during merge-pr.sh divergence resolution — propagate so batch aborts
     print_warning "Usage cap reached during merge — aborting batch"
     return 5
+  elif [ $merge_result -eq 18 ]; then
+    # Auth failure during merge — propagate so batch halts immediately
+    print_error "Provider auth failure during merge (run: claude /login)"
+    return 18
   elif [ $merge_result -ne 0 ]; then
     # Merge actually failed — no work on remote
     print_error "Merge failed"
@@ -3768,6 +3772,12 @@ run_workflow() {
       _diag "PHASE_FAILED issue=${issue_number} phase=merge reason=usage_cap"
       print_warning "Usage cap reached during merge phase — aborting batch"
       return 5
+    elif [ $merge_exit -eq 18 ]; then
+      # Auth failure during merge — propagate so batch halts immediately
+      _timer_end "phase4_merge"
+      _diag "PHASE_FAILED issue=${issue_number} phase=merge reason=auth_failure"
+      print_error "Provider auth failure during merge phase — aborting batch (run: claude /login)"
+      return 18
     elif [ $merge_exit -ne 0 ]; then
       # Merge actually failed
       _timer_end "phase4_merge"

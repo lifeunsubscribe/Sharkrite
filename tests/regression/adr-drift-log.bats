@@ -440,20 +440,22 @@ HELPER_EOF
 # ---------------------------------------------------------------------------
 
 @test "write failed: adr_drift_log_append prints write-failed warning to stderr when append fails" {
-  # Make the entry file unwritable so the append fails
-  local entry_file
+  # chmod 000 on the entry file would hit the awk-read path first (dedup read fails),
+  # returning early via the awk-error branch before reaching the >> append that is
+  # the actual target. Instead: no entry file (awk reads empty input = no match),
+  # make the parent directory unwritable so the >> append is the failing operation.
+  local entry_file entry_dir
   entry_file="$(_adr_drift_entry_path "docs/architecture/adr-write-fail.md")"
-  mkdir -p "$(dirname "$entry_file")"
-  touch "$entry_file"
-  chmod 000 "$entry_file"
+  entry_dir="$(dirname "$entry_file")"
+  mkdir -p "$entry_dir"
+  chmod 555 "$entry_dir"
 
   local stderr_out
   stderr_out=$(adr_drift_log_append \
     "docs/architecture/adr-write-fail.md" \
     "99" "-" "some assertion" "addition" "evidence" 2>&1 >/dev/null)
 
-  chmod 644 "$entry_file"
-  rm -f "$entry_file"
+  chmod 755 "$entry_dir"
 
   echo "$stderr_out" | grep -q "write failed" || {
     echo "FAIL: expected 'write failed' in stderr, got: $stderr_out" >&2
@@ -465,7 +467,7 @@ HELPER_EOF
   # The caller in the promote cross-doc pass must not use 2>/dev/null — it hid
   # the write-failed warning before this fix.
   local ctx
-  ctx=$(grep -A5 "adr_drift_log_append" "$PROJECT_ROOT/lib/core/docs-command.sh" | head -20 || true)
+  ctx=$(grep -A8 "adr_drift_log_append" "$PROJECT_ROOT/lib/core/docs-command.sh" | head -30 || true)
   # 2>/dev/null must not appear on the same call block
   ! echo "$ctx" | grep -q "2>/dev/null" || {
     echo "FAIL: docs-command.sh still uses 2>/dev/null on the adr_drift_log_append call" >&2

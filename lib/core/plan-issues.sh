@@ -594,7 +594,7 @@ _collect_security_context() {
   local raw="" _csc_rc=0
   raw=$(gh_safe issue list --state open --label security --limit 20 \
     --json number,title,body \
-    --jq '.[] | "\(.number)\t\(.title)\t\(.body | gsub("\n"; " "))"' 2>&1) || _csc_rc=$?
+    --jq '.[] | "\(.number)\t\(.title)\t\(.body | gsub("\n"; " "))"') || _csc_rc=$?
   if [ "$_csc_rc" -ne 0 ]; then
     print_warning "plan: could not fetch open security issues (gh exit ${_csc_rc}) — skipping security context"
     return 0

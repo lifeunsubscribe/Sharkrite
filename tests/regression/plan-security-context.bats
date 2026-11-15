@@ -454,18 +454,18 @@ state why the dependency does not apply.
   # Stub gh_safe to return non-zero (network failure / auth error)
   gh_safe() { echo "API error: unauthorized" >&2; return 1; }
 
-  local warned=0
-  print_warning() { warned=1; }
-
-  local result
+  # Capture stderr from the subshell — the flag approach doesn't work because
+  # variable assignments inside $() are discarded on subshell exit (CLAUDE.md:
+  # "Subshell variable loss"). setup()'s print_warning echoes to stderr, so we
+  # capture stderr instead (2>&1 >/dev/null: redirect stderr→pipe, stdout→/dev/null).
+  local stderr_out result
+  stderr_out=$(_collect_security_context 2>&1 >/dev/null)
   result=$(_collect_security_context 2>/dev/null)
 
-  # Must have called print_warning
-  [ "$warned" -eq 1 ] || {
-    echo "FAIL: print_warning was not called on gh failure" >&2
+  echo "$stderr_out" | grep -q "could not fetch open security issues" || {
+    echo "FAIL: expected 'could not fetch open security issues' warning in stderr, got: $stderr_out" >&2
     false
   }
-  # Must return empty (not crashing)
   [ -z "$result" ] || {
     echo "FAIL: expected empty result on gh failure, got: $result" >&2
     false
@@ -476,14 +476,14 @@ state why the dependency does not apply.
   # Stub gh_safe to return success with empty output (zero security issues)
   gh_safe() { echo ""; return 0; }
 
-  local warned=0
-  print_warning() { warned=1; echo "UNEXPECTED WARNING: $*" >&2; }
-
-  local result
+  # Capture stderr to verify no warning is emitted (same subshell-variable-loss
+  # issue as the companion test: flag in $() is discarded; use stderr capture).
+  local stderr_out result
+  stderr_out=$(_collect_security_context 2>&1 >/dev/null)
   result=$(_collect_security_context 2>/dev/null)
 
-  [ "$warned" -eq 0 ] || {
-    echo "FAIL: print_warning called on successful gh call with zero issues" >&2
+  [ -z "$stderr_out" ] || {
+    echo "FAIL: unexpected stderr output on successful gh call with zero issues: $stderr_out" >&2
     false
   }
   [ -z "$result" ]

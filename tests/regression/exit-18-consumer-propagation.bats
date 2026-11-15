@@ -309,9 +309,9 @@ setup() {
   local f
   for f in "${files[@]}"; do
     local five eighteen
-    # Count blocks that check for div_result/DIV_RESULT/etc. == 5
-    five=$(grep -cE '(div_result|DIV_RESULT|_div_result|_postdev_div_result|_supervised_sync_rc) -eq 5' "$f" || true)
-    eighteen=$(grep -cE '(div_result|DIV_RESULT|_div_result|_postdev_div_result|_supervised_sync_rc) -eq 18' "$f" || true)
+    # Count blocks that check for div_result/DIV_RESULT/merge_exit/merge_result/etc. == 5
+    five=$(grep -cE '(div_result|DIV_RESULT|_div_result|_postdev_div_result|_supervised_sync_rc|merge_exit|merge_result) -eq 5' "$f" || true)
+    eighteen=$(grep -cE '(div_result|DIV_RESULT|_div_result|_postdev_div_result|_supervised_sync_rc|merge_exit|merge_result) -eq 18' "$f" || true)
     if [ "$five" -gt 0 ]; then
       [ "$eighteen" -ge "$five" ] || {
         echo "FAIL: $f has $five '== 5' branches but only $eighteen '== 18' branches" >&2
