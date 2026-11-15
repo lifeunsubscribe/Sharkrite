@@ -591,7 +591,7 @@ rite align-docs [doc ...]  # Audit docs against code; ends by offering pending e
                            # pass doc names to scope the audit to specific docs
 rite align-docs --enable   # Record sync (enable per-merge drift recording)
 rite align-docs --disable  # Record off (disable per-merge drift recording)
-rite docs                  # Reconcile pending drift entries (tracking on or off);
+rite docs                  # Reconcile pending drift entries (tracking off / never-run);
                            # zero pending entries → prints pointer to 'rite align-docs';
                            # if drift entries exist, runs the per-entry approval loop
 rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file creations;
