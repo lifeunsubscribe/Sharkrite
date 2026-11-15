@@ -248,7 +248,7 @@ _run_gate() {
 
 @test "(_extract_node_lint_flags #1601) double-quoted value: --ext \".ts,.tsx\" strips quotes" {
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
-  printf '{"scripts":{"lint":"eslint . --ext \".ts,.tsx\""}}\n' > "$TEST_REPO/package.json"
+  printf '%s\n' '{"scripts":{"lint":"eslint . --ext \".ts,.tsx\""}}' > "$TEST_REPO/package.json"
   run _extract_node_lint_flags "$TEST_REPO"
   echo "$output" | grep -q -- '--ext'
   # The value must arrive without surrounding double quotes
