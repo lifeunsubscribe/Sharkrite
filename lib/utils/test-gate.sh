@@ -194,10 +194,46 @@ run_test_gate() {
     local _cmd_tests_exit
     _cmd_tests_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo 1)
     _cmd_tests_exit=${_cmd_tests_exit:-1}  # empty file = child killed before writing = failure (#935)
+    # Flake re-run: every failing test file the runner named is OUTSIDE this
+    # change, so the failure is a load flake or a pre-existing red — neither
+    # is this issue's to fix. Re-run the whole command once and trust that
+    # result (the command is the only sound oracle for an arbitrary wrapper).
+    # A failure in a file the change touched never re-runs. Opt-out and file
+    # cap are shared with the sharkrite path (RITE_GATE_FLAKE_RETRY*).
+    local _cmd_flake_note=""
+    if [ "$_cmd_tests_exit" -ne 0 ] && [ "${RITE_GATE_FLAKE_RETRY:-true}" != "false" ]; then
+      local _cmd_changed _cmd_flake_files
+      # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: cold-start default for direct/CI invocation; run_workflow seeds origin/<target> per #1037, operator env (RITE_TEST_GATE_DIFF_BASE) still wins
+      _cmd_changed=$(git -C "$project_root" -c core.quotePath=false diff --name-only "${RITE_TEST_GATE_DIFF_BASE:-origin/main}"...HEAD 2>/dev/null || true)
+      if _cmd_flake_files=$(_gate_command_flake_candidates "$_tests_raw_file_cmd" "$_cmd_changed"); then
+        local _cmd_flake_count _cmd_flake_list _cmd_retry_raw _cmd_retry_exit
+        _cmd_flake_count=$(grep -c . <<< "$_cmd_flake_files" || true)
+        _cmd_flake_list=$(tr '\n' ' ' <<< "$_cmd_flake_files" | sed 's/ *$//' || true)
+        echo "[test-gate] ${_cmd_flake_count} failing test file(s), none touched by this change — re-running RITE_TEST_COMMAND once"
+        _cmd_retry_raw=$(mktemp "/tmp/rite_gate_cmd_retry_${PR_NUMBER:-0}_$$_XXXXXX")
+        { (cd "$project_root" && sh -c "${RITE_TEST_COMMAND}" 2>&1); echo $? > "$_nonsr_exit_file_cmd"; } \
+          | tee "$_cmd_retry_raw" >> "$_gate_raw_sink" || true
+        _cmd_retry_exit=$(cat "$_nonsr_exit_file_cmd" 2>/dev/null || echo 1)
+        _cmd_retry_exit=${_cmd_retry_exit:-1}
+        if [ "$_cmd_retry_exit" -eq 0 ]; then
+          _cmd_flake_note=" on re-run — failed once, cleared (flake, not this change): ${_cmd_flake_list}"
+          _diag "TEST_GATE_FLAKE_RETRY cleared=${_cmd_flake_count} persisted=0 files=${_cmd_flake_count} retry_exit=0 mode=command pr=${PR_NUMBER:-?}"
+        else
+          _diag "TEST_GATE_FLAKE_RETRY cleared=0 persisted=${_cmd_flake_count} files=${_cmd_flake_count} retry_exit=${_cmd_retry_exit} mode=command pr=${PR_NUMBER:-?}"
+        fi
+        # The second run is the verdict either way: its output feeds the
+        # findings below (kept only when it produced any).
+        if [ -s "$_cmd_retry_raw" ]; then
+          cat "$_cmd_retry_raw" > "$_tests_raw_file_cmd"
+        fi
+        rm -f "${_cmd_retry_raw:-}"
+        _cmd_tests_exit=$_cmd_retry_exit
+      fi
+    fi
     # Same TAP-only hole as the npm branch: a node-flavored custom command
     # (jest/vitest) would otherwise report test_count=0 on real failures.
     if [ "$_cmd_tests_exit" -ne 0 ] \
-       && _node_flavored_test_context "$project_root" "${RITE_TEST_COMMAND}"; then
+       && _node_flavored_test_context "$project_root" "${RITE_TEST_COMMAND}" "$_tests_raw_file_cmd"; then
       _normalize_node_test_output "$_tests_raw_file_cmd" "$project_root"
     fi
     # Missing-deps / no-tests-collected fallback: mirrors the pytest-direct branch.
@@ -257,7 +293,13 @@ run_test_gate() {
     _maybe_warn_unscoped_suite "$_duration_cmd" "${RITE_GATE_SCOPE_WARN_SECONDS:-300}" "false"
     # Console digest for the RITE_TEST_COMMAND path (summary mode hides raw output above).
     if [ "$_cmd_overall_exit" -ne 0 ]; then
-      echo "[test-gate] RITE_TEST_COMMAND: ${_cmd_tests_count} failure(s) — full output in ${RITE_LOG_FILE:-run log}"
+      # A non-zero exit that parsed into no findings is still a failure —
+      # never print "0 failure(s)" on a red gate (freshup #591, 2026-11-15).
+      if [ "$_cmd_tests_count" -gt 0 ]; then
+        echo "[test-gate] RITE_TEST_COMMAND: ${_cmd_tests_count} failure(s) — full output in ${RITE_LOG_FILE:-run log}"
+      else
+        echo "[test-gate] RITE_TEST_COMMAND: failed (exit ${_cmd_overall_exit}, no test names parsed) — full output in ${RITE_LOG_FILE:-run log}"
+      fi
       if [ "$_cmd_tests_count" -gt 0 ]; then
         local _cmd_fail_names
         _cmd_fail_names=$(_extract_tap_failure_names "$_tests_raw_file_cmd")
@@ -271,9 +313,18 @@ run_test_gate() {
         fi
       fi
     else
-      echo "[test-gate] RITE_TEST_COMMAND: passed ✅"
+      echo "[test-gate] RITE_TEST_COMMAND: passed${_cmd_flake_note} ✅"
     fi
-    _gate_write_json "$output_file" "[]" "$_cmd_tests_items" "$_cmd_overall_exit"
+    # Same verdict fields as the detected-runner path: head_sha pins the
+    # verdict to this commit (#986), and a failure that parsed into no findings
+    # (tsc, pytest -q) carries the runner's own error lines (#1785).
+    local _cmd_head_sha _cmd_excerpt=""
+    _cmd_head_sha=$(git -C "$project_root" rev-parse HEAD 2>/dev/null || true)
+    if [ "$_cmd_overall_exit" -ne 0 ] && [ "$_cmd_tests_items" = "[]" ]; then
+      _cmd_excerpt=$(_gate_runner_excerpt "$_tests_raw_file_cmd")
+    fi
+    _gate_write_json "$output_file" "[]" "$_cmd_tests_items" "$_cmd_overall_exit" \
+      "false" "" "${_cmd_head_sha:-}" "$_cmd_excerpt"
     rm -f "${_nonsr_exit_file_cmd:-}" "${_tests_raw_file_cmd:-}"
     trap - EXIT
     return "$_cmd_overall_exit"

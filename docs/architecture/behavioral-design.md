@@ -517,7 +517,7 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Contract:** `_gate_runner_dirs` lists every runner home at the root and one level down (`node` = package.json with `scripts.test`; `pytest` = pytest.ini / `[tool.pytest]` / `[tool:pytest]` / a `tests/` dir with python tests). `_gate_touched_runner_dirs` keeps the homes the diff touches: a subdirectory home by any file under it, the root by any file under no subdirectory home. The gate runs the touched subdirectory homes (`_gate_run_runner_dir`) and the existing root chain only when the root is touched; a failed subdirectory run already blocks, so the root chain is skipped then. Emits `[diag] GATE_RUNNERS detected=… touched=…`. `RITE_GATE_SUBDIR_RUNNERS=false` restores root-only detection; `RITE_TEST_COMMAND` still overrides everything. Fail-safe direction: changes under no detected home run the root runners, never nothing.
 
-**Toolchain in the worktree:** `_link_worktree_toolchain` runs at worktree creation. `node_modules` of each node home is **cloned** (APFS `cp -c`, reflink on Linux), never symlinked — #844 removed the symlink because installs resolve through it and destroyed the primary checkout's tree; a clone is instant, copy-on-write and the worktree's own. Venvs (`.venv`/`venv`/`env`) are symlinked, which only makes visible to sessions the interpreter `_resolve_pytest_python` already uses. A dev session can no longer say "the worktree has no node_modules by design" (freshup #546), and a reviewer never has to `npm ci` to learn whether tests pass.
+**Toolchain in the worktree:** `_link_worktree_toolchain` runs at worktree creation. `node_modules` of each node home is **cloned** (APFS `cp -c`, `cp --reflink=auto` on GNU), never symlinked — #844 removed the symlink because installs resolve through it and destroyed the primary checkout's tree; a clone is instant, copy-on-write and the worktree's own. On a filesystem without clone support (ext4) both commands fall back to a plain copy. Exactly one command runs per userland, chosen by `cp --version` (GNU cp has no clone `-c`). It is `auto` and not `always` because on ext4 `--reflink=always` creates the directory skeleton and fails every file (Linux CI 2026-11-13: `node_modules` present, its binaries missing). A failed copy is removed so the bootstrap never trusts a partial tree. Venvs (`.venv`/`venv`/`env`) are symlinked, which only makes visible to sessions the interpreter `_resolve_pytest_python` already uses. A dev session can no longer say "the worktree has no node_modules by design" (freshup #546), and a reviewer never has to `npm ci` to learn whether tests pass.
 ### Stale-Branch Stash Is Kept Through Resolution When It Overlaps the Incoming Change (2026-11-12)
 
 **Live (freshup #549):** the operator had uncommitted edits in the conflicting file. The stale-branch path stashed them, the rebase conflicted and was aborted, the stash was popped back (deliberately, so WIP stays uncommitted — `commit_resolved_conflicts` stages only conflict paths), and the resolver's `git merge` was then refused by git for exactly those files. The resolver misread the refusal as an untracked add/add collision, failed in one second, and auto mode closed PR #562 and deleted the branch: 34 minutes of dev work and a green hand fix gone.
@@ -528,9 +528,11 @@ The old section argued that having Claude run tests INSIDE the session is defens
 
 **Live:** batch `20261111-095317`, every resumed issue: the stale-branch path rebased the branch and ran post-rebase verification (targeted gate, 82–175 s, serial), then Phase 2 started ~60 s later and ran the initial gate on the same tree with the same selection. Two identical runs per issue; the first one on the critical path.
 
-**Contract:** `run_test_gate` keys a passing verdict on `(HEAD^{tree}, resolved diff-base SHA)` under `RITE_STATE_DIR/gate-verdicts/` and reuses it when the same pair recurs, emitting `[diag] TEST_GATE outcome=passed cached=true`. The key is the tree hash, never the commit or the issue: a rebase or amend with identical content hits, any content change misses. Only passing, non-skipped verdicts are stored — a failure always re-runs. On a hit the `head_sha` field is refreshed to the current HEAD so the #986 SHA-pin check in `assess-and-resolve.sh` still matches the PR head. When the diff base cannot be resolved to a commit (range forms, missing ref) the cache is bypassed. Entries older than 7 days are pruned on store.
+**Contract:** `run_test_gate` keys a passing verdict on `(HEAD^{tree}, resolved diff-base SHA, checkout physical path)` under `RITE_STATE_DIR/gate-verdicts/` and reuses it when the same triple recurs, emitting `[diag] TEST_GATE outcome=passed cached=true`. The key is the tree hash, never the commit or the issue: a rebase or amend with identical content hits, any content change misses. Only passing, non-skipped verdicts are stored — a failure always re-runs. On a hit the `head_sha` field is refreshed to the current HEAD so the #986 SHA-pin check in `assess-and-resolve.sh` still matches the PR head. When the diff base cannot be resolved to a commit (range forms, missing ref) the cache is bypassed. Entries older than 7 days are pruned on store.
 
 **Why not key on the issue or PR:** Pilot's 2026-07-06 red merge (#689) came from an assessment reused because "this issue already has a passing assessment" — no SHA in the key, so a gate failure at a new commit was skipped. The tree hash is the only key that cannot be stale.
+
+**Why the checkout path is in the key (2026-11-15):** a verdict also depends on what is not in the tree: installed dependencies, untracked config, the runners on PATH. Both production reuses happen inside one worktree, so the path costs no hits. Without it, any two checkouts with the same tree and base shared a verdict. Gate tests build near-identical fixture repos, same-second commits give identical SHAs, and a later test got `verdict reused` instead of a run. That made main's CI red from the day the cache landed (13 tests in 7 files on Linux, fewer on macOS where commits rarely share a second). Reproduce deterministically by pinning `GIT_AUTHOR_DATE` and `GIT_COMMITTER_DATE` for a bats run of the gate files.
 
 ### Gate Block-on-Any (CRITICAL)
 
@@ -872,6 +874,26 @@ The assessment prompt's old tie-break biased uncertain findings toward `ACTIONAB
 ### Assessment May Not Defer the Issue's Own Acceptance Criteria
 
 The necessity bar governs *non-essential* findings; the **SCOPE BAR** (added #791) governs the opposite hazard — deferring work the issue exists to do. A feature can otherwise merge "done" while its own core acceptance criteria are punted to follow-ups, shipping non-functional: LeadFlow's #46 CloudWatch-alarm feature merged while deferring its producer token (the event it must emit), its SNS subscription, and the alarm itself into follow-ups. The gate only blocks on TEST failures (Gate Block-on-Any), and those deferred ACs had no tests, so the unmet-AC feature merged clean. The rule, in the `ASSESSMENT_PROMPT` classification criteria of `lib/core/assess-review-issues.sh`, leans on the injected `ORIGINAL ISSUE SCOPE` section (`$ISSUE_DETAILS`): a finding identifying an UNMET acceptance criterion or core deliverable of the issue under assessment is `ACTIONABLE_NOW` and MUST NOT be deferred to `ACTIONABLE_LATER` — only findings OUTSIDE the issue's stated scope are deferral-eligible. This is the tractable prompt-level fix; the stronger deterministic follow-on (a merge gate that runs the issue's own AC verification commands, so an unmet, untested AC cannot pass) is noted future work.
+
+### Documentation Prose Is Not a Fix-Loop Item (2026-11-15)
+
+The SCOPE BAR above makes an unmet acceptance criterion `ACTIONABLE_NOW`. On a
+docs-only issue the document IS the deliverable, so every review opinion about
+its wording read as an unmet criterion and the fix loop spent whole rounds on
+phrasing: freshup #573, two `.md` files, drew 5 `ACTIONABLE_NOW` wording
+findings and 2 fix cycles (freshup report 2026-11-12b §3.8). The `ASSESSMENT_PROMPT` now bounds the
+SCOPE BAR for findings located in `docs/`, README, CHANGELOG or any other `.md`
+file: a documentation criterion is unmet only when required content is ABSENT
+or a statement is FACTUALLY WRONG (it contradicts the code or behaviour it
+describes). Only those two are `ACTIONABLE_NOW`. Wording, clarity, ordering,
+emphasis, better examples, cross-reference polish and completeness beyond the
+named criteria are never NOW, including on docs-only issues; they are
+`ACTIONABLE_LATER` only when a reader following the text as written would do
+the wrong thing, otherwise `DISMISSED`. This follows the doc-drift design:
+documentation corrections are recorded cheaply during development and applied
+later in a reviewed pass, never by interrupting the run. The rule is stated in
+both the THREE-STATE CATEGORIZATION section and DECISION CRITERIA (the #495
+reword-all-locations rule). Test: tests/regression/assess-doc-prose-not-now.bats.
 
 ---
 
@@ -1911,6 +1933,36 @@ a flake); RITE_GATE_FLAKE_RETRY=false is the operator off-switch. Rejected:
 per-test quarantine lists (rot silently; the serial re-run is evidence-based
 per occurrence) and N>1 retries (a test needing two quiet runs isn't flaking,
 it's broken). Test: tests/regression/gate-flake-retry.bats.
+
+**Command-path variant (2026-11-15).** The retry above lived only on the
+sharkrite bats path, so a repo whose gate is a `RITE_TEST_COMMAND` wrapper had
+no flake protection at all: one load-flaky vitest file in freshup turned a
+green change into a fix cycle on a test the change never touched (freshup
+report 2026-11-12b §3.2). The command path now applies the same contract with
+the only granularity a wrapper offers, the whole command. When the command
+fails, `_gate_command_flake_candidates` (`lib/utils/gate-verdict.sh`) reads the
+failing test FILES from the raw output (vitest/jest `FAIL <path>`, pytest
+`FAILED|ERROR <path>::…`) and the gate re-runs the command ONCE only when all
+of these hold: at least one failing file is named; at most
+`RITE_GATE_FLAKE_RETRY_MAX_FILES` are; none of them is in the change's diff
+(a failing file the change touched is the change's failure); and the output
+carries no `error TS<n>` line (a compile error is deterministic, never a
+flake). The second run is the oracle: exit 0 means the failure was a flake and
+the gate passes, naming the cleared files on the pass line; a second failure
+blocks, and its output (not the first run's) feeds the findings. Both outcomes
+emit `[diag] TEST_GATE_FLAKE_RETRY … mode=command`. Accepted cost: a change
+that genuinely breaks an untouched test file pays one extra command run per
+fix cycle. `RITE_GATE_FLAKE_RETRY=false` disables this variant too.
+
+The same change closed three parity gaps on the command path, each already
+fixed on the detected-runner path: the verdict now carries `head_sha` (the
+#986 stale-verdict check had nothing to compare); a failure with no named
+finding carries the runner `excerpt` (#1785), so a `tsc` error reaches the fix
+session as text instead of "no parseable findings"; and node normalization
+keys on the output's own `Test Files` / `Test Suites` summary line when
+neither the command string nor a root `package.json` identifies node (freshup
+keeps its frontend one level down behind a bash wrapper). Test:
+tests/regression/gate-command-flake-rerun.bats.
 
 ## Pass-Type Detector Threshold Reconciliation (#937)
 

@@ -57,3 +57,41 @@ teardown() { rm -rf "${FIX:-}"; }
   [[ "$_fix" == *'${_RITE_PROJ_GATE_DESC}'* ]]
   [[ "$_fix" != *'`bats -r tests/`'* ]]
 }
+
+@test "source: no vocabulary variable is referenced above the first call that sets it" {
+  # Static half of the pin. The fix path runs first in the file, so the first
+  # call below the function body must precede the first ${_RITE_PROJ_*} use.
+  _end=$(grep -n 'sharkrite-extract: project-vocab-end' "$WORKFLOW_FILE" | cut -d: -f1)
+  _bad=$(awk -v end="$_end" '
+    NR <= end { next }
+    /^[[:space:]]*_set_project_verification_vocab[[:space:]]*$/ { called = 1; next }
+    /^[[:space:]]*#/ { next }
+    /\$\{_RITE_PROJ_[A-Z_]+\}/ && !called { print NR }
+  ' "$WORKFLOW_FILE")
+  [ -z "$_bad" ] || { echo "used before set at line(s): $_bad"; false; }
+}
+
+@test "behavior: the mixed gate+review items section builds under set -u" {
+  # Extract from the vocabulary call through the items-section build and run it
+  # the way the script does: set -u, with one [GATE] item and one review item.
+  _from=$(grep -n '^  _set_project_verification_vocab$' "$WORKFLOW_FILE" | head -1 | cut -d: -f1)
+  _to=$(grep -n '# Build fix prompt - tool restrictions' "$WORKFLOW_FILE" | head -1 | cut -d: -f1)
+  [ -n "$_from" ] && [ -n "$_to" ] && [ "$_from" -lt "$_to" ]
+  sed -n "${_from},$((_to - 1))p" "$WORKFLOW_FILE" > "$FIX/section.sh"
+  sed -n '/sharkrite-extract: project-vocab-start/,/sharkrite-extract: project-vocab-end/p' "$WORKFLOW_FILE" > "$FIX/vocab.sh"
+  cat > "$FIX/run.sh" <<'EOS'
+set -euo pipefail
+source "$1/vocab.sh"
+ACTIONABLE_NOW_ITEMS='### [GATE] test_x failed - ACTIONABLE_NOW
+detail
+### Fix the thing - ACTIONABLE_NOW
+detail'
+source "$1/section.sh"
+printf '%s\n' "$_fix_items_section"
+EOS
+  RITE_PROJECT_ROOT="$FIX" RITE_TEST_COMMAND="bash scripts/rite-test.sh" run bash "$FIX/run.sh" "$FIX"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [[ "$output" == *"objective gate failures"* ]]
+  [[ "$output" == *'bash scripts/rite-test.sh'* ]]
+  [[ "$output" != *"unbound variable"* ]]
+}

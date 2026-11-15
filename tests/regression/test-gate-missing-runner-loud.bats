@@ -24,6 +24,11 @@ setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
   TEST_REPO=$(mktemp -d); export TEST_REPO
   STUB_DIR="$TEST_REPO/stub"; mkdir -p "$STUB_DIR"
+  # Per-test state dir. Without it config.sh resolves RITE_STATE_DIR to the
+  # real checkout, so the gate's verdict cache (keyed on tree + base SHA) is
+  # shared by every test here: two fixtures committed in the same second have
+  # identical keys, and a later test gets "verdict reused" instead of a run.
+  export RITE_STATE_DIR="$TEST_REPO/state"
 
   # Initialise a non-Sharkrite git repo with a base commit.
   # The repo has no Makefile with shellcheck:/lint: so _is_sharkrite=false.

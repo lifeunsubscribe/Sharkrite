@@ -608,6 +608,20 @@ ACTIONABLE_NOW - Fix in this PR cycle. ONLY these three classes qualify:
   review round; the bar exists so that round is spent only on what blocks a
   correct, green merge.
 
+  DOCUMENTATION PROSE (findings located in docs/, README, CHANGELOG, or any
+  other .md file): a documentation acceptance criterion is UNMET only when
+  content the issue requires is ABSENT, or a statement is FACTUALLY WRONG
+  (it contradicts the code or the behaviour it describes). Only those two are
+  ACTIONABLE_NOW. Wording, clarity, tone, ordering, emphasis, examples that
+  could be better, cross-reference polish, and completeness beyond what the
+  acceptance criteria name are NEVER ACTIONABLE_NOW — not even when the issue
+  is docs-only and the document is the deliverable. Classify them
+  ACTIONABLE_LATER only when a reader following the text as written would do
+  the wrong thing (state what they would do wrong); otherwise DISMISSED. A
+  deferred documentation finding is recorded and applied later in a reviewed
+  documentation pass, so deferring it loses nothing — a fix round spent on
+  phrasing is the waste.
+
 ACTIONABLE_LATER - Valid concern, create follow-up issue:
   NECESSITY BAR: ACTIONABLE_LATER is for genuinely necessary future work ONLY: a
   real defect, a correctness or security risk, or a broken contract that MUST be
@@ -700,6 +714,10 @@ ACTIONABLE_NOW (fix now) ONLY IF one of:
     diff always counts)
   NOT NOW: quick fixes outside the ACs, logical extensions, same-module
   cleanups, pre-existing defects the PR did not cause → LATER or DISMISSED
+  NOT NOW (DOCUMENTATION PROSE): in docs/, README, CHANGELOG or any .md file,
+  only ABSENT required content or a FACTUALLY WRONG statement is NOW; wording,
+  clarity, ordering and polish findings → LATER only when the text as written
+  would mislead a reader into wrong behaviour, otherwise DISMISSED
 
 ACTIONABLE_LATER (defer to tech-debt) IF:
   - Functional inconsistency across files (e.g., validation rule X in one file,
