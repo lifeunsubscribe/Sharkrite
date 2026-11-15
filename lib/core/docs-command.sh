@@ -4100,8 +4100,26 @@ rite_docs() {
         _docs_ensure_map || exit 1
         docs_directed_update "$instructions" || true
       else
-        # No instructions: point to the audit command and the directed-update form.
-        print_info "Run 'rite align-docs [doc ...]' to audit docs, or 'rite docs \"<instructions>\"' for a directed update."
+        # No instructions: reconcile pending drift entries when any exist,
+        # regardless of RITE_DOC_MODE (off or unset both reach never-run).
+        # With zero entries print the pointer to 'rite align-docs'.
+        local _nr_total=0
+        _nr_total="$(drift_log_entry_count --total || echo 0)"
+        # Also check the legacy flat log when the new store is empty.
+        if [ "${_nr_total:-0}" -eq 0 ]; then
+          local _nr_legacy_path
+          _nr_legacy_path="$(drift_log_path 2>/dev/null || true)"
+          if [ -n "$_nr_legacy_path" ] && [ -f "$_nr_legacy_path" ]; then
+            local _nr_legacy_count
+            _nr_legacy_count="$(drift_log_entry_count "$_nr_legacy_path" || echo 0)"
+            _nr_total=$((_nr_total + _nr_legacy_count))
+          fi
+        fi
+        if [ "${_nr_total:-0}" -gt 0 ]; then
+          docs_reconcile_drift || true
+        else
+          print_info "Run 'rite align-docs [doc ...]' to audit docs, or 'rite docs \"<instructions>\"' for a directed update."
+        fi
       fi
       ;;
 

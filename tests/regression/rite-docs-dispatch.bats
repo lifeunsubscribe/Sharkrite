@@ -432,3 +432,69 @@ teardown() {
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "Generating doc proposals"
 }
+
+# ---------------------------------------------------------------------------
+# never-run + no instructions: pending entries dispatch, zero entries pointer
+# (#1806: bare rite docs reconciles when tracking is off but entries are pending)
+# ---------------------------------------------------------------------------
+
+@test "never-run + pending entries: docs_reconcile_drift is called" {
+  # Build a helper that overrides drift_log_entry_count to report 1 pending entry
+  # and stubs docs_reconcile_drift to leave a sentinel file.
+  local sentinel="${FAKE_PROJECT}/.rite/state/reconcile-called"
+  local dispatch_helper
+  dispatch_helper="$(mktemp)"
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand in helper script
+  cat > "$dispatch_helper" << DISPATCH_EOF
+#!/bin/bash
+set -euo pipefail
+source "${DOCS_CMD}"
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs intentionally defined after source
+load_provider() { return 0; }
+provider_detect_cli() { return 0; }
+provider_healthcheck() { return 0; }
+provider_run_prompt_with_timeout() { echo "NOTHING_FOUND"; }
+provider_resolve_model() { echo "claude-sonnet-4-6"; }
+docs_map_build() { return 0; }
+docs_map_path() { echo "\${RITE_PROJECT_ROOT}/.rite/state/docs-map.tsv"; }
+docs_map_ensure() { return 0; }
+drift_log_path() { echo "\${RITE_PROJECT_ROOT}/docs/sharkrite-drift-log.md"; }
+# Return 1 pending entry for --total; 0 for file-path calls
+drift_log_entry_count() {
+  case "\${1:-}" in
+    --*) echo "1" ;;
+    *)   echo "0" ;;
+  esac
+}
+docs_reconcile_drift() {
+  touch "${sentinel}"
+}
+rite_docs "\$@"
+DISPATCH_EOF
+  chmod +x "$dispatch_helper"
+
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="" \
+    RITE_LOG_AUTO=false \
+    bash "$dispatch_helper" < /dev/null 2>&1
+  rm -f "$dispatch_helper"
+  [ "$status" -eq 0 ]
+  [ -f "$sentinel" ]
+}
+
+@test "never-run + zero entries: prints pointer to rite align-docs" {
+  # The existing helper already stubs drift_log_entry_count to return "0",
+  # so this test reuses it directly.
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE= \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "align-docs"
+}

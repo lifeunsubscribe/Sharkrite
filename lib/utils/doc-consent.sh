@@ -125,6 +125,14 @@ _run_align_docs_passes() {
       fi
     fi
   fi
+  # Offer pending drift entries through the approval loop after the audit.
+  # Runs in every mode (unset, off, sync) — the reconcile path is mode-free.
+  # Skipped in non-interactive runs; mode is never altered.
+  if declare -f docs_reconcile_drift >/dev/null 2>&1; then
+    if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+      docs_reconcile_drift || true
+    fi
+  fi
 }
 
 # ---------------------------------------------------------------------------
