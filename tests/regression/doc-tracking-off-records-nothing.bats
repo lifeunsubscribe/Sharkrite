@@ -1,12 +1,13 @@
 #!/usr/bin/env bats
 # sharkrite-test-covers: lib/core/assess-documentation.sh
 #
-# Regression tests for the RITE_DOC_MODE consent gate in _record_tier1_drift_entries.
-# Pins the acceptance criterion from issue #1427:
-#   "RITE_DOC_MODE off or unset records nothing"
+# Regression tests for the RITE_DOC_MODE gate in _record_tier1_drift_entries.
+# Pins the acceptance criteria from issues #1427 and #1805:
+#   "RITE_DOC_MODE=off records nothing"
+#   "RITE_DOC_MODE unset records (on by default)"
 #
-# Tests verify that even when all three tier-1 triggers would otherwise fire,
-# no drift entries are written when tracking is off or unset.
+# Tests verify that RITE_DOC_MODE=off suppresses all three triggers,
+# while unset (default-on) and sync/changelog all record entries.
 
 setup() {
   RITE_REPO_ROOT="$(cd "$(dirname "$BATS_TEST_DIRNAME")/.." && pwd)"
@@ -65,33 +66,33 @@ _invoke_all_triggers() {
 }
 
 # ---------------------------------------------------------------------------
-# RITE_DOC_MODE unset: records nothing
+# RITE_DOC_MODE unset: records (on by default)
 # ---------------------------------------------------------------------------
 
-@test "RITE_DOC_MODE unset: Trigger A fires but records nothing" {
+@test "RITE_DOC_MODE unset: Trigger A DOES record (default on)" {
   unset RITE_DOC_MODE
   _invoke_all_triggers
   local _cnt
   _cnt="$(drift_log_entry_count)"
-  [ "$_cnt" -eq 0 ]
+  [ "$_cnt" -ge 1 ]
 }
 
-@test "RITE_DOC_MODE unset: Trigger B fires but records nothing" {
+@test "RITE_DOC_MODE unset: Trigger B DOES record (default on)" {
   unset RITE_DOC_MODE
   _record_tier1_drift_entries "201" "Closes #99" \
     "lib/core/impl.sh" "main" "feat/off" || true
   local _cnt
   _cnt="$(drift_log_entry_count)"
-  [ "$_cnt" -eq 0 ]
+  [ "$_cnt" -ge 1 ]
 }
 
-@test "RITE_DOC_MODE unset: Trigger C fires but records nothing" {
+@test "RITE_DOC_MODE unset: Trigger C DOES record (default on)" {
   unset RITE_DOC_MODE
   _record_tier1_drift_entries "202" "Closes #99" \
     "lib/other/unrelated.sh" "main" "feat/off" || true
   local _cnt
   _cnt="$(drift_log_entry_count)"
-  [ "$_cnt" -eq 0 ]
+  [ "$_cnt" -ge 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -140,16 +141,20 @@ _invoke_all_triggers() {
 }
 
 # ---------------------------------------------------------------------------
-# Structural: case statement in _record_tier1_drift_entries gates on sync|changelog
+# Structural: case statement in _record_tier1_drift_entries gates on off only
 # ---------------------------------------------------------------------------
 
-@test "structural: _record_tier1_drift_entries body has sync|changelog consent gate" {
+@test "structural: _record_tier1_drift_entries body has off-only gate (not sync|changelog allowlist)" {
   local body
   body="$(declare -f _record_tier1_drift_entries)"
-  # Must contain a case gate on RITE_DOC_MODE
-  echo "$body" | grep -q 'RITE_DOC_MODE'
-  echo "$body" | grep -q 'sync'
-  echo "$body" | grep -q 'changelog'
+  # Must gate on RITE_DOC_MODE and check for 'off'
+  grep -q 'RITE_DOC_MODE' <<< "$body"
+  grep -q 'off' <<< "$body"
+  # Must NOT gate on sync|changelog in the skip branch (flipped to default-on)
+  # The gate now skips only when off, not when sync/changelog
+  local off_line sync_line
+  off_line="$(grep -n 'off.*return 0' <<< "$body" || true)"
+  [ -n "$off_line" ]
 }
 
 # ---------------------------------------------------------------------------

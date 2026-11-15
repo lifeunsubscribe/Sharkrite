@@ -2634,30 +2634,29 @@ violating it.
 
 ### On, off, and what each state does
 
-`rite align-docs` is the switch. It replaces the consent prompts in
-`rite docs`, `rite --init` and supervised runs.
+`rite align-docs` is the audit command and the on/off switch. It replaces the
+consent prompts that used to live in `rite docs`, `rite --init`, and supervised
+runs.
 
-- **First run** (never enabled): asks whether to turn doc tracking on, and says
-  plainly that the audit runs either way. Then runs the restructure assessment
-  and the assertion audit — there are no drift entries yet. When the repo has no
-  clear doc structure, it offers to scaffold one; the scaffolder is the
-  separately designed ground-up bootstrap (test suites → feature docs → ADR).
-  Until that exists the offer is omitted, not improvised.
-- **`rite align-docs --disable`** turns tracking off. The next plain run asks
-  again, as on the first run.
-- **On:** Tier 1 records entries on every merge; promote and `rite docs`
-  correct them.
-- **Off or never enabled:** nothing is recorded and nothing runs
-  automatically — so nothing piles up. `rite align-docs` and directed
-  `rite docs "<instructions>"` still work: they check docs against the code
-  directly and need no entries.
-- **Unattended runs never turn tracking on.** (Before 2026-10-21 they silently
-  did: 74 unreviewed entries, each with a model call, in sharkrite's own log.)
+- **On by default:** Tier 1 records drift entries on every merge unless tracking
+  is explicitly disabled. `RITE_DOC_MODE` unset is equivalent to `sync`.
+- **`rite align-docs [doc ...]`** runs the restructure assessment and the
+  assertion audit in every state (unset, off, sync) without prompting. Never
+  changes the recorded mode.
+- **`rite align-docs --disable`** records `off`; nothing is recorded on
+  subsequent merges. Run `rite align-docs --enable` to restore recording.
+- **`rite align-docs --enable`** records `sync`; merge recording resumes.
+- **`off`:** nothing is recorded and nothing runs automatically — so nothing
+  piles up. `rite align-docs` and directed `rite docs "<instructions>"` still
+  work: they audit docs directly and need no drift entries.
+- **Unattended runs never change the recording mode.** (Before 2026-10-21 they
+  silently enabled it: 74 unreviewed entries, each with a model call, in
+  sharkrite's own log.)
 
 ### Tier 1 — detection, per merge, deterministic, zero model calls
 
-Runs on every PR merge while tracking is on, whether or not the issue is on a
-branch.
+Runs on every PR merge unless tracking is off (`RITE_DOC_MODE=off`), whether
+or not the issue is on a branch.
 
 Triggers: the PR's changed files intersect a feature doc's enforcing test set,
 or intersect code those tests exercise, or the PR is on a branch with a

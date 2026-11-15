@@ -304,9 +304,10 @@ while [[ $# -gt 0 ]]; do
       echo "  rite --reset-approval         Clear ALL saved blocker approvals (global reset)"
       echo "  rite plan [doc] [instructions] Generate issues from an architectural doc"
       echo "  rite plan --preview [doc]     Preview issues without creating them"
-      echo "  rite align-docs               Enable/disable doc drift tracking (the on/off switch)"
-      echo "  rite align-docs --disable     Turn off doc drift tracking"
-      echo "  rite docs                     Doc audit: check docs against code (requires align-docs first)"
+      echo "  rite align-docs [doc ...]     Audit docs against code (runs in every state)"
+      echo "  rite align-docs --enable      Enable doc drift recording (records sync)"
+      echo "  rite align-docs --disable     Turn off doc drift recording"
+      echo "  rite docs                     Doc audit: audit drift entries or run a directed update"
       echo "  rite docs \"<instructions>\"    Directed doc update"
       echo "  rite docs --resume <branch>   Resume a saved doc proposal from a terminal-less promote"
       echo "  rite --pr <number>            Run by PR number (creates issue if none linked)"
@@ -362,9 +363,10 @@ while [[ $# -gt 0 ]]; do
       echo "  rite plan docs/phases.md   # Generate issues from doc"
       echo "  rite plan \"phases 2-4\"     # Natural language filtering"
       echo "  rite plan --preview        # Preview without creating"
-      echo "  rite align-docs            # Enable/disable doc drift tracking"
-      echo "  rite align-docs --disable  # Turn off doc drift tracking"
-      echo "  rite docs                  # Audit docs against code (run align-docs first)"
+      echo "  rite align-docs [doc ...]  # Audit docs against code (runs in every state)"
+      echo "  rite align-docs --enable   # Enable doc drift recording"
+      echo "  rite align-docs --disable  # Turn off doc drift recording"
+      echo "  rite docs                  # Audit drift entries or run a directed update"
       echo "  rite docs \"update arch\"    # Directed doc update"
       echo "  rite docs --resume my/branch  # Resume a saved doc proposal"
       echo "  rite --status              # Repo-wide status overview"
@@ -720,11 +722,7 @@ resolve_dispatch_plan() {
       return 0
       ;;
     align-docs)
-      if [ -n "${ALIGN_DOCS_ARGS[*]:-}" ] && [ "${ALIGN_DOCS_ARGS[0]:-}" != "--disable" ]; then
-        echo "docs-command.sh::docs_resolve_doc_scope ${ALIGN_DOCS_ARGS[*]:-}  (resolve doc scope by name)"
-      else
-        echo "doc-consent.sh::run_align_docs_switch ${ALIGN_DOCS_ARGS[*]:-}  (enable/disable doc drift tracking)"
-      fi
+      echo "doc-consent.sh::run_align_docs_switch ${ALIGN_DOCS_ARGS[*]:-}  (audit docs or enable/disable tracking)"
       return 0
       ;;
     status-repo-wide)
@@ -1319,7 +1317,7 @@ if [ "$MODE" = "init" ]; then
   elif [ -n "$_recorded_mode" ]; then
     print_info "Doc mode: ${_recorded_mode} (use 'rite align-docs --disable' to turn off)"
   else
-    print_info "Doc drift tracking not configured — run 'rite align-docs' to enable"
+    print_info "Doc drift recording on by default — run 'rite align-docs' to audit, or 'rite align-docs --disable' to opt out"
   fi
 
   # Create backward-compat symlink if .claude/ exists
@@ -1627,23 +1625,22 @@ fi
 
 # Handle docs mode (before normalize — rite docs dispatches on doc state, not issue)
 if [ "$MODE" = "docs" ]; then
+  # Block "rite docs align [...]" — align is not a docs subcommand.
+  if [ "${DOCS_ARGS[0]:-}" = "align" ]; then
+    echo "Error: 'rite docs align' is not a valid command." >&2
+    echo "  To audit docs:          rite align-docs [doc ...]" >&2
+    echo "  For a directed update:  rite docs \"<instructions>\"" >&2
+    exit 1
+  fi
   source "$RITE_LIB_DIR/core/docs-command.sh"
   rite_docs "${DOCS_ARGS[@]+"${DOCS_ARGS[@]}"}"
   exit $?
 fi
 
-# Handle align-docs mode — on/off switch and (with doc names) scope resolver
+# Handle align-docs mode — audit entry point and on/off switch.
+# docs-command.sh is always sourced so docs_run_restructure_assessment,
+# docs_run_assertion_audit, and docs_resolve_doc_scope are available.
 if [ "$MODE" = "align-docs" ]; then
-  if [ -n "${ALIGN_DOCS_ARGS[*]:-}" ] && [ "${ALIGN_DOCS_ARGS[0]:-}" != "--disable" ]; then
-    # Positional doc names: resolve scope and echo resolved paths.
-    source "$RITE_LIB_DIR/core/docs-command.sh"
-    docs_resolve_doc_scope "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
-    exit $?
-  fi
-  # --disable flag or no args: source docs-command.sh so the restructure
-  # assessment hook (docs_run_restructure_assessment) is available when
-  # run_align_docs_switch fires for an already-enabled repo.
-  # docs-command.sh sources doc-consent.sh internally.
   source "$RITE_LIB_DIR/core/docs-command.sh"
   run_align_docs_switch "${ALIGN_DOCS_ARGS[@]+"${ALIGN_DOCS_ARGS[@]}"}"
   exit $?

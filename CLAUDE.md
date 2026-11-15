@@ -42,7 +42,7 @@ lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/integration-ledger.sh   # Integration branch ledger (issue↔SHA record, append/entries/mark_promoted)
-lib/utils/doc-consent.sh          # Doc-drift opt-in (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; unset = never asked, records nothing)
+lib/utils/doc-consent.sh          # Doc-drift recording (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; on by default; unset records like sync; off = explicit opt-out)
 lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → docs/docs-map.tsv)
 lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — per-doc/per-branch entry files under RITE_STATE_DIR/doc-drift/, one entry per PR (#1509: dedupe key is (pr,doc,assertion) — distinct PRs for the same doc each get their own entry), locked via lock.sh)
 lib/utils/pr-detection.sh         # PR/worktree/review state detection utilities
@@ -586,8 +586,12 @@ rite 42 --undo             # Cleanup: close PR, delete branch/worktree
 rite plan docs/phases.md   # Generate issues from architectural doc
 rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
-rite docs                  # Doc consent/audit: turn on drift tracking or audit drift on demand;
-                           # after consent, if drift entries exist, offers to reconcile them
+rite align-docs [doc ...]  # Audit docs against code (runs in every state, never prompts);
+                           # pass doc names to scope the audit to specific docs
+rite align-docs --enable   # Record sync (enable per-merge drift recording)
+rite align-docs --disable  # Record off (disable per-merge drift recording)
+rite docs                  # Doc audit: audit drift entries or run a directed update;
+                           # if drift entries exist, offers to reconcile them
                            # via the same per-entry preview loop (zero entries → no-op)
 rite docs "<instructions>" # Directed doc update: LLM proposes edits/new-file creations;
                            # per-proposal preview → (y)approve / (n)skip / (f)eedback loop;
