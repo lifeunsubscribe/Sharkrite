@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/hooks/claude-pretooluse-deny.sh
+# sharkrite-test-covers: lib/hooks/claude-pretooluse-deny.sh, lib/providers/claude.sh::_claude_write_hook_settings|claude_provider_run_agentic_session
 #
 # The PreToolUse deny hook is the ENFORCED in-session backstop (the CLI ignores
 # --disallowedTools under --output-format stream-json, which every dev/fix
@@ -7,8 +7,14 @@
 #
 # Contract: reads a PreToolUse event JSON on stdin. For Bash tool calls whose
 # command matches the denylist, emit {"hookSpecificOutput":{... "permissionDecision":
-# "deny" ...}} and exit 0. All other calls → exit 0, NO output (allow). Non-Bash
+# "deny" ...}} and exit 0. All other calls → exit 0, NO output (allow). Other
 # tools and malformed input fail open (allow).
+#
+# Write guard (freshup #597, 2026-11-15): the dev session edited the primary
+# checkout by absolute path, found an empty diff at the end, and redid the work
+# in its worktree — leaving the first set of edits in the operator's checkout.
+# Edit/Write/MultiEdit/NotebookEdit aimed at the primary checkout from a
+# linked-worktree session are denied with the worktree path to use instead.
 
 setup() {
   HOOK="${BATS_TEST_DIRNAME}/../../lib/hooks/claude-pretooluse-deny.sh"
@@ -142,4 +148,180 @@ _denied() { echo "$1" | grep -q '"permissionDecision":"deny"'; }
 @test "deny output is valid JSON" {
   run _hook "git commit -m x"
   echo "$output" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null
+}
+
+# ---- write guard: edits aimed at the primary checkout from a worktree session ----
+# Build <tmp>/primary (a clone with one commit) and a linked worktree <tmp>/wt.
+# BATS_TEST_TMPDIR is spelled through the /var symlink on macOS while git
+# reports /private/var, so these fixtures exercise both spellings.
+_wt_fixture() {
+  PRIMARY="$BATS_TEST_TMPDIR/primary"
+  WT="$BATS_TEST_TMPDIR/wt"
+  mkdir -p "$PRIMARY/src" "$PRIMARY/.rite"
+  git -C "$PRIMARY" init -q
+  git -C "$PRIMARY" config user.email t@t
+  git -C "$PRIMARY" config user.name t
+  echo base > "$PRIMARY/src/app.py"
+  git -C "$PRIMARY" add src/app.py
+  git -C "$PRIMARY" commit -qm base
+  git -C "$PRIMARY" worktree add -q "$WT" -b feat/x
+  ln -s "$PRIMARY/.rite" "$WT/.rite"
+}
+# Hook stdout for a write tool: $1 tool, $2 target path, $3 pinned session dir
+# (empty = unset), $4 event cwd (optional).
+_whook() {
+  local _key="file_path"
+  [ "$1" = "NotebookEdit" ] && _key="notebook_path"
+  if [ -n "${3:-}" ]; then
+    printf '{"tool_name":"%s","cwd":"%s","tool_input":{"%s":"%s"}}' "$1" "${4:-}" "$_key" "$2" \
+      | _RITE_HOOK_SESSION_DIR="$3" bash "$HOOK"
+  else
+    printf '{"tool_name":"%s","cwd":"%s","tool_input":{"%s":"%s"}}' "$1" "${4:-}" "$_key" "$2" \
+      | env -u _RITE_HOOK_SESSION_DIR bash "$HOOK"
+  fi
+}
+
+@test "write guard: Edit on a primary-checkout file from a worktree session is denied, naming the worktree file" {
+  _wt_fixture
+  run _whook Edit "$PRIMARY/src/app.py" "$WT"
+  [ "$status" -eq 0 ]
+  _denied "$output"
+  local _reason
+  _reason=$(echo "$output" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+  [[ "$_reason" == *"/wt/src/app.py instead"* ]]
+}
+
+@test "write guard: Write, MultiEdit and NotebookEdit are gated the same way" {
+  _wt_fixture
+  run _whook Write "$PRIMARY/src/new_file.py" "$WT"; _denied "$output"
+  run _whook MultiEdit "$PRIMARY/src/app.py" "$WT"; _denied "$output"
+  run _whook NotebookEdit "$PRIMARY/notebooks/a.ipynb" "$WT"; _denied "$output"
+}
+
+@test "write guard: a new file in a directory that does not exist yet is still denied" {
+  _wt_fixture
+  run _whook Write "$PRIMARY/src/deep/new/dir/file.py" "$WT"
+  _denied "$output"
+  [[ "$output" == *"/wt/src/deep/new/dir/file.py instead"* ]]
+}
+
+@test "write guard: the physical spelling of the primary checkout is denied too" {
+  _wt_fixture
+  local _phys
+  _phys=$(cd "$PRIMARY" && pwd -P)
+  run _whook Edit "$_phys/src/app.py" "$WT"
+  _denied "$output"
+}
+
+@test "write guard: edits inside the session's worktree are allowed" {
+  _wt_fixture
+  run _whook Edit "$WT/src/app.py" "$WT"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run _whook Write "$(cd "$WT" && pwd -P)/src/brand_new.py" "$WT"
+  [ -z "$output" ]
+}
+
+@test "write guard: shared .rite state is writable through the worktree symlink and directly" {
+  _wt_fixture
+  run _whook Write "$WT/.rite/scratch.md" "$WT"
+  [ -z "$output" ]
+  run _whook Write "$PRIMARY/.rite/scratch.md" "$WT"
+  [ -z "$output" ]
+}
+
+@test "write guard: a sibling name sharing the primary prefix is not the primary checkout" {
+  _wt_fixture
+  mkdir -p "$BATS_TEST_TMPDIR/primary-notes"
+  run _whook Write "$BATS_TEST_TMPDIR/primary-notes/x.md" "$WT"
+  [ -z "$output" ]
+}
+
+@test "write guard: a session launched in the primary checkout may edit it" {
+  _wt_fixture
+  run _whook Edit "$PRIMARY/src/app.py" "$PRIMARY"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}
+
+@test "write guard: paths outside the repository are allowed" {
+  _wt_fixture
+  run _whook Write "$BATS_TEST_TMPDIR/elsewhere/notes.md" "$WT"
+  [ -z "$output" ]
+}
+
+@test "write guard: the pinned launch directory wins over a drifted event cwd" {
+  _wt_fixture
+  # The model ran `cd` into the primary checkout: the event cwd says primary,
+  # the pin still says worktree, so the edit is denied.
+  run _whook Edit "$PRIMARY/src/app.py" "$WT" "$PRIMARY"
+  _denied "$output"
+}
+
+@test "write guard: without a pin the event cwd identifies the worktree" {
+  _wt_fixture
+  run _whook Edit "$PRIMARY/src/app.py" "" "$WT"
+  _denied "$output"
+}
+
+@test "write guard fail-open: non-repo session dir, missing dir, relative path, missing path" {
+  _wt_fixture
+  mkdir -p "$BATS_TEST_TMPDIR/plain"
+  run _whook Edit "$PRIMARY/src/app.py" "$BATS_TEST_TMPDIR/plain"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run _whook Edit "$PRIMARY/src/app.py" "$BATS_TEST_TMPDIR/does-not-exist"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run _whook Edit "src/app.py" "$WT"
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+  run bash -c 'printf "{\"tool_name\":\"Edit\",\"tool_input\":{}}" | _RITE_HOOK_SESSION_DIR="'"$WT"'" bash "'"$HOOK"'"'
+  [ "$status" -eq 0 ]; [ -z "$output" ]
+}
+
+@test "write guard: Read of a primary-checkout file is not gated" {
+  _wt_fixture
+  run _whook Read "$PRIMARY/src/app.py" "$WT"
+  [ -z "$output" ]
+}
+
+# ---- provider wiring: the hook only sees what the settings matcher routes to it ----
+@test "settings: the PreToolUse matcher routes Bash and every file-writing tool to the hook" {
+  run bash -c '
+    set -euo pipefail
+    export RITE_LIB_DIR="'"${BATS_TEST_DIRNAME}/../../lib"'"
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source "$RITE_LIB_DIR/providers/claude.sh" || true
+    _f=$(_claude_write_hook_settings)
+    jq -r ".hooks.PreToolUse[0].matcher" "$_f"
+    rm -f "$_f"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "Bash|Edit|Write|MultiEdit|NotebookEdit" ]
+}
+
+@test "session: the CLI is launched with the launch directory pinned for the hook" {
+  local _tmpdir="$BATS_TEST_TMPDIR/stub"
+  mkdir -p "$_tmpdir" "$BATS_TEST_TMPDIR/launch"
+  cat > "$_tmpdir/claude" <<'STUB'
+#!/bin/bash
+printf '%s\n' "${_RITE_HOOK_SESSION_DIR:-unset}" > "$PIN_OUT"
+exit 0
+STUB
+  chmod +x "$_tmpdir/claude"
+  run bash -c "
+    set -euo pipefail
+    export PATH='$_tmpdir:/usr/bin:/bin'
+    export PIN_OUT='$BATS_TEST_TMPDIR/pin.out'
+    export RITE_LIB_DIR='${BATS_TEST_DIRNAME}/../../lib'
+    export _RITE_TIMEOUT_CHECKED=true
+    RITE_SOURCE_FUNCTIONS_ONLY=1 source \"\$RITE_LIB_DIR/providers/claude.sh\" || true
+    set +u; set +o pipefail
+    run_with_timeout() { shift; \"\$@\"; }
+    claude_provider_detect_cli
+    _claude_write_hook_settings() { echo ''; }
+    claude_provider_build_tool_restrictions() { echo 'none'; }
+    claude_provider_resolve_model() { echo 'claude-sonnet-4-6'; }
+    cd '$BATS_TEST_TMPDIR/launch'
+    claude_provider_run_agentic_session 'test prompt' 10 true /dev/null
+    echo \"leaked=\${_RITE_HOOK_SESSION_DIR:-unset}\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$(cat "$BATS_TEST_TMPDIR/pin.out")" = "$(cd "$BATS_TEST_TMPDIR/launch" && pwd -P)" ]
+  [[ "$output" == *"leaked=unset"* ]]
 }

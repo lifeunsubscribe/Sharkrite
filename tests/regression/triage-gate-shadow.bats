@@ -47,6 +47,19 @@ _run_shadow() { # $1=diff $2=files
   [[ "$output" == *"category=docs"* ]]
 }
 
+@test "shadow: a pretty-printed multi-line classifier answer is parsed" {
+  provider_run_prompt() {
+    printf '%s\n' '```json' '{' '  "verdict": "trivial",' '  "confidence": 0.95,' \
+      '  "reason": "docs only"' '}' '```'
+  }
+  export -f provider_run_prompt
+  diff=$(printf 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n+a documentation line\n')
+  run _run_shadow "$diff" 1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"haiku=trivial"* ]]
+  [[ "$output" != *"unparseable"* ]]
+}
+
 @test "shadow: deletion present → Layer-1 guard forces substantive" {
   export TRIAGE_STUB_VERDICT=trivial TRIAGE_STUB_CONF=0.99  # classifier WOULD say trivial...
   diff=$(printf 'diff --git a/x.sh b/x.sh\ndeleted file mode 100644\n--- a/x.sh\n+++ /dev/null\n-old\n')

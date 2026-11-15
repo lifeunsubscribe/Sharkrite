@@ -123,8 +123,11 @@ Definitions:
     return "$_exit"
   fi
 
+  # The model often pretty-prints the object across several lines (inside a
+  # code fence, with prose after it). grep -o matches within one line, so the
+  # answer is flattened first; a multi-line object was otherwise a parse error.
   local _json _verdict
-  _json=$(echo "$_resp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
+  _json=$(tr '\n' ' ' <<< "$_resp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
   if [ -z "${_json:-}" ]; then
     return 1
   fi

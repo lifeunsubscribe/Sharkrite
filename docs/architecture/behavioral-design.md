@@ -710,6 +710,27 @@ The dev-session prompt is assembled from a provider preamble (`claude_provider_d
 
 **Fix direction (confirmed working):** a **PreToolUse hook** (passed via `--settings`) *is* enforced under stream-json — verified: a hook returning `permissionDecision: deny` for `make`/`bats`/`pytest` blocks the command in the same stream-json invocation where `--disallowedTools` fails. Migrating the deny list to a sharkrite-managed PreToolUse hook restores a real deterministic backstop. The Phase 4 prompt-framing fix above removes the *invitation* to run the suite; the hook would restore *enforcement*. Until the hook lands, treat the prompt framing as the only active control.
 
+### Hook Write Guard: A Worktree Session Cannot Edit The Primary Checkout (2026-11-15)
+
+**Live failure (freshup #597):** the dev session's Read and Edit calls addressed the primary checkout by absolute path from its first edit. At the end it found an empty diff in its worktree, said so, and applied the same edits again in the worktree. The PR was correct, but the first set of edits stayed behind in the operator's checkout as uncommitted changes nobody had made on purpose.
+
+**Contract:** the PreToolUse hook also gates `Edit`, `Write`, `MultiEdit` and `NotebookEdit`. When the session runs in a linked worktree and the target file is inside the primary checkout, the call is denied and the reason names the same file inside the worktree, so the model's next call is the corrected one. Allowed by construction:
+
+- a session launched in the primary checkout itself (repos and commands that use no worktree);
+- any path under the session's own worktree, judged on the path as written, so the worktree's `.rite` and `.venv` symlinks into the primary checkout stay writable;
+- the shared `<primary>/.rite/` state directory;
+- every path outside the repository.
+
+**The worktree is the launch directory, pinned.** `claude_provider_run_agentic_session` passes `_RITE_HOOK_SESSION_DIR` in the CLI's environment and the hook inherits it. The hook event's own `cwd` follows the model's `cd`, and a session that has wandered into the primary checkout is exactly the one the guard exists for, so `cwd` is only the fallback for a hook invoked without the pin.
+
+**Fail-open, like the rest of the hook.** A relative path, a directory that is not a git repository, a bare repository, or a missing field allows the call. The guard exists to redirect a confused session, not to be a security boundary.
+
+**Not covered:** writes made through the Bash tool (`sed -i`, `>` redirects) are not parsed for target paths. The live failure went through the Edit tool, and a path parser for arbitrary shell would be the quote-blind regex problem again with a worse failure mode.
+
+**Rejected:** a prompt line telling the session which directory it is in. The session already runs with the worktree as its cwd and still chose the other path; prompt-only prohibitions are the layer this hook was built to back up.
+
+**Enforcement:** `tests/regression/pretooluse-deny-hook.bats` (the "write guard" tests, plus the settings-matcher and launch-pin tests).
+
 ### Supervised commit/push is a single prompt (2026-10-11, issue #1128)
 
 The supervised dev-flow previously asked five sequential questions: "Run tests before committing?", "Create commit?", "Accept this message?", "Push to remote?", and a separate pre-exit salvage pair. These are now consolidated to one: **"Commit and push N file(s)? [y/n/e]"** (plus the salvage equivalent on the interrupt path). `e` shows the message for edit then re-asks; `n` aborts as the old "Create commit? → n" path did. The "Run tests before committing?" prompt is deleted outright — `_run_dev_test_gate` runs the gate unconditionally for all non-orchestrated runs (auto and supervised standalone alike); the prompt duplicated machinery and invited the #495 framing regression. Auto mode is unchanged.
@@ -3044,3 +3065,31 @@ supplies a usable path: prose-only DO AND no path-shaped FtM entries.
 of enforceable paths.  It must therefore be complete; an omitted file will be
 flagged as a scope violation during the dev session even if it was implicitly
 intended to be in scope.
+
+### DO NOT Is Enforced By Path, Never By Prose Word
+
+A `DO NOT` bullet excludes only the paths it names.  `_scope_donot_paths`
+reduces each bullet to its path tokens: a bullet that is one path (`lib/core/secret.sh`)
+is that path, and a prose bullet contributes the strong path tokens inside it
+(`change \`src/pages/Recipes.tsx\` or the feed card` excludes that one file).  A
+bullet with no path in it (`touch the frontend`, `make chips clickable`) excludes
+nothing — it is guidance for the session and the reviewer, not something a path
+comparison can check.
+
+A file the issue names exactly as something to change — a path token in a DO
+bullet, in Files to Modify, or in Documentation Impact — is never a violation.
+A `DO NOT` bullet that mentions such a file restricts *how* it changes.  A
+`DO NOT` path still wins over a DO directory or glob that happens to cover it.
+
+**Rejected: matching the words of a prose `DO NOT` bullet against changed
+paths.**  The original implementation split the bullet into words, dropped a
+stop-word list, and flagged any file whose path contained a remaining word.
+Words are not paths: "on" is inside every `frontend/` path, "source" inside
+`sourceNames.ts`, "theme" inside the `themeRows.ts` the issue listed.  In the
+freshup batch of 2026-11-15 this produced every scope warning on three PRs, all
+on listed files, while the one bullet that did name real paths was treated as a
+single unmatchable pattern and enforced nothing.  Do not reintroduce word
+matching or grow a stop-word list; a file outside the declared set is already
+caught by the "must match a DO path" check.
+
+**Enforcement:** `tests/regression/scope-ftm-described-bullets.bats`.

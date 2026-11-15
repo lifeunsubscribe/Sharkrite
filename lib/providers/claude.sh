@@ -287,6 +287,8 @@ _claude_pretooluse_hook_path() {
 # under --output-format stream-json (CLI 2.0.24), but PreToolUse hooks are honored.
 # See: docs/architecture/behavioral-design.md → "Deterministic backstop is broken".
 # Echoes nothing if the hook script is missing (fail open rather than crash).
+# The matcher also routes the file-writing tools to the hook: its write guard
+# denies edits aimed at the primary checkout from a worktree session.
 _claude_write_hook_settings() {
   local _hook
   _hook=$(_claude_pretooluse_hook_path)
@@ -295,7 +297,7 @@ _claude_write_hook_settings() {
   _file=$(mktemp)
   # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: $_hook path must be expanded into the JSON
   cat > "$_file" <<JSON
-{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"$_hook"}]}]}}
+{"hooks":{"PreToolUse":[{"matcher":"Bash|Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"$_hook"}]}]}}
 JSON
   echo "$_file"
 }
@@ -322,6 +324,13 @@ claude_provider_run_agentic_session() {
 
   local _exit_code=0
 
+  # Pin the launch directory for the hook's write guard. The hook inherits this
+  # through the CLI's environment; the event's own cwd drifts when the model
+  # runs `cd`, and a session that has wandered into the primary checkout is
+  # exactly the one the guard exists for.
+  local _session_dir
+  _session_dir=$(pwd -P 2>/dev/null || pwd)
+
   # Capture stdout to a tee file so we can detect non-JSON usage-cap messages
   # ("Spending cap reached resets 11:20pm" and similar) that claude --print
   # emits outside the stream-json envelope. The jq stream filter silently
@@ -334,7 +343,7 @@ claude_provider_run_agentic_session() {
   if [ "$auto_mode" = true ]; then
     # Auto mode: prompt as positional arg, permissions bypassed.
     # --disallowedTools is variadic but positional arg works when it's last.
-    run_with_timeout "$timeout" "$_cmd" --model "$_model" \
+    _RITE_HOOK_SESSION_DIR="$_session_dir" run_with_timeout "$timeout" "$_cmd" --model "$_model" \
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" ${_settings_args[@]+"${_settings_args[@]}"} --output-format stream-json \
       "$prompt" 2>"$stderr_file" | \
@@ -352,7 +361,7 @@ claude_provider_run_agentic_session() {
     local _prompt_file
     _prompt_file=$(mktemp)
     printf '%s' "$prompt" > "$_prompt_file"
-    run_with_timeout "$timeout" "$_cmd" --model "$_model" \
+    _RITE_HOOK_SESSION_DIR="$_session_dir" run_with_timeout "$timeout" "$_cmd" --model "$_model" \
       --print --verbose --dangerously-skip-permissions \
       --disallowedTools "$_restrictions" ${_settings_args[@]+"${_settings_args[@]}"} --output-format stream-json \
       < "$_prompt_file" 2>"$stderr_file" | \

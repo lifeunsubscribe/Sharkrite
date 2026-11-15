@@ -102,6 +102,36 @@ _make_body() {
 }
 
 # ---------------------------------------------------------------------------
+# Classifier answer shapes. The triage model frequently pretty-prints its JSON
+# across several lines inside a code fence and adds prose after it (live:
+# freshup batch 2026-11-15, 19 of 30 pool entries skipped classify_failed_rc1).
+# ---------------------------------------------------------------------------
+@test "classify: a fenced multi-line JSON answer with trailing prose is parsed" {
+  provider_run_prompt() {
+    printf '%s\n' '```json' '{' '  "verdict": "still-open",' \
+      '  "reason": "Exception caught silently with no logging"' '}' '```' '' \
+      'The handler at lines 438-439 is unchanged.'
+  }
+  run _classify_finding 42 "finding body" "code region" "claude-haiku-4-5"
+  [ "$status" -eq 0 ]
+  [ "$output" = "still-open" ]
+}
+
+@test "classify: a compact single-line JSON answer is still parsed" {
+  provider_run_prompt() { printf '{"verdict":"partially-resolved","reason":"guard added"}'; }
+  run _classify_finding 42 "finding body" "code region" "claude-haiku-4-5"
+  [ "$status" -eq 0 ]
+  [ "$output" = "partially-resolved" ]
+}
+
+@test "classify: an answer with no verdict object is a parse error" {
+  provider_run_prompt() { printf 'I could not find the file.\nNo JSON here.\n'; }
+  run _classify_finding 42 "finding body" "code region" "claude-haiku-4-5"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
 # Path 2: Changed file, verdict = resolved → issue closed.
 # ---------------------------------------------------------------------------
 @test "resolved finding: issue is closed with a comment" {
