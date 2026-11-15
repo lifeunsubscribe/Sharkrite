@@ -242,12 +242,11 @@ RITE_MAX_FINDINGS_PER_RUN="${RITE_MAX_FINDINGS_PER_RUN:-20}"
 # Workflow mode
 WORKFLOW_MODE="${WORKFLOW_MODE:-supervised}"
 
-# Doc-drift consent (opt-in). Values: "sync" (record drift per merge; `rite docs`
-# reconciles), "changelog" (legacy: record drift per merge), "off" (declined).
+# Doc-drift recording mode. Values: "sync" (record drift per merge; `rite docs`
+# reconciles), "changelog" (legacy: record drift per merge), "off" (opt-out).
 # Nothing edits docs/ automatically in any mode. See doc-consent.sh.
-# EMPTY DEFAULT IS INTENTIONAL: empty means "not yet asked" — nothing is
-# recorded, and a supervised run or `rite docs` asks.
-# Set via `rite --init` or a supervised workflow run.
+# EMPTY DEFAULT IS INTENTIONAL: unset means recording is on by default.
+# Set "off" via `rite align-docs --disable` to opt out.
 RITE_DOC_MODE="${RITE_DOC_MODE:-}"
 
 # Notifications (opt-in per project — global env vars like SLACK_WEBHOOK are ignored

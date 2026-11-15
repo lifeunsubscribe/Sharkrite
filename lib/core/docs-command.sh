@@ -5,9 +5,9 @@
 # doc features (consent, drift audit/reconcile, directed updates).
 #
 # Dispatches based on effective documentation state:
-#   never-run   → consent/enable flow (unset or off: ask, record sync|off)
+#   never-run   → prints pointer to 'rite align-docs'; no recording
 #   run-before  → drift audit (report potential inaccuracies vs current code)
-#   input given → directed-update seam (engine lands with #1049)
+#   input given → directed-update seam
 #
 # Public API:
 #   rite_docs [instructions]       — main entry point; called by bin/rite
@@ -4056,6 +4056,19 @@ CLEAR_DOCS_EOF
 rite_docs() {
   local instructions="${*:-}"
 
+  # Block bare "align" as the first word of instructions — it is not a subcommand.
+  # rite docs "align the README with the code" (a quoted sentence) is allowed and
+  # routes to the directed-update engine below; only the bare word "align" (or
+  # "align" followed by additional positional args) is rejected.
+  case "${1:-}" in
+    align)
+      printf "Error: 'rite docs align' is not a valid command.\n" >&2
+      printf "  To audit docs:          rite align-docs [doc ...]\n" >&2
+      printf "  For a directed update:  rite docs \"<instructions>\"\n" >&2
+      return 1
+      ;;
+  esac
+
   # Provider preflight: fail fast on untrusted workspace (Claude CLI >=2.1.284).
   # load_provider was called at module top; detect_cli populates CLAUDE_PROVIDER_CMD.
   # Ordered BEFORE the --resume dispatch below: resume runs the interactive
@@ -4087,8 +4100,8 @@ rite_docs() {
         _docs_ensure_map || exit 1
         docs_directed_update "$instructions" || true
       else
-        # No instructions and no consent recorded: direct user to the switch.
-        print_info "Doc drift tracking is not enabled. Run 'rite align-docs' to turn it on or off."
+        # No instructions: point to the audit command and the directed-update form.
+        print_info "Run 'rite align-docs [doc ...]' to audit docs, or 'rite docs \"<instructions>\"' for a directed update."
       fi
       ;;
 

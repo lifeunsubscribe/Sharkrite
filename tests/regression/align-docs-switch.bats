@@ -2,14 +2,14 @@
 # sharkrite-test-covers: lib/utils/doc-consent.sh, bin/rite
 # tests/regression/align-docs-switch.bats
 #
-# Regression tests for #1424: `rite align-docs` as the single on/off switch
-# for doc drift tracking.
+# Regression tests for #1424 and #1805: `rite align-docs` as the audit entry
+# point and on/off switch for doc drift tracking.
 #
 # Tests cover:
-#   - run_align_docs_switch: non-TTY never enables (stdin from /dev/null)
-#   - run_align_docs_switch --disable: records off; restores first-run semantics
-#   - Structural: prompt text states audit runs either way
-#   - Structural: rite docs and --init no longer contain their own enable prompts
+#   - run_align_docs_switch: runs passes in every state (unset, off, sync) without prompting
+#   - run_align_docs_switch --disable: records off
+#   - run_align_docs_switch --enable: records sync, works without a terminal
+#   - Structural: prompt function is gone; rite docs and --init no longer have enable prompts
 #   - bin/rite dispatch: align-docs routes to run_align_docs_switch
 
 load '../helpers/setup'
@@ -49,11 +49,12 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Non-TTY: never prompts and never enables ([ -t 0 ] false)
+# every state: plain rite align-docs runs passes without prompting
 # ---------------------------------------------------------------------------
 
-@test "run_align_docs_switch in non-TTY never enables and never records sync" {
-  # < /dev/null makes [ -t 0 ] return false — the function must not prompt or record
+@test "every state: run_align_docs_switch with mode unset exits 0 without prompting" {
+  # Non-TTY: passes skip with an info message (TTY guard in _run_align_docs_passes).
+  # No prompt, no mode change.
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
@@ -66,25 +67,48 @@ teardown() {
     echo \"mode=\${RITE_DOC_MODE:-}\"
   " < /dev/null
   [ "$status" -eq 0 ]
-  # Non-TTY must not enable — no sync or changelog recorded
+  # Must not change the mode
   [[ "$output" != *"mode=sync"* ]]
-  [[ "$output" != *"mode=changelog"* ]]
-  # Config must have no RITE_DOC_MODE= line
+  [[ "$output" != *"mode=off"* ]]
+  # Config must have no RITE_DOC_MODE= line written
   [ "$(grep -c '^RITE_DOC_MODE=' "$RITE_PROJECT_ROOT/.rite/config" || true)" -eq 0 ]
 }
 
-@test "run_align_docs_switch in non-TTY exits 0 (degrades gracefully)" {
+@test "every state: run_align_docs_switch with mode=off exits 0 without prompting" {
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     export RITE_DATA_DIR='.rite'
     export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
     export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
-    unset RITE_DOC_MODE 2>/dev/null || true
+    export RITE_DOC_MODE=off
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    run_align_docs_switch
+    echo \"mode=\${RITE_DOC_MODE:-}\"
+  " < /dev/null
+  [ "$status" -eq 0 ]
+  # Mode must remain off (not changed by plain align-docs)
+  [[ "$output" == *"mode=off"* ]]
+}
+
+@test "every state: run_align_docs_switch with mode=sync runs both passes" {
+  # Verifies the passes are invoked regardless of consent state.
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    export RITE_DOC_MODE=sync
+    export _RITE_FORCE_TTY=1
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
+    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
     run_align_docs_switch
   " < /dev/null
   [ "$status" -eq 0 ]
+  [[ "$output" == *"RESTRUCTURE_RAN"* ]]
+  [[ "$output" == *"AUDIT_RAN"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -121,8 +145,9 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
-@test "after --disable, _docs_resolve_state returns never-run (first-run semantics restored)" {
-  # off maps to never-run in _docs_resolve_state so the next align-docs run asks again
+@test "after --disable, _docs_resolve_state returns never-run (rite docs audit path)" {
+  # off maps to never-run in _docs_resolve_state — rite docs uses never-run to show
+  # the prompt message; rite align-docs itself ignores this state and always runs passes.
   run bash -c "
     set -euo pipefail
     export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
@@ -196,13 +221,10 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# TTY y-path: feeding y via stdin records sync
+# enable: --enable records sync and works without a terminal
 # ---------------------------------------------------------------------------
 
-@test "run_align_docs_switch TTY y-path records sync when user answers y" {
-  # Call _align_docs_prompt_and_record directly — the helper that run_align_docs_switch
-  # delegates to after the [ -t 0 ] guard. Testing the helper directly exercises the y-path
-  # without any production bypass of the non-TTY guard.
+@test "--enable records sync when mode is unset" {
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
@@ -211,72 +233,55 @@ teardown() {
     export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
     unset RITE_DOC_MODE 2>/dev/null || true
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
-    _align_docs_prompt_and_record
+    run_align_docs_switch --enable
     grep '^RITE_DOC_MODE=' '$RITE_PROJECT_ROOT/.rite/config' || true
-  " <<< "y"
+  " < /dev/null
   [ "$status" -eq 0 ]
   [[ "$output" == *'RITE_DOC_MODE="sync"'* ]]
 }
 
-@test "run_align_docs_switch TTY y-path runs docs_run_restructure_assessment after enabling" {
-  # Verify the first-run yes path falls through to the passes without a second invocation.
-  # Uses _RITE_FORCE_TTY=1 to satisfy the TTY guard inside _run_align_docs_passes when
-  # stdin is a here-string (not a real TTY). Stubs are defined after source so the
-  # function-sentinel re-source guard on doc-consent.sh cannot overwrite them.
+@test "--enable records sync when mode is off (re-enables)" {
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
     export RITE_DATA_DIR='.rite'
     export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
     export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
-    unset RITE_DOC_MODE 2>/dev/null || true
-    export _RITE_FORCE_TTY=1
+    export RITE_DOC_MODE=off
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
-    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
-    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
-    _align_docs_prompt_and_record
-  " <<< "y"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"RESTRUCTURE_RAN"* ]]
-}
-
-@test "run_align_docs_switch TTY y-path runs docs_run_assertion_audit after enabling" {
-  run bash -c "
-    set -euo pipefail
-    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
-    export RITE_DATA_DIR='.rite'
-    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
-    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
-    unset RITE_DOC_MODE 2>/dev/null || true
-    export _RITE_FORCE_TTY=1
-    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
-    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
-    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
-    _align_docs_prompt_and_record
-  " <<< "y"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"AUDIT_RAN"* ]]
-}
-
-@test "run_align_docs_switch TTY n-path records off and runs no passes" {
-  run bash -c "
-    set -euo pipefail
-    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
-    export RITE_DATA_DIR='.rite'
-    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
-    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
-    unset RITE_DOC_MODE 2>/dev/null || true
-    export _RITE_FORCE_TTY=1
-    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
-    docs_run_restructure_assessment() { echo 'RESTRUCTURE_RAN'; }
-    docs_run_assertion_audit() { echo 'AUDIT_RAN'; }
-    _align_docs_prompt_and_record
+    run_align_docs_switch --enable
     grep '^RITE_DOC_MODE=' '$RITE_PROJECT_ROOT/.rite/config' || true
-  " <<< "n"
+  " < /dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" == *'RITE_DOC_MODE="off"'* ]]
-  [[ "$output" != *"RESTRUCTURE_RAN"* ]]
-  [[ "$output" != *"AUDIT_RAN"* ]]
+  [[ "$output" == *'RITE_DOC_MODE="sync"'* ]]
+}
+
+@test "--enable exits 0 in non-TTY (works without a terminal)" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    unset RITE_DOC_MODE 2>/dev/null || true
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    run_align_docs_switch --enable
+  " < /dev/null
+  [ "$status" -eq 0 ]
+}
+
+@test "--enable with a doc name exits 1" {
+  run bash -c "
+    set -euo pipefail
+    export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
+    export RITE_DATA_DIR='.rite'
+    export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
+    export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
+    source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
+    run_align_docs_switch --enable behavioral-design
+  " < /dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"does not accept doc names"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -290,21 +295,22 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
-# Prompt text invariant: must state the audit runs either way
+# Structural: prompt function gone; --enable/--disable are the mode-change path
 # ---------------------------------------------------------------------------
 
-@test "run_align_docs_switch prompt text states the audit runs either way" {
-  # Structural: acceptance criterion requires this exact framing
-  count=$(grep -c "either way" \
+@test "_align_docs_prompt_and_record is gone (prompt removed in #1805)" {
+  count=$(grep -c "_align_docs_prompt_and_record" \
     "$RITE_REPO_ROOT/lib/utils/doc-consent.sh" || true)
-  [ "$count" -ge 1 ]
+  [ "$count" -eq 0 ]
 }
 
-@test "run_align_docs_switch prompt asks about enabling, not about tracking" {
-  # Structural: the new prompt asks 'Enable doc drift tracking?' not the old wording
-  count=$(grep -c "Enable doc drift tracking" \
-    "$RITE_REPO_ROOT/lib/utils/doc-consent.sh" || true)
-  [ "$count" -ge 1 ]
+@test "run_align_docs_switch does not contain 'read -p' (no prompt)" {
+  # Only --enable/--disable change mode; the plain path never prompts.
+  local body
+  body="$(declare -f run_align_docs_switch 2>/dev/null || grep -A100 '^run_align_docs_switch()' \
+    "$RITE_REPO_ROOT/lib/utils/doc-consent.sh" | head -60 || true)"
+  count=$(grep -c "read -p" <<< "$body" || true)
+  [ "$count" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -324,11 +330,10 @@ teardown() {
 }
 
 @test "ensure_doc_mode no longer prompts (is a permanent no-op)" {
-  # Structural: ensure_doc_mode must not contain 'read -p' — consent moved to align-docs
+  # doc-consent.sh must not contain 'read -p' anywhere (prompt removed in #1805).
   count=$(grep -c 'read -p' "$RITE_REPO_ROOT/lib/utils/doc-consent.sh" || true)
-  # The only read -p in doc-consent.sh should be in run_align_docs_switch (the on/off switch)
-  # — ensure_doc_mode specifically must not have one.
-  # Verify by checking the function body contains no read -p.
+  [ "$count" -eq 0 ]
+  # Verify ensure_doc_mode is callable twice without error.
   run bash -c "
     set -euo pipefail
     export RITE_PROJECT_ROOT='$RITE_PROJECT_ROOT'
@@ -336,7 +341,6 @@ teardown() {
     export RITE_INSTALL_DIR='$RITE_REPO_ROOT'
     export RITE_LIB_DIR='$RITE_REPO_ROOT/lib'
     source '$RITE_REPO_ROOT/lib/utils/doc-consent.sh'
-    # ensure_doc_mode is the no-op: source twice + call must be safe
     ensure_doc_mode
     ensure_doc_mode
     echo OK

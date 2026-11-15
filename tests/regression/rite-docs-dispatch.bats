@@ -381,3 +381,54 @@ teardown() {
   [ "$status" -eq 0 ]
   [ ! -f "$FAKE_PROJECT/.rite/state/drift-log.calls" ]
 }
+
+# ---------------------------------------------------------------------------
+# docs align: block rite docs align [anything] with corrected commands (#1805)
+# ---------------------------------------------------------------------------
+
+@test "docs align: 'rite docs align' exits 1 (not a valid command)" {
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="sync" \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" "align" < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+}
+
+@test "docs align: 'rite docs align' prints corrected audit command" {
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="sync" \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" "align" < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -q "align-docs"
+}
+
+@test "docs align: 'rite docs align README' exits 1 (not a valid command)" {
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="sync" \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" "align" "README" < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+}
+
+@test "quoted align: 'rite docs \"align the README with the code\"' routes to directed-update engine" {
+  touch "$FAKE_PROJECT/.rite/state/docs-map.tsv"
+  run env \
+    RITE_LIB_DIR="$PROJECT_ROOT/lib" \
+    RITE_PROJECT_ROOT="$FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_DOC_MODE="sync" \
+    RITE_LOG_AUTO=false \
+    bash "$_DOCS_HELPER" "align the README with the code" < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Generating doc proposals"
+}

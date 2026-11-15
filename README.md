@@ -155,9 +155,11 @@ See [config/project.conf.example](config/project.conf.example) for all options, 
 
 ## Keeping your project docs accurate
 
-Sharkrite never edits your docs on its own. Doc drift tracking is opt-in:
+Sharkrite never edits your docs on its own. Doc drift recording is on by default:
 
-- **Turn it on** with `rite docs` (or answer `y` at `rite --init`). Each merge then records a drift entry naming the docs the change may have made inaccurate.
+- **Each merge records** a drift entry naming the docs the change may have made inaccurate. No setup needed; `RITE_DOC_MODE` unset means recording is active.
+- **Audit docs against code** with `rite align-docs [doc ...]` — runs the restructure assessment and assertion audit in every state, without prompting.
+- **Disable recording** with `rite align-docs --disable`; re-enable with `rite align-docs --enable`.
 - **Review it** with `rite docs`: it audits drift and proposes fixes one at a time — approve, skip, or give feedback. Approved edits land as a docs PR for human review.
 - **Directed updates:** `rite docs "<instructions>"` proposes specific edits or new docs through the same approval loop.
 - **Resume a saved proposal:** `rite docs --resume <branch>` loads a doc proposal saved by a terminal-less promote and runs it through the same approval loop.

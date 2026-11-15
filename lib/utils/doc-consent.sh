@@ -3,25 +3,24 @@
 #
 # Doc-mode consent helpers.
 #
-# Tracks whether the user has opted in to doc-drift tracking. Records the
-# decision as RITE_DOC_MODE in .rite/config. No mode ever edits docs/ on its
-# own — corrections go through `rite docs`' propose/approve loop.
+# Tracks the doc-drift recording mode. Records the decision as RITE_DOC_MODE
+# in .rite/config. No mode ever edits docs/ on its own — corrections go
+# through `rite docs`' propose/approve loop.
 #
 # Modes (recorded in RITE_DOC_MODE):
-#   sync      — opted in: each merge records a drift entry; `rite docs`
-#               offers to reconcile entries interactively
-#   changelog — legacy opt-in: each merge records a drift entry
-#   off       — asked and declined: nothing is recorded; `rite align-docs`
-#               prompts again (first-run semantics restored)
-#   (unset)   — never asked: nothing is recorded
+#   sync      — each merge records a drift entry; `rite docs` offers to
+#               reconcile entries interactively
+#   changelog — legacy: each merge records a drift entry
+#   off       — explicit opt-out: nothing is recorded
+#   (unset)   — on by default: recording happens, same as sync
 #
 # The per-merge doc-sync rewrite that `sync` used to switch on (.rite/doc-sync.md)
 # was retired 2026-10-21 — it committed raw model output into orrery's README.
 #
 # Public API:
-#   record_doc_mode <sync|changelog|off>  — write to .rite/config + export
-#   ensure_doc_mode                       — no-op (consent owned by `rite align-docs`)
-#   run_align_docs_switch [--disable]     — the single on/off entry point
+#   record_doc_mode <sync|changelog|off>              — write to .rite/config + export
+#   ensure_doc_mode                                   — no-op (permanent)
+#   run_align_docs_switch [--enable|--disable|doc...] — audit entry point
 
 set -euo pipefail
 
@@ -101,17 +100,16 @@ ensure_doc_mode() {
 }
 
 # ---------------------------------------------------------------------------
-# _run_align_docs_passes
+# _run_align_docs_passes [doc ...]
 #
 # Internal helper: run restructure assessment then assertion audit when the
 # functions are available and stdin is an interactive terminal.
-# Shared by the already-enabled path and the first-run yes path so both
-# behave identically without duplicating the TTY guard logic.
+# Optional doc name args are forwarded to both passes unchanged.
 # ---------------------------------------------------------------------------
 _run_align_docs_passes() {
   if declare -f docs_run_restructure_assessment >/dev/null 2>&1; then
     if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
-      docs_run_restructure_assessment
+      docs_run_restructure_assessment "$@"
     else
       if declare -f print_info >/dev/null 2>&1; then
         print_info "Restructure assessment skipped (not an interactive terminal — run 'rite align-docs' interactively)."
@@ -120,7 +118,7 @@ _run_align_docs_passes() {
   fi
   if declare -f docs_run_assertion_audit >/dev/null 2>&1; then
     if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
-      docs_run_assertion_audit
+      docs_run_assertion_audit "$@"
     else
       if declare -f print_info >/dev/null 2>&1; then
         print_info "Assertion audit skipped (not an interactive terminal — run 'rite align-docs' interactively)."
@@ -130,28 +128,25 @@ _run_align_docs_passes() {
 }
 
 # ---------------------------------------------------------------------------
-# run_align_docs_switch [--disable]
+# run_align_docs_switch [--enable | --disable | doc ...]
 #
-# The single on/off entry point for doc drift tracking. Called by `rite align-docs`.
+# The audit entry point and on/off switch for doc drift tracking.
+# Called by `rite align-docs`.
 #
 # Behaviour:
-#   --disable   Record off; print confirmation. The next plain `rite align-docs`
-#               will ask again (off maps to never-run in _docs_resolve_state).
-#               Extra args after --disable are rejected with exit 1 (no per-doc
-#               disable; pass doc names to 'rite align-docs [doc ...]' instead).
-#   (no args)   If already enabled (sync/changelog): report state, no prompt.
-#               If non-TTY: print a message, never enable, exit 0.
-#               If TTY + never enabled: ask y/n; prompt text states the audit
-#               runs either way. Records sync on yes, off on no.
-#               After enabling: fall through into the restructure assessment
-#               and assertion audit (same passes as the already-enabled path).
-#
-# Degrades gracefully in non-TTY ([ -t 0 ] false) — never enables unattended.
+#   --enable    Record sync; print confirmation. Works without a terminal.
+#               Extra args after --enable are rejected with exit 1.
+#   --disable   Record off; print confirmation. Works without a terminal.
+#               Extra args after --disable are rejected with exit 1.
+#   doc [...]   Resolve named docs (exits 1 on unknown/ambiguous), then run
+#               both audit passes scoped to those docs. Never changes the mode.
+#   (no args)   Run both audit passes over all docs. Never changes the mode.
+#               Works in every mode (unset, off, sync) without prompting.
 # ---------------------------------------------------------------------------
 run_align_docs_switch() {
-  local _disable_flag="${1:-}"
+  local _first_arg="${1:-}"
 
-  if [ "$_disable_flag" = "--disable" ]; then
+  if [ "$_first_arg" = "--disable" ]; then
     if [ $# -gt 1 ]; then
       echo "Error: 'rite align-docs --disable' does not accept doc names." >&2
       echo "  Usage: rite align-docs --disable" >&2
@@ -159,75 +154,39 @@ run_align_docs_switch() {
     fi
     record_doc_mode "off"
     if declare -f print_info >/dev/null 2>&1; then
-      print_info "Doc drift tracking disabled. Run 'rite align-docs' to re-enable."
+      print_info "Doc drift tracking disabled. Run 'rite align-docs --enable' to re-enable."
     else
-      echo "  Doc drift tracking disabled. Run 'rite align-docs' to re-enable." >&2
+      echo "  Doc drift tracking disabled. Run 'rite align-docs --enable' to re-enable." >&2
     fi
     return 0
   fi
 
-  if [ -n "$_disable_flag" ]; then
-    echo "Error: unknown argument '${_disable_flag}'. Usage: rite align-docs [--disable]" >&2
-    return 1
-  fi
-
-  # Already enabled: run the align-docs passes (restructure assessment first).
-  case "${RITE_DOC_MODE:-}" in
-    sync|changelog)
-      if declare -f print_info >/dev/null 2>&1; then
-        print_info "Doc drift tracking is on (mode: ${RITE_DOC_MODE}). Run 'rite align-docs --disable' to turn it off."
-      else
-        echo "  Doc drift tracking is on (mode: ${RITE_DOC_MODE}). Run 'rite align-docs --disable' to turn it off." >&2
-      fi
-      _run_align_docs_passes
-      return 0
-      ;;
-  esac
-
-  # Mode is unset or off — first-run path
-  if [ ! -t 0 ]; then
-    if declare -f print_info >/dev/null 2>&1; then
-      print_info "Not an interactive terminal — run 'rite align-docs' interactively to configure doc drift tracking."
-    else
-      echo "  Not an interactive terminal — run 'rite align-docs' interactively to configure doc drift tracking." >&2
+  if [ "$_first_arg" = "--enable" ]; then
+    if [ $# -gt 1 ]; then
+      echo "Error: 'rite align-docs --enable' does not accept doc names." >&2
+      echo "  Usage: rite align-docs --enable" >&2
+      return 1
     fi
-    return 0
-  fi
-
-  _align_docs_prompt_and_record
-}
-
-# ---------------------------------------------------------------------------
-# _align_docs_prompt_and_record
-#
-# Internal helper: display the consent prompt and record the user's choice.
-# Caller must have already verified stdin is a TTY before calling this.
-# Extracted to allow unit tests to exercise the y/n path without needing any
-# bypass of the [ -t 0 ] guard in run_align_docs_switch.
-# ---------------------------------------------------------------------------
-_align_docs_prompt_and_record() {
-  echo "" >&2
-  echo "  Sharkrite can track which docs a merge may have made inaccurate." >&2
-  echo "  The audit (checking docs against code) runs either way." >&2
-  local _reply_val="N"
-  read -p "  Enable doc drift tracking? [y/N] " -n 1 -r
-  echo >&2
-  _reply_val="${REPLY:-N}"
-
-  if [[ "$_reply_val" =~ ^[Yy]$ ]]; then
     record_doc_mode "sync"
     if declare -f print_success >/dev/null 2>&1; then
       print_success "Doc drift tracking enabled."
     else
       echo "  Doc drift tracking enabled." >&2
     fi
-    _run_align_docs_passes
+    return 0
+  fi
+
+  if [ -n "$_first_arg" ] && [ "${_first_arg#--}" != "$_first_arg" ]; then
+    echo "Error: unknown argument '${_first_arg}'. Usage: rite align-docs [--enable | --disable | doc ...]" >&2
+    return 1
+  fi
+
+  # No mode changes: resolve any named docs, then run both audit passes.
+  if [ $# -gt 0 ] && declare -f docs_resolve_doc_scope >/dev/null 2>&1; then
+    local _rads_resolved
+    _rads_resolved="$(docs_resolve_doc_scope "$@")" || return 1
+    _run_align_docs_passes "$_rads_resolved"
   else
-    record_doc_mode "off"
-    if declare -f print_info >/dev/null 2>&1; then
-      print_info "Doc drift tracking off. Run 'rite align-docs' to turn it on."
-    else
-      echo "  Doc drift tracking off. Run 'rite align-docs' to turn it on." >&2
-    fi
+    _run_align_docs_passes "$@"
   fi
 }

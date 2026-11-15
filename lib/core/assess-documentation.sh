@@ -66,8 +66,8 @@ source "$RITE_LIB_DIR/utils/gate-selection.sh"
 #   B — a changed file matches a covers-header path of an enforcing test
 #   C — the PR's head branch has a declared-doc state file
 #
-# Consent gate is enforced here: RITE_DOC_MODE must be sync or changelog;
-# unset or off → returns immediately with no writes.
+# Tracking gate: skip only when tracking is explicitly disabled (RITE_DOC_MODE=off).
+# Unset or any other value → record (on by default).
 #
 # Arguments:
 #   $1  PR number
@@ -78,8 +78,7 @@ source "$RITE_LIB_DIR/utils/gate-selection.sh"
 # ---------------------------------------------------------------------------
 _record_tier1_drift_entries() {
   case "${RITE_DOC_MODE:-}" in
-    sync|changelog) ;;
-    *) verbose_info "  drift-log: doc tracking not enabled — skipping tier-1"; return 0 ;;
+    off) verbose_info "  drift-log: doc tracking disabled — skipping tier-1"; return 0 ;;
   esac
 
   local pr_number="$1"
@@ -1247,9 +1246,9 @@ print_header "📚 Documentation"
 # =====================================================================
 
 # Tier 1 drift recording: deterministic, zero model calls.
-# Consent gating is inside _record_tier1_drift_entries (RITE_DOC_MODE check).
+# Gate is inside _record_tier1_drift_entries (RITE_DOC_MODE check).
 # Nothing in the user's docs is ever edited here.
-# No recorded consent → no recording (opt-in; see doc-consent.sh).
+# Recording is on by default; RITE_DOC_MODE=off is the explicit opt-out.
 _T1_CHANGED_FILES="$(echo "$PR_DATA" | jq -r '.files[]?.path // empty' | grep -v '^docs/' || true)"
 _T1_BASE_BRANCH="$(echo "$PR_DATA" | jq -r '.baseRefName // "main"' || true)"
 _T1_HEAD_BRANCH="$(echo "$PR_DATA" | jq -r '.headRefName // ""' || true)"

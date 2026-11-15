@@ -282,3 +282,65 @@ HELPER_EOF
   run bash "$helper" --disable < /dev/null 2>&1
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# AC (reach both passes): doc names thread through run_align_docs_switch to
+# both audit passes; unknown names exit 1 before any pass runs.
+# ---------------------------------------------------------------------------
+
+_passes_helper() {
+  local helper="${BATS_TEST_TMPDIR}/passes_helper.sh"
+  cat > "$helper" << 'HELPER_EOF'
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="${RITE_LIB_DIR}"
+export RITE_PROJECT_ROOT="${RITE_PROJECT_ROOT}"
+source "${RITE_LIB_DIR}/core/docs-command.sh"
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs function-sentinel guard; post-source stubs preserved
+load_provider() { return 0; }
+provider_run_prompt_with_timeout() { echo "NO_PROPOSALS_NEEDED"; }
+provider_resolve_model() { echo "claude-sonnet-4-6"; }
+docs_map_path() { echo "${RITE_PROJECT_ROOT}/docs/docs-map.tsv"; }
+docs_map_build() { return 0; }
+docs_map_ensure() { return 0; }
+export _RITE_FORCE_TTY=1
+docs_run_restructure_assessment() { echo "RESTRUCTURE_RAN:$*"; }
+docs_run_assertion_audit() { echo "AUDIT_RAN:$*"; }
+run_align_docs_switch "$@"
+HELPER_EOF
+  chmod +x "$helper"
+  echo "$helper"
+}
+
+@test "reach both passes: named doc reaches docs_run_restructure_assessment" {
+  local helper
+  helper="$(_passes_helper)"
+  run bash "$helper" behavioral-design < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RESTRUCTURE_RAN"* ]]
+}
+
+@test "reach both passes: named doc reaches docs_run_assertion_audit" {
+  local helper
+  helper="$(_passes_helper)"
+  run bash "$helper" behavioral-design < /dev/null 2>&1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"AUDIT_RAN"* ]]
+}
+
+@test "reach both passes: unknown name exits 1 before any pass runs" {
+  local helper
+  helper="$(_passes_helper)"
+  run bash "$helper" totally-unknown-nonexistent-doc < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"RESTRUCTURE_RAN"* ]]
+  [[ "$output" != *"AUDIT_RAN"* ]]
+}
+
+@test "reach both passes: unknown name prints error message" {
+  local helper
+  helper="$(_passes_helper)"
+  run bash "$helper" totally-unknown-nonexistent-doc < /dev/null 2>&1
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"error: unknown doc"* ]]
+}

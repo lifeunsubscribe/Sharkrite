@@ -298,17 +298,18 @@
 # quality for speed when drafting or iterating quickly.
 # RITE_DOC_UPDATE_MODEL="claude-fable-5"
 
-# Doc drift consent (opt-in) — nothing edits docs/ automatically in any mode.
+# Doc drift recording mode — on by default; nothing edits docs/ automatically.
 #
 # Values:
 #   "sync"      — each merge records a drift entry (docs it may have made
 #                 inaccurate); `rite docs` proposes fixes for your approval.
-#                 Set by rite --init / `rite docs` when you answer y.
-#   "off"       — declined; nothing is recorded. Set when you answer n.
+#                 Set by `rite align-docs --enable`.
+#   "off"       — explicit opt-out; nothing is recorded.
+#                 Set by `rite align-docs --disable`.
 #   "changelog" — legacy: records drift entries; `rite docs` logs audit findings.
 #
-# LEAVE UNSET (default: empty) to be asked on the next supervised run or
-# `rite docs`. Unset records nothing — unattended runs never opt a repo in.
+# LEAVE UNSET (default: empty) to keep recording on by default.
+# Unset is equivalent to sync — merges record drift entries.
 # RITE_DOC_MODE="off"
 
 # Doc proposal growth warning threshold (percent).
