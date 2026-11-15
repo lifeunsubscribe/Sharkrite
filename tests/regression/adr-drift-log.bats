@@ -434,3 +434,68 @@ HELPER_EOF
   run adr_drift_log_remove_entry "$doc" "some architectural observation"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# write failed: adr_drift_log_append emits warning on write failure (#1803)
+# ---------------------------------------------------------------------------
+
+@test "write failed: adr_drift_log_append prints write-failed warning to stderr when append fails" {
+  # Make the entry file unwritable so the append fails
+  local entry_file
+  entry_file="$(_adr_drift_entry_path "docs/architecture/adr-write-fail.md")"
+  mkdir -p "$(dirname "$entry_file")"
+  touch "$entry_file"
+  chmod 000 "$entry_file"
+
+  local stderr_out
+  stderr_out=$(adr_drift_log_append \
+    "docs/architecture/adr-write-fail.md" \
+    "99" "-" "some assertion" "addition" "evidence" 2>&1 >/dev/null)
+
+  chmod 644 "$entry_file"
+  rm -f "$entry_file"
+
+  echo "$stderr_out" | grep -q "write failed" || {
+    echo "FAIL: expected 'write failed' in stderr, got: $stderr_out" >&2
+    false
+  }
+}
+
+@test "write failed: docs-command.sh adr_drift_log_append call does not suppress stderr" {
+  # The caller in the promote cross-doc pass must not use 2>/dev/null — it hid
+  # the write-failed warning before this fix.
+  local ctx
+  ctx=$(grep -A5 "adr_drift_log_append" "$PROJECT_ROOT/lib/core/docs-command.sh" | head -20 || true)
+  # 2>/dev/null must not appear on the same call block
+  ! echo "$ctx" | grep -q "2>/dev/null" || {
+    echo "FAIL: docs-command.sh still uses 2>/dev/null on the adr_drift_log_append call" >&2
+    false
+  }
+}
+
+# ---------------------------------------------------------------------------
+# legacy comma: a pr=50,51 entry is matched by PR 51 and not duplicated (#1803)
+# ---------------------------------------------------------------------------
+
+@test "legacy comma: existing pr=50,51 entry is matched by PR 51 (no duplicate written)" {
+  # Directly write a legacy comma-separated entry to simulate a pre-#1509 format
+  local entry_file
+  entry_file="$(_adr_drift_entry_path "docs/adr-legacy.md")"
+  mkdir -p "$(dirname "$entry_file")"
+  printf 'doc=%s\tpr=%s\tissue=%s\tassertion=%s\tkind=%s\tevidence=%s\trecorded=%s\n' \
+    "docs/adr-legacy.md" "50,51" "-" "Legacy assertion" "addition" "legacy.sh" \
+    "2026-01-01T00:00:00Z" > "$entry_file"
+
+  # Calling adr_drift_log_append with PR 51 must match the existing entry (idempotent)
+  adr_drift_log_append \
+    "docs/adr-legacy.md" "51" "-" "Legacy assertion" "addition" "new.sh"
+
+  # Still one entry — PR 51 was already in the comma list
+  local line_count
+  line_count=$(grep -c '^doc=' "$entry_file" || true)
+  [ "$line_count" -eq 1 ] || {
+    echo "FAIL: expected 1 entry after re-append of PR 51 (comma list matched), got $line_count" >&2
+    cat "$entry_file" >&2
+    false
+  }
+}

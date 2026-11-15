@@ -445,3 +445,46 @@ state why the dependency does not apply.
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# gh failure: _collect_security_context warns on gh failure, stays silent on empty
+# ---------------------------------------------------------------------------
+
+@test "gh failure: _collect_security_context prints one warning on gh failure, returns 0" {
+  # Stub gh_safe to return non-zero (network failure / auth error)
+  gh_safe() { echo "API error: unauthorized" >&2; return 1; }
+
+  local warned=0
+  print_warning() { warned=1; }
+
+  local result
+  result=$(_collect_security_context 2>/dev/null)
+
+  # Must have called print_warning
+  [ "$warned" -eq 1 ] || {
+    echo "FAIL: print_warning was not called on gh failure" >&2
+    false
+  }
+  # Must return empty (not crashing)
+  [ -z "$result" ] || {
+    echo "FAIL: expected empty result on gh failure, got: $result" >&2
+    false
+  }
+}
+
+@test "gh failure: _collect_security_context stays silent when gh succeeds with zero issues" {
+  # Stub gh_safe to return success with empty output (zero security issues)
+  gh_safe() { echo ""; return 0; }
+
+  local warned=0
+  print_warning() { warned=1; echo "UNEXPECTED WARNING: $*" >&2; }
+
+  local result
+  result=$(_collect_security_context 2>/dev/null)
+
+  [ "$warned" -eq 0 ] || {
+    echo "FAIL: print_warning called on successful gh call with zero issues" >&2
+    false
+  }
+  [ -z "$result" ]
+}

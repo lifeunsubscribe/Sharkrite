@@ -1142,6 +1142,10 @@ if [ -n "$EXPECTED_HEAD" ] && [ -n "$REPO_NAME" ]; then
         # Usage cap reached — propagate so batch can abort cleanly
         print_error "Claude usage cap reached during merge-time divergence resolution — aborting batch"
         MERGE_EXIT_CODE=5
+      elif [ $DIV_RESULT -eq 18 ]; then
+        # Auth failure — propagate so batch halts immediately
+        print_error "Provider auth failure during merge-time divergence resolution (run: claude /login)"
+        MERGE_EXIT_CODE=18
       else
         print_error "Could not resolve divergence at merge time"
         MERGE_EXIT_CODE=1
@@ -1193,6 +1197,9 @@ fi
 if [ $MERGE_EXIT_CODE -eq 5 ]; then
   # Usage cap reached during divergence resolution — propagate exit 5 for batch abort
   exit 5
+elif [ $MERGE_EXIT_CODE -eq 18 ]; then
+  # Auth failure during divergence resolution — propagate exit 18 for batch halt
+  exit 18
 elif [ $MERGE_EXIT_CODE -eq 0 ]; then
   verbose_header "✅ PR Merged Successfully"
 

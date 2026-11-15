@@ -241,8 +241,13 @@ _gate_flake_retry_pass() {
   while IFS= read -r _fr_hit; do
     [ -n "$_fr_hit" ] && _fr_file_arr+=("$_fr_hit")
   done <<< "$_fr_files"
+  # Serial lane: strip BATS_TEST_TIMEOUT (bats-core 1.13 waits out the full per-test
+  # ceiling after a FAILING test when run serially; the watchdog is the outer bound).
   # shellcheck disable=SC2154
-  { (cd "$_fr_root" && "${_bats_sandbox[@]+"${_bats_sandbox[@]}"}" \
+  local _fr_ser_sandbox=("${_bats_sandbox[0]}" "-u" "BATS_TEST_TIMEOUT" "${_bats_sandbox[@]:1}")
+  # shellcheck disable=SC2154
+  { (cd "$_fr_root" && "${_fr_ser_sandbox[@]+"${_fr_ser_sandbox[@]}"}" \
+      "${_bats_watchdog[@]+"${_bats_watchdog[@]}"}" \
       bats "${_fr_file_arr[@]+"${_fr_file_arr[@]}"}" < /dev/null 2>&1); \
     echo $? > "${_fr_retry_raw}.exit"; } >> "$_fr_retry_raw" || true
   _fr_retry_exit=$(cat "${_fr_retry_raw}.exit" 2>/dev/null || echo 1)

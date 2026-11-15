@@ -1594,7 +1594,15 @@ phase_assess_and_resolve() {
         "${pr_number:-}" \
         "$WORKFLOW_MODE" \
         "$_mid_rebase_base" || _mid_rebase_result=$?
-      if [ "$_mid_rebase_result" -ne 0 ]; then
+      if [ "$_mid_rebase_result" -eq 18 ]; then
+        # Auth failure during resolution — propagate so batch halts immediately.
+        print_error "Phase 3 aborted: provider auth failure during mid-run rebase (run: claude /login)"
+        return 18
+      elif [ "$_mid_rebase_result" -eq 5 ]; then
+        # Usage cap during resolution — propagate so batch aborts cleanly.
+        print_warning "Phase 3 aborted: usage cap reached during mid-run rebase"
+        return 5
+      elif [ "$_mid_rebase_result" -ne 0 ]; then
         # Rebase conflict (Claude-assisted resolution failed): abort before spending
         # Claude time on a review.
         print_error "Phase 3 aborted: mid-run drift cannot be resolved automatically"
@@ -2064,6 +2072,10 @@ phase_merge_pr() {
         # Usage cap reached during conflict resolution — propagate so batch aborts cleanly
         print_warning "Usage cap reached during merge-time divergence resolution — aborting batch"
         return 5
+      elif [ $div_result -eq 18 ]; then
+        # Auth failure during resolution — propagate so batch halts immediately
+        print_error "Provider auth failure during merge-time divergence resolution (run: claude /login)"
+        return 18
       elif [ $div_result -ne 0 ]; then
         print_error "Cannot merge — PR head diverged and could not be resolved"
         return 1

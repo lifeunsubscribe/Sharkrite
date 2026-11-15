@@ -549,7 +549,12 @@ run_promote() {
       if [ "${_sync_answer:-n}" = "y" ] || [ "${_sync_answer:-n}" = "Y" ]; then
         # shellcheck source=/dev/null
         source "$RITE_LIB_DIR/utils/integration-sync.sh"
-        sync_integration_branch "$BRANCH" || true
+        local _supervised_sync_rc=0
+        sync_integration_branch "$BRANCH" || _supervised_sync_rc=$?
+        if [ "$_supervised_sync_rc" -eq 18 ]; then
+          print_error "Provider auth failure during sync (run: claude /login)"
+          exit 18
+        fi
         # Re-fetch and re-check after sync; also re-capture SHA so Phase 6 sees the post-sync tip
         git_fetch_safe origin "$BRANCH" || true
         _branch_sha=$(git rev-parse --verify --quiet "origin/$BRANCH" 2>/dev/null || true)
