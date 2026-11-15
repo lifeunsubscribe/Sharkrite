@@ -228,10 +228,8 @@ EOF
   _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
   [ -n "$_log" ]
 
-  # skipped=2 must appear in the FULL_SUITE_RUN diag line
-  grep -q 'FULL_SUITE_RUN.*skipped=2' "$_log"
-  # test_count=0 (no failures) must also be present
-  grep -q 'test_count=0' "$_log"
+  # Both test_count=0 and skipped=2 must appear together on the FULL_SUITE_RUN diag line
+  grep -q 'FULL_SUITE_RUN .* test_count=0 skipped=2' "$_log"
 }
 
 # ---------------------------------------------------------------------------

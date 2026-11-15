@@ -27,6 +27,16 @@
 #
 # Scope: SHELL_FILES (lib/ bin/ tools/ *.sh)
 #
+# Exemption — tools/lint-rules/ fragments are OUTSIDE this rule's scope:
+# SHELL_FILES is built with ! -path "*/lint-rules/*" so Rule 42 never scans
+# the per-rule fragments. The exemption is correct for one-line producers
+# (the write finishes before grep -q can exit), but NOT for multi-line
+# variables: a large head40/head60 block is delivered in multiple pipe chunks,
+# reproducing the same #1633 race. Any fragment that pipes a multi-line
+# variable into grep -q MUST use a here-string instead:
+#   grep -qE "pattern" <<< "$head40"
+#   # NOT: echo "$head40" | grep -qE "pattern"
+#
 # Suppression (preceding line):
 #   # sharkrite-lint disable PRODUCER_PIPE_TO_GREP_Q - Reason: <text>
 #

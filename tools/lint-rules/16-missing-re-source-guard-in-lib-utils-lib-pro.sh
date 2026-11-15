@@ -33,8 +33,9 @@ for file in "${LIB_FILES[@]}"; do
   #   2. return 0 2>/dev/null (idempotent return — used in guard bodies)
   #   3. _RITE_*_LOADED variable guard
   #   4. RITE_SOURCE_FUNCTIONS_ONLY (test-mode early-exit for executables)
-  if echo "$head40" | grep -qE \
-    'declare -f [a-z_]+ >/dev/null 2>&1|return 0 2>/dev/null|_RITE_[A-Z_]+_LOADED|RITE_SOURCE_FUNCTIONS_ONLY'; then
+  if grep -qE \
+    'declare -f [a-z_]+ >/dev/null 2>&1|return 0 2>/dev/null|_RITE_[A-Z_]+_LOADED|RITE_SOURCE_FUNCTIONS_ONLY' \
+    <<< "$head40"; then
     continue
   fi
 

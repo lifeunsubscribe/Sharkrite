@@ -356,25 +356,8 @@ setup() {
   # Write the marker (simulating assess-and-resolve.sh filing the issue)
   touch "$_marker"
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
-  _script="$BATS_TEST_TMPDIR/test-no-inherit.sh"
-  cat > "$_script" <<STUB_EOF
-#!/usr/bin/env bash
-set -euo pipefail
-RITE_STATE_DIR="${_tmpdir}"
-RITE_TARGET_BRANCH="doc-refactor"
-ISSUE_NUMBER="${_issue_num}"
-
-_target_no_inherit_marker="\${RITE_STATE_DIR}/followup-no-inherit-\${ISSUE_NUMBER}.marker"
-if [ ! -f "\$_target_no_inherit_marker" ]; then
-  echo "\$RITE_TARGET_BRANCH" > "\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt" 2>/dev/null || true
-fi
-unset _target_no_inherit_marker
-exit 0
-STUB_EOF
-  chmod +x "$_script"
-  run bash "$_script"
-  [ "$status" -eq 0 ]
+  # Call the shipped production function directly
+  _write_target_branch_state_if_eligible "$_issue_num" "doc-refactor" "$_tmpdir"
 
   [ ! -f "$_state_file" ] || {
     echo "FAIL: state file was written despite no-inherit marker" >&2
@@ -482,44 +465,13 @@ STUB_EOF
   # Poison the state file with "integration-A"
   echo "integration-A" > "$_state_file"
 
-  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: variables must expand
-  _script="$BATS_TEST_TMPDIR/test-anti-loop-nonmain.sh"
-  cat > "$_script" <<STUB_EOF
-#!/usr/bin/env bash
-set -euo pipefail
+  # Call the shipped production function directly
+  _clear_stale_target_state_file "$_issue_num" "integration-B" "$_tmpdir"
 
-RITE_STATE_DIR="${_tmpdir}"
-ISSUE_NUMBER="${_issue_num}"
-RITE_TARGET_BRANCH="integration-B"
-
-# Simulate the widened --base handler: clear when explicit target != recorded.
-if [ -n "\${RITE_STATE_DIR:-}" ] && [ -n "\${ISSUE_NUMBER:-}" ]; then
-  _base_state_file="\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt"
-  _base_recorded=\$(cat "\$_base_state_file" 2>/dev/null || true)
-  if [ -n "\$_base_recorded" ] && [ "\${RITE_TARGET_BRANCH}" != "\$_base_recorded" ]; then
-    rm -f "\$_base_state_file" 2>/dev/null || true
-  fi
-fi
-
-# State file must be gone now.
-if [ -f "\${RITE_STATE_DIR}/target-branch-\${ISSUE_NUMBER}.txt" ]; then
-  echo "FAIL: state file still present after --base integration-B with recorded integration-A" >&2
-  exit 1
-fi
-
-echo "PASS: non-main-to-non-main state file cleared"
-exit 0
-STUB_EOF
-  chmod +x "$_script"
-  run bash "$_script"
-  [ "$status" -eq 0 ] || {
-    echo "FAIL: anti-loop (non-main) simulation failed (exit $status)" >&2
-    echo "$output" >&2
-    return 1
-  }
-  echo "$output" | grep -qF "PASS: non-main-to-non-main state file cleared" || {
-    echo "FAIL: non-main-to-non-main anti-loop assertion not confirmed in output" >&2
-    echo "Output: $output" >&2
+  # State file must be gone (the new target differs from the recorded value)
+  [ ! -f "$_state_file" ] || {
+    echo "FAIL: state file still present after _clear_stale_target_state_file with target=integration-B, recorded=integration-A"
+    echo "      Content: $(cat "$_state_file")"
     return 1
   }
 }
