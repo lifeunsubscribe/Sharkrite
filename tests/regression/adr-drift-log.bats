@@ -440,24 +440,29 @@ HELPER_EOF
 # ---------------------------------------------------------------------------
 
 @test "write failed: adr_drift_log_append prints write-failed warning to stderr when append fails" {
-  # chmod 000 on the entry file would hit the awk-read path first (dedup read fails),
-  # returning early via the awk-error branch before reaching the >> append that is
-  # the actual target. Instead: no entry file (awk reads empty input = no match),
-  # make the parent directory unwritable so the >> append is the failing operation.
+  # Strategy: keep the directory writable (lock_acquire creates .lock tmp files
+  # there), pre-populate the entry file with a non-matching entry so awk succeeds
+  # and exits 1 (no match), then chmod 444 only the entry file so >> is the first
+  # failing operation and the write-failed warning is emitted.
   local entry_file entry_dir
   entry_file="$(_adr_drift_entry_path "docs/architecture/adr-write-fail.md")"
   entry_dir="$(dirname "$entry_file")"
   mkdir -p "$entry_dir"
-  chmod 555 "$entry_dir"
+  # Pre-populate with a non-matching entry (different doc) so awk reads it and
+  # exits 1 (no match), leaving _adla_found=0 and proceeding to the >> path.
+  printf 'doc=%s\tpr=%s\tissue=%s\tassertion=%s\tkind=%s\tevidence=%s\trecorded=%s\n' \
+    "docs/other-doc.md" "1" "-" "unrelated assertion" "addition" "evidence" \
+    "2026-01-01T00:00:00Z" > "$entry_file"
+  chmod 444 "$entry_file"
 
   local stderr_out
   stderr_out=$(adr_drift_log_append \
     "docs/architecture/adr-write-fail.md" \
     "99" "-" "some assertion" "addition" "evidence" 2>&1 >/dev/null)
 
-  chmod 755 "$entry_dir"
+  chmod 644 "$entry_file"
 
-  echo "$stderr_out" | grep -q "write failed" || {
+  grep -q "write failed" <<< "$stderr_out" || {
     echo "FAIL: expected 'write failed' in stderr, got: $stderr_out" >&2
     false
   }
