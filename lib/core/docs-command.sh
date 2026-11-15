@@ -4103,27 +4103,30 @@ rite_docs() {
         # No instructions: reconcile pending drift entries when any exist,
         # regardless of RITE_DOC_MODE (off or unset both reach never-run).
         # With zero entries print the pointer to 'rite align-docs'.
-        # Non-interactive runs (no TTY and no FORCE_TTY) make no model call and
-        # no edit — the same guard _run_align_docs_passes uses.
-        if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
-          local _nr_total=0
-          # Count only branch=main entries — that is what docs_reconcile_drift processes.
-          _nr_total="$(drift_log_entry_count --branch main || echo 0)"
-          # Also check the legacy flat log when the new store is empty.
-          if [ "${_nr_total:-0}" -eq 0 ]; then
-            local _nr_legacy_path
-            _nr_legacy_path="$(drift_log_path 2>/dev/null || true)"
-            if [ -n "$_nr_legacy_path" ] && [ -f "$_nr_legacy_path" ]; then
-              local _nr_legacy_count
-              _nr_legacy_count="$(drift_log_entry_count "$_nr_legacy_path" || echo 0)"
-              _nr_total=$((_nr_total + _nr_legacy_count))
-            fi
+        local _nr_total=0
+        # Count branch=main entries (what docs_reconcile_drift processes) and ADR drift entries.
+        _nr_total="$(drift_log_entry_count --branch main || echo 0)"
+        local _nr_adr
+        _nr_adr="$(adr_drift_log_entry_count --total || echo 0)"
+        _nr_total=$((_nr_total + _nr_adr))
+        # Also check the legacy flat log when the new store is empty.
+        if [ "${_nr_total:-0}" -eq 0 ]; then
+          local _nr_legacy_path
+          _nr_legacy_path="$(drift_log_path 2>/dev/null || true)"
+          if [ -n "$_nr_legacy_path" ] && [ -f "$_nr_legacy_path" ]; then
+            local _nr_legacy_count
+            _nr_legacy_count="$(drift_log_entry_count "$_nr_legacy_path" || echo 0)"
+            _nr_total=$((_nr_total + _nr_legacy_count))
           fi
-          if [ "${_nr_total:-0}" -gt 0 ]; then
+        fi
+        if [ "${_nr_total:-0}" -gt 0 ]; then
+          # Non-interactive runs (no TTY and no FORCE_TTY) make no model call and
+          # no edit — the same guard _run_align_docs_passes uses.
+          if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
             docs_reconcile_drift || true
-          else
-            print_info "Run 'rite align-docs [doc ...]' to audit docs, or 'rite docs \"<instructions>\"' for a directed update."
           fi
+        else
+          print_info "Run 'rite align-docs [doc ...]' to audit docs, or 'rite docs \"<instructions>\"' for a directed update."
         fi
       fi
       ;;

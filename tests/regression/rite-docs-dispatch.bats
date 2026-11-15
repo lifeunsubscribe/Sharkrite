@@ -479,6 +479,7 @@ DISPATCH_EOF
     RITE_DATA_DIR=".rite" \
     RITE_DOC_MODE="" \
     RITE_LOG_AUTO=false \
+    _RITE_FORCE_TTY=1 \
     bash "$dispatch_helper" < /dev/null 2>&1
   rm -f "$dispatch_helper"
   [ "$status" -eq 0 ]
