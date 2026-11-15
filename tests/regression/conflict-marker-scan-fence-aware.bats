@@ -19,28 +19,23 @@ setup() {
   RITE_REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   SUT="$RITE_REPO_ROOT/lib/utils/conflict-resolver.sh"
   FIX="$BATS_TEST_TMPDIR"
-}
-
-# The scan exactly as Check 2 runs it, lifted from source so the test tracks
-# the real implementation rather than a copy of it.
-_scan() {
-  tr -d '\r' < "$1" 2>/dev/null | awk '
-    /^```/ { fence = !fence; next }
-    !fence && /^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])/ { found = 1; exit }
-    END { exit(found ? 0 : 1) }
-  '
+  export RITE_LIB_DIR="$RITE_REPO_ROOT/lib"
+  export RITE_LOG_FILE="/dev/null"
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  _diag() { true; }
+  set +u; set +o pipefail
 }
 
 @test "a fenced documentation example is NOT flagged" {
   printf 'intro\n```\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> side\n```\ntail\n' > "$FIX/doc.md"
-  run _scan "$FIX/doc.md"
+  run _cr_file_has_conflict_markers "$FIX/doc.md"
   [ "$status" -ne 0 ]
 }
 
 @test "the real behavioral-design.md is NOT flagged" {
   # The file that actually broke #1221. If this regresses, every conflict
   # involving it becomes unresolvable again.
-  run _scan "$RITE_REPO_ROOT/docs/architecture/behavioral-design.md"
+  run _cr_file_has_conflict_markers "$RITE_REPO_ROOT/docs/architecture/behavioral-design.md"
   [ "$status" -ne 0 ] || {
     echo "behavioral-design.md flagged as containing conflict markers — #1221 class regression"
     grep -nE '^<<<<<<< |^=======$|^>>>>>>> ' "$RITE_REPO_ROOT/docs/architecture/behavioral-design.md" | head -5
@@ -50,25 +45,25 @@ _scan() {
 
 @test "a genuine leftover marker at top level IS flagged" {
   printf 'line\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> side\n' > "$FIX/real.md"
-  run _scan "$FIX/real.md"
+  run _cr_file_has_conflict_markers "$FIX/real.md"
   [ "$status" -eq 0 ]
 }
 
 @test "a real marker outside a fence is flagged even when a fenced example exists" {
   printf 'intro\n```\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> side\n```\ntail\n<<<<<<< HEAD\nreal\n=======\nalso\n>>>>>>> side\n' > "$FIX/both.md"
-  run _scan "$FIX/both.md"
+  run _cr_file_has_conflict_markers "$FIX/both.md"
   [ "$status" -eq 0 ]
 }
 
 @test "diff3 base-version markers are still caught outside fences" {
   printf 'x\n||||||| base\nold\n' > "$FIX/diff3.md"
-  run _scan "$FIX/diff3.md"
+  run _cr_file_has_conflict_markers "$FIX/diff3.md"
   [ "$status" -eq 0 ]
 }
 
 @test "a non-markdown file with no fences behaves exactly as before" {
   printf '#!/bin/bash\n<<<<<<< HEAD\necho a\n=======\necho b\n>>>>>>> side\n' > "$FIX/script.sh"
-  run _scan "$FIX/script.sh"
+  run _cr_file_has_conflict_markers "$FIX/script.sh"
   [ "$status" -eq 0 ]
 }
 

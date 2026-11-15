@@ -246,6 +246,101 @@ _run_gate() {
   echo "$output" | grep -q '^0$'
 }
 
+@test "(_extract_node_lint_flags #1601) double-quoted value: --ext \".ts,.tsx\" strips quotes" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '%s\n' '{"scripts":{"lint":"eslint . --ext \".ts,.tsx\""}}' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  echo "$output" | grep -q -- '--ext'
+  # The value must arrive without surrounding double quotes
+  local _val
+  _val=$(printf '%s\n' "$output" | grep -v -- '--ext' | head -1 || true)
+  [ "$_val" = ".ts,.tsx" ] || {
+    echo "FAIL: expected '.ts,.tsx' but got '$_val'" >&2
+    return 1
+  }
+}
+
+@test "(_extract_node_lint_flags #1601) single-quoted value: --ext '.ts,.tsx' strips quotes" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf "%s\n" '{"scripts":{"lint":"eslint . --ext '"'"'.ts,.tsx'"'"'"}}' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  echo "$output" | grep -q -- '--ext'
+  local _val
+  _val=$(printf '%s\n' "$output" | grep -v -- '--ext' | head -1 || true)
+  [ "$_val" = ".ts,.tsx" ] || {
+    echo "FAIL: expected '.ts,.tsx' but got '$_val'" >&2
+    return 1
+  }
+}
+
+@test "(_extract_node_lint_flags #1601) --flag=value form emitted as single token" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint . --max-warnings=5"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  # --max-warnings=5 is a single token with no space — it must be emitted as-is
+  echo "$output" | grep -q -- '--max-warnings=5'
+}
+
+@test "(_extract_node_lint_flags #1601) --fix dropped (denylist boolean flag)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint . --fix src/"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  # --fix must not appear in the output
+  local _fix_count
+  _fix_count=$(printf '%s\n' "$output" | grep -c -- '--fix' || true)
+  [ "$_fix_count" -eq 0 ]
+}
+
+@test "(_extract_node_lint_flags #1601) --format and its value dropped (denylist value-taking flag)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint . --format stylish --max-warnings 0"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  # --format and its value "stylish" must be absent
+  local _fmt_count
+  _fmt_count=$(printf '%s\n' "$output" | grep -c -- '--format' || true)
+  [ "$_fmt_count" -eq 0 ]
+  local _stylish_count
+  _stylish_count=$(printf '%s\n' "$output" | grep -c 'stylish' || true)
+  [ "$_stylish_count" -eq 0 ]
+  # --max-warnings must still appear
+  echo "$output" | grep -q -- '--max-warnings'
+}
+
+@test "(_extract_node_lint_flags #1601) -o and its value dropped (denylist value-taking short flag)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint . -o report.txt --max-warnings 0"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  local _o_count
+  _o_count=$(printf '%s\n' "$output" | grep -c -- '^-o$' || true)
+  [ "$_o_count" -eq 0 ]
+  local _report_count
+  _report_count=$(printf '%s\n' "$output" | grep -c 'report.txt' || true)
+  [ "$_report_count" -eq 0 ]
+  echo "$output" | grep -q -- '--max-warnings'
+}
+
+@test "(_extract_node_lint_flags #1601) --cache dropped (denylist boolean flag)" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  printf '{"scripts":{"lint":"eslint . --cache --max-warnings 0"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  local _cache_count
+  _cache_count=$(printf '%s\n' "$output" | grep -c -- '--cache' || true)
+  [ "$_cache_count" -eq 0 ]
+  echo "$output" | grep -q -- '--max-warnings'
+}
+
+@test "(_extract_node_lint_flags #1601) boolean flag followed by file arg: flag emitted, file skipped" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  # --no-ignore is an eslint boolean flag (not in value-taking list); 'src/' is a positional
+  printf '{"scripts":{"lint":"eslint --no-ignore src/"}}\n' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  echo "$output" | grep -q -- '--no-ignore'
+  # 'src/' must NOT appear as a flag value
+  local _src_count
+  _src_count=$(printf '%s\n' "$output" | grep -c '^src/$' || true)
+  [ "$_src_count" -eq 0 ]
+}
+
 # =============================================================================
 # Unit: _normalize_eslint_output
 # =============================================================================

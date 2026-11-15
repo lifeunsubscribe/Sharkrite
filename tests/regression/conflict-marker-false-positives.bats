@@ -39,23 +39,14 @@ setup() {
   unset RITE_VERBOSE
 
   cd "$FIXTURE_REPO"
+
+  source "$RITE_LIB_DIR/utils/conflict-resolver.sh"
+  _diag() { true; }
+  set +u; set +o pipefail
 }
 
 teardown() {
   teardown_test_tmpdir
-}
-
-# ---------------------------------------------------------------------------
-# Helper: run the same grep used by conflict-resolver.sh Check 2 against
-# a given string (via stdin).  Returns 0 if the grep matched (i.e. a conflict
-# marker was detected), non-zero otherwise.
-# ---------------------------------------------------------------------------
-_has_conflict_marker() {
-  # Mirrors conflict-resolver.sh Check 2 exactly, including the CR-strip (#533):
-  # a CRLF separator ends the line with "=======\r", which the anchored
-  # "=======$" misses — stripping CR first catches it without relaxing the anchor
-  # (so the trailing-space / setext false-positive guards below still hold).
-  tr -d '\r' < "$1" 2>/dev/null | grep -qE '^(<<<<<<<[[:space:]]|=======$|>>>>>>>[[:space:]]|\|\|\|\|\|\|\|[[:space:]])'
 }
 
 # ===========================================================================
@@ -64,22 +55,22 @@ _has_conflict_marker() {
 
 @test "conflict-marker check: detects real open-marker '<<<<<<< HEAD'" {
   printf '<<<<<<< HEAD\nsome content\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: detects real separator '======='" {
   printf '=======\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: detects real close-marker '>>>>>>> branch'" {
   printf '>>>>>>> some-branch\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: detects full conflict block" {
   printf '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature/x\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: detects diff3/zdiff3 base-version marker '||||||| base'" {
@@ -92,12 +83,12 @@ _has_conflict_marker() {
   #   theirs
   #   >>>>>>> branch
   printf '||||||| base-sha\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: detects full diff3 conflict block" {
   printf '<<<<<<< HEAD\nours\n||||||| base\nbase content\n=======\ntheirs\n>>>>>>> feature/x\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 # --- #533: CRLF (Windows) line endings ---
@@ -106,12 +97,12 @@ _has_conflict_marker() {
   # A conflict file written with CRLF endings ends the separator line with a CR.
   # The bare "=======$" anchor misses it → a bad resolution would be accepted.
   printf '=======\r\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check (#533): detects full CRLF conflict block" {
   printf '<<<<<<< HEAD\r\nours\r\n=======\r\ntheirs\r\n>>>>>>> feature/x\r\n' > test_file.txt
-  _has_conflict_marker test_file.txt
+  _cr_file_has_conflict_markers test_file.txt
 }
 
 # ===========================================================================
@@ -120,41 +111,41 @@ _has_conflict_marker() {
 
 @test "conflict-marker check: does NOT flag markdown setext underline (8 equals)" {
   printf 'Heading\n========\n' > test_file.md
-  ! _has_conflict_marker test_file.md
+  ! _cr_file_has_conflict_markers test_file.md
 }
 
 @test "conflict-marker check: does NOT flag long doc separator (20 equals)" {
   printf '====================\n' > test_file.txt
-  ! _has_conflict_marker test_file.txt
+  ! _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: does NOT flag '=======' followed by text (e.g. doc separator)" {
   printf '=======foo\n' > test_file.txt
-  ! _has_conflict_marker test_file.txt
+  ! _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: does NOT flag '=======  ' (trailing spaces after separator)" {
   # A setext underline may have trailing spaces; git conflict separator does not
   printf '=======  \n' > test_file.txt
-  ! _has_conflict_marker test_file.txt
+  ! _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: does NOT flag '<<<<<<<' without trailing space (bare 7 <)" {
   # Real markers always have a space + branch; a bare '<<<<<<< ' should also match,
   # but bare '<<<<<<<' with no space is not a real conflict marker
   printf '<<<<<<<\n' > test_file.txt
-  ! _has_conflict_marker test_file.txt
+  ! _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: does NOT flag '>>>>>>>' without trailing space (bare 7 >)" {
   printf '>>>>>>>\n' > test_file.txt
-  ! _has_conflict_marker test_file.txt
+  ! _cr_file_has_conflict_markers test_file.txt
 }
 
 @test "conflict-marker check: does NOT flag '|||||||' without trailing space (bare 7 |)" {
   # Real diff3 markers always have a space + sha/label; bare '|||||||' is not a marker
   printf '|||||||\n' > test_file.txt
-  ! _has_conflict_marker test_file.txt
+  ! _cr_file_has_conflict_markers test_file.txt
 }
 
 # ===========================================================================

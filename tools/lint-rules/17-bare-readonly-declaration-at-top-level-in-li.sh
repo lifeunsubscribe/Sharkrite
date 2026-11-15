@@ -29,8 +29,9 @@ for file in "${LIB_FILES[@]}"; do
 
   # Check if this file has an accepted re-source guard in the first 60 lines
   head60=$(head -60 "$file" 2>/dev/null)
-  if echo "$head60" | grep -qE \
-    'declare -f [a-z_]+ >/dev/null 2>&1|return 0 2>/dev/null|_RITE_[A-Z_]+_LOADED|RITE_SOURCE_FUNCTIONS_ONLY'; then
+  if grep -qE \
+    'declare -f [a-z_]+ >/dev/null 2>&1|return 0 2>/dev/null|_RITE_[A-Z_]+_LOADED|RITE_SOURCE_FUNCTIONS_ONLY' \
+    <<< "$head60"; then
     # File has a guard — the readonly is protected, skip it
     continue
   fi
