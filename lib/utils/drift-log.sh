@@ -735,6 +735,7 @@ adr_drift_log_append() {
       "$_adla_doc" "$_adla_pr" "$_adla_issue" \
       "$_adla_assertion_norm" "$_adla_kind" "$_adla_evidence_norm" "$_adla_recorded" \
       >> "$_adla_entry_file" || {
+      printf 'adr_drift_log_append: write failed for "%s" — skipping\n' "$_adla_entry_file" >&2
       lock_release "$_adla_lock_path"
       trap - RETURN
       return 0

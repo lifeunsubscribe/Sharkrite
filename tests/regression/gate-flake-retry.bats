@@ -142,3 +142,24 @@ _write_toggle_fixture() {
   run grep -E 'RITE_GATE_FLAKE_RETRY:-true' "${RITE_REPO_ROOT}/lib/utils/test-gate.sh"
   [ "$status" -eq 0 ]
 }
+
+@test "BATS_TEST_TIMEOUT: flake retry builds _fr_ser_sandbox stripping BATS_TEST_TIMEOUT" {
+  # Structural: gate-verdict.sh must build _fr_ser_sandbox with -u BATS_TEST_TIMEOUT
+  # (same as the serial lane in test-gate.sh) so a failing test does not block the
+  # retry for the full per-test ceiling (measured: 120s wasted per test on bats-core 1.13).
+  run grep -E '_fr_ser_sandbox' "${RITE_REPO_ROOT}/lib/utils/gate-verdict.sh"
+  [ "$status" -eq 0 ]
+  run grep -E 'BATS_TEST_TIMEOUT.*_fr_ser_sandbox|_fr_ser_sandbox.*BATS_TEST_TIMEOUT' \
+    "${RITE_REPO_ROOT}/lib/utils/gate-verdict.sh"
+  [ "$status" -eq 0 ]
+}
+
+@test "BATS_TEST_TIMEOUT: flake retry passes _bats_watchdog to the bats call" {
+  # Structural: without the outer watchdog, a hung serial bats run is unbounded.
+  run grep -E '_bats_watchdog' "${RITE_REPO_ROOT}/lib/utils/gate-verdict.sh"
+  [ "$status" -eq 0 ]
+  # Both _fr_ser_sandbox and _bats_watchdog must appear in the same invocation block
+  run awk '/_fr_ser_sandbox/{f=1} f&&/_bats_watchdog/{print; exit}' \
+    "${RITE_REPO_ROOT}/lib/utils/gate-verdict.sh"
+  [ -n "$output" ]
+}

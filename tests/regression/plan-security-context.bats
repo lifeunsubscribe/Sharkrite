@@ -445,3 +445,46 @@ state why the dependency does not apply.
     false
   }
 }
+
+# ---------------------------------------------------------------------------
+# gh failure: _collect_security_context warns on gh failure, stays silent on empty
+# ---------------------------------------------------------------------------
+
+@test "gh failure: _collect_security_context prints one warning on gh failure, returns 0" {
+  # Stub gh_safe to return non-zero (network failure / auth error)
+  gh_safe() { echo "API error: unauthorized" >&2; return 1; }
+
+  # Capture stderr from the subshell — the flag approach doesn't work because
+  # variable assignments inside $() are discarded on subshell exit (CLAUDE.md:
+  # "Subshell variable loss"). setup()'s print_warning echoes to stderr, so we
+  # capture stderr instead (2>&1 >/dev/null: redirect stderr→pipe, stdout→/dev/null).
+  local stderr_out result
+  stderr_out=$(_collect_security_context 2>&1 >/dev/null)
+  result=$(_collect_security_context 2>/dev/null)
+
+  echo "$stderr_out" | grep -q "could not fetch open security issues" || {
+    echo "FAIL: expected 'could not fetch open security issues' warning in stderr, got: $stderr_out" >&2
+    false
+  }
+  [ -z "$result" ] || {
+    echo "FAIL: expected empty result on gh failure, got: $result" >&2
+    false
+  }
+}
+
+@test "gh failure: _collect_security_context stays silent when gh succeeds with zero issues" {
+  # Stub gh_safe to return success with empty output (zero security issues)
+  gh_safe() { echo ""; return 0; }
+
+  # Capture stderr to verify no warning is emitted (same subshell-variable-loss
+  # issue as the companion test: flag in $() is discarded; use stderr capture).
+  local stderr_out result
+  stderr_out=$(_collect_security_context 2>&1 >/dev/null)
+  result=$(_collect_security_context 2>/dev/null)
+
+  [ -z "$stderr_out" ] || {
+    echo "FAIL: unexpected stderr output on successful gh call with zero issues: $stderr_out" >&2
+    false
+  }
+  [ -z "$result" ]
+}

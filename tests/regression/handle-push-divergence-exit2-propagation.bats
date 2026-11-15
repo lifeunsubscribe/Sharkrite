@@ -232,11 +232,13 @@ teardown() {
   # This catches regressions where someone removes the elif-eq-2 branch.
 
   # claude-workflow.sh fix-review push: must have elif _div_result -eq 2 → exit 2
-  grep -A5 '_div_result.*-eq.*5' "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" \
+  # -A11: the exit-18 branch added by #1803 sits between the eq-5 and eq-2 checks,
+  # pushing eq-2 to 8 lines after eq-5; -A5 was too short.
+  grep -A11 '_div_result.*-eq.*5' "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" \
     | grep -q '_div_result.*-eq.*2'
 
   # claude-workflow.sh post-dev push: must have elif _postdev_div_result -eq 2 → exit 2
-  grep -A5 '_postdev_div_result.*-eq.*5' "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" \
+  grep -A11 '_postdev_div_result.*-eq.*5' "$RITE_REPO_ROOT/lib/core/claude-workflow.sh" \
     | grep -q '_postdev_div_result.*-eq.*2'
 
   # workflow-runner.sh fix-review caller: must have fix_result -eq 2 branch

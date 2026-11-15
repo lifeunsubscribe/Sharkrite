@@ -1605,6 +1605,10 @@ Changes made via automated workflow (rite --fix-review mode)."
         # Usage cap reached — propagate so batch can abort cleanly
         print_error "Claude usage cap reached during fix-review push divergence — aborting batch"
         exit 5
+      elif [ "$_div_result" -eq 18 ]; then
+        # Auth failure — propagate so batch halts immediately
+        print_error "Provider auth failure during fix-review push divergence (run: claude /login)"
+        exit 18
       elif [ "$_div_result" -eq 2 ]; then
         # Foreign commits pulled and rebase succeeded — push done inside handler.
         # Signal caller (workflow-runner phase_assess_and_resolve) to re-enter the
@@ -4056,6 +4060,10 @@ if ! git push -u origin "$BRANCH_NAME" >/dev/null 2>&1; then
       # Usage cap reached — propagate so batch can abort cleanly
       print_error "Claude usage cap reached during post-dev push divergence — aborting batch"
       exit 5
+    elif [ "$_postdev_div_result" -eq 18 ]; then
+      # Auth failure — propagate so batch halts immediately
+      print_error "Provider auth failure during post-dev push divergence (run: claude /login)"
+      exit 18
     elif [ "$_postdev_div_result" -eq 2 ]; then
       # Foreign commits pulled and rebase succeeded — push done inside handler.
       # Signal caller to re-enter the review cycle so the fresh combined HEAD

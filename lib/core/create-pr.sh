@@ -239,6 +239,10 @@ if [ ! -z "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
           # Usage cap reached — propagate so workflow-runner can abort cleanly
           print_error "Usage cap reached during divergence resolution"
           exit 5
+        elif [ $div_result -eq 18 ]; then
+          # Auth failure — propagate so batch halts immediately
+          print_error "Provider auth failure during divergence resolution (run: claude /login)"
+          exit 18
         elif [ $div_result -ne 0 ]; then
           print_error "Divergence could not be resolved"
           exit 1

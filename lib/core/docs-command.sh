@@ -2866,7 +2866,7 @@ Output ONLY the JSON array, no prose."
         "${_ji_rec_assert:-just-in-case cross-doc hit}" \
         "$_ji_rec_kind" \
         "promote cross-doc pass: promotion diff intersected doc fingerprint set" \
-        2>/dev/null || true
+        || true
     else
       drift_log_append \
         "$_ji_rec_doc" \

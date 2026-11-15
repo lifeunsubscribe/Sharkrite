@@ -76,17 +76,20 @@ setup() {
 
 @test "structural: _bats_sandbox is used at both the main and flake-retry invocation sites" {
   # The main path (4 _bats_sandbox + 2 _ser_bats_sandbox in test-gate.sh) and the
-  # flake-retry (1 _bats_sandbox in gate-verdict.sh) must all use a sandbox.
-  # Serial invocations use _ser_bats_sandbox (derived from _bats_sandbox, adds
-  # -u BATS_TEST_TIMEOUT) — both are locally defined within run_test_gate so
-  # _gate_flake_retry_pass sees _bats_sandbox via bash dynamic scoping.
+  # flake-retry (1 _fr_ser_sandbox invocation in gate-verdict.sh) must all use a sandbox.
+  # Serial invocations use _ser_bats_sandbox in test-gate.sh and _fr_ser_sandbox in
+  # gate-verdict.sh (both derived from _bats_sandbox, adds -u BATS_TEST_TIMEOUT).
+  # _bats_sandbox is dynamically scoped from run_test_gate so _gate_flake_retry_pass
+  # references it at construction time (line ~247 of gate-verdict.sh).
   _uses_main=$(grep -c '"${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh" || true)
   _uses_ser=$(grep -c '"${_ser_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/test-gate.sh" || true)
-  _uses_flake=$(grep -c '"${_bats_sandbox\[@\]}"' "${RITE_LIB_DIR}/utils/gate-verdict.sh" || true)
+  # Flake-retry uses _fr_ser_sandbox (the local equivalent of _ser_bats_sandbox in
+  # gate-verdict.sh) — check for its invocation rather than the bare _bats_sandbox[@] form.
+  _uses_flake=$(grep -c '"${_fr_ser_sandbox\[@' "${RITE_LIB_DIR}/utils/gate-verdict.sh" || true)
   _uses=$(( ${_uses_main:-0} + ${_uses_ser:-0} + ${_uses_flake:-0} ))
-  # 4 _bats_sandbox + 2 _ser_bats_sandbox + 1 flake-retry = 7 minimum
+  # 4 _bats_sandbox + 2 _ser_bats_sandbox + 1 _fr_ser_sandbox = 7 minimum
   [ "${_uses:-0}" -ge 7 ] || {
-    echo "FAIL: expected ≥7 sandbox uses (4 _bats_sandbox + 2 _ser_bats_sandbox in test-gate.sh + 1 gate-verdict.sh), got ${_uses}" >&2
+    echo "FAIL: expected ≥7 sandbox uses (4 _bats_sandbox + 2 _ser_bats_sandbox in test-gate.sh + 1 _fr_ser_sandbox in gate-verdict.sh), got ${_uses}" >&2
     return 1
   }
 }
