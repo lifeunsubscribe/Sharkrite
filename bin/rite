@@ -1313,7 +1313,7 @@ if [ "$MODE" = "init" ]; then
 
   _recorded_mode=$(grep -oE '^RITE_DOC_MODE="[^"]*"' "$_config_file_for_doc_mode" 2>/dev/null | cut -d'"' -f2 || true)
   if [ "$_recorded_mode" = "off" ]; then
-    print_info "Doc drift tracking off — run 'rite align-docs' to re-enable"
+    print_info "Doc drift tracking off — run 'rite align-docs --enable' to re-enable"
   elif [ -n "$_recorded_mode" ]; then
     print_info "Doc mode: ${_recorded_mode} (use 'rite align-docs --disable' to turn off)"
   else

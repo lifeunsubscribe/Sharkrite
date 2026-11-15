@@ -152,9 +152,10 @@ _invoke_all_triggers() {
   grep -q 'off' <<< "$body"
   # Must NOT gate on sync|changelog in the skip branch (flipped to default-on)
   # The gate now skips only when off, not when sync/changelog
-  local off_line sync_line
-  off_line="$(grep -n 'off.*return 0' <<< "$body" || true)"
-  [ -n "$off_line" ]
+  # declare -f splits case branches onto separate lines, so grep single-line 'off.*return 0' never matches.
+  # Assert the two invariants independently: the off) case arm exists, and return 0 appears in the body.
+  grep -q "off)" <<< "$body"
+  grep -q 'return 0' <<< "$body"
 }
 
 # ---------------------------------------------------------------------------
