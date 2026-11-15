@@ -1324,6 +1324,12 @@ if [ "${FIX_REVIEW_MODE:-false}" = true ]; then
     _fix_test_runbook_section=$(provider_load_test_authoring_runbook || true)
   fi
 
+  # The vocabulary must be set BEFORE the items section below: the mixed
+  # gate+review section interpolates _RITE_PROJ_GATE_DESC. Live (freshup #591,
+  # 2026-11-15): the call sat below the section, so every fix session with both
+  # a [GATE] and a review NOW item died on "unbound variable" before it started.
+  _set_project_verification_vocab
+
   # Split ACTIONABLE_NOW_ITEMS into gate-origin and review-origin groups (issue #985).
   # Gate items carry the `### [GATE] ` prefix; review items do not.
   # Each item block spans from its `### ` header to just before the next `### ` (or EOF).
@@ -1378,7 +1384,6 @@ $ACTIONABLE_NOW_ITEMS
   fi
 
   # Build fix prompt - tool restrictions are enforced by --disallowedTools flag
-  _set_project_verification_vocab
   FIX_PROMPT="You are running inside a **Sharkrite** (CLI: \`rite\`) fix-review session.
 Do NOT run git commit, git push, gh pr create, or any git/gh commands yourself.
 
