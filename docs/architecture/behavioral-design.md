@@ -873,6 +873,26 @@ The assessment prompt's old tie-break biased uncertain findings toward `ACTIONAB
 
 The necessity bar governs *non-essential* findings; the **SCOPE BAR** (added #791) governs the opposite hazard — deferring work the issue exists to do. A feature can otherwise merge "done" while its own core acceptance criteria are punted to follow-ups, shipping non-functional: LeadFlow's #46 CloudWatch-alarm feature merged while deferring its producer token (the event it must emit), its SNS subscription, and the alarm itself into follow-ups. The gate only blocks on TEST failures (Gate Block-on-Any), and those deferred ACs had no tests, so the unmet-AC feature merged clean. The rule, in the `ASSESSMENT_PROMPT` classification criteria of `lib/core/assess-review-issues.sh`, leans on the injected `ORIGINAL ISSUE SCOPE` section (`$ISSUE_DETAILS`): a finding identifying an UNMET acceptance criterion or core deliverable of the issue under assessment is `ACTIONABLE_NOW` and MUST NOT be deferred to `ACTIONABLE_LATER` — only findings OUTSIDE the issue's stated scope are deferral-eligible. This is the tractable prompt-level fix; the stronger deterministic follow-on (a merge gate that runs the issue's own AC verification commands, so an unmet, untested AC cannot pass) is noted future work.
 
+### Documentation Prose Is Not a Fix-Loop Item (2026-11-15)
+
+The SCOPE BAR above makes an unmet acceptance criterion `ACTIONABLE_NOW`. On a
+docs-only issue the document IS the deliverable, so every review opinion about
+its wording read as an unmet criterion and the fix loop spent whole rounds on
+phrasing: freshup #573, two `.md` files, drew 5 `ACTIONABLE_NOW` wording
+findings and 2 fix cycles (freshup report 2026-11-12b §3.8). The `ASSESSMENT_PROMPT` now bounds the
+SCOPE BAR for findings located in `docs/`, README, CHANGELOG or any other `.md`
+file: a documentation criterion is unmet only when required content is ABSENT
+or a statement is FACTUALLY WRONG (it contradicts the code or behaviour it
+describes). Only those two are `ACTIONABLE_NOW`. Wording, clarity, ordering,
+emphasis, better examples, cross-reference polish and completeness beyond the
+named criteria are never NOW, including on docs-only issues; they are
+`ACTIONABLE_LATER` only when a reader following the text as written would do
+the wrong thing, otherwise `DISMISSED`. This follows the doc-drift design:
+documentation corrections are recorded cheaply during development and applied
+later in a reviewed pass, never by interrupting the run. The rule is stated in
+both the THREE-STATE CATEGORIZATION section and DECISION CRITERIA (the #495
+reword-all-locations rule). Test: tests/regression/assess-doc-prose-not-now.bats.
+
 ---
 
 ## Doc Assessment (assess-documentation.sh, workflow-runner.sh)
@@ -1911,6 +1931,36 @@ a flake); RITE_GATE_FLAKE_RETRY=false is the operator off-switch. Rejected:
 per-test quarantine lists (rot silently; the serial re-run is evidence-based
 per occurrence) and N>1 retries (a test needing two quiet runs isn't flaking,
 it's broken). Test: tests/regression/gate-flake-retry.bats.
+
+**Command-path variant (2026-11-15).** The retry above lived only on the
+sharkrite bats path, so a repo whose gate is a `RITE_TEST_COMMAND` wrapper had
+no flake protection at all: one load-flaky vitest file in freshup turned a
+green change into a fix cycle on a test the change never touched (freshup
+report 2026-11-12b §3.2). The command path now applies the same contract with
+the only granularity a wrapper offers, the whole command. When the command
+fails, `_gate_command_flake_candidates` (`lib/utils/gate-verdict.sh`) reads the
+failing test FILES from the raw output (vitest/jest `FAIL <path>`, pytest
+`FAILED|ERROR <path>::…`) and the gate re-runs the command ONCE only when all
+of these hold: at least one failing file is named; at most
+`RITE_GATE_FLAKE_RETRY_MAX_FILES` are; none of them is in the change's diff
+(a failing file the change touched is the change's failure); and the output
+carries no `error TS<n>` line (a compile error is deterministic, never a
+flake). The second run is the oracle: exit 0 means the failure was a flake and
+the gate passes, naming the cleared files on the pass line; a second failure
+blocks, and its output (not the first run's) feeds the findings. Both outcomes
+emit `[diag] TEST_GATE_FLAKE_RETRY … mode=command`. Accepted cost: a change
+that genuinely breaks an untouched test file pays one extra command run per
+fix cycle. `RITE_GATE_FLAKE_RETRY=false` disables this variant too.
+
+The same change closed three parity gaps on the command path, each already
+fixed on the detected-runner path: the verdict now carries `head_sha` (the
+#986 stale-verdict check had nothing to compare); a failure with no named
+finding carries the runner `excerpt` (#1785), so a `tsc` error reaches the fix
+session as text instead of "no parseable findings"; and node normalization
+keys on the output's own `Test Files` / `Test Suites` summary line when
+neither the command string nor a root `package.json` identifies node (freshup
+keeps its frontend one level down behind a bash wrapper). Test:
+tests/regression/gate-command-flake-rerun.bats.
 
 ## Pass-Type Detector Threshold Reconciliation (#937)
 

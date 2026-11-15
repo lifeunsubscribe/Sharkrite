@@ -180,16 +180,25 @@ _normalize_node_test_output() {
 # _node_flavored_test_context — true when a RITE_TEST_COMMAND run is expected
 # to produce jest/vitest output (node runner named in the command, or the
 # repo is an npm package).
-# Args: $1 = project_root, $2 = test command string
+# Args: $1 = project_root, $2 = test command string,
+#       $3 = raw output file (optional)
+# A wrapper script hides the runner from both signals (freshup:
+# RITE_TEST_COMMAND="bash scripts/rite-test.sh", package.json one level down
+# in frontend/), so the run's own output is the third: a jest/vitest summary
+# line ("Test Files  1 failed", "Test Suites: 1 failed") names the runner.
 # ---------------------------------------------------------------------------
 _node_flavored_test_context() {
   local ctx_root="$1"
   local ctx_cmd="${2:-}"
+  local ctx_raw="${3:-}"
   case "$ctx_cmd" in
     # *npm* also covers pnpm; *node* also covers nodemon
     *npm*|*npx*|*yarn*|*jest*|*vitest*|*node*) return 0 ;;
   esac
-  [ -f "$ctx_root/package.json" ]
+  [ -f "$ctx_root/package.json" ] && return 0
+  [ -n "$ctx_raw" ] && [ -s "$ctx_raw" ] || return 1
+  sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$ctx_raw" 2>/dev/null \
+    | grep -E '^[[:space:]]*(Test Files|Test Suites):?[[:space:]]' >/dev/null
 }
 
 # ---------------------------------------------------------------------------

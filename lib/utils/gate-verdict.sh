@@ -288,6 +288,86 @@ _gate_flake_retry_pass() {
 }
 
 # ---------------------------------------------------------------------------
+# _gate_command_flake_candidates RAW_FILE CHANGED_FILES
+#
+# Flake triage for the RITE_TEST_COMMAND path (freshup 2026-11-12b §3.2: a
+# vitest pagination test in an untouched frontend file took 10.4 s under gate
+# load, failed, and a fix session for a backend issue rewrote two frontend
+# tests). The sharkrite path has _gate_flake_retry_pass; a custom command had
+# no retry at all.
+#
+# Reads the failing TEST FILES the runner named in RAW_FILE and decides
+# whether the failure can only be a flake or a pre-existing red: it is a
+# candidate when at least one failing file is named and NONE of them is in
+# CHANGED_FILES (newline-separated, project-relative). Formats read:
+#   vitest   " FAIL  src/x.test.tsx > suite > test" / " FAIL  src/x.test.tsx [ ... ]"
+#   jest     "FAIL src/x.test.ts"
+#   pytest   "FAILED tests/test_x.py::test_y - ..." / "ERROR tests/test_x.py ..."
+# A runner prints paths relative to ITS cwd (frontend/), so a failing file is
+# "in the change" when a changed path equals it or ends with "/<it>" (or the
+# reverse for an absolute runner path) — no filesystem resolution needed.
+#
+# Not a candidate (return 1, nothing printed) when:
+#   - no failing test file is named (a compile error, a crashed wrapper)
+#   - the output carries a tsc error ("error TS1234") — never a flake, and the
+#     caller's re-run of the whole command would only fail again
+#   - CHANGED_FILES is empty (no diff computable — cannot prove "outside")
+#   - any failing file is in the change, or more than
+#     RITE_GATE_FLAKE_RETRY_MAX_FILES (default 5) files fail
+# Candidate (return 0): prints the failing files, one per line. The caller
+# re-runs the WHOLE command once — the only sound oracle for an arbitrary
+# wrapper — and trusts that result.
+# ---------------------------------------------------------------------------
+_gate_command_flake_candidates() {
+  local _cf_raw="${1:-}" _cf_changed="${2:-}"
+  local _cf_max="${RITE_GATE_FLAKE_RETRY_MAX_FILES:-5}"
+  [ -s "$_cf_raw" ] || return 1
+  [ -n "$_cf_changed" ] || return 1
+
+  local _cf_plain
+  _cf_plain=$(sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$_cf_raw" 2>/dev/null || true)
+  if grep -qE 'error TS[0-9]+' <<< "$_cf_plain"; then
+    return 1
+  fi
+
+  local _cf_files
+  _cf_files=$(awk '
+    /^[[:space:]]*FAIL[[:space:]]/ {
+      p = $2
+      if (p ~ /\// || p ~ /\.(test|spec)\./) print p
+      next
+    }
+    /^(FAILED|ERROR)[[:space:]]/ {
+      p = $2; sub(/::.*/, "", p)
+      if (p ~ /\.py$/) print p
+      next
+    }
+  ' <<< "$_cf_plain" | sort -u || true)
+  [ -n "$_cf_files" ] || return 1
+
+  local _cf_count
+  _cf_count=$(grep -c . <<< "$_cf_files" || true)
+  [ "${_cf_count:-0}" -le "$_cf_max" ] || return 1
+
+  local _cf_file _cf_chg
+  while IFS= read -r _cf_file; do
+    [ -n "$_cf_file" ] || continue
+    while IFS= read -r _cf_chg; do
+      [ -n "$_cf_chg" ] || continue
+      case "$_cf_chg" in
+        "$_cf_file"|*/"$_cf_file") return 1 ;;
+      esac
+      case "$_cf_file" in
+        */"$_cf_chg") return 1 ;;
+      esac
+    done <<< "$_cf_changed"
+  done <<< "$_cf_files"
+
+  printf '%s\n' "$_cf_files"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # _parse_bats_failure — convert bats failure output to JSON fragment
 # Input: bats test failure section text
 # Output: JSON objects (one per failure)
