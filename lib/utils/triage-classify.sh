@@ -99,7 +99,9 @@ triage_classify_diff() {
 DIFF:
 $_diff_head"
     _tresp=$(provider_run_prompt "$_tprompt" "$_tmodel" "true" 2>/dev/null || true)
-    _tjson=$(echo "$_tresp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
+    # Flatten first: grep -o matches within one line, and the model often
+    # pretty-prints the object across several (see _classify_finding).
+    _tjson=$(tr '\n' ' ' <<< "$_tresp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
     if [ -n "$_tjson" ] && echo "$_tjson" | jq -e . >/dev/null 2>&1; then
       _verdict=$(echo "$_tjson" | jq -r '.verdict // "substantive"' 2>/dev/null || echo "substantive")
       _conf=$(echo "$_tjson" | jq -r '.confidence // 0' 2>/dev/null || echo "0")

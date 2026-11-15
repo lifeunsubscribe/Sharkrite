@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/scope-checker.sh::_scope_path_tokens|parse_documentation_impact|check_scope_boundary|scope_boundary_is_enforceable
+# sharkrite-test-covers: lib/utils/scope-checker.sh::_scope_path_tokens|_scope_donot_paths|parse_documentation_impact|check_scope_boundary|scope_boundary_is_enforceable
 #
 # Live (freshup batch 2026-11-12, Dace's report §3.1): 10 of 11 PRs carried a
 # scope warning and 0 were real. Runbook "Files to Modify" bullets carry a
@@ -60,4 +60,54 @@ B
   [[ "$output" != *"docs/handoff.md"* ]]
   [[ "$output" != *"docs/FreshUp-ADR.md"* && "$output" != *"docs/freshup-adr.md"* ]]
   [[ "$output" == *"src/routers/feed.py"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# DO NOT is enforced by path, never by prose word (freshup batch 2026-11-15,
+# Dace's report section 3.2): "DO NOT: make chips clickable or link them to
+# filters" flagged every frontend/ file because "on" is inside "frontend", and
+# the listed themeRows.ts was flagged by the words "theme" and "rows".
+# ---------------------------------------------------------------------------
+_donot_body() { # $1 = the DO NOT bullet text
+  cat <<B
+**Claude Context**:
+Files to Modify:
+- \`src/schemas/recipe.py\` (two fields)
+- \`src/schemas/feed.py\`
+- \`tests/routers/test_recipes.py\`, \`tests/routers/test_feed.py\`
+- \`docs/handoff.md\`, \`docs/FreshUp-ADR.md\`
+
+**Scope Boundary**:
+- DO: add the two fields under \`src/routers/\` and both schemas
+- DO NOT: $1
+B
+}
+
+@test "donot paths: a prose bullet names no path; a path inside prose is extracted; a lone path is kept" {
+  run _scope_donot_paths <<< "rename the recipe schemas or reorder the feed on any router"
+  [ -z "$output" ]
+  run _scope_donot_paths <<< "change \`src/routers/feed.py\` or the card component"
+  [ "$output" = "src/routers/feed.py" ]
+  run _scope_donot_paths <<< "secret.sh"
+  [ "$output" = "secret.sh" ]
+  run _scope_donot_paths <<< "\`Lib/Core/\`"
+  [ "$output" = "lib/core/" ]
+}
+
+@test "check_scope_boundary: prose DO NOT words never flag a file (recipe, schemas, feed, on)" {
+  run check_scope_boundary "$(_donot_body "rename the recipe schemas or reorder the feed on any router")" "$REPO" main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "check_scope_boundary: a path named inside a prose DO NOT bullet is flagged despite a DO directory" {
+  run check_scope_boundary "$(_donot_body "change \`src/routers/feed.py\` or the card component")" "$REPO" main
+  [ "$status" -eq 1 ]
+  [ "$output" = "VIOLATION: src/routers/feed.py" ]
+}
+
+@test "check_scope_boundary: a file named exactly in Files to Modify is in scope even when a DO NOT bullet mentions it" {
+  run check_scope_boundary "$(_donot_body "change the validators in \`src/schemas/recipe.py\`")" "$REPO" main
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"src/schemas/recipe.py"* ]]
 }

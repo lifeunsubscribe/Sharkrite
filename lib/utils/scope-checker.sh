@@ -9,8 +9,13 @@
 # Design notes:
 #   - DO bullets define the allowed set.  A changed file is "in-scope" when
 #     it prefix-matches at least one DO pattern (path prefix or exact file).
-#   - DO NOT bullets define explicit exclusions.  A file matching a DO NOT
-#     pattern is flagged even if it also matches a DO bullet.
+#   - DO NOT bullets define explicit exclusions, by PATH only.  A file matching
+#     a path named in a DO NOT bullet is flagged even if a DO directory or glob
+#     covers it.  The prose of a DO NOT bullet is never matched against paths:
+#     words are not paths ("on" is inside every frontend/ path).
+#   - A file the issue names exactly as something to change (a DO bullet, Files
+#     to Modify, Documentation Impact) is never a violation.  A DO NOT bullet
+#     that mentions it restricts HOW it changes, which a path check cannot judge.
 #   - When no Scope Boundary section exists the function returns 0 (no
 #     violations) so repos that don't use the section are unaffected.
 #   - The check is advisory: callers decide whether to block, warn, or prompt.
@@ -203,7 +208,9 @@ _file_matches_pattern() {
 # patterns parsed from ISSUE_BODY.
 #
 # Also unions the "Files to Modify:" list from the Claude Context section into
-# the allowed set — declared modification intent can never be a violation.
+# the allowed set — declared modification intent can never be a violation, and
+# a file named exactly there (or in a DO bullet / Documentation Impact) is
+# skipped before the DO NOT check.
 #
 # Outputs violations to stdout (one file per line, prefixed with "VIOLATION: ").
 # Also outputs info/warning lines to stderr.
@@ -257,19 +264,42 @@ check_scope_boundary() {
     return 0
   fi
 
-  # Union Files-to-Modify paths from Claude Context into the DO allowed set
-  # BEFORE the prose-only enforceability guard.  This ensures the guard sees
-  # the full allowed set (DO bullets ∪ FtM paths) — an issue with prose-only
-  # DO bullets but a path-shaped Files to Modify list is enforceable via FtM.
-  # Declared modification intent can never be a violation; adding FtM paths
-  # here also satisfies the "must match at least one DO" check without altering
-  # any existing matching logic.
+  # Declared modification intent: the path tokens in Files to Modify and
+  # Documentation Impact.  They join the DO allowed set below, so an issue with
+  # prose-only DO bullets but a path-shaped Files to Modify list is enforceable.
+  local _declared_tokens
+  _declared_tokens=$( { parse_files_to_modify "$issue_body"; parse_documentation_impact "$issue_body"; } | _scope_path_tokens)
+
+  # Files the issue names exactly as something to change: path tokens from DO
+  # bullets, Files to Modify and Documentation Impact that name one file (no
+  # trailing slash, no glob).  Newline-delimited with a leading newline so the
+  # membership test below is a whole-line match.
+  local _named_exact=$'\n' _ntok
+  while IFS= read -r _ntok; do
+    [ -z "$_ntok" ] && continue
+    case "$_ntok" in
+      */|*'*'*|*'?'*|*'['*) continue ;;
+    esac
+    _named_exact="${_named_exact}${_ntok}"$'\n'
+  done <<< "$( { printf '%s\n' "${_do_patterns[@]+"${_do_patterns[@]}"}"; printf '%s\n' "$_declared_tokens"; } | _scope_path_tokens)"
+
+  # DO NOT bullets reduced to the paths they name (see _scope_donot_paths).
+  local _donot_paths=() _dnp
+  while IFS= read -r _dnp; do
+    [ -z "$_dnp" ] && continue
+    _donot_paths+=("$_dnp")
+  done <<< "$(printf '%s\n' "${_donot_patterns[@]+"${_donot_patterns[@]}"}" | _scope_donot_paths)"
+
+  # The allowed set: every path-shaped token in a DO bullet, plus the declared
+  # tokens.  _do_patterns keeps the raw bullets (its count answers "does the
+  # issue have DO bullets at all"); _do_paths is what files are matched against.
+  local _do_paths=()
   if [ "${#_do_patterns[@]}" -gt 0 ]; then
     local _ftm_path
     while IFS= read -r _ftm_path; do
       [ -z "$_ftm_path" ] && continue
-      _do_patterns+=("$_ftm_path")
-    done <<< "$( { parse_files_to_modify "$issue_body"; parse_documentation_impact "$issue_body"; } | _scope_path_tokens)"
+      _do_paths+=("$_ftm_path")
+    done <<< "$(printf '%s\n' "${_do_patterns[@]}" | _scope_path_tokens _is_path_shaped; printf '%s\n' "$_declared_tokens")"
   fi
 
   # Prose-only guard: when DO bullets exist but neither DO bullets nor Files to
@@ -361,49 +391,25 @@ check_scope_boundary() {
     local _file_norm
     _file_norm=$(echo "$_file" | tr '[:upper:]' '[:lower:]' | sed 's|^\./||' || true)
 
-    # Check DO NOT patterns first (explicit exclusion wins).
+    # Named exactly as something to change → in scope, whatever a DO NOT
+    # bullet says about it (that bullet restricts how, not whether).
+    if [[ "$_named_exact" == *$'\n'"${_file_norm}"$'\n'* ]]; then
+      continue
+    fi
+
+    # DO NOT paths next (explicit exclusion wins over a DO directory or glob).
+    # Paths only: the prose-word substring match that used to live here flagged
+    # listed files on words like "on", "source" and "theme" (freshup batch
+    # 2026-11-15: every warning on three PRs) while a real path inside a prose
+    # bullet was never enforced.
     # +idiom REQUIRED: this file is #!/bin/bash (bash 3.2 on macOS), where a
-    # bare [@] expansion of an empty array crashes under set -u — a Scope
-    # Boundary with a DO: line but no DO NOT: line leaves _donot_patterns
-    # empty. (An earlier comment here wrongly assumed bash-4 empty-array
-    # semantics.)
-    #
-    # Two matching strategies:
-    #   - Path-shaped patterns  → use _file_matches_pattern (prefix/glob)
-    #   - Prose patterns        → substring match: the file path contains a
-    #     word from the prose phrase (e.g. "touch unrelated tests" matches
-    #     any file whose path contains "unrelated" or "tests")
+    # bare [@] expansion of an empty array crashes under set -u.
     local _donot_match=false
-    for _pat in "${_donot_patterns[@]+"${_donot_patterns[@]}"}"; do
+    for _pat in "${_donot_paths[@]+"${_donot_paths[@]}"}"; do
       [ -z "${_pat:-}" ] && continue
-      if _is_path_shaped "$_pat"; then
-        # Path-shaped: use standard prefix/glob matching
-        if _file_matches_pattern "$_file_norm" "$_pat"; then
-          _donot_match=true
-          break
-        fi
-      else
-        # Prose phrase: check whether any significant word in the phrase
-        # appears as a substring of the file path (case-insensitive, already
-        # lowercased).  Skip stop-words (do, not, the, a, an, touch, any).
-        local _prose_pat_lower
-        _prose_pat_lower=$(echo "$_pat" | tr '[:upper:]' '[:lower:]')
-        local _word
-        for _word in $_prose_pat_lower; do
-          # Skip common stop-words that would over-match.
-          # "tests" is excluded because it matches every file under tests/
-          # when the intent is to exclude a specific class of tests (e.g.
-          # "unrelated tests").  More specific words like "unrelated" still
-          # fire as intended.
-          case "$_word" in
-            do|not|the|a|an|touch|any|to|in|of|and|or|with|for|all|tests|test|files|file|changes|code) continue ;;
-          esac
-          if [[ "$_file_norm" == *"$_word"* ]]; then
-            _donot_match=true
-            break
-          fi
-        done
-        [ "$_donot_match" = true ] && break
+      if _file_matches_pattern "$_file_norm" "$_pat"; then
+        _donot_match=true
+        break
       fi
     done
 
@@ -433,32 +439,14 @@ check_scope_boundary() {
         continue
       fi
 
-      # A DO bullet may contain prose mixed with paths (e.g. "tweak the regex
-      # in lib/core/foo.sh").  When the full bullet text contains spaces, split
-      # it on whitespace and test only the path-shaped tokens — this prevents
-      # prose words from being used as path prefixes (which would never match)
-      # and ensures real path mentions inside prose DO bullets are honoured.
+      # _do_paths holds only path tokens (prose words were dropped when it was
+      # built), so a DO bullet mixing prose and paths matches on its paths.
       local _do_match=false
-      # +idiom: a Scope Boundary with DO NOT: but no DO: leaves _do_patterns
-      # empty — bare [@] crashes bash 3.2 under set -u (sibling of the
-      # _donot_patterns fix above).
-      for _pat in "${_do_patterns[@]+"${_do_patterns[@]}"}"; do
+      for _pat in "${_do_paths[@]+"${_do_paths[@]}"}"; do
         [ -z "$_pat" ] && continue
-        if [[ "$_pat" == *" "* ]]; then
-          # Prose bullet: try each whitespace-separated token that is path-shaped
-          local _token
-          for _token in $_pat; do
-            if _is_path_shaped "$_token" && _file_matches_pattern "$_file_norm" "$_token"; then
-              _do_match=true
-              break
-            fi
-          done
-          [ "$_do_match" = true ] && break
-        else
-          if _file_matches_pattern "$_file_norm" "$_pat"; then
-            _do_match=true
-            break
-          fi
+        if _file_matches_pattern "$_file_norm" "$_pat"; then
+          _do_match=true
+          break
         fi
       done
       if [ "$_do_match" = false ]; then
@@ -539,8 +527,15 @@ _is_strong_path_token() {
 # reported as a scope violation (freshup 2026-11-12: 10 of 11 PRs warned,
 # 0 real). Tokens are split on whitespace, commas, semicolons and parens, and
 # trimmed of backticks, quotes and trailing punctuation.
+#
+# DO bullets go through the same tokenizer (with the _is_path_shaped predicate)
+# so a backticked or comma-terminated path in "DO: add the guard in
+# `lib/core/foo.sh`, then test it" matches the file it names.
 # ---------------------------------------------------------------------------
 _scope_path_tokens() {
+  # $1: token predicate. Default keeps strong path tokens; _is_path_shaped also
+  # keeps bare filenames and extensionless directories (lib/core, foo.sh).
+  local _pred="${1:-_is_strong_path_token}"
   local _line _tok
   while IFS= read -r _line; do
     [ -n "$_line" ] || continue
@@ -549,10 +544,32 @@ _scope_path_tokens() {
       _tok="${_tok#\'}"; _tok="${_tok%\'}"
       _tok="${_tok%.}"; _tok="${_tok%:}"
       _tok="${_tok#./}"
-      if _is_strong_path_token "$_tok"; then
+      if "$_pred" "$_tok"; then
         printf '%s\n' "$_tok" | tr '[:upper:]' '[:lower:]'
       fi
     done
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# _scope_donot_paths — read DO NOT bullets on stdin, print the paths they name,
+# one per line.  A bullet that is itself one path-shaped token (`lib/core/x.sh`,
+# `secret.sh`, `lib/core`) is that path.  Any other bullet contributes only its
+# strong path tokens, so "change `src/pages/Recipes.tsx` or the feed card"
+# excludes src/pages/Recipes.tsx and "touch the frontend" excludes nothing.
+# ---------------------------------------------------------------------------
+_scope_donot_paths() {
+  local _line _bare
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _bare=$(printf '%s' "$_line" | tr -d '`' || true)
+    _bare="${_bare#./}"
+    if [[ "$_bare" != *[[:space:]]* ]] && _is_path_shaped "$_bare"; then
+      printf '%s\n' "$_bare" | tr '[:upper:]' '[:lower:]'
+      continue
+    fi
+    printf '%s\n' "$_line" | _scope_path_tokens
   done
   return 0
 }
@@ -671,41 +688,17 @@ scope_boundary_is_enforceable() {
 
   # Require at least one STRONG path token (path-shaped + contains a slash).
   # Bare filenames like "issue-lock.sh" in prose do not qualify.
-  local _pat _token
-  for _pat in "${_do_patterns[@]}"; do
-    [ -z "$_pat" ] && continue
-    if [[ "$_pat" == *" "* ]]; then
-      # Multi-word bullet: check each whitespace-separated token
-      for _token in $_pat; do
-        if _is_strong_path_token "$_token"; then return 0; fi
-      done
-    else
-      if _is_strong_path_token "$_pat"; then return 0; fi
-    fi
-  done
+  # Same tokenizer check_scope_boundary matches with, so a backticked path
+  # counts here exactly when it can match there.
+  if [ -n "$(printf '%s\n' "${_do_patterns[@]}" | _scope_path_tokens)" ]; then
+    return 0
+  fi
 
-  # Fallback: DO bullets are prose-only, but Files to Modify may supply the
-  # allowed set.  check_scope_boundary unions FtM into _do_patterns before the
-  # prose-only skip, so if FtM has at least one strong path token the check is
-  # meaningful and should run.
-  local _ftm_path _ftm_tok
-  while IFS= read -r _ftm_path; do
-    [ -z "$_ftm_path" ] && continue
-    # Strip leading/trailing backtick decorators (parse_files_to_modify emits
-    # raw bullet content; some issues format paths as `lib/core/foo.sh`).
-    _ftm_path="${_ftm_path#\`}"
-    _ftm_path="${_ftm_path%\`}"
-    [ -z "$_ftm_path" ] && continue
-    if [[ "$_ftm_path" == *" "* ]]; then
-      # Multi-word entry: check each whitespace-separated token (consistent
-      # with the DO-bullet strength loop above).
-      for _ftm_tok in $_ftm_path; do
-        if _is_strong_path_token "$_ftm_tok"; then return 0; fi
-      done
-    else
-      if _is_strong_path_token "$_ftm_path"; then return 0; fi
-    fi
-  done <<< "$( { parse_files_to_modify "$issue_body"; parse_documentation_impact "$issue_body"; } | _scope_path_tokens)"
+  # Fallback: DO bullets are prose-only, but Files to Modify or Documentation
+  # Impact may supply the allowed set (check_scope_boundary unions them in).
+  if [ -n "$( { parse_files_to_modify "$issue_body"; parse_documentation_impact "$issue_body"; } | _scope_path_tokens)" ]; then
+    return 0
+  fi
 
   return 1
 }
