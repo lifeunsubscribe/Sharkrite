@@ -300,6 +300,30 @@ setup() {
   [ -n "$output" ]
 }
 
+@test "promote supervised preflight: sync exit 5 propagates as exit 5 (not still-N-behind)" {
+  _test_exit=0
+  (
+    print_error()   { true; }
+    sync_integration_branch() { return 5; }
+
+    local _supervised_sync_rc=0
+    sync_integration_branch "my-branch" || _supervised_sync_rc=$?
+    if [ "$_supervised_sync_rc" -eq 5 ]; then
+      exit 5
+    fi
+    echo "MISSING EXIT 5 — usage cap not surfaced" >&2
+    exit 1
+  ) || _test_exit=$?
+  [ "$_test_exit" -eq 5 ]
+}
+
+@test "promote-branch.sh: supervised sync captures result and checks for 5" {
+  run grep -nE '_supervised_sync_rc' "$PROMOTE_SH"
+  [ "$status" -eq 0 ]
+  run awk '/_supervised_sync_rc.*-eq 5/{f=1} f&&/exit 5/{print; exit}' "$PROMOTE_SH"
+  [ -n "$output" ]
+}
+
 # ---------------------------------------------------------------------------
 # Parity: every handle_push_divergence capture with a 5 branch has an 18 branch
 # ---------------------------------------------------------------------------

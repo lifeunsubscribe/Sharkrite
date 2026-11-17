@@ -108,6 +108,10 @@ fi
 #              could not be resolved, or push failed
 #   3 — conflict_deferred: --clean-only and merge conflicted (resolver not
 #              invoked); no push; temp worktree removed
+#   5 — usage_cap: provider usage cap hit during conflict resolution; temp
+#              worktree removed; caller should invoke cap-resume machinery
+#  18 — auth_failure: provider auth expired during conflict resolution; temp
+#              worktree removed
 # =============================================================================
 sync_integration_branch() {
   local SYNC_BRANCH="${1:?sync_integration_branch: branch argument required}"
@@ -273,6 +277,16 @@ sync_integration_branch() {
       git worktree remove --force "$_sync_wt" 2>/dev/null || true
       return 0
     fi
+    if [ "$_resolver_rc" -eq 5 ]; then
+      # Usage cap reached — propagate so promote-branch.sh can invoke the
+      # cap-resume machinery rather than printing misleading manual instructions.
+      print_error "Usage cap reached during conflict resolution — re-run after cap resets: rite --sync $SYNC_BRANCH"
+      _diag "INTEGRATION_SYNC branch=$SYNC_BRANCH outcome=usage_cap"
+      git -C "$_sync_wt" merge --abort 2>/dev/null || true
+      trap - EXIT
+      git worktree remove --force "$_sync_wt" 2>/dev/null || true
+      return 5
+    fi
     if [ "$_resolver_rc" -eq 18 ]; then
       # Auth expired — propagate so the caller halts rather than printing manual instructions.
       print_error "Provider auth expired during conflict resolution — run: claude /login"
@@ -282,7 +296,7 @@ sync_integration_branch() {
       git worktree remove --force "$_sync_wt" 2>/dev/null || true
       return 18
     fi
-    # Resolver failed (exit 1) or usage-cap (exit 5) — fall through to manual.
+    # Resolver failed (exit 1) — fall through to manual.
     print_warning "Claude could not resolve conflicts — manual resolution required"
   fi
 

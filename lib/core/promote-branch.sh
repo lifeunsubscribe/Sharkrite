@@ -551,7 +551,10 @@ run_promote() {
         source "$RITE_LIB_DIR/utils/integration-sync.sh"
         local _supervised_sync_rc=0
         sync_integration_branch "$BRANCH" || _supervised_sync_rc=$?
-        if [ "$_supervised_sync_rc" -eq 18 ]; then
+        if [ "$_supervised_sync_rc" -eq 5 ]; then
+          print_error "Usage cap reached during sync"
+          exit 5
+        elif [ "$_supervised_sync_rc" -eq 18 ]; then
           print_error "Provider auth failure during sync (run: claude /login)"
           exit 18
         fi
