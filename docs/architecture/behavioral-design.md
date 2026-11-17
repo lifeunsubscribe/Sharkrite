@@ -574,7 +574,7 @@ The fix (`_resolve_prior_gate_findings` in `assess-and-resolve.sh`): after `asse
 
 - **`_GATE_HAD_VALID_VERDICT=true`** (gate ran for the current HEAD without stale SHA or timeout/crash): all `[GATE] ACTIONABLE_NOW` items are dropped from the LLM output. Items still failing appear in `GATE_PREPEND_ITEMS` and are prepended by the caller — dropping from the LLM result prevents double-counting. Items that passed are silently dropped.
 
-- **`_GATE_HAD_VALID_VERDICT=false`** (standalone `--assess-and-fix` without a preceding gate run): a targeted bats rerun is attempted for each `[GATE] bats failure:` item whose location is extractable from the prior assessment comment. A passing run resolves the item; failure or unrunnable state keeps it. Lint `[GATE]` items are always kept (conservative — running `make check` would violate the no-full-suite contract).
+- **`_GATE_HAD_VALID_VERDICT=false`** (standalone `--assess-and-fix` without a preceding gate run): a targeted bats rerun is attempted for each `[GATE] bats failure:` item whose location is extractable from the prior assessment comment. A passing run resolves the item; failure or unrunnable state keeps it. Lint `[GATE]` items are always kept (conservative — running `make check` would violate the no-full-suite contract). `[GATE] test failure:` items (pytest, jest/vitest — any non-bats runner) are kept for the same reason: re-running them means re-running the project's test command.
 
 A `[diag] GATE_FINDING_RESOLVED` line is emitted for each dropped item. Live deadlock that motivated this fix: issue #1595 batch rite-1605-1597-1596-1607-1595 — `blocker-rules subshell gate` test passed on retry 3 but the LLM re-raised it with a paraphrased title; `FOLLOWUP_SKIPPED_GATE_ORIGIN` fired; exit 1 halted the batch despite the review being approved.
 
@@ -1998,6 +1998,62 @@ keys on the output's own `Test Files` / `Test Suites` summary line when
 neither the command string nor a root `package.json` identifies node (freshup
 keeps its frontend one level down behind a bash wrapper). Test:
 tests/regression/gate-command-flake-rerun.bats.
+
+**Pytest failures become named findings (2026-11-17).** Every failure count,
+`tests[]` entry and `[GATE]` item in the gate is built from `^not ok` lines.
+bats prints them and `_normalize_node_test_output` synthesizes them for
+jest/vitest, but nothing did for pytest. A red pytest run therefore logged
+`test_count=0` and `failed (exit 1, no test names parsed)`, wrote an empty
+`tests[]`, and reached the fix session as one item telling it to "investigate
+why the test runner produced no parseable output". Live (freshup, 2026-11-16
+and 11-17): three issues spent whole fix budgets (1020 s; 780 s then 1560 s)
+without an edit while the same log named the eight failing tests and
+`ValueError: Constraint must have a name`.
+
+`_normalize_pytest_test_output` (`lib/utils/gate-runners.sh`) runs on both
+paths that can execute pytest (the `RITE_TEST_COMMAND` path and the
+detected-runner path) whenever the test run exits non-zero. It appends one
+`not ok N <nodeid><TAB><reason>` line per `FAILED <nodeid>` / `ERROR <nodeid>`
+line of pytest's short test summary:
+
+- **Name = the pytest node id, verbatim.** It is stable across fix rounds
+  and it is runnable as `pytest <name>`.
+- **Reason = the runner's own words.** The first `E   ` line of that test's
+  traceback section, plus ` [last error line: …]` when the block ends in a
+  different bare `<Exception>: <msg>` line. That second part matters when an
+  assertion wraps a subprocess: `AssertionError: upgrade failed` says what
+  broke, `ValueError: Constraint must have a name` says why. With no traceback
+  section the summary line's own ` - message` tail is used. `ERROR` entries
+  are labelled `setup/teardown error:` (a fixture failed, so the fix is in the
+  fixture's dependency, not the test body) or `collection error:`.
+- **File = the test file.** `_parse_bats_failure_line` takes it from the node
+  id (and, for a normalized jest/vitest line, from the `*.test.*` path), so
+  the fix item's Location names a real file instead of the constant `bats`.
+  A plain bats TAP line keeps `file: "bats"`. The batch circuit breaker's
+  signature is the sorted set of those files, so it changes with this: pytest
+  failures used to produce an empty signature (never counted) and jest/vitest
+  failures the constant `bats` (any three consecutive failed issues matched).
+  Both now trip only when consecutive failed issues fail in the same test
+  files, which is the repeated-environmental-failure signal the breaker
+  exists for.
+- **Cap 50**, then one `... and N more` line, to bound the assessment prompt.
+- **No-op on anything else.** Only `FAILED|ERROR <path>.py[::…]` lines match;
+  bats TAP, vitest/jest output and application log lines starting with
+  `ERROR ` leave the file byte-identical.
+
+`_build_gate_prepend_items` words the item by runner. A finding whose file is
+`bats` or `*.bats` keeps the header `[GATE] bats failure:` (the standalone
+rerun in `_resolve_prior_gate_findings` matches on it). Any other file gets
+`[GATE] test failure:` and reasoning that names the project's test command,
+because telling a Python fix session that `bats -r tests/` reported the
+failure sends it looking for a runner the repo does not have. The synthesized
+no-findings item changes the same way: when it carries a runner `excerpt` its
+effort and next step say to fix what the quoted lines name, and the
+"investigate the runner" wording is kept only when no runner line was
+captured. Side effect worth knowing: eight named findings size the fix budget
+at `300 + 240 × 8`, capped at 1800 s, where the single unparsed item got
+540 s. Test: tests/regression/gate-pytest-failure-findings.bats (fixture:
+the real freshup #603 output, tests/fixtures/pytest-xdist-failure-output.txt).
 
 ## Pass-Type Detector Threshold Reconciliation (#937)
 

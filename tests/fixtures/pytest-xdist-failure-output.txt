@@ -1,0 +1,141 @@
+bringing up nodes...
+bringing up nodes...
+
+........................................................................ [  2%]
+..........................................EEEEEE.F.F.................... [100%]
+==================================== ERRORS ====================================
+___ ERROR at setup of TestMigrationsRunFromEmpty.test_upgrade_head_succeeds ____
+[gw1] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert result.returncode == 0, (
+E       AssertionError: `alembic upgrade head` failed on an empty database.
+E         stdout:
+E         stderr:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-m', 'alembic', 'upgrade', 'head'], returncod...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:62: AssertionError
+_ ERROR at setup of TestMigrationsRunFromEmpty.test_migrated_schema_has_every_model_table _
+[gw1] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert result.returncode == 0, (
+E       AssertionError: `alembic upgrade head` failed on an empty database.
+E         stdout:
+E         stderr:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-m', 'alembic', 'upgrade', 'head'], returncod...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:62: AssertionError
+_ ERROR at setup of TestNoNewSchemaDrift.test_only_known_benign_drift_remains __
+[gw5] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert result.returncode == 0, (
+E       AssertionError: `alembic upgrade head` failed on an empty database.
+E         stdout:
+E         stderr:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-m', 'alembic', 'upgrade', 'head'], returncod...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:62: AssertionError
+_ ERROR at setup of TestMigrationsRunFromEmpty.test_migrated_schema_has_every_model_column _
+[gw1] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert result.returncode == 0, (
+E       AssertionError: `alembic upgrade head` failed on an empty database.
+E         stdout:
+E         stderr:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-m', 'alembic', 'upgrade', 'head'], returncod...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:62: AssertionError
+_ ERROR at setup of TestMigrationsRunFromEmpty.test_renamed_rating_table_is_gone _
+[gw1] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert result.returncode == 0, (
+E       AssertionError: `alembic upgrade head` failed on an empty database.
+E         stdout:
+E         stderr:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-m', 'alembic', 'upgrade', 'head'], returncod...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:62: AssertionError
+_ ERROR at setup of TestMigrationsRunFromEmpty.test_dropped_rating_columns_are_gone _
+[gw1] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert result.returncode == 0, (
+E       AssertionError: `alembic upgrade head` failed on an empty database.
+E         stdout:
+E         stderr:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-m', 'alembic', 'upgrade', 'head'], returncod...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:62: AssertionError
+=================================== FAILURES ===================================
+____________ TestMigrationRoundTrip.test_downgrade_to_base_and_back ____________
+[gw5] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert up.returncode == 0, f"initial upgrade failed:\n{up.stderr}"
+E       AssertionError: initial upgrade failed:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-m', 'alembic', 'upgrade', 'head'], returncod...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:196: AssertionError
+__ TestStartupReportsMigrationFailures.test_single_head_chain_starts_cleanly ___
+[gw4] darwin -- Python 3.13.9 /home/dev/freshup/.venv/bin/python
+
+>       assert result.returncode == 0, (
+E       AssertionError: _ensure_schema failed on a clean database:
+E         INFO  [alembic.runtime.migration] Running upgrade sl4ntia2uyc -> mp603a, add catalog_card_id to meal_plan_entries
+E         Traceback (most recent call last):
+E             raise ValueError("Constraint must have a name")
+E         ValueError: Constraint must have a name
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/home/dev/freshup/.venv/bin/python', '-c', 'import src.main as m; m._ensure_schema(...69, in add_constraint\n    raise ValueError("Constraint must have a name")\nValueError: Constraint must have a name\n').returncode
+
+tests/test_migration_chain.py:471: AssertionError
+=============================== warnings summary ===============================
+tests/unit/services/test_llm_client.py:27
+  /home/dev/freshup/tests/unit/services/test_llm_client.py:27: PytestCollectionWarning: cannot collect test class 'TestReceipt' because it has a __init__ constructor (from: tests/unit/services/test_llm_client.py)
+    class TestReceipt(BaseModel):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_migration_chain.py::TestMigrationRoundTrip::test_downgrade_to_base_and_back
+FAILED tests/test_migration_chain.py::TestStartupReportsMigrationFailures::test_single_head_chain_starts_cleanly
+ERROR tests/test_migration_chain.py::TestMigrationsRunFromEmpty::test_upgrade_head_succeeds
+ERROR tests/test_migration_chain.py::TestMigrationsRunFromEmpty::test_migrated_schema_has_every_model_table
+ERROR tests/test_migration_chain.py::TestNoNewSchemaDrift::test_only_known_benign_drift_remains
+ERROR tests/test_migration_chain.py::TestMigrationsRunFromEmpty::test_migrated_schema_has_every_model_column
+ERROR tests/test_migration_chain.py::TestMigrationsRunFromEmpty::test_renamed_rating_table_is_gone
+ERROR tests/test_migration_chain.py::TestMigrationsRunFromEmpty::test_dropped_rating_columns_are_gone
+2 failed, 2424 passed, 1091 warnings, 6 errors in 20.18s
+
+[rite-test] frontend: tsc (build config) + tsc (tests, #540) + vitest run
