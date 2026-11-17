@@ -281,6 +281,20 @@ _run_gate() {
   echo "$output" | grep -q -- '--max-warnings=5'
 }
 
+@test "(_extract_node_lint_flags #1601) equals-form with quotes: --ext=\".ts,.tsx\" strips embedded quote" {
+  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  # Script text contains --ext=".ts,.tsx" (equals form, quoted value)
+  printf '%s\n' '{"scripts":{"lint":"eslint . --ext=\".ts,.tsx\""}}' > "$TEST_REPO/package.json"
+  run _extract_node_lint_flags "$TEST_REPO"
+  # Must emit --ext=.ts,.tsx (no embedded quotes); a literal " would be a malformed flag value
+  local _tok
+  _tok=$(printf '%s\n' "$output" | grep -- '--ext=' | head -1 || true)
+  [ "$_tok" = '--ext=.ts,.tsx' ] || {
+    echo "FAIL: expected '--ext=.ts,.tsx' but got '$_tok'" >&2
+    return 1
+  }
+}
+
 @test "(_extract_node_lint_flags #1601) --fix dropped (denylist boolean flag)" {
   command -v jq >/dev/null 2>&1 || skip "jq not installed"
   printf '{"scripts":{"lint":"eslint . --fix src/"}}\n' > "$TEST_REPO/package.json"

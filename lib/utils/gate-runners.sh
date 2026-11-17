@@ -553,7 +553,7 @@ _extract_node_lint_flags() {
         # Non-flag non-value positionals are silently skipped
         ;;
     esac
-  done < <(printf '%s\n' "$_script" | awk '{for(i=1;i<=NF;i++) { t=$i; gsub(/^["'"'"']|["'"'"']$/, "", t); print t }}' || true)
+  done < <(printf '%s\n' "$_script" | awk '{for(i=1;i<=NF;i++) { t=$i; gsub(/^["'"'"']|["'"'"']$/, "", t); gsub(/=["'"'"']/, "=", t); print t }}' || true)
 
   # Emit any trailing buffered flag (boolean at end of script)
   if [ -n "$_buffered_flag" ]; then
