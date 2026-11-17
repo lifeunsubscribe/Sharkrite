@@ -10,8 +10,13 @@
 #
 #   flake:      parallel gate red on a test that passes alone → exit 0, PR kept,
 #               no STALE_REBASE_CONFLICT_RESTART, FLAKE_CLEARED diag
-#   persistent: parallel gate red on a test that fails alone  → exit 11, restart
-#               diag (the existing contract for a genuine semantic conflict)
+#   persistent: parallel gate red on a test that fails alone  → exit 0, PR kept,
+#               rebased branch pushed, STALE_REBASE_VERIFY_RED_KEPT diag. The
+#               failure is the fix loop's job. The verification has no
+#               pre-rebase baseline, so a restart here re-ran a whole dev
+#               session to land on the same failure (freshup #591, #593,
+#               #590, #603, 2026-11-15 to 11-17).
+#   supervised: unchanged — the operator is asked, and "d" rolls the rebase back
 
 load '../helpers/setup.bash'
 load '../helpers/git-fixtures.bash'
@@ -77,15 +82,43 @@ _behind_branch() {
   grep -q "POST_MERGE_VERIFY_FLAKE_CLEARED files=1" "$DIAG"
 }
 
-@test "persistent post-rebase failure: still closes and restarts (exit 11) — contract unchanged" {
+@test "persistent post-rebase failure: PR kept, rebased branch pushed, no restart (exit 0)" {
   _behind_branch
   run_test_gate() {
     printf '{"lint":[],"tests":[{"file":"bats","test_name":"genuinely broken","reason":"assertion failed"}],"exit_code":1}' > "$1"
     return 1
   }
+  local _closed="$RITE_TEST_TMPDIR/gh-calls.log"; : > "$_closed"
+  gh_safe() { echo "$*" >> "$_closed"; return 0; }
   local rc=0
-  check_stale_branch "$WT" 9002 78 "auto" 2>/dev/null || rc=$?
-  [ "$rc" -eq 11 ]
+  check_stale_branch "$WT" 9002 78 "auto" >"$RITE_TEST_TMPDIR/out.log" 2>&1 || rc=$?
+  [ "$rc" -eq 0 ]
+
+  # The failure was real (serial re-run did not clear it) and was still kept.
   grep -q "POST_MERGE_VERIFY_FLAKE_PERSISTENT reason=still_failing" "$DIAG"
-  grep -q "STALE_REBASE_CONFLICT_RESTART issue=78" "$DIAG"
+  grep -q "STALE_REBASE_VERIFY_RED_KEPT issue=78 pr=9002 branch=$BRANCH site=clean_rebase" "$DIAG"
+  ! grep -q "STALE_REBASE_CONFLICT_RESTART" "$DIAG"
+
+  # Worktree and branch survive, rebased onto main, and the remote has the rebased tip.
+  [ -d "$WT" ]
+  [ -f "$WT/main-3.txt" ] && [ -f "$WT/feature.txt" ]
+  git -C "$FIXTURE_REPO" show-ref --verify --quiet "refs/heads/$BRANCH"
+  [ "$(git -C "$WT" rev-parse HEAD)" = "$(git -C "$BARE_REMOTE" rev-parse "refs/heads/$BRANCH")" ]
+
+  # Nothing closed the PR, and the operator is told where the failure goes.
+  ! grep -q "pr close" "$_closed"
+  grep -q "keeping PR #9002" "$RITE_TEST_TMPDIR/out.log"
+  ! grep -q "cannot proceed in auto mode" "$RITE_TEST_TMPDIR/out.log"
+}
+
+@test "persistent post-rebase failure, supervised: operator is asked; abort rolls the rebase back (exit 1)" {
+  _behind_branch
+  verify_post_merge() { return 1; }
+  local _pre; _pre=$(git -C "$WT" rev-parse HEAD)
+  local rc=0
+  _stale_rebase_onto_main "$WT" "$BRANCH" "supervised" 79 9003 main <<< "d" 2>/dev/null || rc=$?
+  [ "$rc" -eq 1 ]
+  [ "$(git -C "$WT" rev-parse HEAD)" = "$_pre" ]
+  [ "$(git -C "$BARE_REMOTE" rev-parse "refs/heads/$BRANCH")" = "$_pre" ]
+  ! grep -q "STALE_REBASE_VERIFY_RED_KEPT" "$DIAG"
 }

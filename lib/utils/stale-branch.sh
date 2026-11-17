@@ -394,8 +394,9 @@ check_stale_branch() {
   # Decision is conflict-based, not distance-based — same ruling as mid-run drift (#433/#439).
   # A branch 50 commits behind that touches isolated files rebases instantly;
   # a branch 2 commits behind editing the same line needs the resolver.
-  # Close-and-restart fires only when the rebase conflicts AND the resolver fails
-  # (or post-rebase verification fails) — not on distance alone.
+  # Close-and-restart fires only when the rebase conflicts AND the resolver fails —
+  # not on distance alone, and not on red post-rebase tests (those keep the PR and
+  # go to the fix loop; see _stale_keep_pr_on_red_verify).
   #
   # Absurd-divergence guard: RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD (default: 100).
   # Replaying 100+ commits would be extraordinarily slow and typically signals an
@@ -429,8 +430,10 @@ check_stale_branch() {
       return 1
       ;;
     1)
-      # Rebase conflict unresolved (resolver failed or unavailable) or post-rebase
-      # verification failure. Rebase was aborted cleanly, no local changes stranded;
+      # Rebase conflict unresolved (resolver failed or unavailable), or a failed
+      # verification on the push-rejection replay path. Red tests after a clean or
+      # resolved rebase do NOT land here — they return 0 with the PR kept.
+      # Rebase was aborted cleanly, no local changes stranded;
       # remote is intact with original feature commits.
       # Fall back to close-and-restart so the issue re-runs from a fresh base.
       print_status "Rebase conflict unresolved — closing PR and restarting fresh..."
@@ -1000,6 +1003,33 @@ _stale_restore_stash_by_sha() {
   return 0
 }
 
+# Auto mode, rebase done at git level, post-rebase tests red: say so and let the
+# caller push the rebased branch. The PR stays open and the failure goes to the
+# fix loop.
+#
+# Why not close-and-restart: the verification has no pre-rebase baseline, so it
+# cannot tell "the rebase broke this" from "this branch's own test was already
+# failing". Live (freshup, 2026-11-15 to 11-17, issues #590, #591, #593, #595,
+# #603): five restarts on a clean git rebase. Each threw away a reviewed PR and
+# cost a fresh dev session of 6 to 18 minutes. In the three traced (#591, #593,
+# #603) the fresh session reproduced a red gate or the same defect (two alembic
+# heads; the branch's own flaky test), and one fix round then repaired it. A
+# restart re-derives the change from the same issue against
+# the same main, so it lands in the same place. The fix loop is the mechanism
+# built for "tests fail on this branch": after the push the rebased commits are
+# newer than the review, the resume path re-enters Phase 2, the initial gate
+# re-runs (red verdicts are never cached) and the failing tests reach the fix
+# session as [GATE] findings by name.
+#
+# Supervised mode is not routed here: the operator is asked instead.
+#
+# Usage: _stale_keep_pr_on_red_verify SITE ISSUE_NUMBER PR_NUMBER BRANCH_NAME
+_stale_keep_pr_on_red_verify() {
+  local _site="$1" _issue="${2:-}" _pr="${3:-}" _branch="${4:-}"
+  print_info "Tests fail on the rebased branch — keeping PR #${_pr:-?}; the gate hands the failures to the fix loop"
+  _diag "STALE_REBASE_VERIFY_RED_KEPT issue=${_issue} pr=${_pr} branch=${_branch} site=${_site}"
+}
+
 # _stale_rebase_onto_main WORKTREE_PATH BRANCH_NAME WORKFLOW_MODE [ISSUE_NUMBER] [PR_NUMBER] [BASE_BRANCH]
 #
 # Rebases the feature branch onto the PR's base branch (defaults to "main").
@@ -1057,9 +1087,9 @@ _stale_rebase_onto_main() {
     # Verify rebase didn't introduce silent semantic conflicts (tests pass)
     # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
     if ! verify_post_merge "$worktree_path" "origin/main"; then
-      print_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
-      git reset --hard "$pre_rebase_head" 2>/dev/null || true
       if [ "$workflow_mode" = "supervised" ]; then
+        print_warning "Rebase succeeded at git level but tests fail — possible semantic conflict"
+        git reset --hard "$pre_rebase_head" 2>/dev/null || true
         echo "" >&2
         echo "The rebase onto $base_branch introduced test failures." >&2
         echo "Options:" >&2
@@ -1071,11 +1101,9 @@ _stale_rebase_onto_main() {
           c|C) return 0 ;;
           *)   return 1 ;;
         esac
-      else
-        print_error "Post-rebase verification failed — cannot proceed in auto mode"
-        print_info "Run 'rite \$issue_number --supervised' to resolve manually"
-        return 1
       fi
+      # Auto mode: keep the rebased branch and the PR (see _stale_keep_pr_on_red_verify).
+      _stale_keep_pr_on_red_verify "clean_rebase" "$issue_number" "$pr_number" "$branch_name"
     fi
 
     # Push with force-with-lease (history was rewritten by rebase)
@@ -1174,11 +1202,15 @@ _stale_rebase_onto_main() {
         # Verify resolution didn't introduce silent semantic conflicts (tests pass)
         # sharkrite-lint disable RAW_ORIGIN_MAIN_REF - Reason: gate-selection hint — over-selection vs main errs safe (#1039 Scope Boundary explicitly defers these four verify_post_merge sites)
         if ! verify_post_merge "$worktree_path" "origin/main"; then
-          print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
-          print_error "Post-resolution verification failed — cannot proceed in auto mode"
-          return 1
+          if [ "$workflow_mode" = "supervised" ]; then
+            print_warning "Conflict resolution succeeded at git level but tests fail — possible semantic conflict"
+            print_error "Post-resolution verification failed"
+            return 1
+          fi
+          # Auto mode: keep the resolved branch and the PR (see _stale_keep_pr_on_red_verify).
+          _stale_keep_pr_on_red_verify "resolved_rebase" "$issue_number" "$pr_number" "$branch_name"
         fi
-        # Resolution committed (or already committed inside resolver) and verified — push with force-with-lease
+        # Resolution committed (or already committed inside resolver) — push with force-with-lease
         if git push --force-with-lease origin "$branch_name" 2>/dev/null; then
           print_success "Branch rebased onto origin/$base_branch (with conflict resolution)"
           return 0
