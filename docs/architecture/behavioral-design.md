@@ -627,6 +627,36 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 
 **Enforcement:** `tests/regression/gate-force-full-optin.bats` (real mock-gate: empty `origin/main` diff → NOT full; `RITE_GATE_FORCE_FULL=1` and `DIFF_BASE=HEAD` → full).
 
+### Scheduled Full-Suite Deadline Is Wall-Clock (2026-11-17, #1822)
+
+**The situation.** `rite-full-suite --scheduled` is allowed to run only inside 02:00–05:00. Two things were supposed to enforce that: a window guard at startup and a `gtimeout` wrapper around the bats run, sized to the seconds remaining until 05:00 (#1609, #1658). Both assumed the process keeps running once it starts.
+
+**The live failure.** On a sleeping Mac, launchd starts the job on time during a maintenance wake that lasts a few seconds. The window guard passes. The machine goes back to sleep in the middle of `make check`, and the process freezes with it. At the next real wake the run carries on where it stopped:
+
+| Night | Job started | Suite ran (`--jobs 8`) | `duration_s` |
+|---|---|---|---|
+| 2026-11-15 | 03:02 | 06:59 – 07:08 | 14735 |
+| 2026-11-16 | 04:09 | 19:33 – 19:45 | 56155 |
+| 2026-11-17 | 03:27 | 08:41 – 08:53 | 19570 |
+
+Two of the three overlapped a running freshup batch, which reported the load both times. On that machine the installed LaunchAgent also predated `--scheduled`, so no guard applied at all — but the guards would not have stopped it: at bats-start the remaining time was negative, the 1200 s floor replaced it, and the suite got twenty minutes of working hours. Had the sleep landed inside the bats run, the wrapper's timer would have resumed with its whole budget, because it counts awake time.
+
+**The contract.**
+
+1. **Re-check the window before starting bats.** The hour is read again after `make check` (it already was, for the deadline arithmetic). Outside the window → the run is recorded as aborted and bats never starts. The floor only applies to a run that is still inside the window.
+2. **Enforce the window end against the real clock while bats runs.** The deadline is stored as an epoch at bats-start. A background loop compares `date +%s` to it every 5 s while the wrapper is alive. Once past it, the loop sends the wrapper `SIGALRM`. GNU `timeout` treats that as its own timer firing: `TERM` to its process group, `KILL` after the `-k 30` grace, exit 124. The existing 124/137 handling then runs unchanged.
+3. **One abort path.** Both sites call `_fs_abort_at_window_end`: abort header in the daily log, `FULL_SUITE_RUN outcome=aborted reason=window_end`, failure flag untouched, no investigate, no remediation, exit 0.
+
+**Why signal the wrapper instead of killing bats.** The wrapper owns the process group and the escalation. Signalling it reuses both, and the exit code stays 124, so there is no second abort protocol to keep in step with the first. The armed run is backgrounded with `exec` so that `$!` is the wrapper itself.
+
+**Manual runs are untouched.** No `--scheduled` → no re-check, no poll, and the bats invocation stays in the foreground so Ctrl-C reaches it.
+
+**Rejected.** Holding the machine awake for the run (`caffeinate`): launchd's start can land in a maintenance wake that a user-level assertion may not extend, and keeping a closed laptop awake overnight is a machine-level decision — the documented opt-in is `pmset repeat wakeorpoweron`. A catch-up run at wake time: that is the bug.
+
+**What is not covered.** The part of `make check` that was interrupted by the sleep finishes at wake time (one lint scan, about a minute, single process). A sleep during the investigate re-runs lets the file in progress finish; the loop's own wall-clock check stops it before the next file.
+
+**Enforcement:** `tests/regression/full-suite-scheduled-guards.bats` — "machine sleeps during bats", "machine sleeps during make check", "manual run is never deadline-aborted". Both sleep tests move the clock the script sees and fail against the pre-#1822 script.
+
 ### Serial Gate Hint (`sharkrite-gate-serial`) (#724)
 
 **2026-06-26.** Some bats files are load-sensitive — they spawn many subprocesses, mass-source the full lib tree, or are otherwise flaky when other bats workers are running concurrently under `bats --jobs N`. Under block-on-any, a single spurious flake from such a file blocks the gate and feeds the fix loop, burning retry iterations on a phantom failure (#649: `lib-resource-safety.bats` reported 2 `MISSING_RESOURCE_GUARD` tests as `not ok` under `--jobs 8`; both passed cleanly in isolation). *(2026-07-05 correction: a large share of what looked like `lib-resource-safety` load-flake was actually `validate-setup.sh` running its validation program at source time — an environment dependence fixed in #899/#902. The load-sensitivity mechanism described here remains real for genuinely subprocess-heavy files, but attribute a failure to load only after ruling out env dependence.)*

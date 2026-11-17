@@ -172,11 +172,12 @@ _lint_raw=""
 _lint_raw_stripped=""
 _tests_raw=""
 _bats_tail_pid=""
+_deadline_poller_pid=""
 _serial_results_raw=""
 _invest_dir=""
 _interp_prompt_file=""
 _issue_body_file=""
-trap '[ -n "${_bats_tail_pid:-}" ] && kill "${_bats_tail_pid}" 2>/dev/null || true; rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
+trap '[ -n "${_bats_tail_pid:-}" ] && kill "${_bats_tail_pid}" 2>/dev/null || true; [ -n "${_deadline_poller_pid:-}" ] && kill "${_deadline_poller_pid}" 2>/dev/null || true; rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
 
 exec > >(tee >(strip_ansi >> "$_LOG_FILE"))
 exec 2>&1
@@ -293,11 +294,53 @@ fi
 _total_bats=$(cd "$_PROJECT_ROOT" && find tests -name "*.bats" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
 print_info "Running $_total_bats bats files (parallel jobs: $_bats_jobs)"
 
+# Scheduled-run abort: the window closed before a verdict. Not a pass and not a
+# failure — the failure flag is left untouched, investigate/remediation are
+# skipped, and the exit is 0 so launchd does not schedule a retry.
+_fs_abort_at_window_end() {
+  local _abort_end _abort_duration
+  _abort_end=$(date +%s)
+  _abort_duration=$(( _abort_end - _start ))
+  {
+    echo "=== Scheduled run ABORTED at window end ==="
+  } >> "$_LOG_FILE"
+  _diag "FULL_SUITE_RUN outcome=aborted reason=window_end duration_s=${_abort_duration}"
+  print_warning "Scheduled run aborted at window end after ${_abort_duration}s — failure flag unchanged"
+  print_info "Run 'rite --full-suite' (manual, no deadline) to get a verdict on the current suite"
+  exit 0
+}
+
+# Wall-clock half of the deadline. The timeout wrapper counts time on a timer
+# that stops while the machine sleeps, and so does the suite — so a run that
+# launchd starts inside the window during a seconds-long maintenance wake
+# resumes whenever the machine is next really awake, with its whole budget
+# intact (live 2026-11-15/16/17: started 03:02, 04:09, 03:27; ran the suite at
+# 06:59, 19:33, 08:41, twice on top of a freshup batch). This loop compares the
+# real clock to the deadline every few seconds, so the first poll after a wake
+# past the window delivers the alarm the wrapper's timer never got to raise.
+# SIGALRM is the wrapper's own timer signal: GNU timeout treats it as "timed
+# out" — TERM to its process group, KILL after the -k grace, exit 124.
+#
+# Usage: _fs_wallclock_deadline_poller WRAPPER_PID DEADLINE_EPOCH
+_fs_wallclock_deadline_poller() {
+  local _wrapper_pid="$1" _deadline_epoch="$2" _poll_now
+  while kill -0 "$_wrapper_pid" 2>/dev/null; do
+    _poll_now=$(date +%s)
+    if [ "$_poll_now" -ge "$_deadline_epoch" ]; then
+      kill -ALRM "$_wrapper_pid" 2>/dev/null || true
+      return 0
+    fi
+    sleep 5
+  done
+  return 0
+}
+
 # Window-end deadline (--scheduled only): compute remaining seconds to 05:00
 # at bats-start time (after make check), apply floor, wrap bats with timeout.
 # Manual runs are completely unaffected — _bats_deadline_watchdog stays empty.
 _bats_deadline_watchdog=()
 _deadline_armed=false
+_deadline_epoch=0
 if [ "$_scheduled" = "true" ]; then
   # Re-read the current hour here (not _current_hour from window-guard time):
   # make check runs ~85 s and may cross an hour boundary, which would cause
@@ -306,12 +349,22 @@ if [ "$_scheduled" = "true" ]; then
   _dl_h=$(( 10#${_dl_h_raw} ))
   _now_m=$(( 10#${_now_m_raw} ))
   _now_s=$(( 10#${_now_s_raw} ))
+
+  # The window can close while make check is still running — the machine went
+  # back to sleep seconds after launchd started the job. Do not start the
+  # suite at all then: the floor below would hand it 20 minutes of working
+  # hours.
+  if [ "$_dl_h" -lt "$_FULL_SUITE_WINDOW_START" ] || [ "$_dl_h" -ge "$_FULL_SUITE_WINDOW_END" ]; then
+    _fs_abort_at_window_end
+  fi
+
   _now_total_secs=$(( _dl_h * 3600 + _now_m * 60 + _now_s ))
   _window_end_total_secs=$(( _FULL_SUITE_WINDOW_END * 3600 ))
   _deadline_secs=$(( _window_end_total_secs - _now_total_secs ))
   if [ "$_deadline_secs" -lt "$_FULL_SUITE_MIN_DEADLINE_S" ]; then
     _deadline_secs="$_FULL_SUITE_MIN_DEADLINE_S"
   fi
+  _deadline_epoch=$(( $(date +%s) + _deadline_secs ))
   if command -v gtimeout >/dev/null 2>&1; then
     _bats_deadline_watchdog=(gtimeout -k 30 "$_deadline_secs")
     _deadline_armed=true
@@ -319,6 +372,11 @@ if [ "$_scheduled" = "true" ]; then
     _bats_deadline_watchdog=(timeout -k 30 "$_deadline_secs")
     _deadline_armed=true
   fi
+fi
+
+_bats_args=(-r tests/)
+if [ "${_bats_jobs:-1}" -gt 1 ]; then
+  _bats_args=(--jobs "$_bats_jobs" -r tests/)
 fi
 
 # Redirect bats output directly to $_tests_raw; use tail -f for live display.
@@ -329,15 +387,25 @@ tail -f "$_tests_raw" &
 _bats_tail_pid=$!
 
 set +e
-if [ "${_bats_jobs:-1}" -gt 1 ]; then
+if [ "$_deadline_armed" = "true" ]; then
+  # Backgrounded with exec so $! is the timeout wrapper itself — the pid the
+  # wall-clock poller signals. Manual runs keep the foreground form below, so
+  # Ctrl-C still reaches bats.
   (cd "$_PROJECT_ROOT" && \
-      "${_bats_deadline_watchdog[@]+"${_bats_deadline_watchdog[@]}"}" \
-      bats --jobs "$_bats_jobs" -r tests/) > "$_tests_raw" 2>&1
+      exec "${_bats_deadline_watchdog[@]+"${_bats_deadline_watchdog[@]}"}" \
+      bats "${_bats_args[@]+"${_bats_args[@]}"}") > "$_tests_raw" 2>&1 &
+  _bats_wrapper_pid=$!
+  # Detached from stdout: a poller killed mid-sleep leaves its sleep child
+  # behind for a few seconds, and that child must not hold the log pipe open.
+  _fs_wallclock_deadline_poller "$_bats_wrapper_pid" "$_deadline_epoch" >/dev/null 2>&1 &
+  _deadline_poller_pid=$!
+  wait "$_bats_wrapper_pid"
   _tests_exit=$?
+  kill "$_deadline_poller_pid" 2>/dev/null || true
+  wait "$_deadline_poller_pid" 2>/dev/null || true
+  _deadline_poller_pid=""
 else
-  (cd "$_PROJECT_ROOT" && \
-      "${_bats_deadline_watchdog[@]+"${_bats_deadline_watchdog[@]}"}" \
-      bats -r tests/) > "$_tests_raw" 2>&1
+  (cd "$_PROJECT_ROOT" && bats "${_bats_args[@]+"${_bats_args[@]}"}") > "$_tests_raw" 2>&1
   _tests_exit=$?
 fi
 set -e
@@ -359,15 +427,7 @@ _bats_tail_pid=""
 # watchdog was actually armed — an external kill (OOM, stray SIGKILL) on a
 # manual run must not silently exit 0 and suppress the failure flag.
 if [ "$_deadline_armed" = "true" ] && { [ "$_tests_exit" = "124" ] || [ "$_tests_exit" = "137" ]; }; then
-  _end=$(date +%s)
-  _duration=$(( _end - _start ))
-  {
-    echo "=== Scheduled run ABORTED at window end ==="
-  } >> "$_LOG_FILE"
-  _diag "FULL_SUITE_RUN outcome=aborted reason=window_end duration_s=${_duration}"
-  print_warning "Scheduled run aborted at window end after ${_duration}s — failure flag unchanged"
-  print_info "Run 'rite --full-suite' (manual, no deadline) to get a verdict on the current suite"
-  exit 0
+  _fs_abort_at_window_end
 fi
 
 _tests_count=$(grep -c "^not ok " "$_tests_raw" || true)
