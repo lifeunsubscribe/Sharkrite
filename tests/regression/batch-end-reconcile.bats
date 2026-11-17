@@ -124,6 +124,27 @@ _make_body() {
   [ "$output" = "partially-resolved" ]
 }
 
+# Live: freshup pool 553, entry 543-tabindex-1-during-pending-contradicts-ar-1,
+# skipped classify_failed_rc1 on every reconcile 2026-11-15 to 11-17. The reason
+# quotes JSX, and the old brace-excluding regex could not match the object.
+@test "classify: a reason that quotes code with braces is parsed" {
+  provider_run_prompt() {
+    printf '%s\n' '```json' '{' '  "verdict": "still-open",' \
+      '  "reason": "tabIndex={isPending ? -1 : 0} conditional unchanged; aria-disabled still present"' \
+      '}' '```'
+  }
+  run _classify_finding 543 "finding body" "code region" "claude-haiku-4-5"
+  [ "$status" -eq 0 ]
+  [ "$output" = "still-open" ]
+}
+
+@test "classify: a verdict outside the three states is a parse error" {
+  provider_run_prompt() { printf '{"verdict":"maybe","reason":"{unsure}"}'; }
+  run _classify_finding 42 "finding body" "code region" "claude-haiku-4-5"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+}
+
 @test "classify: an answer with no verdict object is a parse error" {
   provider_run_prompt() { printf 'I could not find the file.\nNo JSON here.\n'; }
   run _classify_finding 42 "finding body" "code region" "claude-haiku-4-5"
