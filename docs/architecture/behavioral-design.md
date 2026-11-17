@@ -627,6 +627,24 @@ A normal `rite <N>` run never sets the opt-in or a HEAD base, so a transient emp
 
 **Enforcement:** `tests/regression/gate-force-full-optin.bats` (real mock-gate: empty `origin/main` diff → NOT full; `RITE_GATE_FORCE_FULL=1` and `DIFF_BASE=HEAD` → full).
 
+### Classifier Answers Are Parsed, Not Regex-Matched (2026-11-17, #1824)
+
+Two call sites ask a cheap model for a small JSON object: the batch-end reconcile (`_classify_finding` in `lib/utils/reconcile-followups.sh`) and the diff triage classifier (`triage_classify_diff` in `lib/utils/triage-classify.sh`). Both obtain the object from `llm_extract_json_object TEXT KEY` in `lib/utils/llm-json.sh`.
+
+**Contract:**
+
+- The helper returns the first JSON object in the answer that has `KEY` as a top-level field, compact on one line. It prints nothing when there is none and always returns 0. An empty result is the caller's "unparseable" signal.
+- The object is found by parsing. Every `{` is tried as a start and every later `}` as an end, and the first span `jq` accepts as an object carrying the key wins. Code fences, pretty-printing, surrounding prose, and braces inside string values do not matter.
+- The search is bounded at 64 starts by 64 ends, so a brace-heavy answer cannot make it quadratic.
+- Fail-safe directions are unchanged. Reconcile treats an empty result as a parse error and skips the entry (`classify_failed_rc1`). Triage falls to `substantive` with reason `unparseable`.
+- Triage splices the confidence into an awk comparison. A confidence that is not a plain number is treated as 0, which escalates to `substantive`.
+
+**Why:** both sites used a regex that matched only an object with no brace anywhere in its body. A reconcile answer whose reason quoted JSX (`tabIndex={isPending ? -1 : 0}`) was valid JSON and still a parse error, so the same pool entry was skipped on every reconcile (freshup pool 553, 2026-11-15 to 11-17). In triage the same shape cost a full review of a trivial diff.
+
+**Rejected:** widening the regex to tolerate braces. Any regex over the text keeps the answer's free-text fields in charge of whether it parses. Also rejected: pulling the verdict field out with a field-level regex, which would accept a verdict quoted inside prose or inside another field's value.
+
+**New call sites** that need a JSON object from a model answer use this helper. Do not add another per-caller pattern.
+
 ### Scheduled Full-Suite Deadline Is Wall-Clock (2026-11-17, #1822)
 
 **The situation.** `rite-full-suite --scheduled` is allowed to run only inside 02:00–05:00. Two things were supposed to enforce that: a window guard at startup and a `gtimeout` wrapper around the bats run, sized to the seconds remaining until 05:00 (#1609, #1658). Both assumed the process keeps running once it starts.

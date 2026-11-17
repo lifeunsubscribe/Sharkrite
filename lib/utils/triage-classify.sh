@@ -28,6 +28,10 @@ if declare -f triage_classify_diff >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
+# Classifier answers are parsed, not regex-matched (see llm-json.sh).
+_tc_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$_tc_self_dir/llm-json.sh"
+
 # ---------------------------------------------------------------------------
 # triage_classify_diff <PR_NUMBER> <DIFF> <FILES>
 #
@@ -99,10 +103,10 @@ triage_classify_diff() {
 DIFF:
 $_diff_head"
     _tresp=$(provider_run_prompt "$_tprompt" "$_tmodel" "true" 2>/dev/null || true)
-    # Flatten first: grep -o matches within one line, and the model often
-    # pretty-prints the object across several (see _classify_finding).
-    _tjson=$(tr '\n' ' ' <<< "$_tresp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
-    if [ -n "$_tjson" ] && echo "$_tjson" | jq -e . >/dev/null 2>&1; then
+    # The model often pretty-prints the object, and its reason can quote code
+    # with braces in it — the object is found by parsing (see llm-json.sh).
+    _tjson=$(llm_extract_json_object "$_tresp" "verdict")
+    if [ -n "$_tjson" ]; then
       _verdict=$(echo "$_tjson" | jq -r '.verdict // "substantive"' 2>/dev/null || echo "substantive")
       _conf=$(echo "$_tjson" | jq -r '.confidence // 0' 2>/dev/null || echo "0")
       _reason=$(echo "$_tjson" | jq -r '.reason // "?"' 2>/dev/null | tr ' |' '__' | head -c 40 || echo "?")
@@ -110,6 +114,11 @@ $_diff_head"
       # Unparseable classifier output → escalate (fail safe toward substantive).
       _verdict="substantive"; _conf="0"; _reason="unparseable"
     fi
+    # The confidence is spliced into an awk program below. Anything that is not
+    # a plain number is treated as no confidence at all.
+    case "${_conf:-}" in
+      ''|*[!0-9.]*) _conf="0" ;;
+    esac
     # Confidence gate: low confidence escalates to substantive.
     if [ "$_verdict" = "trivial" ] && awk "BEGIN{exit !(${_conf:-0} < 0.8)}" 2>/dev/null; then
       _verdict="substantive"; _reason="lowconf_${_conf}"

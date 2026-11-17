@@ -42,6 +42,7 @@ lib/utils/blocker-rules.sh        # Hard gates + review sensitivity detection
 lib/utils/config.sh               # Config loading, path setup, provider variables
 lib/utils/divergence-handler.sh   # Branch divergence detection, classification, resolution
 lib/utils/integration-ledger.sh   # Integration branch ledger (issue↔SHA record, append/entries/mark_promoted)
+lib/utils/llm-json.sh             # Pull a JSON object out of a model answer by parsing (llm_extract_json_object — used by reconcile + triage classifiers; never a per-caller regex)
 lib/utils/doc-consent.sh          # Doc-drift recording (record_doc_mode, ensure_doc_mode — RITE_DOC_MODE sync|changelog|off; on by default; unset records like sync; off = explicit opt-out)
 lib/utils/docs-map.sh             # Deterministic docs-map builder (docs/**/*.md + README + CLAUDE → docs/docs-map.tsv)
 lib/utils/drift-log.sh            # Doc drift log format library (drift_log_path, drift_log_append, drift_log_entry_count — per-doc/per-branch entry files under RITE_STATE_DIR/doc-drift/, one entry per PR (#1509: dedupe key is (pr,doc,assertion) — distinct PRs for the same doc each get their own entry), locked via lock.sh)

@@ -53,6 +53,8 @@ fi
 # Deferred-findings pool: pool issues are reconciled per entry.
 _rf_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_rf_self_dir/followup-pool.sh"
+# Classifier answers are parsed, not regex-matched (see llm-json.sh).
+source "$_rf_self_dir/llm-json.sh"
 
 _get_code_region() {
   local _file="$1"
@@ -123,18 +125,15 @@ Definitions:
     return "$_exit"
   fi
 
-  # The model often pretty-prints the object across several lines (inside a
-  # code fence, with prose after it). grep -o matches within one line, so the
-  # answer is flattened first; a multi-line object was otherwise a parse error.
+  # The model often pretty-prints the object (inside a code fence, with prose
+  # after it), and its reason can quote code with braces in it. The object is
+  # found by parsing — a brace in a string value is not a parse error.
   local _json _verdict
-  _json=$(tr '\n' ' ' <<< "$_resp" | grep -oE '\{[^{}]*"verdict"[^{}]*\}' | head -1 || true)
+  _json=$(llm_extract_json_object "$_resp" "verdict")
   if [ -z "${_json:-}" ]; then
     return 1
   fi
-  if ! echo "$_json" | jq -e . >/dev/null 2>&1; then
-    return 1
-  fi
-  _verdict=$(echo "$_json" | jq -r '.verdict // ""' 2>/dev/null || true)
+  _verdict=$(jq -r '.verdict // ""' <<< "$_json" 2>/dev/null || true)
   case "${_verdict:-}" in
     resolved|partially-resolved|still-open)
       printf '%s' "$_verdict"
