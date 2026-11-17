@@ -202,6 +202,115 @@ _node_flavored_test_context() {
 }
 
 # ---------------------------------------------------------------------------
+# _normalize_pytest_test_output — synthesize TAP "not ok" lines from pytest's
+# short test summary so a pytest failure reaches the fix session by name.
+#
+# Same TAP-only hole _normalize_node_test_output closes for jest/vitest:
+# pytest prints "FAILED <path>::<nodeid>" / "ERROR <path>::<nodeid>", never
+# "not ok", so a real failure produced test_count=0, an empty tests[] array
+# and one [GATE] item telling the fix session to "investigate why the test
+# runner produced no parseable output". Live (freshup #590, #595, #603,
+# 2026-11-16/17): three fix sessions ran 1020-1560 s on that item and edited
+# nothing, with the failing test ids sitting in the log.
+#
+# Appended line shape: "not ok N <nodeid><TAB><reason>".
+#   nodeid : exactly what pytest printed (runnable as `pytest <nodeid>`), and
+#            stable across rounds — the reason is NOT part of the name.
+#   reason : the first "E   ..." line of the test's failure section
+#            ("____ Class.test ____", "ERROR at setup of ...", "ERROR
+#            collecting <path>"), else the summary line's " - message" tail.
+#            ERROR entries are labelled setup/teardown or collection so the
+#            fix session does not go looking for a failed assertion.
+# _parse_bats_failure_line splits on the TAB and takes the file from the
+# nodeid; _tap_failure_name drops the TAB tail for digests.
+#
+# Args: $1 = raw tests output file (synthetic lines APPENDED in place;
+#            numbering continues after any existing "not ok" lines)
+# Returns 0 always; leaves the file untouched when no pytest summary line
+# is present (any other runner's output).
+# ---------------------------------------------------------------------------
+_normalize_pytest_test_output() {
+  local raw_file="$1"
+  [ -s "$raw_file" ] || return 0
+
+  local _pyn_cap=50
+  local _pyn_stripped _pyn_extracted
+  _pyn_stripped=$(mktemp "/tmp/rite_gate_pynorm_strip_$$_XXXXXX")
+  _pyn_extracted=$(mktemp "/tmp/rite_gate_pynorm_desc_$$_XXXXXX")
+  sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\x1b//g' "$raw_file" > "$_pyn_stripped" || true
+
+  awk '
+    # "===== short test summary info =====" and friends close a failure section
+    /^==+ .* ==+$/ { key = ""; next }
+    # failure section header: "____ Class.test ____"
+    /^_+ .+ _+$/ {
+      key = $0
+      sub(/^_+ /, "", key); sub(/ _+$/, "", key)
+      sub(/^ERROR at (setup|teardown) of /, "", key)
+      if (sub(/^ERROR collecting /, "", key)) key = "collect:" key
+      next
+    }
+    # first "E   <text>" line of the open section is the reason
+    key != "" && /^E   / {
+      r = $0; sub(/^E[[:space:]]+/, "", r)
+      if (!(key in why)) why[key] = substr(r, 1, 180)
+      # The last bare "<Exception>: <msg>" line of the block is the error the
+      # assertion wraps (a subprocess traceback quoted in the message):
+      # "AssertionError: upgrade failed" says what broke, "ValueError:
+      # Constraint must have a name" says why.
+      if (r ~ /^[A-Za-z_][A-Za-z0-9_.]*(Error|Exception): /) deep[key] = substr(r, 1, 120)
+      next
+    }
+    /^(FAILED|ERROR) / {
+      kind = $1
+      id = $0; sub(/^(FAILED|ERROR) /, "", id)
+      msg = ""
+      i = index(id, " - ")
+      if (i > 0) { msg = substr(id, i + 3); id = substr(id, 1, i - 1) }
+      path = id; sub(/::.*/, "", path)
+      # path guard: a real test file, not a captured log line
+      # ("ERROR    app.module:file.py:12 message")
+      if (path !~ /^[^[:space:]:]+\.py$/) next
+      if (id in seen) next
+      seen[id] = 1
+      j = index(id, "::")
+      if (j > 0) { k = substr(id, j + 2); gsub(/::/, ".", k) }
+      else k = "collect:" path
+      r = (k in why) ? why[k] : msg
+      if ((k in deep) && index(r, deep[k]) == 0) r = r " [last error line: " deep[k] "]"
+      if (kind == "ERROR") {
+        label = (j > 0) ? "setup/teardown error" : "collection error"
+        r = (r != "") ? label ": " r : label
+      } else if (r == "") {
+        r = "test failed"
+      }
+      gsub(/\t/, " ", r)
+      print id "\t" r
+    }
+  ' "$_pyn_stripped" > "$_pyn_extracted" || true
+
+  local _pyn_total _pyn_n _pyn_desc
+  _pyn_total=$(grep -c "" "$_pyn_extracted" || true)
+  if [ "$_pyn_total" -gt 0 ]; then
+    _pyn_n=$(grep -c "^not ok " "$raw_file" || true)
+    while IFS= read -r _pyn_desc; do
+      [ -n "$_pyn_desc" ] || continue
+      _pyn_n=$(( _pyn_n + 1 ))
+      printf 'not ok %d %s\n' "$_pyn_n" "$_pyn_desc" >> "$raw_file"
+    done < <(head -n "$_pyn_cap" "$_pyn_extracted")
+    # Cap bounds the assessment prompt size; note the overflow explicitly.
+    if [ "$_pyn_total" -gt "$_pyn_cap" ]; then
+      _pyn_n=$(( _pyn_n + 1 ))
+      printf 'not ok %d ... and %d more test failure(s) truncated — see the gate log for full output\n' \
+        "$_pyn_n" $(( _pyn_total - _pyn_cap )) >> "$raw_file"
+    fi
+    echo "[test-gate] normalized ${_pyn_total} pytest failure(s) into TAP findings"
+  fi
+  rm -f "${_pyn_stripped:-}" "${_pyn_extracted:-}"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # _classify_pytest_outcome — classify a pytest run into one of four outcomes.
 #
 # Args: $1=exit_code  $2=raw_output (the captured stdout+stderr of the run)

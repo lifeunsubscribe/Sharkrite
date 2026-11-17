@@ -236,6 +236,12 @@ run_test_gate() {
        && _node_flavored_test_context "$project_root" "${RITE_TEST_COMMAND}" "$_tests_raw_file_cmd"; then
       _normalize_node_test_output "$_tests_raw_file_cmd" "$project_root"
     fi
+    # And for pytest: its "FAILED <path>::<test>" / "ERROR <path>::<test>"
+    # summary lines are not TAP either. Self-gating — a no-op on any output
+    # without them (freshup #590/#595/#603: test_count=0 on real failures).
+    if [ "$_cmd_tests_exit" -ne 0 ]; then
+      _normalize_pytest_test_output "$_tests_raw_file_cmd"
+    fi
     # Missing-deps / no-tests-collected fallback: mirrors the pytest-direct branch.
     # When RITE_TEST_COMMAND wraps a Python runner (e.g. "python -m pytest"), a
     # missing venv exits non-zero with a ModuleNotFoundError signature — that's an
@@ -1674,6 +1680,13 @@ run_test_gate() {
       # Only set reason if not already classified (e.g. workspace_build_failed
       # set it above; a "not found" in npm output must not clobber that label).
       [ -n "${_gate_reason:-}" ] || _gate_reason="runner_unavailable"
+    fi
+
+    # pytest (direct, via `make test`, or in a runner home one level down)
+    # never emits TAP: name its failures before the ^not ok count and the
+    # tests[] loop read the file. A no-op on any other runner's output.
+    if [ "${_tests_exit:-0}" -ne 0 ]; then
+      _normalize_pytest_test_output "$_tests_raw_file"
     fi
 
     _tests_count=$(grep -c "^not ok " "$_tests_raw_file" || true)

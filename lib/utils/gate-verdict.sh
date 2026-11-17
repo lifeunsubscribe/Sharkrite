@@ -381,19 +381,48 @@ _parse_bats_failure_line() {
   local raw_line="$1"
   # bats failure format: "not ok N test description"
   if grep -qE '^not ok [0-9]+ ' <<< "$raw_line"; then
-    local test_name _stripped _reason
+    local test_name _stripped _reason _file _tab _detail
     # Strip the "not ok N " prefix, then ANSI/control bytes + JSON-escape via the
     # shared helper (portable across BSD/GNU sed — the old inline hex-range sed
     # errored on macOS and emptied the name).
     _stripped=$(echo "$raw_line" | sed 's/^not ok [0-9]* //' || true)
-    test_name=$(_sanitize_json_value "$_stripped" || true)
     # Synthetic not-run findings (issue #804) carry a [tests_not_run] marker so
     # the per-item reason names the real cause instead of "assertion failed".
     _reason="assertion failed"
     case "$_stripped" in
       "[tests_not_run]"*) _reason="tests_not_run" ;;
     esac
-    printf '{"file":"bats","test_name":"%s","reason":"%s"}' "$test_name" "$_reason"
+    # Normalizer lines carry "<name><TAB><reason>" (_normalize_pytest_test_output):
+    # the reason is the runner's own first error line, kept out of the name so
+    # the name stays stable across fix rounds.
+    _tab=$'\t'
+    case "$_stripped" in
+      *"$_tab"*)
+        _detail=$(_sanitize_json_value "${_stripped#*"$_tab"}" || true)
+        _stripped="${_stripped%%"$_tab"*}"
+        [ -n "$_detail" ] && _reason="$_detail"
+        ;;
+    esac
+    test_name=$(_sanitize_json_value "$_stripped" || true)
+    # file: the test file when the name carries one, else the historical "bats"
+    # label (a bats TAP line names the test, never its file).
+    #   pytest nodeid      : tests/test_x.py::TestA::test_b  → tests/test_x.py
+    #   jest/vitest (norm) : first *.test.* / *.spec.* token of a "- <desc>"
+    #                        line (_normalize_node_test_output's shape; a real
+    #                        bats line never starts with "- ")
+    _file="bats"
+    if grep -qE '^[^[:space:]:]+\.py(::|$)' <<< "$_stripped"; then
+      _file="${_stripped%%::*}"
+    else
+      case "$_stripped" in
+        "- "*)
+          _detail=$(grep -oE '[^[:space:]]+\.(test|spec)\.[cm]?[jt]sx?' <<< "$_stripped" | head -1 || true)
+          [ -n "$_detail" ] && _file="$_detail"
+          ;;
+      esac
+    fi
+    _file=$(_sanitize_json_value "$_file" || true)
+    printf '{"file":"%s","test_name":"%s","reason":"%s"}' "${_file:-bats}" "$test_name" "$_reason"
     return 0
   fi
   return 1
@@ -450,7 +479,8 @@ _tap_failure_name() {
   # so feeding a newline-less line would emit a name with no trailing newline —
   # callers in a loop would then concatenate adjacent names. The '\n' guarantees
   # one name per line.
-  printf '%s\n' "$1" | sed 's/^not ok [0-9]* //; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/[[:space:]]*$//' || true
+  # A normalizer line carries "<name><TAB><reason>"; the name ends at the TAB.
+  printf '%s\n' "${1%%$'\t'*}" | sed 's/^not ok [0-9]* //; s/\x1b\[[0-9;]*[a-zA-Z]//g; s/[[:space:]]*$//' || true
 }
 
 # _extract_tap_failure_names — newline-separated canonical names of every

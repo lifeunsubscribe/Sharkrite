@@ -268,15 +268,16 @@ EOF
 @test "assess-and-resolve.sh: gate test-failure title interpolates _test_name (not _test_file)" {
   # Title must use _test_name so two tests with identical file field ("bats")
   # produce distinct headers. The body **Test:** line may still use _test_name.
-  run grep -nE '\[GATE\] bats failure:.*_test_name' "${RITE_LIB_DIR}/core/assess-and-resolve.sh"
+  run grep -nE '\[GATE\] \$\{_test_kind\}[^:]*:.*_test_name' "${RITE_LIB_DIR}/core/assess-and-resolve.sh"
   [ "$status" -eq 0 ]
   [[ "$output" == *"_test_name"* ]]
 }
 
 @test "assess-and-resolve.sh: gate test-failure title does NOT interpolate _test_file" {
-  # Regression guard: _test_file is always hardcoded "bats" — it must not appear
-  # in the ### [GATE] title line.
-  run grep -nE '\[GATE\] bats failure:.*_test_file' "${RITE_LIB_DIR}/core/assess-and-resolve.sh"
+  # Regression guard: _test_file is "bats" for every bats finding — it must not
+  # appear in the ### [GATE] title line. (The header kind is ${_test_kind}:
+  # "bats failure" for bats findings, "test failure" for other runners.)
+  run grep -nE '\[GATE\] \$\{_test_kind\}[^:]*:.*_test_file' "${RITE_LIB_DIR}/core/assess-and-resolve.sh"
   [ "$status" -ne 0 ]
 }
 

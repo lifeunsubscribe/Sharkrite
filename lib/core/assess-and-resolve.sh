@@ -782,9 +782,25 @@ _build_gate_prepend_items() {
           fi
         fi
 
+        # A finding names the runner that produced it. file is "bats" (a TAP
+        # line carries no path) or a *.bats path for sharkrite's own suite;
+        # any other value is the target repo's test file (pytest nodeid,
+        # jest/vitest test file). Calling a pytest failure a "bats failure"
+        # reported by `bats -r tests/` sent fix sessions in a Python repo
+        # looking for a runner that does not exist there.
+        local _test_kind="bats failure"
+        local _test_how="\`bats -r tests/\` (post-commit gate) reported this failure. Fix: identify root cause and address the failing test assertion."
+        case "$_test_file" in
+          bats|*.bats) ;;
+          *)
+            _test_kind="test failure"
+            _test_how="The project's test command (post-commit gate) reported this failure in \`${_test_file}\`. The Reason line is the runner's own first error line. Fix the root cause in the code this change touched; edit the test only when it asserts behavior the change deliberately replaced."
+            ;;
+        esac
+
         if [ "$_test_is_inherited" = "true" ]; then
           # Title by test name (#1163): headers must be distinct per finding.
-          GATE_PREPEND_ITEMS+="### [GATE] bats failure (main-inherited): ${_test_name} - INFO_ONLY
+          GATE_PREPEND_ITEMS+="### [GATE] ${_test_kind} (main-inherited): ${_test_name} - INFO_ONLY
 **Severity:** INFO
 **Category:** Test failure (main-inherited — not attributable to this branch)
 **Location:** ${_test_file}
@@ -796,12 +812,12 @@ _build_gate_prepend_items() {
           _gate_inherited_count=$(( _gate_inherited_count + 1 ))
           _gate_inherited_summary="${_gate_inherited_summary}${_test_name}; "
         else
-          GATE_PREPEND_ITEMS+="### [GATE] bats failure: ${_test_name} - ACTIONABLE_NOW
+          GATE_PREPEND_ITEMS+="### [GATE] ${_test_kind}: ${_test_name} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Test failure (objective — no LLM categorization needed)
 **Location:** ${_test_file}
 **Fix Effort:** Medium (failing test needs investigation)
-**Reasoning:** \`bats -r tests/\` (post-commit gate) reported this failure. Fix: identify root cause and address the failing test assertion.
+**Reasoning:** ${_test_how}
 **Test:** ${_test_name}
 **Reason:** ${_test_reason}
 
@@ -852,11 +868,21 @@ ${_gate_excerpt}
 Fix what these lines name first; they are the gate's actual failure.
 "
       fi
+      # With runner lines in hand the job is the failure they name, not the
+      # runner. Telling the session to "investigate why the test runner
+      # produced no parseable output" above a quoted AssertionError spent whole
+      # fix budgets on the harness (freshup #590: 1020 s, no edit).
+      local _gate_synth_effort="Medium (investigate why the test runner produced no parseable output)"
+      local _gate_synth_next="Investigate the runner (check for missing dependencies, bootstrap failures, or non-TAP output) and resolve the underlying issue before merging."
+      if [ -n "$_gate_excerpt_block" ]; then
+        _gate_synth_effort="Medium (fix the failure the runner lines below name)"
+        _gate_synth_next="The runner's own error lines are quoted below: fix the failure they name. Do not investigate the runner or the gate unless those lines show the runner itself could not start."
+      fi
       GATE_PREPEND_ITEMS+="### [GATE] ${_gate_failure_desc} - ACTIONABLE_NOW
 **Severity:** HIGH
 **Category:** Gate failure (objective — no LLM categorization needed)
-**Fix Effort:** Medium (investigate why the test runner produced no parseable output)
-**Reasoning:** The post-commit gate exited non-zero (exit_code=${_gate_exit_code}) but produced zero parseable lint or test findings. This means verification did not complete — the gate CANNOT confirm the suite passed. A non-zero exit with no findings is still a blocking failure; merging unverified code is not acceptable. Investigate the runner (check for missing dependencies, bootstrap failures, or non-TAP output) and resolve the underlying issue before merging.
+**Fix Effort:** ${_gate_synth_effort}
+**Reasoning:** The post-commit gate exited non-zero (exit_code=${_gate_exit_code}) but produced zero parseable lint or test findings. This means verification did not complete — the gate CANNOT confirm the suite passed. A non-zero exit with no findings is still a blocking failure; merging unverified code is not acceptable. ${_gate_synth_next}
 
 ${_gate_excerpt_block}
 "
