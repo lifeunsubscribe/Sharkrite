@@ -15,6 +15,9 @@
 #  8. FULL_SUITE_RUN diag is NOT emitted on a skip.
 #  9. Deadline guard: --scheduled aborts when bats hangs past window deadline.
 # 10. Deadline guard: aborted run leaves failure flag unchanged, no investigate.
+# 11. Wall-clock deadline (#1822): a run the machine slept through is aborted
+#     on wake — before bats if the window closed during make check, within
+#     seconds if it closed while bats was running.
 
 load '../helpers/setup'
 
@@ -1010,4 +1013,187 @@ STUB
   # the already-processed file triggers the remediation block)
   [ -f "$gh_calls_file" ]
   grep -q 'issue create' "$gh_calls_file"
+}
+
+# ---------------------------------------------------------------------------
+# Wall-clock deadline (#1822). The timeout wrapper's timer stops while the
+# machine sleeps. Live 2026-11-15/16/17: launchd started the job inside the
+# window during a seconds-long maintenance wake, the machine slept, and the
+# suite ran at 06:59, 19:33 and 08:41 — twice on top of a freshup batch.
+# Both tests simulate the sleep by moving the clock the script sees.
+# ---------------------------------------------------------------------------
+
+# Shared stubs for the two wall-clock tests. $1 = fake bin dir, $2 = flag file
+# whose existence means "the machine slept and woke after the window".
+_write_wallclock_stubs() {
+  local fake_bin="$1" slept_flag="$2" call_log="$3"
+  mkdir -p "$fake_bin" "$_FAKE_PROJECT/tests"
+
+  cat > "$fake_bin/git" << 'STUB'
+#!/bin/bash
+if [ "${1:-}" = "-C" ] && [ "${3:-}" = "rev-parse" ]; then
+  echo "test-branch"
+  exit 0
+fi
+exec /usr/bin/git "$@"
+STUB
+
+  # Clock: 03:00:00 before the sleep; 19:00:00 and 50000 s later after it.
+  cat > "$fake_bin/date" << STUB
+#!/bin/bash
+case "\${1:-}" in
+  '+%H') if [ -f "$slept_flag" ]; then echo "19"; else echo "03"; fi ;;
+  '+%M') echo "00" ;;
+  '+%S') echo "00" ;;
+  '+%s')
+    _real=\$(/bin/date +%s)
+    if [ -f "$slept_flag" ]; then echo \$(( _real + 50000 )); else echo "\$_real"; fi
+    ;;
+  *) exec /bin/date "\$@" ;;
+esac
+STUB
+
+  cat > "$fake_bin/make" << STUB
+#!/bin/bash
+echo "make-called" >> "$call_log"
+exit 0
+STUB
+  chmod +x "$fake_bin/git" "$fake_bin/date" "$fake_bin/make"
+}
+
+@test "--scheduled wall-clock deadline: machine sleeps during bats, run aborts on wake" {
+  local _real_timeout_cmd=""
+  if command -v gtimeout >/dev/null 2>&1; then
+    _real_timeout_cmd="$(command -v gtimeout)"
+  elif command -v timeout >/dev/null 2>&1; then
+    _real_timeout_cmd="$(command -v timeout)"
+  else
+    skip "gtimeout or timeout not available — deadline guard requires a timeout command"
+  fi
+
+  _write_lib_stubs
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin-wallclock"
+  local slept_flag="$RITE_TEST_TMPDIR/slept.flag"
+  local call_log="$RITE_TEST_TMPDIR/wallclock-calls.log"
+  _write_wallclock_stubs "$fake_bin" "$slept_flag" "$call_log"
+  cp "$_real_timeout_cmd" "$fake_bin/gtimeout"
+  chmod +x "$fake_bin/gtimeout"
+
+  # bats starts at 03:00:00 with a 7200 s timer, then the "machine sleeps":
+  # the clock jumps past the window while the timer has barely advanced. Only
+  # the wall-clock check can end this run before the 60 s stub does.
+  cat > "$fake_bin/bats" << STUB
+#!/bin/bash
+echo "bats-called" >> "$call_log"
+touch "$slept_flag"
+sleep 60
+exit 0
+STUB
+  chmod +x "$fake_bin/bats"
+
+  local _t0=$SECONDS
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    bash "$_FULL_SUITE_SCRIPT" --scheduled
+  local _elapsed=$(( SECONDS - _t0 ))
+
+  [ "$status" -eq 0 ]
+  grep -q "bats-called" "$call_log"
+  # Killed by the wall-clock check, not by the stub running out (60 s) or the
+  # timer (7200 s).
+  [ "$_elapsed" -lt 40 ]
+
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+  grep -q 'FULL_SUITE_RUN outcome=aborted reason=window_end' "$_log"
+  grep -q 'Scheduled run ABORTED at window end' "$_log"
+  ! grep -q 'outcome=passed\|outcome=failed' "$_log"
+  [ ! -f "$_FAKE_PROJECT/.rite/state/full-suite-failure.flag" ]
+}
+
+@test "--scheduled wall-clock deadline: machine sleeps during make check, bats never starts" {
+  _write_lib_stubs
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin-wallclock2"
+  local slept_flag="$RITE_TEST_TMPDIR/slept2.flag"
+  local call_log="$RITE_TEST_TMPDIR/wallclock2-calls.log"
+  _write_wallclock_stubs "$fake_bin" "$slept_flag" "$call_log"
+
+  # The window guard passes at 03:00; the sleep lands inside make check.
+  cat > "$fake_bin/make" << STUB
+#!/bin/bash
+echo "make-called" >> "$call_log"
+touch "$slept_flag"
+exit 0
+STUB
+  cat > "$fake_bin/bats" << STUB
+#!/bin/bash
+echo "bats-called" >> "$call_log"
+exit 0
+STUB
+  chmod +x "$fake_bin/make" "$fake_bin/bats"
+
+  # A prior failure flag must survive: an abort is not a verdict.
+  local _flag="$_FAKE_PROJECT/.rite/state/full-suite-failure.flag"
+  echo "outcome=failed" > "$_flag"
+
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    bash "$_FULL_SUITE_SCRIPT" --scheduled
+
+  [ "$status" -eq 0 ]
+  grep -q "make-called" "$call_log"
+  ! grep -q "bats-called" "$call_log"
+
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log" ]
+  grep -q 'FULL_SUITE_RUN outcome=aborted reason=window_end' "$_log"
+  grep -q 'Scheduled run ABORTED at window end' "$_log"
+  ! grep -q 'outcome=passed\|outcome=failed' "$_log"
+  grep -q 'outcome=failed' "$_flag"
+}
+
+@test "manual run is never deadline-aborted, even when the clock is outside the window" {
+  _write_lib_stubs
+  local fake_bin="$RITE_TEST_TMPDIR/fake-bin-wallclock3"
+  local slept_flag="$RITE_TEST_TMPDIR/slept3.flag"
+  local call_log="$RITE_TEST_TMPDIR/wallclock3-calls.log"
+  _write_wallclock_stubs "$fake_bin" "$slept_flag" "$call_log"
+  touch "$slept_flag"   # 19:00 from the first clock read
+
+  cat > "$fake_bin/bats" << STUB
+#!/bin/bash
+echo "bats-called" >> "$call_log"
+echo "1..1"
+echo "ok 1 stub"
+exit 0
+STUB
+  chmod +x "$fake_bin/bats"
+
+  run env \
+    PATH="$fake_bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    RITE_LOCK_DIR="$_FAKE_LOCK_DIR" \
+    bash "$_FULL_SUITE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "bats-called" "$call_log"
+  local _log
+  _log=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  grep -q 'FULL_SUITE_RUN outcome=passed' "$_log"
+  ! grep -q 'outcome=aborted' "$_log"
 }

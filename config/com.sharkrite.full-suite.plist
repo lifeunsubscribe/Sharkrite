@@ -21,13 +21,19 @@
   high-drift environments).
 
   CLOSED-LAPTOP / SKIPPED NIGHTS:
-  macOS StartCalendarInterval does NOT fire while the machine is asleep; launchd
-  defers the missed job and fires it on the next wake. Because the script is
-  invoked with --scheduled, it checks the local clock on startup — a catch-up
-  firing outside 02:00–05:00 exits 0 immediately (logs the skip, runs nothing).
-  A closed lid at 3 AM therefore guarantees a skipped night; that is the
-  intended behavior. Skipping the night IS the right choice — deferring into
-  working hours is the bug being fixed (#1609).
+  A sleeping Mac handles StartCalendarInterval in one of two ways. Either
+  launchd defers the missed job and fires it on the next wake, or it starts
+  the job on time during a maintenance wake that lasts a few seconds, after
+  which the machine sleeps again and the frozen run resumes at the next real
+  wake. --scheduled covers both: a start outside 02:00-05:00 exits 0
+  immediately (logs the skip, runs nothing), and a run that resumes after the
+  window aborts without running the suite (#1822). A closed lid at 3 AM
+  therefore means a skipped or aborted night; that is the intended behavior.
+  Deferring into working hours is the bug being fixed (#1609).
+
+  Without --scheduled in ProgramArguments none of this applies: the suite
+  runs whenever the machine wakes. An installed copy of this file made before
+  the flag existed must be edited by hand.
 
   To never miss a night, schedule a repeating wake before 03:00:
     sudo pmset repeat wakeorpoweron MTWRFSU 02:55:00
