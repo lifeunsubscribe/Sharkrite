@@ -131,6 +131,58 @@ _setup_conflicting_branch() {
 }
 
 # ───────────────────────────────────────────────────────────────────
+# Test 1b: Resolver returns 0 but post-resolution tests are red → auto mode
+# keeps the PR and pushes; the fix loop owns the failure (no restart).
+# ───────────────────────────────────────────────────────────────────
+@test "conflict resolver exit 0 with red post-resolution tests: auto mode keeps the PR and pushes (exit 0)" {
+  _setup_conflicting_branch
+
+  attempt_claude_merge_resolution() {
+    cd "$WORKTREE_PATH" || return 1
+    echo "Feature line" > README.md
+    echo "Main line (conflict)" >> README.md
+    git add README.md
+    git commit -m "chore: resolve rebase conflict (stub)" >/dev/null 2>&1
+    return 0
+  }
+  verify_post_merge() { return 1; }
+  local _diag_log="$RITE_TEST_TMPDIR/diag.log"; : > "$_diag_log"
+  _diag() { echo "$*" >> "$_diag_log"; }
+
+  local exit_code=0
+  _stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "auto" "75" "101" 2>/dev/null || exit_code=$?
+  [ "$exit_code" -eq 0 ]
+
+  local remote_sha local_sha
+  remote_sha=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME" 2>/dev/null)
+  local_sha=$(git -C "$WORKTREE_PATH" rev-parse HEAD 2>/dev/null)
+  [ "$remote_sha" = "$local_sha" ]
+  grep -q "STALE_REBASE_VERIFY_RED_KEPT issue=75 pr=101 branch=$BRANCH_NAME site=resolved_rebase" "$_diag_log"
+}
+
+@test "conflict resolver exit 0 with red post-resolution tests: supervised mode still stops (exit 1)" {
+  _setup_conflicting_branch
+
+  attempt_claude_merge_resolution() {
+    cd "$WORKTREE_PATH" || return 1
+    echo "Feature line" > README.md
+    echo "Main line (conflict)" >> README.md
+    git add README.md
+    git commit -m "chore: resolve rebase conflict (stub)" >/dev/null 2>&1
+    return 0
+  }
+  verify_post_merge() { return 1; }
+  local _pre_remote
+  _pre_remote=$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME")
+
+  local exit_code=0
+  _stale_rebase_onto_main "$WORKTREE_PATH" "$BRANCH_NAME" "supervised" "75" "101" </dev/null 2>/dev/null || exit_code=$?
+  [ "$exit_code" -eq 1 ]
+  git -C "$WORKTREE_PATH" fetch -q origin
+  [ "$(git -C "$WORKTREE_PATH" rev-parse "origin/$BRANCH_NAME")" = "$_pre_remote" ]
+}
+
+# ───────────────────────────────────────────────────────────────────
 # Test 2: Resolver returns 1 (cannot resolve) → falls back to auto bail
 # ───────────────────────────────────────────────────────────────────
 @test "conflict resolver exit 1: resolver fails, auto mode prints supervised message" {

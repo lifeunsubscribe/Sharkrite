@@ -535,7 +535,8 @@ When resuming an issue with an existing PR, the branch is checked against the PR
 **Auto mode** — stale branch resume decision is conflict-based, not distance-based (same ruling as mid-run drift #433/#439; extended to stale-branch resume path by #1137):
 - Always attempts rebase onto the PR's base branch first, regardless of how many commits behind.
 - Rebase succeeds → continue workflow (PR preserved, no restart).
-- Rebase conflicts + resolver fails (or post-rebase verification fails) → close PR with summary comment, cleanup branch/worktree, restart fresh (exit 11).
+- Rebase done but post-rebase tests are red → PR preserved, rebased branch pushed, no restart. The stale review routes the resume through Phase 2, where the gate hands the failures to the fix loop by name (`STALE_REBASE_VERIFY_RED_KEPT` diag). A restart re-derives the same change against the same base and lands on the same failure (live: five freshup restarts, 2026-11-15 to 11-17).
+- Rebase conflicts + resolver fails → close PR with summary comment, cleanup branch/worktree, restart fresh (exit 11).
 - Absurd-divergence guard: `RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD` (default: 100 commits) → close and restart directly when **more than** 100 commits behind (strict `>`; exactly 100 still rebases), skipping the rebase attempt. Prevents replaying truly enormous histories.
 
 **Supervised mode** — uses `RITE_STALE_BRANCH_THRESHOLD` (default: 10) as the decision point:
@@ -1060,6 +1061,7 @@ tail -f .rite/logs/rite-sync-*.log           # live view during a sync
 Structured `[diag]` lines are logged to `RITE_LOG_FILE` at key workflow points for health report aggregation. They write directly to the file (not via stdout tee) so they appear exactly once — see two-channel write convention above.
 
 - `POST_MERGE_VERIFY_FLAKE_CLEARED` / `POST_MERGE_VERIFY_FLAKE_PERSISTENT` — a red post-rebase/post-merge gate was re-run serially before being called a semantic conflict; `CLEARED files=N list=…` means every failing file passed alone (load flake — verification passes), `PERSISTENT reason=still_failing|too_many_files` means the failure stands. See `behavioral-design.md` → "Serial Re-run Before Semantic Conflict".
+- `STALE_REBASE_VERIFY_RED_KEPT` — auto-mode stale-branch resume: the rebase was done at the git level, post-rebase verification stayed red, and the PR was kept and pushed instead of restarted; `issue=N pr=N branch=… site=clean_rebase|resolved_rebase`. The failure is expected to show up next as `[GATE]` findings in Phase 2. See `behavioral-design.md` → "Post-Rebase Verification: Red Tests Keep the PR".
 - `TEST_GATE` — per gate run: `outcome=passed|failed|skipped`, counts, `duration_s`. `cached=true` means a passing verdict for the identical tree + diff base was reused (the post-rebase verification and the Phase 2 initial gate otherwise run the same selection twice ~60s apart); key is `HEAD^{tree}` + resolved base SHA + the checkout's physical path, passes only, under `RITE_STATE_DIR/gate-verdicts/`.
 - `TEST_GATE_FLAKE_RETRY` — the gate re-ran failing tests once before blocking; `cleared=N persisted=N files=N retry_exit=N pr=N`. On the sharkrite bats path the failing files re-run serially. On the `RITE_TEST_COMMAND` path (`mode=command`) the whole command re-runs once, and only when every failing test file is outside the change's diff and the output has no compile error. See `behavioral-design.md` → "Gate Flake-Retry: One Bounded Serial Re-Run".
 - `WORKFLOW_COMPLETE` — issue number, fix iterations, rtk savings per phase
