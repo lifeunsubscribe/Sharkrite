@@ -102,9 +102,10 @@ ensure_doc_mode() {
 # ---------------------------------------------------------------------------
 # _run_align_docs_passes [doc ...]
 #
-# Internal helper: run restructure assessment then assertion audit when the
-# functions are available and stdin is an interactive terminal.
-# Optional doc name args are forwarded to both passes unchanged.
+# Internal helper: run restructure assessment, assertion audit, then the
+# closing reconcile when the functions are available and stdin is an
+# interactive terminal. Optional doc name args are forwarded to all three
+# unchanged.
 # ---------------------------------------------------------------------------
 _run_align_docs_passes() {
   if declare -f docs_run_restructure_assessment >/dev/null 2>&1; then
@@ -128,9 +129,14 @@ _run_align_docs_passes() {
   # Offer pending drift entries through the approval loop after the audit.
   # Runs in every mode (unset, off, sync) — the reconcile path is mode-free.
   # Skipped in non-interactive runs; mode is never altered.
+  # Doc name args scope it to the docs this run audited. Skipped when the
+  # operator quit the findings review to resume later (_DOCS_AUDIT_STOPPED) —
+  # reconciling half the findings now would edit the doc under the other half.
   if declare -f docs_reconcile_drift >/dev/null 2>&1; then
-    if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
-      docs_reconcile_drift || true
+    if [ "${_DOCS_AUDIT_STOPPED:-false}" != "true" ]; then
+      if [ "${_RITE_FORCE_TTY:-0}" = "1" ] || [ -t 0 ]; then
+        docs_reconcile_drift "$@" || true
+      fi
     fi
   fi
 }

@@ -975,9 +975,16 @@ fi
 
 # Set up logging (on by default, --no-log to disable)
 # Read-only commands skip logging
-if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ] || [ "$MODE" = "align-docs" ]; then
+if [ "$MODE" = "status" ] || [ "$MODE" = "health-report" ] || [ "$MODE" = "init" ] || [ "$MODE" = "reset-approval" ] || [ "$MODE" = "backfill-locks" ] || [ "$MODE" = "refresh-encountered-issues" ] || [ "$MODE" = "tags" ] || [ "$MODE" = "full-suite" ]; then
   # full-suite manages its own log file (per-run to .rite/logs/full-suite-YYYYMMDD.log)
   RITE_LOG_AUTO=false
+fi
+# align-docs is logged (the audit is a long run of model calls and its diag
+# lines need a log to land in). Its two consent switches only flip a setting.
+if [ "$MODE" = "align-docs" ]; then
+  case "${ALIGN_DOCS_ARGS[0]:-}" in
+    --enable|--disable) RITE_LOG_AUTO=false ;;
+  esac
 fi
 
 # Health report: dispatch immediately (no issue number needed)
@@ -1107,6 +1114,8 @@ if [ "$RITE_LOG_AUTO" = true ] && [ -z "$RITE_LOG_FILE" ]; then
     LOG_SLUG="plan"
   elif [ "$MODE" = "docs" ]; then
     LOG_SLUG="docs"
+  elif [ "$MODE" = "align-docs" ]; then
+    LOG_SLUG="align-docs"
   elif [ "$MODE" = "promote" ]; then
     # Branch name is the only identifying arg; bare slug if somehow absent.
     LOG_SLUG="promote-${PROMOTE_BRANCH:-branch}"

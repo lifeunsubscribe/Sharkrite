@@ -590,7 +590,14 @@ rite plan "phases 2-4"     # Natural language doc filtering
 rite plan --preview        # Preview issues without creating
 rite align-docs [doc ...]  # Audit docs against code; ends by offering pending entries for approval
                            # via the existing y/n/f loop (interactive only, mode unchanged);
-                           # pass doc names to scope the audit to specific docs
+                           # pass doc names to scope the audit (and the closing reconcile) to
+                           # specific docs. One model call per docs-map section, each section's
+                           # own text only; prints one progress line per call and saves progress
+                           # after every call under .rite/state/doc-audit/. A rerun resumes:
+                           # (r)esume skips sections already checked and unchanged, (s)tart over
+                           # discards the saved progress. A usage cap, an auth failure, three
+                           # failed calls in a row, or (q)uit during review all keep the progress.
+                           # See behavioral-design.md → "Align-Docs Audit: Saved Progress and Resume".
 rite align-docs --enable   # Record sync (enable per-merge drift recording)
 rite align-docs --disable  # Record off (disable per-merge drift recording)
 rite docs                  # Reconcile pending drift entries (tracking off / never-run);
@@ -1040,6 +1047,7 @@ cat .rite/reports/full-suite-$(date +%Y%m%d).md  # See today's investigation rep
 | `rite --sync <N> [<N>...]` (issue rebase) | `sync-<N>-<N>` | `rite-sync-42-43-20261014-103034.log` |
 | `rite plan` | `plan` | `rite-plan-20261014-103034.log` |
 | `rite docs` | `docs` | `rite-docs-20261014-103034.log` |
+| `rite align-docs [doc ...]` | `align-docs` | `rite-align-docs-20261014-103034.log` |
 
 Logs contain everything you would have seen in the terminal, including subprocess output (Claude tool calls with `⚡` indicators, bats per-test output, make check / lint output). Use `tail -f` to watch a running workflow in real time.
 
