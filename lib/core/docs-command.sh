@@ -1239,6 +1239,57 @@ _docs_extract_section() {
 }
 
 # ---------------------------------------------------------------------------
+# _docs_extract_section_own FILE HEADING_LEVEL HEADING_TEXT [OCCURRENCE]
+#
+# Like _docs_extract_section, but the section ends at the NEXT heading of any
+# level, so a parent section does not carry its child sections. Used by the
+# assertion audit (#1826): with the nested form the H1 row of a doc sent the
+# whole file and every H2 row re-sent its H3 children, so each paragraph was
+# audited two or three times.
+#
+# OCCURRENCE (default 1) picks the Nth heading with this (level, text) pair,
+# for docs that repeat a heading. A heading is a line of 1 to 6 leading '#'
+# outside a code fence — the same rule the docs-map builder uses
+# (_docs_map_heading_level), so every map row resolves to exactly one slice.
+# Preamble (HEADING_LEVEL="") is delegated to _docs_extract_section.
+# ---------------------------------------------------------------------------
+_docs_extract_section_own() {
+  local _deo_file="$1"
+  local _deo_level="$2"
+  local _deo_text="$3"
+  local _deo_occ="${4:-1}"
+  [ -f "$_deo_file" ] || return 0
+
+  if [ -z "$_deo_level" ]; then
+    _docs_extract_section "$_deo_file" "" ""
+    return 0
+  fi
+
+  TGT_TEXT="$_deo_text" awk -v tgt_level="$_deo_level" -v tgt_occ="$_deo_occ" '
+    BEGIN{capturing=0;inf=0;seen=0;tgt_l=tgt_level+0;tgt_o=tgt_occ+0;tgt_text=ENVIRON["TGT_TEXT"]}
+    /^```/||/^~~~/{inf=!inf; if(capturing)print; next}
+    !inf&&/^#/{
+      n=0; line=$0
+      while(substr(line,1,1)=="#"){n++;line=substr(line,2)}
+      if(n<=6){
+        if(capturing){exit}
+        if(substr(line,1,1)==" ") line=substr(line,2)
+        if(substr(line,1,1)=="\t") line=substr(line,2)
+        if(length(line)>0&&substr(line,length(line),1)==" ") line=substr(line,1,length(line)-1)
+        if(length(line)>0&&substr(line,length(line),1)=="\t") line=substr(line,1,length(line)-1)
+        gsub(/\t/,"",line)
+        if(n==tgt_l&&line==tgt_text){
+          seen++
+          if(seen==tgt_o){capturing=1;print}
+        }
+        next
+      }
+    }
+    capturing{print}
+  ' "$_deo_file"
+}
+
+# ---------------------------------------------------------------------------
 # _docs_list_main_entry_docs
 #
 # Echo one doc path per line for every doc that has branch=main drift entries
@@ -2177,7 +2228,7 @@ docs_reconcile_adr_drift() {
 }
 
 # ---------------------------------------------------------------------------
-# docs_reconcile_drift
+# docs_reconcile_drift [DOC ...]
 #
 # Reconcile mode: run the Tier 2 doc-update pass over pending drift entries.
 #
@@ -2192,8 +2243,41 @@ docs_reconcile_adr_drift() {
 # Invoked from the reconcile offers in _docs_run_audit and rite_docs.
 # Zero entries (either store) → prints an info line and exits 0.
 # Entries for branches other than main are untouched.
+#
+# With DOC args (rite align-docs <doc>): only those docs' branch=main entries
+# are offered. The legacy path and the ADR pass do not run.
 # ---------------------------------------------------------------------------
+# shellcheck disable=SC2120  # The caller that passes docs is in another file: _run_align_docs_passes (lib/utils/doc-consent.sh).
 docs_reconcile_drift() {
+  # Scoped form: only the named docs' branch=main entries. The legacy flat log
+  # and the ADR pass are project-wide, so a scoped run leaves them alone.
+  local _rd_scope="" _rd_arg
+  for _rd_arg in "$@"; do
+    [ -n "$_rd_arg" ] || continue
+    _rd_scope="${_rd_scope}${_rd_arg}"$'\n'
+  done
+  if [ -n "$_rd_scope" ]; then
+    local _rd_scoped_doc _rd_scoped_n _rd_scoped_any=false
+    while IFS= read -r _rd_scoped_doc <&3 || [ -n "${_rd_scoped_doc:-}" ]; do
+      [ -n "$_rd_scoped_doc" ] || continue
+      _rd_scoped_n="$(drift_log_entry_count --doc "$_rd_scoped_doc" --branch main 2>/dev/null || echo 0)"
+      [ "${_rd_scoped_n:-0}" -gt 0 ] || continue
+      if [ "$_rd_scoped_any" = "false" ]; then
+        docs_map_ensure || true
+        _rd_scoped_any=true
+      fi
+      echo "" >&2
+      print_info "Processing doc: ${_rd_scoped_doc}"
+      _docs_main_entries_pass "$_rd_scoped_doc" || true
+    done 3<<RD_SCOPE_EOF
+$_rd_scope
+RD_SCOPE_EOF
+    if [ "$_rd_scoped_any" = "false" ]; then
+      print_info "No drift entries for the named doc(s) — nothing to reconcile"
+    fi
+    return 0
+  fi
+
   # Priority: check for branch=main entries in the new structured store.
   local _rd_main_count=0
   if [ -n "${RITE_STATE_DIR:-}" ]; then
@@ -3650,236 +3734,232 @@ _DOCS_AUDIT_RUBRIC_FEATURE="${_DOCS_AUDIT_RUBRIC_FEATURE:-"Feature-doc role chec
 _DOCS_AUDIT_RUBRIC_ADR="${_DOCS_AUDIT_RUBRIC_ADR:-"ADR role check — compare across docs: (1) does this ADR section link every feature doc it covers? List any feature docs in the project not linked. (2) does any feature doc contradict a decision in this section? (3) are there code areas this section claims to cover with zero feature-doc coverage? (4) do the architectural decisions in this section still hold given the current codebase?"}"
 
 # ---------------------------------------------------------------------------
-# docs_run_assertion_audit [DOC ...]
+# Assertion-audit saved progress (#1826)
 #
-# Assertion audit pass for rite align-docs. Runs AFTER docs_run_restructure_assessment.
+# The audit is one model call per section. Its progress lives on disk so an
+# interrupted run (Ctrl-C, usage cap, closed terminal) loses nothing and the
+# next run continues where it stopped. Four append-only TSV files under
+# RITE_STATE_DIR/doc-audit/:
 #
-# For each in-scope doc, iterates over every docs-map section and makes one
-# provider_resolve_model doc_update call per section.  Each call receives:
-#   - the map-anchored section content (via _docs_extract_section)
-#   - code files referenced in the section (byte-capped at 3 KB total)
-#   - the applicable rubric: accuracy (all docs) + role (feature/ADR types)
+#   done.tsv      doc, section-id, finding count, timestamp   one row per finished call
+#   findings.tsv  doc, section-id, section label, type, text  one row per finding
+#   reviewed.tsv  doc, section-id                             one row per reviewed section
+#   cleared.tsv   doc                                         old drift entries cleared this cycle
 #
-# The map's rubric column overrides shipped defaults when present and != '-'.
-# ADR role check uses docs_map_adr_links to compute missing-link context.
+# A section id is the checksum of the exact prompt that would be sent (section
+# text + rubric + code excerpts) plus the heading's occurrence index, so a
+# section that changed since it was checked gets a new id: it is audited again
+# and its old findings are never offered.
 #
-# Before running: displays in-scope docs, section count, and model-call count
-# and asks for confirmation.  Declining exits 0 with zero model calls made.
-#
-# Findings routing:
-#   nondeterministic — auto-recorded as kind=refinement drift entry (no prompt)
-#   accuracy / role  — presented to user; y records a drift entry, n skips
-#
-# Non-interactive (non-TTY): skipped with an info message.
-# Tests may bypass the TTY check with _RITE_FORCE_TTY=1.
+# This is a resume device, not a cache. Once every section of a doc has been
+# checked and reviewed, the doc's rows are dropped and the next run starts
+# from scratch.
 # ---------------------------------------------------------------------------
-docs_run_assertion_audit() {
-  # Non-TTY: skip to avoid recording false entries for output no human saw.
-  if [ "${_RITE_FORCE_TTY:-0}" != "1" ] && [ ! -t 0 ]; then
-    print_info "Assertion audit skipped (not an interactive terminal — run 'rite align-docs' interactively)"
-    return 0
-  fi
+_docs_audit_state_dir() {
+  printf '%s\n' "${RITE_STATE_DIR:-${RITE_PROJECT_ROOT:-.}/${RITE_DATA_DIR:-.rite}/state}/doc-audit"
+}
 
-  # Resolve doc scope
-  local _aau_docs_raw=""
-  if [ "$#" -gt 0 ]; then
-    local _aau_arg
-    for _aau_arg in "$@"; do
-      _aau_docs_raw="${_aau_docs_raw}${_aau_arg}"$'\n'
+# _docs_audit_state_has FILE DOC [ID] — exit 0 when a row for DOC (and ID) exists.
+_docs_audit_state_has() {
+  local _dsh_file
+  _dsh_file="$(_docs_audit_state_dir)/$1"
+  [ -f "$_dsh_file" ] || return 1
+  AUD_DOC="$2" AUD_ID="${3:-}" awk -F'\t' '
+    $1==ENVIRON["AUD_DOC"] && (ENVIRON["AUD_ID"]=="" || $2==ENVIRON["AUD_ID"]) {found=1; exit}
+    END{exit found?0:1}' "$_dsh_file"
+}
+
+# _docs_audit_state_add FILE FIELD... — append one tab-separated row.
+_docs_audit_state_add() {
+  local _dsa_dir _dsa_name="$1" _dsa_field
+  shift
+  _dsa_dir="$(_docs_audit_state_dir)"
+  mkdir -p "$_dsa_dir"
+  {
+    printf '%s' "${1:-}"
+    shift || true
+    for _dsa_field in "$@"; do
+      printf '\t%s' "$_dsa_field"
     done
+    printf '\n'
+  } >> "${_dsa_dir}/${_dsa_name}"
+}
+
+# _docs_audit_state_drop FILE DOC [ID] — remove the rows for DOC (and ID).
+_docs_audit_state_drop() {
+  local _dsd_file _dsd_tmp
+  _dsd_file="$(_docs_audit_state_dir)/$1"
+  [ -f "$_dsd_file" ] || return 0
+  _dsd_tmp="${_dsd_file}.tmp.$$"
+  AUD_DOC="$2" AUD_ID="${3:-}" awk -F'\t' '
+    $1==ENVIRON["AUD_DOC"] && (ENVIRON["AUD_ID"]=="" || $2==ENVIRON["AUD_ID"]) {next}
+    {print}' "$_dsd_file" > "$_dsd_tmp" || true
+  if [ -s "$_dsd_tmp" ]; then
+    mv "$_dsd_tmp" "$_dsd_file"
   else
-    _aau_docs_raw="$(docs_resolve_doc_scope 2>/dev/null || true)"
+    rm -f "$_dsd_tmp" "$_dsd_file"
   fi
-  if [ -z "$_aau_docs_raw" ]; then
-    print_info "Assertion audit: no docs in scope"
-    return 0
+}
+
+# _docs_audit_state_drop_doc DOC — forget everything saved for DOC.
+_docs_audit_state_drop_doc() {
+  local _dsdd_name
+  for _dsdd_name in done.tsv findings.tsv reviewed.tsv cleared.tsv; do
+    _docs_audit_state_drop "$_dsdd_name" "$1"
+  done
+  rmdir "$(_docs_audit_state_dir)" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# _docs_audit_list_sections MAPFILE DOC
+#
+# One line per docs-map row of DOC, fields separated by \001 (not a tab: the
+# preamble row has an empty level and heading, and a whitespace IFS would
+# collapse them): level, heading, type, rubric, occurrence.
+# Occurrence is the running count of this (level, heading) pair in the doc.
+# ---------------------------------------------------------------------------
+_docs_audit_list_sections() {
+  [ -f "$1" ] || return 0
+  AUD_DOC="$2" awk -F'\t' '
+    /^#/{next}
+    $1==ENVIRON["AUD_DOC"]{
+      hl=(NF>=4)?$4:""; ht=(NF>=5)?$5:""
+      dt=(NF>=7&&$7!="")?$7:"other"; rb=(NF>=8&&$8!="")?$8:"-"
+      occ=++cnt[hl SUBSEP ht]
+      printf "%s\001%s\001%s\001%s\001%d\n",hl,ht,dt,rb,occ
+    }' "$1" || true
+}
+
+# ---------------------------------------------------------------------------
+# _docs_audit_build_prompt DOC LEVEL HEADING TYPE RUBRIC OCCURRENCE MAPFILE OUTFILE
+#
+# Write the audit prompt for one section to OUTFILE. Returns 1, writing
+# nothing, when the doc is missing or the section has no text of its own
+# (a heading followed directly by a child heading) — such a section makes no
+# model call.
+# ---------------------------------------------------------------------------
+_docs_audit_build_prompt() {
+  local _abp_doc="$1" _abp_hl="$2" _abp_ht="$3" _abp_dt="$4" _abp_rb="$5" _abp_occ="$6"
+  local _abp_map="$7" _abp_out="$8"
+
+  local _abp_abs="${RITE_PROJECT_ROOT}/${_abp_doc}"
+  [ -f "$_abp_abs" ] || return 1
+
+  # This section's own text (map-anchored, never the whole document, never its
+  # child sections).
+  local _abp_sec
+  _abp_sec="$(_docs_extract_section_own "$_abp_abs" "$_abp_hl" "$_abp_ht" "$_abp_occ" || true)"
+  local _abp_body="$_abp_sec"
+  if [ -n "$_abp_hl" ]; then
+    case "$_abp_sec" in
+      *$'\n'*) _abp_body="${_abp_sec#*$'\n'}" ;;
+      *)       _abp_body="" ;;
+    esac
   fi
-
-  # Ensure map
-  local _aau_map_file
-  _aau_map_file="$(docs_map_path)"
-  if [ ! -f "$_aau_map_file" ]; then
-    print_info "Assertion audit: docs map not found — run 'rite docs' first to build the map"
-    return 0
-  fi
-
-  # Build section list: one entry per map row for in-scope docs.
-  # Format: doc_path TAB heading_level TAB heading_text TAB type TAB rubric_col
-  local _aau_section_list=""
-  local _aau_section_count=0
-
-  local _aau_d
-  while IFS= read -r _aau_d <&3 || [ -n "$_aau_d" ]; do
-    [ -n "$_aau_d" ] || continue
-    local _aau_fp _aau_sha _aau_af _aau_hl _aau_ht _aau_fpr _aau_dt _aau_rb _aau_tg _aau_nt
-    while IFS=$'\001' read -r _aau_fp _aau_sha _aau_af _aau_hl _aau_ht _aau_fpr _aau_dt _aau_rb _aau_tg _aau_nt; do
-      [ "$_aau_fp" = "$_aau_d" ] || continue
-      _aau_section_list="${_aau_section_list}${_aau_fp}	${_aau_hl:-}	${_aau_ht:-}	${_aau_dt:-other}	${_aau_rb:--}
-"
-      _aau_section_count=$((_aau_section_count + 1))
-    done < <(awk -F'\t' '/^#/{next}{printf "%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\001%s\n",$1,(NF>=2)?$2:"",(NF>=3)?$3:"-",(NF>=4)?$4:"",(NF>=5)?$5:"",(NF>=6)?$6:"",(NF>=7)?$7:"other",(NF>=8)?$8:"-",(NF>=9)?$9:"-",(NF>=10)?$10:"-"}' "$_aau_map_file" || true)
-  done 3<<DOCS_SCOPE_EOF
-$_aau_docs_raw
-DOCS_SCOPE_EOF
-
-  if [ "$_aau_section_count" -eq 0 ]; then
-    print_info "Assertion audit: no sections found in docs map for in-scope docs"
-    return 0
-  fi
-
-  local _aau_doc_count=0
-  _aau_doc_count="$(printf '%s\n' "$_aau_docs_raw" | grep -c '.' || true)"
-
-  # Pre-run confirmation gate
-  echo "" >&2
-  print_info "Assertion audit plan:"
-  printf '  Docs:          %d\n' "$_aau_doc_count" >&2
-  printf '  Sections:      %d\n' "$_aau_section_count" >&2
-  printf '  Model calls:   %d  (one per section, doc_update model)\n' "$_aau_section_count" >&2
-  echo "" >&2
-
-  local _aau_confirm="n"
-  read -p "  Proceed with assertion audit? [y/N] " -r _aau_confirm || true
-  echo "" >&2
-  case "${_aau_confirm:-n}" in
-    [Yy]|[Yy][Ee][Ss]) ;;
-    *)
-      print_info "Assertion audit cancelled"
-      return 0
-      ;;
+  case "$_abp_body" in
+    *[![:space:]]*) ;;
+    *) return 1 ;;
   esac
 
-  local _aau_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
-  local _aau_branch
-  _aau_branch="$(git -C "${RITE_PROJECT_ROOT:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
-
-  # Temp file: accumulates findings across all sections.
-  # Format per line: doc_path TAB section_heading TAB type TAB description
-  local _aau_findings_file
-  _aau_findings_file="$(mktemp)"
-
-  local _aau_calls=0
-  local _aau_total_elapsed=0 _aau_total_bytes=0
-  local _aau_sl
-  while IFS= read -r _aau_sl <&4 || [ -n "$_aau_sl" ]; do
-    [ -n "$_aau_sl" ] || continue
-
-    local _aau_sl_doc _aau_sl_hl _aau_sl_ht _aau_sl_dt _aau_sl_rb
-    _aau_sl_doc="$(printf '%s' "$_aau_sl" | cut -f1 || true)"
-    _aau_sl_hl="$(printf '%s' "$_aau_sl" | cut -f2 || true)"
-    _aau_sl_ht="$(printf '%s' "$_aau_sl" | cut -f3 || true)"
-    _aau_sl_dt="$(printf '%s' "$_aau_sl" | cut -f4 || true)"
-    _aau_sl_rb="$(printf '%s' "$_aau_sl" | cut -f5 || true)"
-
-    local _aau_abs="${RITE_PROJECT_ROOT}/${_aau_sl_doc}"
-    [ -f "$_aau_abs" ] || continue
-
-    # Extract this section's content (map-anchored, never the whole document)
-    local _aau_sec
-    _aau_sec="$(_docs_extract_section "$_aau_abs" "$_aau_sl_hl" "$_aau_sl_ht" || true)"
-    [ -n "$_aau_sec" ] || continue
-
-    # Code context: scan section for referenced code file paths and read them.
-    # Byte cap: 1500 bytes per file, 3000 bytes total.
-    local _aau_code_ctx="" _aau_code_bytes=0 _aau_code_cap=3000 _aau_file_cap=1500
-    local _aau_seen_refs=""
-    local _aau_ref
-    while IFS= read -r _aau_ref || [ -n "$_aau_ref" ]; do
-      [ -n "$_aau_ref" ] || continue
-      case $'\n'"$_aau_seen_refs"$'\n' in *$'\n'"${_aau_ref}"$'\n'*) continue ;; esac
-      _aau_seen_refs="${_aau_seen_refs}${_aau_ref}"$'\n'
-      local _aau_ref_abs="${RITE_PROJECT_ROOT}/${_aau_ref}"
-      [ -f "$_aau_ref_abs" ] || continue
-      local _aau_ref_excerpt
-      _aau_ref_excerpt="$(head -c "$_aau_file_cap" "$_aau_ref_abs" 2>/dev/null || true)"
-      [ -n "$_aau_ref_excerpt" ] || continue
-      local _aau_ref_entry="--- ${_aau_ref} ---
-${_aau_ref_excerpt}
+  # Code context: scan section for referenced code file paths and read them.
+  # Byte cap: 1500 bytes per file, 3000 bytes total.
+  local _abp_code_ctx="" _abp_code_bytes=0 _abp_code_cap=3000 _abp_file_cap=1500
+  local _abp_seen_refs=""
+  local _abp_ref
+  while IFS= read -r _abp_ref || [ -n "$_abp_ref" ]; do
+    [ -n "$_abp_ref" ] || continue
+    case $'\n'"$_abp_seen_refs"$'\n' in *$'\n'"${_abp_ref}"$'\n'*) continue ;; esac
+    _abp_seen_refs="${_abp_seen_refs}${_abp_ref}"$'\n'
+    local _abp_ref_abs="${RITE_PROJECT_ROOT}/${_abp_ref}"
+    [ -f "$_abp_ref_abs" ] || continue
+    local _abp_ref_excerpt
+    _abp_ref_excerpt="$(head -c "$_abp_file_cap" "$_abp_ref_abs" 2>/dev/null || true)"
+    [ -n "$_abp_ref_excerpt" ] || continue
+    local _abp_ref_entry="--- ${_abp_ref} ---
+${_abp_ref_excerpt}
 
 "
-      if [ $((_aau_code_bytes + ${#_aau_ref_entry})) -le "$_aau_code_cap" ]; then
-        _aau_code_bytes=$((_aau_code_bytes + ${#_aau_ref_entry}))
-        _aau_code_ctx="${_aau_code_ctx}${_aau_ref_entry}"
-      fi
-    done < <(printf '%s\n' "$_aau_sec" | grep -oE '(lib|bin|tests|tools)/[a-zA-Z0-9_./-]+\.(sh|bats)' | sort -u || true)
+    if [ $((_abp_code_bytes + ${#_abp_ref_entry})) -le "$_abp_code_cap" ]; then
+      _abp_code_bytes=$((_abp_code_bytes + ${#_abp_ref_entry}))
+      _abp_code_ctx="${_abp_code_ctx}${_abp_ref_entry}"
+    fi
+  done < <(printf '%s\n' "$_abp_sec" | grep -oE '(lib|bin|tests|tools)/[a-zA-Z0-9_./-]+\.(sh|bats)' | sort -u || true)
 
-    # Rubric selection: map's rubric column wins over shipped defaults.
-    local _aau_acc_rubric="$_DOCS_AUDIT_RUBRIC_ACCURACY"
-    local _aau_role_rubric=""
-    local _aau_override_loaded=false
-    if [ "${_aau_sl_rb:-}" != "-" ] && [ -n "${_aau_sl_rb:-}" ]; then
-      local _aau_rb_abs="${RITE_PROJECT_ROOT}/${_aau_sl_rb}"
-      if [ -f "$_aau_rb_abs" ]; then
-        _aau_acc_rubric="$(cat "$_aau_rb_abs" 2>/dev/null || true)"
-        if [ -n "$_aau_acc_rubric" ]; then
-          _aau_override_loaded=true
-        else
-          print_warning "Assertion audit: rubric-override '${_aau_sl_rb}' missing or empty; using type-based default" >&2
-        fi
+  # Rubric selection: map's rubric column wins over shipped defaults.
+  local _abp_acc_rubric="$_DOCS_AUDIT_RUBRIC_ACCURACY"
+  local _abp_role_rubric=""
+  local _abp_override_loaded=false
+  if [ "${_abp_rb:-}" != "-" ] && [ -n "${_abp_rb:-}" ]; then
+    local _abp_rb_abs="${RITE_PROJECT_ROOT}/${_abp_rb}"
+    if [ -f "$_abp_rb_abs" ]; then
+      _abp_acc_rubric="$(cat "$_abp_rb_abs" 2>/dev/null || true)"
+      if [ -n "$_abp_acc_rubric" ]; then
+        _abp_override_loaded=true
       else
-        print_warning "Assertion audit: rubric-override '${_aau_sl_rb}' missing or empty; using type-based default" >&2
+        print_warning "Assertion audit: rubric-override '${_abp_rb}' missing or empty; using type-based default" >&2
       fi
+    else
+      print_warning "Assertion audit: rubric-override '${_abp_rb}' missing or empty; using type-based default" >&2
     fi
-    if [ "$_aau_override_loaded" = "false" ]; then
-      _aau_acc_rubric="$_DOCS_AUDIT_RUBRIC_ACCURACY"
-      case "${_aau_sl_dt:-other}" in
-        feature) _aau_role_rubric="$_DOCS_AUDIT_RUBRIC_FEATURE" ;;
-        adr)     _aau_role_rubric="$_DOCS_AUDIT_RUBRIC_ADR" ;;
-      esac
-    fi
+  fi
+  if [ "$_abp_override_loaded" = "false" ]; then
+    _abp_acc_rubric="$_DOCS_AUDIT_RUBRIC_ACCURACY"
+    case "${_abp_dt:-other}" in
+      feature) _abp_role_rubric="$_DOCS_AUDIT_RUBRIC_FEATURE" ;;
+      adr)     _abp_role_rubric="$_DOCS_AUDIT_RUBRIC_ADR" ;;
+    esac
+  fi
 
-    # ADR cross-doc context: compare docs_map_adr_links against all feature docs.
-    local _aau_adr_ctx=""
-    if [ "${_aau_sl_dt:-other}" = "adr" ]; then
-      local _aau_linked
-      _aau_linked="$(docs_map_adr_links "$_aau_sl_doc" 2>/dev/null || true)"
-      local _aau_all_feat
-      _aau_all_feat="$(awk -F'\t' '/^#/{next} NF>=7 && $7=="feature"{print $1}' \
-        "$_aau_map_file" 2>/dev/null | sort -u || true)"
-      local _aau_missing=""
-      local _aau_feat
-      while IFS= read -r _aau_feat <&5 || [ -n "$_aau_feat" ]; do
-        [ -n "$_aau_feat" ] || continue
-        if ! grep -qxF "$_aau_feat" <<< "$_aau_linked" 2>/dev/null; then
-          _aau_missing="${_aau_missing}  - ${_aau_feat}"$'\n'
-        fi
-      done 5<<FEAT_LOOP_EOF
-$_aau_all_feat
+  # ADR cross-doc context: compare docs_map_adr_links against all feature docs.
+  local _abp_adr_ctx=""
+  if [ "${_abp_dt:-other}" = "adr" ]; then
+    local _abp_linked
+    _abp_linked="$(docs_map_adr_links "$_abp_doc" 2>/dev/null || true)"
+    local _abp_all_feat
+    _abp_all_feat="$(awk -F'\t' '/^#/{next} NF>=7 && $7=="feature"{print $1}' \
+      "$_abp_map" 2>/dev/null | sort -u || true)"
+    local _abp_missing=""
+    local _abp_feat
+    while IFS= read -r _abp_feat <&5 || [ -n "$_abp_feat" ]; do
+      [ -n "$_abp_feat" ] || continue
+      if ! grep -qxF "$_abp_feat" <<< "$_abp_linked" 2>/dev/null; then
+        _abp_missing="${_abp_missing}  - ${_abp_feat}"$'\n'
+      fi
+    done 5<<FEAT_LOOP_EOF
+$_abp_all_feat
 FEAT_LOOP_EOF
-      if [ -n "$_aau_missing" ]; then
-        _aau_adr_ctx="ADR cross-doc check:
+    if [ -n "$_abp_missing" ]; then
+      _abp_adr_ctx="ADR cross-doc check:
 Feature docs in the project NOT linked from this ADR:
-${_aau_missing}"
-      fi
+${_abp_missing}"
     fi
+  fi
 
-    # Assemble role section and code section for the prompt (avoid blank lines
-    # when absent so the model doesn't see confusing empty headers).
-    local _aau_role_section="" _aau_code_section="" _aau_adr_section=""
-    [ -n "$_aau_role_rubric" ] && _aau_role_section="--- ROLE RUBRIC ---
-${_aau_role_rubric}
+  # Assemble role section and code section for the prompt (avoid blank lines
+  # when absent so the model doesn't see confusing empty headers).
+  local _abp_role_section="" _abp_code_section="" _abp_adr_section=""
+  [ -n "$_abp_role_rubric" ] && _abp_role_section="--- ROLE RUBRIC ---
+${_abp_role_rubric}
 "
-    [ -n "$_aau_code_ctx" ] && _aau_code_section="--- REFERENCED CODE ---
-${_aau_code_ctx}"
-    [ -n "$_aau_adr_ctx" ] && _aau_adr_section="${_aau_adr_ctx}
+  [ -n "$_abp_code_ctx" ] && _abp_code_section="--- REFERENCED CODE ---
+${_abp_code_ctx}"
+  [ -n "$_abp_adr_ctx" ] && _abp_adr_section="${_abp_adr_ctx}
 "
 
-    local _aau_pf
-    _aau_pf="$(mktemp)"
-    # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: doc path, section content, rubric, code ctx, and adr ctx vars must expand
-    cat > "$_aau_pf" <<AUDIT_SECTION_EOF
+  # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: doc path, section content, rubric, code ctx, and adr ctx vars must expand
+  cat > "$_abp_out" <<AUDIT_SECTION_EOF
 You are auditing one section of a documentation file for accuracy and role compliance.
 
-Section: ${_aau_sl_doc} § ${_aau_sl_ht:-(preamble)}
-Doc type: ${_aau_sl_dt:-other}
+Section: ${_abp_doc} § ${_abp_ht:-(preamble)}
+Doc type: ${_abp_dt:-other}
 
 --- ACCURACY RUBRIC ---
-${_aau_acc_rubric}
+${_abp_acc_rubric}
 
-${_aau_role_section}${_aau_adr_section}--- SECTION CONTENT ---
-${_aau_sec}
+${_abp_role_section}${_abp_adr_section}--- SECTION CONTENT ---
+${_abp_sec}
 
-${_aau_code_section}
+${_abp_code_section}
 Output ONLY lines in this exact format for each issue found:
 FINDING: <type>|<one-line description>
 
@@ -3890,155 +3970,502 @@ Where <type> is one of:
 
 If no issues are found, output only: NOTHING_FOUND
 AUDIT_SECTION_EOF
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# docs_run_assertion_audit [DOC ...]
+#
+# Assertion audit pass for rite align-docs. Runs AFTER docs_run_restructure_assessment.
+#
+# The docs map is rebuilt first, so the section list matches the docs as they
+# are now. Then, for each in-scope doc, every docs-map section that has text
+# of its own gets one provider_resolve_model doc_update call. Each call receives:
+#   - the section's own text (via _docs_extract_section_own — no child sections)
+#   - code files referenced in the section (byte-capped at 3 KB total)
+#   - the applicable rubric: accuracy (all docs) + role (feature/ADR types)
+#
+# The map's rubric column overrides shipped defaults when present and != '-'.
+# ADR role check uses docs_map_adr_links to compute missing-link context.
+#
+# Before running: displays in-scope docs, section count, and model-call count
+# and asks for confirmation.  Declining exits 0 with zero model calls made.
+#
+# Progress and resume (#1826): one line per section as its call runs, and the
+# result of every call is saved under RITE_STATE_DIR/doc-audit/ at once (see
+# "Assertion-audit saved progress" above). A later run offers to resume and
+# makes calls only for sections that are unchecked or changed. A usage-cap or
+# auth exit (5 / 18) stops the audit immediately and returns that code; three
+# failed calls in a row stop it with 1. Saved progress survives all three.
+#
+# Findings review, one prompt per section:
+#   nondeterministic — auto-recorded as kind=refinement drift entry (no prompt)
+#   accuracy / role  — record all, none, pick one by one, or quit and resume
+#                      later (sets _DOCS_AUDIT_STOPPED=true so the caller skips
+#                      the closing reconcile)
+#
+# A doc's pre-existing drift entries are cleared once per audit cycle, before
+# its first review — never again on a resumed run, which would wipe the
+# entries recorded earlier in the same cycle.
+#
+# Non-interactive (non-TTY): skipped with an info message.
+# Tests may bypass the TTY check with _RITE_FORCE_TTY=1.
+# ---------------------------------------------------------------------------
+docs_run_assertion_audit() {
+  _DOCS_AUDIT_STOPPED=false
+
+  # Non-TTY: skip to avoid recording false entries for output no human saw.
+  if [ "${_RITE_FORCE_TTY:-0}" != "1" ] && [ ! -t 0 ]; then
+    print_info "Assertion audit skipped (not an interactive terminal — run 'rite align-docs' interactively)"
+    return 0
+  fi
+
+  # Resolve doc scope
+  local _aau_docs_raw=""
+  local _aau_resume_cmd="rite align-docs"
+  if [ "$#" -gt 0 ]; then
+    local _aau_arg
+    for _aau_arg in "$@"; do
+      _aau_docs_raw="${_aau_docs_raw}${_aau_arg}"$'\n'
+    done
+    _aau_resume_cmd="rite align-docs $(printf '%s' "$_aau_docs_raw" | tr '\n' ' ' | sed 's/  *$//' || true)"
+  else
+    _aau_docs_raw="$(docs_resolve_doc_scope 2>/dev/null || true)"
+  fi
+  if [ -z "$_aau_docs_raw" ]; then
+    print_info "Assertion audit: no docs in scope"
+    return 0
+  fi
+
+  # Rebuild the map BEFORE reading the section list: a stale map hides every
+  # section added since it was built (live: 150 mapped vs 175 real headings).
+  if declare -f docs_map_build >/dev/null 2>&1; then
+    print_status "Refreshing docs map..." >&2
+    docs_map_build || print_warning "Docs map refresh failed — using the existing map" >&2
+  fi
+
+  local _aau_map_file
+  _aau_map_file="$(docs_map_path)"
+  if [ ! -f "$_aau_map_file" ]; then
+    print_info "Assertion audit: docs map not found — run 'rite docs' first to build the map"
+    return 0
+  fi
+
+  # Planning pass: build every section's prompt once, into a private work dir,
+  # and look each one up in the saved progress.
+  #   work   state \001 position \001 section-id \001 doc \001 label
+  #   cur    doc TAB section-id            (the ids that exist right now)
+  #   p.N    the prompt for position N
+  print_status "Reading sections..." >&2
+  local _aau_work_dir
+  _aau_work_dir="$(mktemp -d)"
+  local _aau_work="${_aau_work_dir}/work"
+  local _aau_cur="${_aau_work_dir}/cur"
+  : > "$_aau_work"
+  : > "$_aau_cur"
+  : > "${_aau_work_dir}/empty"
+
+  local _aau_n=0 _aau_todo=0 _aau_done=0 _aau_skipped=0 _aau_doc_count=0
+  local _aau_d
+  while IFS= read -r _aau_d <&3 || [ -n "$_aau_d" ]; do
+    [ -n "$_aau_d" ] || continue
+    _aau_doc_count=$((_aau_doc_count + 1))
+    local _aau_hl _aau_ht _aau_dt _aau_rb _aau_occ
+    while IFS=$'\001' read -r _aau_hl _aau_ht _aau_dt _aau_rb _aau_occ <&4; do
+      local _aau_pf="${_aau_work_dir}/p.$((_aau_n + 1))"
+      if ! _docs_audit_build_prompt "$_aau_d" "$_aau_hl" "$_aau_ht" "$_aau_dt" "$_aau_rb" \
+        "$_aau_occ" "$_aau_map_file" "$_aau_pf"; then
+        _aau_skipped=$((_aau_skipped + 1))
+        continue
+      fi
+      _aau_n=$((_aau_n + 1))
+      local _aau_ck _aau_id _aau_state="todo"
+      _aau_ck="$(cksum < "$_aau_pf" | awk '{print $1 "-" $2}' || true)"
+      _aau_id="${_aau_ck:-0-0}-${_aau_occ:-1}"
+      if _docs_audit_state_has done.tsv "$_aau_d" "$_aau_id"; then
+        _aau_state="done"
+        _aau_done=$((_aau_done + 1))
+      else
+        _aau_todo=$((_aau_todo + 1))
+      fi
+      printf '%s\001%s\001%s\001%s\001%s\n' \
+        "$_aau_state" "$_aau_n" "$_aau_id" "$_aau_d" "${_aau_ht:-(preamble)}" >> "$_aau_work"
+      printf '%s\t%s\n' "$_aau_d" "$_aau_id" >> "$_aau_cur"
+    done 4< <(_docs_audit_list_sections "$_aau_map_file" "$_aau_d")
+  done 3<<DOCS_SCOPE_EOF
+$_aau_docs_raw
+DOCS_SCOPE_EOF
+
+  if [ "$_aau_n" -eq 0 ]; then
+    rm -rf "${_aau_work_dir:?}"
+    print_info "Assertion audit: no sections found in docs map for in-scope docs"
+    return 0
+  fi
+
+  local _aau_state_dir
+  _aau_state_dir="$(_docs_audit_state_dir)"
+  local _aau_model
+  _aau_model="$(provider_resolve_model doc_update 2>/dev/null || true)"
+
+  # Pre-run confirmation gate
+  echo "" >&2
+  print_info "Assertion audit plan:"
+  printf '  Docs:          %d\n' "$_aau_doc_count" >&2
+  if [ "$_aau_skipped" -gt 0 ]; then
+    printf '  Sections:      %d  (+%d with no text of their own, not sent)\n' "$_aau_n" "$_aau_skipped" >&2
+  else
+    printf '  Sections:      %d\n' "$_aau_n" >&2
+  fi
+  if [ "$_aau_done" -gt 0 ]; then
+    local _aau_since=""
+    _aau_since="$(awk -F'\t' 'FILENAME==ARGV[1]{cur[$1 FS $2]=1; next}
+      (($1 FS $2) in cur) && $4!="" && (min=="" || $4<min){min=$4}
+      END{print min}' "$_aau_cur" "${_aau_state_dir}/done.tsv" 2>/dev/null || true)"
+    printf '  Already done:  %d  (saved progress%s)\n' "$_aau_done" "${_aau_since:+ from ${_aau_since}}" >&2
+  fi
+  printf '  Model calls:   %d  (one per section, %s)\n' "$_aau_todo" "${_aau_model:-doc_update model}" >&2
+  echo "" >&2
+
+  local _aau_confirm="n"
+  if [ "$_aau_done" -gt 0 ]; then
+    read -p "  (r)esume / (s)tart over / (n)o: " -r _aau_confirm || true
+    echo "" >&2
+    case "${_aau_confirm:-n}" in
+      [Rr]|[Rr][Ee][Ss][Uu][Mm][Ee]|[Yy]|[Yy][Ee][Ss]) ;;
+      [Ss]|[Ss][Tt][Aa][Rr][Tt]*)
+        local _aau_reset_doc
+        while IFS= read -r _aau_reset_doc || [ -n "$_aau_reset_doc" ]; do
+          [ -n "$_aau_reset_doc" ] || continue
+          _docs_audit_state_drop_doc "$_aau_reset_doc"
+        done <<RESET_DOCS_EOF
+$_aau_docs_raw
+RESET_DOCS_EOF
+        sed 's/^done/todo/' "$_aau_work" > "${_aau_work}.new" && mv "${_aau_work}.new" "$_aau_work"
+        _aau_todo="$_aau_n"
+        _aau_done=0
+        print_info "Saved progress discarded — starting over (${_aau_todo} model call(s))"
+        ;;
+      *)
+        rm -rf "${_aau_work_dir:?}"
+        print_info "Assertion audit cancelled"
+        return 0
+        ;;
+    esac
+  else
+    read -p "  Proceed with assertion audit? [y/N] " -r _aau_confirm || true
+    echo "" >&2
+    case "${_aau_confirm:-n}" in
+      [Yy]|[Yy][Ee][Ss]) ;;
+      *)
+        rm -rf "${_aau_work_dir:?}"
+        print_info "Assertion audit cancelled"
+        return 0
+        ;;
+    esac
+  fi
+
+  local _aau_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
+  local _aau_branch
+  _aau_branch="$(git -C "${RITE_PROJECT_ROOT:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+
+  # Call pass: one model call per unchecked section, serial. Each result is
+  # saved the moment its call returns.
+  if [ "$_aau_todo" -gt 0 ]; then
+    if [ "$_aau_done" -gt 0 ]; then
+      print_info "Resuming: ${_aau_done} section(s) already checked, ${_aau_todo} to go"
+    fi
+    printf '  Progress is saved after every section. Ctrl-C stops the audit; run %s again to resume.\n\n' \
+      "'${_aau_resume_cmd}'" >&2
+  fi
+
+  local _aau_calls=0 _aau_ok=0 _aau_failed=0 _aau_fail_streak=0 _aau_stop_rc=0
+  local _aau_total_elapsed=0 _aau_total_bytes=0 _aau_ok_elapsed=0
+  local _aau_w_state _aau_w_n _aau_w_id _aau_w_doc _aau_w_label
+  while IFS=$'\001' read -r _aau_w_state _aau_w_n _aau_w_id _aau_w_doc _aau_w_label <&4; do
+    [ "$_aau_w_state" = "todo" ] || continue
+    local _aau_call_pf="${_aau_work_dir}/p.${_aau_w_n}"
+    [ -f "$_aau_call_pf" ] || continue
 
     _aau_calls=$((_aau_calls + 1))
+    printf '  [%d/%d] %s § %s ... ' "$_aau_w_n" "$_aau_n" "$_aau_w_doc" "$_aau_w_label" >&2
 
     local _aau_sec_bytes _aau_sec_start _aau_sec_end _aau_sec_elapsed
-    _aau_sec_bytes="$(wc -c < "$_aau_pf" 2>/dev/null | tr -d ' ' || true)"
+    _aau_sec_bytes="$(wc -c < "$_aau_call_pf" 2>/dev/null | tr -d ' ' || true)"
     _aau_sec_bytes="${_aau_sec_bytes:-0}"
     _aau_sec_start=$(date +%s)
 
     local _aau_raw="" _aau_llm_rc=0
     _aau_raw="$(provider_run_prompt_with_timeout \
-      "$(cat "$_aau_pf")" \
+      "$(cat "$_aau_call_pf")" \
       "$(provider_resolve_model doc_update)" \
       true \
       "$_aau_timeout" 2>/dev/null)" || _aau_llm_rc=$?
-    rm -f "$_aau_pf"
 
     _aau_sec_end=$(date +%s)
     _aau_sec_elapsed=$((_aau_sec_end - _aau_sec_start))
     _aau_total_elapsed=$((_aau_total_elapsed + _aau_sec_elapsed))
     _aau_total_bytes=$((_aau_total_bytes + _aau_sec_bytes))
 
-    if [ "$_aau_llm_rc" -eq 124 ]; then
-      print_warning "Assertion audit: timed out on ${_aau_sl_doc} § ${_aau_sl_ht:-(preamble)}" >&2
-      continue
+    if [ "$_aau_llm_rc" -eq 5 ] || [ "$_aau_llm_rc" -eq 18 ]; then
+      # Usage cap / auth failure: every further call would fail the same way.
+      printf 'stopped\n' >&2
+      _aau_stop_rc="$_aau_llm_rc"
+      break
+    elif [ "$_aau_llm_rc" -eq 124 ]; then
+      printf 'timed out (%ss)\n' "$_aau_timeout" >&2
+      _aau_failed=$((_aau_failed + 1))
+      _aau_fail_streak=$((_aau_fail_streak + 1))
     elif [ "$_aau_llm_rc" -ne 0 ]; then
-      print_warning "Assertion audit: provider call failed for ${_aau_sl_doc} § ${_aau_sl_ht:-(preamble)}" >&2
-      continue
-    fi
+      printf 'failed (rc=%d, %ds)\n' "$_aau_llm_rc" "$_aau_sec_elapsed" >&2
+      _aau_failed=$((_aau_failed + 1))
+      _aau_fail_streak=$((_aau_fail_streak + 1))
+    else
+      _aau_fail_streak=0
+      _aau_ok=$((_aau_ok + 1))
+      _aau_ok_elapsed=$((_aau_ok_elapsed + _aau_sec_elapsed))
 
-    # Parse FINDING: lines and append to findings file
-    local _aau_raw_line
-    while IFS= read -r _aau_raw_line || [ -n "$_aau_raw_line" ]; do
-      case "$_aau_raw_line" in
-        FINDING:*)
-          local _aau_f_rest="${_aau_raw_line#FINDING: }"
-          # Also strip "FINDING:" without trailing space (model may omit it)
-          [ "$_aau_f_rest" = "$_aau_raw_line" ] && _aau_f_rest="${_aau_raw_line#FINDING:}"
-          local _aau_f_type="${_aau_f_rest%%|*}"
-          local _aau_f_desc="${_aau_f_rest#*|}"
-          # Sanitize tabs so the TSV's cut -f4 read-back returns the full description.
-          _aau_f_desc="${_aau_f_desc//$'\t'/ }"
-          [ -n "$_aau_f_type" ] && [ -n "$_aau_f_desc" ] && [ "$_aau_f_type" != "$_aau_f_rest" ] && \
-            printf '%s\t%s\t%s\t%s\n' \
-              "$_aau_sl_doc" "${_aau_sl_ht:-(preamble)}" "$_aau_f_type" "$_aau_f_desc" >> "$_aau_findings_file"
-          ;;
-      esac
-    done <<RAW_EOF
+      # Parse FINDING: lines for this section.
+      local _aau_sec_findings="${_aau_work_dir}/f.new"
+      : > "$_aau_sec_findings"
+      local _aau_raw_line _aau_sec_nf=0
+      while IFS= read -r _aau_raw_line || [ -n "$_aau_raw_line" ]; do
+        case "$_aau_raw_line" in
+          FINDING:*)
+            local _aau_f_rest="${_aau_raw_line#FINDING: }"
+            # Also strip "FINDING:" without trailing space (model may omit it)
+            [ "$_aau_f_rest" = "$_aau_raw_line" ] && _aau_f_rest="${_aau_raw_line#FINDING:}"
+            local _aau_f_type="${_aau_f_rest%%|*}"
+            local _aau_f_desc="${_aau_f_rest#*|}"
+            # Sanitize tabs so the TSV read-back returns the full description.
+            _aau_f_desc="${_aau_f_desc//$'\t'/ }"
+            if [ -n "$_aau_f_type" ] && [ -n "$_aau_f_desc" ] && [ "$_aau_f_type" != "$_aau_f_rest" ]; then
+              printf '%s\t%s\t%s\t%s\t%s\n' \
+                "$_aau_w_doc" "$_aau_w_id" "$_aau_w_label" "$_aau_f_type" "$_aau_f_desc" >> "$_aau_sec_findings"
+              _aau_sec_nf=$((_aau_sec_nf + 1))
+            fi
+            ;;
+        esac
+      done <<RAW_EOF
 $_aau_raw
 RAW_EOF
 
-  done 4<<SECTION_LOOP_EOF
-$_aau_section_list
-SECTION_LOOP_EOF
+      # Save: findings first, then the done row. A run killed between the two
+      # re-audits the section, so drop any findings an earlier kill left behind.
+      _docs_audit_state_drop findings.tsv "$_aau_w_doc" "$_aau_w_id"
+      if [ "$_aau_sec_nf" -gt 0 ]; then
+        mkdir -p "$_aau_state_dir"
+        cat "$_aau_sec_findings" >> "${_aau_state_dir}/findings.tsv"
+      fi
+      _docs_audit_state_add done.tsv "$_aau_w_doc" "$_aau_w_id" "$_aau_sec_nf" "$(date '+%Y-%m-%d %H:%M')"
 
-  # Count findings
+      printf '%d finding(s) (%ds)\n' "$_aau_sec_nf" "$_aau_sec_elapsed" >&2
+
+      # One estimate, once the rate is known.
+      if [ "$_aau_ok" -eq 3 ] && [ $((_aau_todo - _aau_calls)) -ge 3 ]; then
+        printf '  About %d min left at this rate (%d call(s) to go).\n' \
+          $(( (_aau_ok_elapsed / 3 * (_aau_todo - _aau_calls) + 59) / 60 )) $((_aau_todo - _aau_calls)) >&2
+      fi
+    fi
+
+    if [ "$_aau_fail_streak" -ge 3 ]; then
+      _aau_stop_rc=1
+      break
+    fi
+  done 4< "$_aau_work"
+
+  local _aau_checked_now=0
+  _aau_checked_now=$((_aau_done + _aau_ok))
+
+  if [ "$_aau_stop_rc" -ne 0 ]; then
+    rm -rf "${_aau_work_dir:?}"
+    echo "" >&2
+    case "$_aau_stop_rc" in
+      5)  print_warning "Assertion audit stopped: the provider usage cap was reached" ;;
+      18) print_warning "Assertion audit stopped: the provider rejected the credentials" ;;
+      *)  print_warning "Assertion audit stopped: three model calls in a row failed" ;;
+    esac
+    print_info "Progress saved: ${_aau_checked_now} of ${_aau_n} section(s) checked. Resume with: ${_aau_resume_cmd}"
+    _diag "DOC_PASS kind=align doc=- duration_s=${_aau_total_elapsed} input_bytes=${_aau_total_bytes} outcome=rejected"
+    return "$_aau_stop_rc"
+  fi
+
+  # Findings still waiting for a decision (current sections only).
+  local _aau_rev_file="${_aau_state_dir}/reviewed.tsv" _aau_find_file="${_aau_state_dir}/findings.tsv"
+  [ -f "$_aau_rev_file" ] || _aau_rev_file="${_aau_work_dir}/empty"
+  [ -f "$_aau_find_file" ] || _aau_find_file="${_aau_work_dir}/empty"
   local _aau_total=0
-  _aau_total="$(grep -c '.' "$_aau_findings_file" || true)"
+  _aau_total="$(awk -F'\t' '
+    FILENAME==ARGV[1]{cur[$1 FS $2]=1; next}
+    FILENAME==ARGV[2]{rev[$1 FS $2]=1; next}
+    (($1 FS $2) in cur) && !(($1 FS $2) in rev){c++}
+    END{print c+0}' "$_aau_cur" "$_aau_rev_file" "$_aau_find_file" || true)"
+  _aau_total="${_aau_total:-0}"
 
   echo "" >&2
-  print_info "Assertion audit complete: ${_aau_calls} section(s) checked, ${_aau_total} finding(s)"
+  print_info "Assertion audit complete: ${_aau_checked_now} section(s) checked, ${_aau_total} finding(s)"
 
-  # Clear pre-existing drift entries for every audited doc (across all branches)
-  # and rebuild the docs map — before new entries are appended and before the
-  # early return, so both the clean-audit and findings paths run both operations.
-  # This is the "consumed or cleared" half of the bounded-entries contract.
-  if [ -n "${_aau_docs_raw:-}" ] && declare -f drift_log_clear_doc >/dev/null 2>&1; then
+  # Clear pre-existing drift entries for every audited doc (across all
+  # branches) — the "consumed or cleared" half of the bounded-entries contract.
+  # Once per audit cycle: a resumed run must not wipe the entries an earlier
+  # partial review recorded.
+  if declare -f drift_log_clear_doc >/dev/null 2>&1; then
     local _aau_clear_doc
     while IFS= read -r _aau_clear_doc || [ -n "$_aau_clear_doc" ]; do
       [ -n "$_aau_clear_doc" ] || continue
-      drift_log_clear_doc "$_aau_clear_doc" || true
+      if ! _docs_audit_state_has cleared.tsv "$_aau_clear_doc"; then
+        drift_log_clear_doc "$_aau_clear_doc" || true
+        _docs_audit_state_add cleared.tsv "$_aau_clear_doc"
+      fi
     done <<CLEAR_DOCS_EOF
 $_aau_docs_raw
 CLEAR_DOCS_EOF
   fi
 
-  if declare -f docs_map_build >/dev/null 2>&1; then
-    local _aau_map_rc=0
-    docs_map_build || _aau_map_rc=$?
-    if [ "$_aau_map_rc" -eq 0 ]; then
-      print_info "Docs map rebuilt post-audit"
-    else
-      print_warning "Docs map rebuild failed post-audit"
+  # Review pass: one decision per section.
+  #   no findings / only nondeterministic → no prompt
+  #   otherwise → all / none / pick / quit (single finding: yes / no / quit)
+  local _aau_approved=0 _aau_auto=0 _aau_left=0 _aau_quit=false
+  local _aau_incomplete=""
+  local _aau_sf="${_aau_work_dir}/sf"
+  while IFS=$'\001' read -r _aau_w_state _aau_w_n _aau_w_id _aau_w_doc _aau_w_label <&6; do
+    if ! _docs_audit_state_has done.tsv "$_aau_w_doc" "$_aau_w_id"; then
+      _aau_incomplete="${_aau_incomplete}${_aau_w_doc}"$'\n'
+      continue
     fi
-  fi
-
-  if [ "$_aau_total" -eq 0 ]; then
-    rm -f "$_aau_findings_file"
-    _diag "DOC_PASS kind=align doc=- duration_s=${_aau_total_elapsed} input_bytes=${_aau_total_bytes} outcome=rejected"
-    _docs_warn_doc_pass_threshold "-" "$_aau_total_elapsed"
-    return 0
-  fi
-
-  # Findings routing: propose/approve loop.
-  # nondeterministic → auto-record as refinement (no prompt).
-  # accuracy / role   → prompt user (y: record drift entry, n: skip).
-  echo "" >&2
-  local _aau_approved=0 _aau_auto=0
-  local _aau_fi
-  while IFS= read -r _aau_fi <&6 || [ -n "$_aau_fi" ]; do
-    [ -n "$_aau_fi" ] || continue
-    local _aau_fi_doc _aau_fi_sec _aau_fi_type _aau_fi_desc
-    _aau_fi_doc="$(printf '%s' "$_aau_fi" | cut -f1 || true)"
-    _aau_fi_sec="$(printf '%s' "$_aau_fi" | cut -f2 || true)"
-    _aau_fi_type="$(printf '%s' "$_aau_fi" | cut -f3 || true)"
-    _aau_fi_desc="$(printf '%s' "$_aau_fi" | cut -f4- || true)"
-
-    local _aau_fi_kind="refinement"
-    case "$_aau_fi_type" in
-      accuracy) _aau_fi_kind="contradiction" ;;
-      role)     _aau_fi_kind="reference-missing" ;;
-      *)        _aau_fi_kind="refinement" ;;
-    esac
-
-    if [ "$_aau_fi_type" = "nondeterministic" ]; then
-      drift_log_append \
-        "$_aau_fi_doc" "$_aau_branch" "0" "-" \
-        "${_aau_fi_desc}" "refinement" \
-        "nondeterministic assertion; section: ${_aau_fi_sec}" || true
-      _aau_auto=$((_aau_auto + 1))
+    if _docs_audit_state_has reviewed.tsv "$_aau_w_doc" "$_aau_w_id"; then
+      continue
+    fi
+    if [ "$_aau_quit" = "true" ]; then
+      _aau_left=$((_aau_left + 1))
+      _aau_incomplete="${_aau_incomplete}${_aau_w_doc}"$'\n'
       continue
     fi
 
-    echo "──────────────────────────────────────────────" >&2
-    printf '  Finding [%s]  %s § %s\n' "$_aau_fi_type" "$_aau_fi_doc" "$_aau_fi_sec" >&2
-    printf '  %s\n' "$_aau_fi_desc" >&2
-    echo "" >&2
-    local _aau_fi_reply="n"
-    read -p "  Record as drift entry (${_aau_fi_kind})? (y)es / (n)o: " -r _aau_fi_reply || true
-    echo "" >&2
-    case "${_aau_fi_reply:-n}" in
-      [Yy]|[Yy][Ee][Ss])
+    : > "$_aau_sf"
+    if [ -f "${_aau_state_dir}/findings.tsv" ]; then
+      AUD_DOC="$_aau_w_doc" AUD_ID="$_aau_w_id" awk -F'\t' \
+        '$1==ENVIRON["AUD_DOC"] && $2==ENVIRON["AUD_ID"]' "${_aau_state_dir}/findings.tsv" > "$_aau_sf" || true
+    fi
+    local _aau_sf_ask=0
+    _aau_sf_ask="$(awk -F'\t' '$4!="nondeterministic"{c++} END{print c+0}' "$_aau_sf" || true)"
+    _aau_sf_ask="${_aau_sf_ask:-0}"
+
+    local _aau_choice="all"
+    if [ "$_aau_sf_ask" -gt 0 ]; then
+      echo "──────────────────────────────────────────────" >&2
+      printf '  %s § %s\n' "$_aau_w_doc" "$_aau_w_label" >&2
+      awk -F'\t' '$4!="nondeterministic"{n++; d=$5; for(i=6;i<=NF;i++) d=d " " $i; printf "  %d. [%s] %s\n", n, $4, d}' \
+        "$_aau_sf" >&2 || true
+      echo "" >&2
+
+      local _aau_single_kind=""
+      if [ "$_aau_sf_ask" -eq 1 ]; then
+        _aau_single_kind="$(awk -F'\t' '$4!="nondeterministic"{print ($4=="accuracy")?"contradiction":(($4=="role")?"reference-missing":"refinement"); exit}' "$_aau_sf" || true)"
+      fi
+      _aau_choice=""
+      while [ -z "$_aau_choice" ]; do
+        local _aau_reply=""
+        if [ "$_aau_sf_ask" -eq 1 ]; then
+          read -p "  Record as drift entry (${_aau_single_kind})? (y)es / (n)o / (q)uit and resume later: " -r _aau_reply || _aau_reply="q"
+        else
+          read -p "  Record as drift entries? (a)ll / (n)one / (p)ick / (q)uit and resume later: " -r _aau_reply || _aau_reply="q"
+        fi
+        case "$_aau_reply" in
+          [Aa]|[Aa][Ll][Ll]|[Yy]|[Yy][Ee][Ss]) _aau_choice="all" ;;
+          [Nn]|[Nn][Oo]|[Nn][Oo][Nn][Ee])      _aau_choice="none" ;;
+          [Pp]|[Pp][Ii][Cc][Kk])                _aau_choice="pick" ;;
+          [Qq]|[Qq][Uu][Ii][Tt])                _aau_choice="quit" ;;
+        esac
+      done
+      echo "" >&2
+    fi
+
+    if [ "$_aau_choice" = "quit" ]; then
+      _aau_quit=true
+      _aau_left=$((_aau_left + 1))
+      _aau_incomplete="${_aau_incomplete}${_aau_w_doc}"$'\n'
+      continue
+    fi
+
+    local _aau_fi _aau_sec_recorded=0
+    while IFS= read -r _aau_fi <&7 || [ -n "$_aau_fi" ]; do
+      [ -n "$_aau_fi" ] || continue
+      local _aau_fi_type _aau_fi_desc
+      _aau_fi_type="$(printf '%s' "$_aau_fi" | cut -f4 || true)"
+      _aau_fi_desc="$(printf '%s' "$_aau_fi" | cut -f5- || true)"
+
+      local _aau_fi_kind="refinement"
+      case "$_aau_fi_type" in
+        accuracy) _aau_fi_kind="contradiction" ;;
+        role)     _aau_fi_kind="reference-missing" ;;
+        *)        _aau_fi_kind="refinement" ;;
+      esac
+
+      if [ "$_aau_fi_type" = "nondeterministic" ]; then
         drift_log_append \
-          "$_aau_fi_doc" "$_aau_branch" "0" "-" \
+          "$_aau_w_doc" "$_aau_branch" "0" "-" \
+          "${_aau_fi_desc}" "refinement" \
+          "nondeterministic assertion; section: ${_aau_w_label}" || true
+        _aau_auto=$((_aau_auto + 1))
+        continue
+      fi
+
+      local _aau_take="$_aau_choice"
+      if [ "$_aau_choice" = "pick" ]; then
+        printf '  [%s] %s\n' "$_aau_fi_type" "$_aau_fi_desc" >&2
+        local _aau_fi_reply="n"
+        read -p "  Record as drift entry (${_aau_fi_kind})? (y)es / (n)o: " -r _aau_fi_reply || true
+        echo "" >&2
+        case "${_aau_fi_reply:-n}" in
+          [Yy]|[Yy][Ee][Ss]) _aau_take="all" ;;
+          *)                 _aau_take="none" ;;
+        esac
+      fi
+      if [ "$_aau_take" = "all" ]; then
+        drift_log_append \
+          "$_aau_w_doc" "$_aau_branch" "0" "-" \
           "${_aau_fi_desc}" "$_aau_fi_kind" \
-          "assertion audit; section: ${_aau_fi_sec}" || true
+          "assertion audit; section: ${_aau_w_label}" || true
         _aau_approved=$((_aau_approved + 1))
-        print_info "  Drift entry recorded"
-        ;;
-      *)
+        _aau_sec_recorded=$((_aau_sec_recorded + 1))
+      fi
+    done 7< "$_aau_sf"
+
+    _docs_audit_state_add reviewed.tsv "$_aau_w_doc" "$_aau_w_id"
+    if [ "$_aau_sf_ask" -gt 0 ]; then
+      if [ "$_aau_sec_recorded" -gt 0 ]; then
+        print_info "  ${_aau_sec_recorded} drift entr$([ "$_aau_sec_recorded" -eq 1 ] && echo 'y' || echo 'ies') recorded"
+      else
         print_info "  Skipped"
-        ;;
-    esac
-  done 6< "$_aau_findings_file"
+      fi
+    fi
+  done 6< "$_aau_work"
 
-  rm -f "$_aau_findings_file"
+  # A doc whose sections are all checked and reviewed is finished: forget its
+  # saved progress so the next run audits it from scratch.
+  local _aau_fin_doc
+  while IFS= read -r _aau_fin_doc || [ -n "$_aau_fin_doc" ]; do
+    [ -n "$_aau_fin_doc" ] || continue
+    case $'\n'"$_aau_incomplete" in *$'\n'"${_aau_fin_doc}"$'\n'*) continue ;; esac
+    _docs_audit_state_drop_doc "$_aau_fin_doc"
+  done <<FIN_DOCS_EOF
+$_aau_docs_raw
+FIN_DOCS_EOF
 
-  echo "" >&2
+  rm -rf "${_aau_work_dir:?}"
+
   local _aau_recorded=$((_aau_approved + _aau_auto))
-  print_info "Assertion audit: ${_aau_recorded} finding(s) recorded (${_aau_auto} auto-refinement, ${_aau_approved} user-accepted)"
+  if [ "$_aau_total" -gt 0 ]; then
+    echo "" >&2
+    print_info "Assertion audit: ${_aau_recorded} finding(s) recorded (${_aau_auto} auto-refinement, ${_aau_approved} user-accepted)"
+  fi
+  if [ "$_aau_quit" = "true" ]; then
+    _DOCS_AUDIT_STOPPED=true
+    print_info "Review paused: ${_aau_left} section(s) still to review. Resume with: ${_aau_resume_cmd}"
+  elif [ "$_aau_failed" -gt 0 ]; then
+    print_info "${_aau_failed} section(s) were not checked (timed out or failed). Run '${_aau_resume_cmd}' again to retry them."
+  fi
+
   local _aau_outcome="rejected"
   [ "$_aau_recorded" -gt 0 ] && _aau_outcome="accepted"
   _diag "DOC_PASS kind=align doc=- duration_s=${_aau_total_elapsed} input_bytes=${_aau_total_bytes} outcome=${_aau_outcome}"

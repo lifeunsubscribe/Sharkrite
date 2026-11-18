@@ -11,13 +11,15 @@
 load '../helpers/setup'
 
 # ---------------------------------------------------------------------------
-# Build a minimal docs-map.tsv with one feature doc and one section.
+# Build a minimal docs-map.tsv with one feature doc and one section. The row
+# must name a heading the fixture doc really has: the assertion audit sends
+# no call for a map row with no text behind it (#1826).
 # ---------------------------------------------------------------------------
 _write_map() {
   local map_file="$1"
   local doc_path="${2:-docs/feature-a.md}"
   printf '# docs-map v4 sha=abc123 built=2026-10-26T00:00:00Z\n' > "$map_file"
-  printf '%s\tabc123\t-\t2\tOverview\tfingerprint000\tfeature\t-\t-\t-\n' \
+  printf '%s\tabc123\t-\t1\tFeature A\tfingerprint000\tfeature\t-\t-\t-\n' \
     "$doc_path" >> "$map_file"
 }
 

@@ -2939,8 +2939,9 @@ There is no cheap mode: the per-change path is Tier 2.
   materially since (order of +25%).
 - **Assertion audit.** Every assertion in every in-scope doc against the code,
   plus each doc's role rubric. Chunked by docs-map section: one call per
-  section, reading that section and the code it references. Before running it
-  shows the section and call count and asks.
+  section, reading that section's own text and the code it references. Before
+  running it rebuilds the docs map, shows the section count, the call count and
+  the model, and asks. Progress is saved after every call (next section).
 - **ADR drift log reconcile**, with an **approval history** (question,
   decision, date, rationale; human-editable) injected so the same architectural
   question is never asked twice.
@@ -2951,6 +2952,70 @@ Quality-of-vision judgements (philosophy, budget vs scale, security posture,
 complexity vs reliability) are out of scope: a contradiction may be surfaced, a
 resolution may not be proposed. A separate, curated analysis command is their
 home and is a later design.
+
+### Align-Docs Audit: Saved Progress and Resume
+
+The assertion audit is the longest run of model calls sharkrite makes outside a
+batch: one call per docs-map section, 60 to 100 seconds each on the
+`doc_update` model. It is built so that a stopped run costs nothing twice.
+
+**Live failure (2026-11-18, #1826).** `rite align-docs behavioral-design.md`
+planned 150 calls, printed nothing after the confirmation, and was stopped at
+call 37 after 25 minutes. Every finding was held in a shell variable and was
+lost. The H1 row sent the whole file, and every parent section re-sent its
+children, so most of the doc was audited two or three times. The run wrote no
+log, so its `DOC_PASS` diag line had nowhere to land.
+
+**Contract.**
+
+- **A section is its own text.** `_docs_extract_section_own` ends a section at
+  the next heading of any level, so a parent is sent without its children and
+  each paragraph of a doc is sent once. A map row with no text of its own (a
+  heading directly followed by a subheading) makes no call and is counted
+  separately in the plan. A repeated heading resolves to its own occurrence.
+  `_docs_extract_section` keeps its nested behaviour for its other callers.
+- **The plan is real.** The docs map is rebuilt before the section list is
+  read, and every prompt is assembled before the confirmation, so the call
+  count shown is the count that will run. The plan names the model.
+- **One progress line per call.** `[n/N] doc § section ... K finding(s) (Ns)`,
+  printed when the call returns. After three calls it prints a time estimate.
+- **Progress is saved after every call.** Four append-only TSV files under
+  `RITE_STATE_DIR/doc-audit/`: `done.tsv` (section checked), `findings.tsv`,
+  `reviewed.tsv` (operator answered for that section) and `cleared.tsv` (the
+  doc's old drift entries were cleared this cycle). A section's identity is a
+  checksum of the full prompt it was sent with, plus its occurrence number. A
+  changed section, changed code context or changed rubric therefore reads as a
+  new section: it is audited again and its old findings are never offered.
+- **A rerun resumes.** With saved progress in scope the prompt is
+  `(r)esume / (s)tart over / (n)o`. Resume calls the model only for sections
+  with no `done.tsv` row. Start over drops the in-scope docs' saved state.
+- **Stops are immediate and say how to resume.** Provider exit 5 (usage cap)
+  and 18 (auth) stop the audit and return that code. Three failed calls in a
+  row stop it with exit 1. A single timeout or failure is reported on its
+  progress line and the section is retried by the next run.
+- **Review is per section, with a quit.** One question per section: yes or no
+  for a single finding; all, none or pick for several. `q` and end of input
+  both mean "quit and resume later": unreviewed sections stay saved and the
+  closing reconcile is skipped (`_DOCS_AUDIT_STOPPED`), because reconciling half
+  of a doc's findings would edit the doc under the other half.
+- **Old entries are cleared once per cycle.** A doc's existing drift entries
+  are cleared when its review starts, and never again on a resumed run, so
+  entries recorded before a quit survive the resume.
+- **State is removed when a doc is finished.** Once every section of a doc is
+  checked and reviewed its rows are dropped; the directory goes when empty.
+- **Scoped closing reconcile.** `rite align-docs <doc>` offers only that doc's
+  entries afterwards. The legacy flat log and the ADR pass are project-wide
+  and run only on an unscoped run.
+- **Logged.** `rite align-docs` writes `rite-align-docs-<timestamp>.log`. The
+  two consent switches (`--enable`, `--disable`) stay unlogged.
+
+**Rejected.** Parallel model calls (a cap mid-fan-out wastes every in-flight
+call, and the progress lines stop being readable). A config variable for the
+state location or the failure limit (nothing an operator needs to tune). A
+trap to remove the temporary prompt directory on Ctrl-C (a trap in a sourced
+library overrides the caller's; the directory is small and under `TMPDIR`).
+
+**Tests.** `tests/regression/align-docs-audit-resume.bats`.
 
 ### The docs map — sharkrite's navigation document
 
