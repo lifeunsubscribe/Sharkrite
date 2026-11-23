@@ -1012,9 +1012,11 @@ EOF
   _report=$(find "$_FAKE_PROJECT/.rite/reports" -name "full-suite-*.md" | head -1 || true)
   [ -n "$_report" ]
 
-  # Must NOT be listed in Unmapped section — the suffix strip enabled mapping
-  ! awk '/^## Unmapped/{p=1; next} p && /^## /{p=0} p' "$_report" \
-      | grep -qF "$bare_name"
+  # Must NOT be listed in Unmapped section — the suffix strip enabled mapping.
+  # Use `run` so bats captures the exit status: status=0 (found) is a failure,
+  # status=1 (not found) is a pass. Bare `! pipeline` is inert under bats errexit.
+  run bash -c "awk '/^## Unmapped/{p=1; next} p && /^## /{p=0} p' '$_report' | grep -F '$bare_name'"
+  [ "$status" -ne 0 ]
 
   # Must appear in Persistent Failures (serial re-run classified it)
   awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
