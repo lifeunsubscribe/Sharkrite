@@ -85,6 +85,10 @@ _FAILURE_FLAG="$_STATE_DIR/full-suite-failure.flag"
 
 mkdir -p "$_LOGS_DIR" "$_STATE_DIR"
 
+# Change into the project root so all subsequent gh calls run against the right repo.
+# Under launchd the working directory is /; without this cd, gh cannot find .git.
+cd "$_PROJECT_ROOT" || { echo "ERROR: cannot cd into project root: $_PROJECT_ROOT" >&2; exit 1; }
+
 # ---------------------------------------------------------------------------
 # Log file setup: append a header + tee output
 # ---------------------------------------------------------------------------
@@ -177,7 +181,8 @@ _serial_results_raw=""
 _invest_dir=""
 _interp_prompt_file=""
 _issue_body_file=""
-trap '[ -n "${_bats_tail_pid:-}" ] && kill "${_bats_tail_pid}" 2>/dev/null || true; [ -n "${_deadline_poller_pid:-}" ] && kill "${_deadline_poller_pid}" 2>/dev/null || true; rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
+_gh_create_stderr=""
+trap '[ -n "${_bats_tail_pid:-}" ] && kill "${_bats_tail_pid}" 2>/dev/null || true; [ -n "${_deadline_poller_pid:-}" ] && kill "${_deadline_poller_pid}" 2>/dev/null || true; rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" "${_gh_create_stderr:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
 
 exec > >(tee >(strip_ansi >> "$_LOG_FILE"))
 exec 2>&1
@@ -524,7 +529,7 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
   touch "$_failing_names_file"
   if [ "$_tests_exit" -ne 0 ] && [ -s "${_tests_raw:-/dev/null}" ]; then
     grep "^not ok [0-9]* " "$_tests_raw" 2>/dev/null \
-      | sed 's/^not ok [0-9]* //' > "$_failing_names_file" || true
+      | sed 's/^not ok [0-9]* //; s/ # timeout after [0-9]*s$//' > "$_failing_names_file" || true
   fi
 
   # --- Map each failing test name to its source .bats file ---
@@ -974,17 +979,26 @@ PROMPT_HDR
       } > "$_issue_body_file"
 
       _issue_title="Fix full-suite failures - ${_TODAY}"
+      _gh_create_stderr=$(mktemp "${TMPDIR:-/tmp}/rite_fs_gh_stderr_$$_XXXXXX")
       _new_issue_url=""
-      if _new_issue_url=$(gh_safe issue create \
+      _gh_create_exit=0
+      _new_issue_url=$(gh_safe issue create \
           --title "$_issue_title" \
           --body-file "$_issue_body_file" \
-          --label "tech-debt,priority-high" 2>/dev/null); then
-        rm -f "${_issue_body_file:-}"
-        _issue_body_file=""
+          --label "tech-debt,priority-high" 2>"$_gh_create_stderr") || _gh_create_exit=$?
+      if [ "$_gh_create_exit" -eq 0 ] && [ -n "${_new_issue_url:-}" ]; then
+        rm -f "${_gh_create_stderr:-}" "${_issue_body_file:-}"
+        _gh_create_stderr=""; _issue_body_file=""
         _new_issue_num=$(echo "$_new_issue_url" | grep -oE '[0-9]+$' || true)
         print_success "Remediation issue filed: #${_new_issue_num:-?} — ${_new_issue_url}"
         _diag "FULL_SUITE_REMEDIATION_CREATED issue=${_new_issue_num:-unknown} hash=${_hash} persistent=${_persistent_count} lint=${_lint_persistent_count}"
       else
+        # Log the create error before writing the orphan artifact
+        if [ -s "${_gh_create_stderr:-}" ]; then
+          echo "[ERROR] gh issue create failed: $(cat "$_gh_create_stderr" 2>/dev/null || true)" >> "$_LOG_FILE" || true
+        fi
+        rm -f "${_gh_create_stderr:-}"
+        _gh_create_stderr=""
         # gh issue create failed — save orphan artifact so findings are not lost
         _orphan_file="${_PROJECT_ROOT}/${_DATA_DIR}/orphaned-followup-items.md"
         mkdir -p "${_PROJECT_ROOT}/${_DATA_DIR}" 2>/dev/null || true
