@@ -83,7 +83,7 @@ docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	
 docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	3	Rejected: Keyword Matching for Deferral Detection	ccadc05d221af4294257ef44aa2dfb1e17107589a745c06b466ab956436146ef	feature	-	-	-
 docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	3	Rule: No Keyword Matching for Detection — Anywhere in Sharkrite	d794a8f5de8e2d55ca74a92b0f38370399ec96e3de5c6baf45906e94274f4ea3	feature	-	-	-
 docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	Decision: How Sharkrite Maintains Its Own Docs	9efd1f65e25f6e47606e0fc880eb6966026e53d014a508463ba0d7a869497e55	feature	-	-	-
-docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	3	Conventions Catalog: Accumulate-in-Place Contract	8fa860a1885978e3bcbfd916f471f4d62a57301fedc836b2d7831a0f35f098f1	feature	-	-	-
+docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	3	Conventions Catalog: Accumulate-in-Place Contract	8fa860a1885978e3bcbfd916f471f4d62a57301fedc836b2d7831a0f35f098f1	feature	-	Updated	-
 docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	macOS/BSD Portability Bug Class (CI Can't Catch)	20c816ef6ebfb08468a38482ad0caaf6773700c3366e68bb3a086996c1c8ffd6	feature	-	-	-
 docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	macOS bash 3.2 Compatibility	f9bb270cef5a7f05854980c9be3651372264a91ef3daf5bf1ff2abf6d71d5565	feature	-	-	-
 docs/architecture/behavioral-design.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	3	Background	7384e635002b2f7021d098f3c061c1e9aa3d96b6564de77f77d4d47ea178bdb1	feature	-	-	-
