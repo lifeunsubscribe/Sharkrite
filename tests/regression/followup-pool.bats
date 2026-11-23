@@ -136,7 +136,7 @@ _body() { cat "$FAKE_GH/issues/$1.body"; }
   followup_pool_append 55 42 HIGH Reliability "Retry loop swallows exit 18 on auth failure" "lib/core/local-review.sh:664" abc1234 "r1"
   followup_pool_append 56 43 MEDIUM Reliability "Auth failure exit 18 burns all retry attempts in the loop" "lib/core/local-review.sh:700" def5678 "r2"
   # second append with the same restated source (issue #43, PR #56) — must not duplicate the Also seen line
-  followup_pool_append 57 43 LOW Reliability "Auth failure exit 18 burns all retry attempts in the loop" "lib/core/local-review.sh:700" def5678 "r3"
+  followup_pool_append 56 43 LOW Reliability "Auth failure exit 18 burns all retry attempts in the loop" "lib/core/local-review.sh:700" def5678 "r3"
   n=$(followup_pool_issue); b=$(_body "$n")
   [ "$(echo "$b" | grep -c -- '- \*\*Also seen:\*\* issue #43 via PR #56')" = "1" ]
 }
