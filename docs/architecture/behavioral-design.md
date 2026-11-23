@@ -1020,6 +1020,8 @@ the fix loop (`phase_spawn_doc_assessment`) and waits for it before merge
    `reconcile_tag_index`, `commit_catalog_files`. Deterministic, except the
    tag-dedup similarity/coverage checks in `reconcile_tag_index`, which call the
    `doc_assessment` model only when a PR declares new tags.
+   `commit_catalog_files` commits `conventions.md`, `tag-index.md`, and
+   `docs/docs-map.tsv` together in a single best-effort commit and push.
 2. **Drift recording (opt-in)** — when doc consent is recorded
    (`RITE_DOC_MODE=sync|changelog`), one drift-log entry per merge. Never edits
    the user's docs. Unset or `off` records nothing; unattended runs never opt a
