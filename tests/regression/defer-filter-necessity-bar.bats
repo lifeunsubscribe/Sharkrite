@@ -83,9 +83,18 @@ setup() {
 # ─── Test 5: 'Scope exceeds time budget' is restricted to >1hr effort ─────────
 
 @test "assess-review-issues.sh: time budget Defer Reason requires Fix Effort >1hr" {
-  run grep -n "Scope exceeds time budget (only when Fix Effort is >1hr)" "$ASSESS_REVIEW_SCRIPT"
+  # Constraint must appear as a separate RULE line after the format block so the
+  # parenthetical text cannot leak verbatim into emitted model output (follow-up issues).
+  run grep -n "RULE.*Scope exceeds time budget.*only when Fix Effort is >1hr" "$ASSESS_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
-    echo "FAIL: 'Scope exceeds time budget' effort condition (>1hr) is missing"
+    echo "FAIL: 'Scope exceeds time budget' effort condition (>1hr) missing from RULE line"
+    false
+  }
+  # The enum value itself must NOT embed the constraint inline.
+  run grep -n "Scope exceeds time budget (only when Fix Effort is >1hr)" "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -ne 0 ] || {
+    echo "FAIL: effort condition embedded inside enum value — would leak verbatim into GitHub issues"
+    echo "$output"
     false
   }
 }

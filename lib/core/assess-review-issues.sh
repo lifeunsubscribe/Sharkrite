@@ -685,9 +685,11 @@ For each item, use EXACTLY this format (no deviations):
 {FOR ACTIONABLE_NOW: **Fix Effort:** {<10min|<1hr|>1hr}}
 {FOR ACTIONABLE_LATER: **Location:** {specific file(s), module, or domain this finding applies to — must be concrete enough that someone unfamiliar with the PR can find the right code}}
 {FOR ACTIONABLE_LATER: **Fix Effort:** {<10min|<1hr|>1hr}}
-{FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget (only when Fix Effort is >1hr)|Architectural refactor needed|Needs separate focused PR|Outside the issue's acceptance criteria}}
+{FOR ACTIONABLE_LATER: **Defer Reason:** {Scope exceeds time budget|Architectural refactor needed|Needs separate focused PR|Outside the issue's acceptance criteria}}
 {FOR ACTIONABLE_LATER: **Suggested Fix:** {1-2 sentences describing the concrete remedy the reviewer identified}}
 {FOR ACTIONABLE_LATER: **Verification:** {a single runnable command that confirms the fix is applied}}
+
+RULE: "Scope exceeds time budget" is only valid as a Defer Reason when Fix Effort is >1hr.
 
 DO NOT add any summary section, recommendations, or extra text after the items.
 
@@ -696,7 +698,7 @@ CATEGORY GUIDE:
 - CodeQuality: Bugs, error handling, maintainability
 - Standards: Convention violations
 - ScopeCreep: Good idea but exceeds issue scope — always LATER or DISMISSED, never NOW
-- QuickWin: <10min fixes with high impact — always LATER or DISMISSED, never NOW
+- QuickWin: <10min fixes with high impact — out-of-scope quick wins are always LATER or DISMISSED, never NOW; in-scope items follow DECISION CRITERIA
 
 ---
 
