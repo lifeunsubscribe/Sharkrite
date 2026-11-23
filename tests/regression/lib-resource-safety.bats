@@ -409,13 +409,19 @@ _assert_double_source() {
 # ---------------------------------------------------------------------------
 
 @test "lint rule MISSING_RESOURCE_GUARD detects file without re-source guard" {
-  local fixture_dir="${RITE_REPO_ROOT}/lib/test-fixtures-temp"
-  mkdir -p "$fixture_dir"
+  # Build a private project root under BATS_TEST_TMPDIR so the linter scans only
+  # this test's fixture — Rule 16 runs find "$PROJECT_ROOT/lib" directly, which
+  # bypasses the test-fixtures-temp exclusion in the main SHELL_FILES scan and
+  # would see another test's concurrent fixtures if we shared the real lib/.
+  local private_root="$BATS_TEST_TMPDIR/project"
+  mkdir -p "$private_root"
+  cp -r "${RITE_REPO_ROOT}/tools" "$private_root/"
+  mkdir -p "$private_root/lib"
 
   # Create a lib file WITHOUT a re-source guard
-  cat > "$fixture_dir/unguarded.sh" << 'EOF'
+  cat > "$private_root/lib/unguarded.sh" << 'EOF'
 #!/bin/bash
-# lib/test-fixtures-temp/unguarded.sh - no re-source guard (fixture for lint test)
+# unguarded.sh - no re-source guard (fixture for lint test)
 set -euo pipefail
 
 some_function() {
@@ -426,23 +432,24 @@ EOF
   # Lint should flag our fixture with MISSING_RESOURCE_GUARD.
   # We check for the rule name in output, not overall exit status — other pre-existing
   # lint rules (UNSAFE_PIPE_IN_CMDSUB, etc.) may also fire and that's expected.
-  SHARKRITE_LINT_ONLY=16 run bash "${RITE_REPO_ROOT}/tools/sharkrite-lint.sh"
-
-  rm -f "$fixture_dir/unguarded.sh"
-  rmdir "$fixture_dir" 2>/dev/null || true
+  SHARKRITE_LINT_ONLY=16 run bash "$private_root/tools/sharkrite-lint.sh"
 
   [[ "$output" =~ "MISSING_RESOURCE_GUARD" ]]
   [[ "$output" =~ "unguarded.sh" ]]
 }
 
 @test "lint rule MISSING_RESOURCE_GUARD passes file with declare -f guard" {
-  local fixture_dir="${RITE_REPO_ROOT}/lib/test-fixtures-temp"
-  mkdir -p "$fixture_dir"
+  # Build a private project root under BATS_TEST_TMPDIR so the linter scans only
+  # this test's fixture (see "detects" test above for why private root is needed).
+  local private_root="$BATS_TEST_TMPDIR/project"
+  mkdir -p "$private_root"
+  cp -r "${RITE_REPO_ROOT}/tools" "$private_root/"
+  mkdir -p "$private_root/lib"
 
   # Create a lib file WITH the canonical declare -f guard
-  cat > "$fixture_dir/guarded.sh" << 'EOF'
+  cat > "$private_root/lib/guarded.sh" << 'EOF'
 #!/bin/bash
-# lib/test-fixtures-temp/guarded.sh - has canonical re-source guard
+# guarded.sh - has canonical re-source guard
 set -euo pipefail
 
 if declare -f guarded_function >/dev/null 2>&1; then
@@ -456,17 +463,15 @@ EOF
 
   # Lint should NOT flag our guarded fixture with MISSING_RESOURCE_GUARD.
   # (Other pre-existing lint rules may still fire — that's expected and unrelated.)
-  SHARKRITE_LINT_ONLY=16 run bash "${RITE_REPO_ROOT}/tools/sharkrite-lint.sh"
+  SHARKRITE_LINT_ONLY=16 run bash "$private_root/tools/sharkrite-lint.sh"
   local lint_output="$output"
 
-  rm -f "$fixture_dir/guarded.sh"
-  rmdir "$fixture_dir" 2>/dev/null || true
-
-  # guarded.sh must NOT appear paired with MISSING_RESOURCE_GUARD in the output.
-  # Filter only the MISSING_RESOURCE_GUARD lines and check guarded.sh is absent.
+  # /guarded.sh (with leading slash) must NOT appear in MISSING_RESOURCE_GUARD
+  # violation lines. The slash anchor prevents "unguarded.sh" from satisfying this
+  # check (the path contains /unguarded.sh, not /guarded.sh).
   local guard_violations
-  guard_violations=$(echo "$lint_output" | grep "MISSING_RESOURCE_GUARD" || true)
-  ! echo "$guard_violations" | grep -q "guarded.sh"
+  guard_violations=$(grep "MISSING_RESOURCE_GUARD" <<< "$lint_output" || true)
+  ! grep -q "/guarded.sh" <<< "$guard_violations"
 }
 
 @test "codebase: no lib files have MISSING_RESOURCE_GUARD violations" {
