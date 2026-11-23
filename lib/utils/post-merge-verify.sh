@@ -153,16 +153,27 @@ _pmv_serial_rerun_clears() {
   # would cost the whole ceiling before being reported. The run is bounded as a
   # whole instead: 900s wall-clock, then the tree is killed and the failure
   # stands (a hung test is not a flake either).
+  # Build env prefix from shared helper so the scrub list stays in sync
+  # with run_test_gate's _bats_sandbox without manual copy-paste.
+  local _pmv_bats_env=(env)
+  while read -r _sg_flag _sg_var; do
+    [ -n "${_sg_var:-}" ] && _pmv_bats_env+=("$_sg_flag" "$_sg_var")
+  done < <(_bats_session_scrub_args)
+  # Serial lane: also unset BATS_TEST_TIMEOUT — bats-core 1.13 waits out the
+  # full timeout after a FAILING test under --jobs (measured 2026-11-11); the
+  # serial lane uses wait_pid_with_timeout as the hung-test guard instead.
+  _pmv_bats_env+=(-u BATS_TEST_TIMEOUT)
+  # Throwaway state dir: config.sh falls back to real .rite/state when unset.
+  local _pmv_state_dir
+  _pmv_state_dir=$(mktemp -d "${TMPDIR:-/tmp}/rite_pmv_state_$$_XXXXXX" 2>/dev/null || true)
+  if [ -d "${_pmv_state_dir:-}" ]; then
+    _pmv_bats_env+=(RITE_STATE_DIR="$_pmv_state_dir")
+  fi
+  _pmv_bats_env+=(PATH="$_path")
   local _bats_pid=""
   (
     cd "$_wt" && \
-    exec env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER -u SESSION_STATE_FILE \
-        -u _RITE_PROVIDER_PREFLIGHT_OK \
-        -u RITE_BATCH_ID -u BATCH_MODE -u SESSION_START_TIME -u RITE_TARGET_BRANCH \
-        -u RITE_TEST_GATE_SKIP_TRIGGERS -u RITE_TEST_GATE_DIFF_BASE -u BATS_TEST_TIMEOUT \
-        -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR -u BATS_TEST_TMPDIR \
-        -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER \
-        PATH="$_path" \
+    exec "${_pmv_bats_env[@]+"${_pmv_bats_env[@]}"}" \
       bats "${_file_args[@]+"${_file_args[@]}"}" </dev/null >/dev/null 2>&1
   ) &
   _bats_pid=$!
@@ -178,6 +189,7 @@ _pmv_serial_rerun_clears() {
     wait "$_bats_pid" || _rc=$?
   fi
   [ -n "${_shim_dir:-}" ] && rm -rf "$_shim_dir" 2>/dev/null
+  [ -n "${_pmv_state_dir:-}" ] && rm -rf "$_pmv_state_dir" 2>/dev/null
 
   if [ "$_rc" -eq 0 ]; then
     echo "Serial re-run passed — the parallel failure was load flake, not a semantic conflict" >&2

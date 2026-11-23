@@ -37,6 +37,7 @@ export RITE_INSTALL_DIR RITE_LIB_DIR
 source "$RITE_LIB_DIR/utils/config.sh"
 source "$RITE_LIB_DIR/utils/colors.sh"
 source "$RITE_LIB_DIR/utils/logging.sh"
+source "$RITE_LIB_DIR/utils/gate-runners.sh"
 
 # Force verbose off: when RITE_VERBOSE=true is inherited, _diag() writes to
 # stderr (which is torn down after the tee reader exits) instead of
@@ -182,7 +183,8 @@ _invest_dir=""
 _interp_prompt_file=""
 _issue_body_file=""
 _gh_create_stderr=""
-trap '[ -n "${_bats_tail_pid:-}" ] && kill "${_bats_tail_pid}" 2>/dev/null || true; [ -n "${_deadline_poller_pid:-}" ] && kill "${_deadline_poller_pid}" 2>/dev/null || true; rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" "${_gh_create_stderr:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true' EXIT
+_bats_state_dir=""
+trap '[ -n "${_bats_tail_pid:-}" ] && kill "${_bats_tail_pid}" 2>/dev/null || true; [ -n "${_deadline_poller_pid:-}" ] && kill "${_deadline_poller_pid}" 2>/dev/null || true; rm -f "${_lint_raw:-}" "${_lint_raw_stripped:-}" "${_tests_raw:-}" "${_serial_results_raw:-}" "${_interp_prompt_file:-}" "${_issue_body_file:-}" "${_gh_create_stderr:-}" 2>/dev/null || true; [ -n "${_invest_dir:-}" ] && rm -rf "${_invest_dir:-}" 2>/dev/null || true; [ -n "${_bats_state_dir:-}" ] && rm -rf "${_bats_state_dir:-}" 2>/dev/null || true' EXIT
 
 exec > >(tee >(strip_ansi >> "$_LOG_FILE"))
 exec 2>&1
@@ -276,6 +278,24 @@ _tests_count=0
 # RITE_BATS_TEST_TIMEOUT. A timed-out test shows as "not ok … # timeout after
 # 300 s" and is classified by investigate like any other failure.
 export BATS_TEST_TIMEOUT="${RITE_BATS_TEST_TIMEOUT:-300}"
+
+# Build the env prefix for all three bats launches (deadline-armed, manual,
+# investigate-serial) from the shared helper so the scrub list stays in sync
+# with run_test_gate without manual copy-paste.
+_bats_scrub_env=(env)
+while read -r _sg_flag _sg_var; do
+  [ -n "${_sg_var:-}" ] && _bats_scrub_env+=("$_sg_flag" "$_sg_var")
+done < <(_bats_session_scrub_args)
+# Throwaway state dir: config.sh falls back to real .rite/state when RITE_STATE_DIR
+# is unset, so we set it to a private temp dir that bats children can write freely.
+# RITE_STATE_DIR is NOT added to _bats_scrub_env here: the serial re-run lane
+# must insert -u BATS_TEST_TIMEOUT BEFORE RITE_STATE_DIR= (env stops option-parsing
+# at the first VAR=val operand — post-merge-verify.sh's _pmv_serial_rerun_clears is
+# the reference implementation). Instead, each launch site appends RITE_STATE_DIR=
+# inline via the _bats_state_env helper array below.
+_bats_state_dir=$(mktemp -d "${TMPDIR:-/tmp}/rite_fs_state_$$_XXXXXX" 2>/dev/null || true)
+_bats_state_env=()
+[ -d "${_bats_state_dir:-}" ] && _bats_state_env+=(RITE_STATE_DIR="$_bats_state_dir")
 
 print_step "Running bats -r tests/ (full suite, no targeted selection)..."
 # _tests_raw is assigned here (was pre-initialized empty for the EXIT trap above)
@@ -397,7 +417,9 @@ if [ "$_deadline_armed" = "true" ]; then
   # wall-clock poller signals. Manual runs keep the foreground form below, so
   # Ctrl-C still reaches bats.
   (cd "$_PROJECT_ROOT" && \
-      exec "${_bats_deadline_watchdog[@]+"${_bats_deadline_watchdog[@]}"}" \
+      exec "${_bats_scrub_env[@]+"${_bats_scrub_env[@]}"}" \
+      "${_bats_state_env[@]+"${_bats_state_env[@]}"}" \
+      "${_bats_deadline_watchdog[@]+"${_bats_deadline_watchdog[@]}"}" \
       bats "${_bats_args[@]+"${_bats_args[@]}"}") > "$_tests_raw" 2>&1 &
   _bats_wrapper_pid=$!
   # Detached from stdout: a poller killed mid-sleep leaves its sleep child
@@ -410,7 +432,7 @@ if [ "$_deadline_armed" = "true" ]; then
   wait "$_deadline_poller_pid" 2>/dev/null || true
   _deadline_poller_pid=""
 else
-  (cd "$_PROJECT_ROOT" && bats "${_bats_args[@]+"${_bats_args[@]}"}") > "$_tests_raw" 2>&1
+  (cd "$_PROJECT_ROOT" && "${_bats_scrub_env[@]}" "${_bats_state_env[@]+"${_bats_state_env[@]}"}" bats "${_bats_args[@]+"${_bats_args[@]}"}") > "$_tests_raw" 2>&1
   _tests_exit=$?
 fi
 set -e
@@ -592,7 +614,9 @@ if [ "$_investigate" = "true" ] && [ "$_outcome" = "failed" ]; then
     # with BATS_TEST_TIMEOUT=300 takes 300s serially, unset takes 0s).  The whole
     # file is bounded by wait_pid_with_timeout instead, so a genuinely hung test
     # is still killed.  Same pattern as _pmv_serial_rerun_clears (#1742).
-    (cd "$_PROJECT_ROOT" && exec env -u BATS_TEST_TIMEOUT bats "$_bats_file") \
+    (cd "$_PROJECT_ROOT" && \
+        exec "${_bats_scrub_env[@]+"${_bats_scrub_env[@]}"}" -u BATS_TEST_TIMEOUT \
+        "${_bats_state_env[@]+"${_bats_state_env[@]}"}" bats "$_bats_file") \
       > "$_serial_results_raw" 2>&1 &
     _serial_bats_pid=$!
     _serial_file_exit=0

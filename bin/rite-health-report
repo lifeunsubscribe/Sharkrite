@@ -152,7 +152,7 @@ fi
 DIAG_LINES=""
 TIMING_LINES=""
 for logfile in "${RECENT_LOGS[@]+"${RECENT_LOGS[@]}"}"; do
-  DIAG_LINES+=$(grep '\[diag\]' "$logfile" 2>/dev/null || true)
+  DIAG_LINES+=$(grep '^\[diag\]' "$logfile" 2>/dev/null || true)
   DIAG_LINES+=$'\n'
   TIMING_LINES+=$(grep '\[timing\].*END' "$logfile" 2>/dev/null || true)
   TIMING_LINES+=$'\n'
@@ -276,7 +276,7 @@ if [ -d "$LOGS_DIR" ]; then
     if [ -n "$_log_date" ]; then
       _log_epoch=$(date_from_compact "$_log_date")
       if [ "${_log_epoch:-0}" -ge "$WEEK_AGO_EPOCH" ] 2>/dev/null; then
-        FSR_DIAG_LINES+=$(grep '\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
+        FSR_DIAG_LINES+=$(grep '^\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
         FSR_DIAG_LINES+=$'\n'
       fi
     fi

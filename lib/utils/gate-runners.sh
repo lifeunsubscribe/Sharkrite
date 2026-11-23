@@ -1555,6 +1555,36 @@ _cienv_gnu_prefix() {
 }
 
 # ---------------------------------------------------------------------------
+# _bats_session_scrub_args — shared scrub list for all bats child launches
+#
+# Prints one "-u NAME" argument per line for each session-behavioral variable
+# that bats children spawned by the gate MUST NOT inherit from a live workflow
+# session.  Every bats invocation site (run_test_gate, _pmv_serial_rerun_clears,
+# bin/rite-full-suite) calls this helper and builds its env prefix with a
+# while-read loop, so the scrub list has a single owner.
+#
+# _GATE_BATS_SCRUB_VARS canonical constant name — grep anchor for cross-refs.
+#
+# NOT included: BATS_TEST_TIMEOUT — callers that need it unset (serial lanes)
+# add it themselves; callers that keep it (parallel lanes) leave it set.
+# NOT included: RITE_STATE_DIR — set to a throwaway mktemp dir by callers,
+# not unset (config.sh would fall back to the real .rite/state if unset).
+# ---------------------------------------------------------------------------
+_bats_session_scrub_args() {
+  printf -- '-u %s\n' \
+    RITE_LOG_FILE PR_NUMBER ISSUE_NUMBER \
+    _RITE_PROVIDER_PREFLIGHT_OK \
+    SESSION_STATE_FILE RITE_BATCH_ID BATCH_MODE SESSION_START_TIME \
+    RITE_TARGET_BRANCH RITE_TEST_GATE_SKIP_TRIGGERS \
+    RITE_STALE_BRANCH_THRESHOLD RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
+    RITE_ACCEPT_RED_MAIN \
+    RITE_TEST_GATE_DIFF_BASE \
+    BATS_RUN_TMPDIR BATS_SUITE_TMPDIR BATS_FILE_TMPDIR \
+    BATS_TEST_TMPDIR BATS_ROOT_PID BATS_LIBEXEC_DIR \
+    BATS_TMPDIR BATS_SUITE_TEST_NUMBER
+}
+
+# ---------------------------------------------------------------------------
 # Runner homes one level down (2026-11-12)
 #
 # Live (freshup batch 2026-11-12): package.json lives in frontend/, pytest

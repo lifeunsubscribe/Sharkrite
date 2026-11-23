@@ -322,7 +322,7 @@ if [ -d "$LOGS_DIR" ]; then
     _log_date=$(echo "$logfile" | grep -oE '[0-9]{8}' | tail -1 || true)
     if [ -n "$_log_date" ]; then
       # Accept all log files in test (override epoch check by using epoch 0)
-      FSR_DIAG_LINES+=$(grep '\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
+      FSR_DIAG_LINES+=$(grep '^\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
       FSR_DIAG_LINES+=$'\n'
     fi
   done < <(find "$LOGS_DIR" -name "*.log" -type f 2>/dev/null | sort)
@@ -431,7 +431,7 @@ LOGS_DIR="${FSR_LOGS_DIR:-}"
 FSR_DIAG_LINES=""
 if [ -d "$LOGS_DIR" ]; then
   while IFS= read -r logfile; do
-    FSR_DIAG_LINES+=$(grep '\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
+    FSR_DIAG_LINES+=$(grep '^\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
     FSR_DIAG_LINES+=$'\n'
   done < <(find "$LOGS_DIR" -name "*.log" -type f 2>/dev/null | sort)
 fi
@@ -448,6 +448,47 @@ HELPEREOF
 
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "^FSR_TOTAL=0$"
+}
+
+@test "health-report: FSR parser does not count a TAP line mentioning FULL_SUITE_RUN" {
+  # Regression for the missing ^ anchor: a bats TAP output line like
+  # "ok 1 some test name [diag] FULL_SUITE_RUN outcome=passed ..."
+  # (produced when a test name contains the string) would increment FSR_TOTAL
+  # without the anchor, counting a phantom run.
+  cat > "$RITE_TEST_TMPDIR/compute_fsr_tap.sh" << 'HELPEREOF'
+#!/bin/bash
+set -euo pipefail
+LOGS_DIR="${FSR_LOGS_DIR:-}"
+FSR_DIAG_LINES=""
+if [ -d "$LOGS_DIR" ]; then
+  while IFS= read -r logfile; do
+    FSR_DIAG_LINES+=$(grep '^\[diag\].*FULL_SUITE_RUN ' "$logfile" 2>/dev/null || true)
+    FSR_DIAG_LINES+=$'\n'
+  done < <(find "$LOGS_DIR" -name "*.log" -type f 2>/dev/null | sort)
+fi
+FSR_DIAG_LINES=$(echo "$FSR_DIAG_LINES" | sed '/^$/d' || true)
+FSR_TOTAL=$(echo "$FSR_DIAG_LINES" | grep -c 'FULL_SUITE_RUN ' || true)
+echo "FSR_TOTAL=$FSR_TOTAL"
+HELPEREOF
+  chmod +x "$RITE_TEST_TMPDIR/compute_fsr_tap.sh"
+
+  local _logs_dir="$RITE_TEST_TMPDIR/tap-logs"
+  mkdir -p "$_logs_dir"
+
+  # Log file containing one real FULL_SUITE_RUN diag line AND one TAP line that
+  # mentions FULL_SUITE_RUN mid-line (not at the start).  The anchored grep must
+  # count exactly 1, not 2.
+  cat > "$_logs_dir/full-suite-20261125.log" << 'EOF'
+[diag] 03:00:01 | FULL_SUITE_RUN outcome=passed lint_count=0 test_count=0 duration_s=300
+ok 42 health-report: FSR parser sees [diag] FULL_SUITE_RUN in a TAP name
+EOF
+
+  run env \
+    FSR_LOGS_DIR="$_logs_dir" \
+    "$RITE_TEST_TMPDIR/compute_fsr_tap.sh"
+
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "^FSR_TOTAL=1$"
 }
 
 # ---------------------------------------------------------------------------
