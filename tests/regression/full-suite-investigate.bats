@@ -891,3 +891,197 @@ EOF
   _report=$(find "$_FAKE_PROJECT/.rite/reports" -name "full-suite-*.md" | head -1 || true)
   [ -n "$_report" ]
 }
+
+# ---------------------------------------------------------------------------
+# Test: launched outside the repo — RITE_PROJECT_ROOT used for gh calls.
+# Simulates launchd starting the script from / (no .git there). The fix is
+# the early `cd "$_PROJECT_ROOT"` in bin/rite-full-suite. The fake gh stub
+# records its pwd; after the fix, all gh calls happen from $_FAKE_PROJECT.
+# ---------------------------------------------------------------------------
+@test "investigate: launched outside the repo uses RITE_PROJECT_ROOT for gh calls" {
+  _write_lib_stubs
+  _write_make_stub
+
+  local test_name="outside-repo-test"
+  _write_fake_bats_test "$_FAKE_PROJECT/tests" "outside.bats" "$test_name"
+
+  mkdir -p "$_FAKE_PROJECT/bin"
+
+  # gh stub: records its working directory on every call
+  local _gh_cwd_log="$RITE_TEST_TMPDIR/gh-cwd.log"
+  cat > "$_FAKE_PROJECT/bin/gh" << EOF
+#!/bin/bash
+echo "\$(pwd)" >> "$_gh_cwd_log"
+echo "\$@" >> "$_GH_CALL_LOG"
+if echo "\$*" | grep -q "issue list"; then
+  echo "null"
+  exit 0
+fi
+if echo "\$*" | grep -q "issue create"; then
+  echo "https://github.com/owner/repo/issues/42"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/gh"
+
+  # bats stub: parallel fails, serial re-run still fails (persistent)
+  cat > "$_FAKE_PROJECT/bin/bats" << EOF
+#!/bin/bash
+if echo "\$*" | grep -q -- "-r tests/"; then
+  printf '1..1\nnot ok 1 %s\n' "$test_name"
+  exit 1
+else
+  printf '1..1\nnot ok 1 %s\n  # assertion: false\n' "$test_name"
+  exit 1
+fi
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  # Launch from /tmp (simulating launchd starting from /)
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash -c "cd /tmp && bash '$_FULL_SUITE_SCRIPT' --investigate"
+
+  # gh must have been called with cwd == the fake project root
+  [ -f "$_gh_cwd_log" ]
+  grep -qF "$_FAKE_PROJECT" "$_gh_cwd_log"
+}
+
+# ---------------------------------------------------------------------------
+# Test: timeout-suffixed test name is stripped and mapped correctly.
+# bats reports a timed-out test as "not ok N <name> # timeout after 300s".
+# The name-to-file mapper must strip " # timeout after Ns" before searching
+# for @test "<name>" — otherwise the test is unmapped and skips serial re-run.
+# ---------------------------------------------------------------------------
+@test "investigate: timeout suffix stripped so test is mapped and classified" {
+  _write_lib_stubs
+  _write_make_stub
+
+  local bare_name="issue #654: a leaked child holding the gate pipe does NOT hang the wait"
+  local full_name="${bare_name} # timeout after 300s"
+
+  # Write a bats file containing the bare-name @test declaration
+  _write_fake_bats_test "$_FAKE_PROJECT/tests" "timeout.bats" "$bare_name"
+
+  mkdir -p "$_FAKE_PROJECT/bin"
+
+  # bats stub:
+  #   parallel run → emits name WITH the timeout suffix (as bats does on timeout)
+  #   serial run  → still fails without suffix (persistent failure)
+  cat > "$_FAKE_PROJECT/bin/bats" << EOF
+#!/bin/bash
+if echo "\$*" | grep -q -- "-r tests/"; then
+  printf '1..1\nnot ok 1 %s\n' "$full_name"
+  exit 1
+else
+  printf '1..1\nnot ok 1 %s\n  # assertion: false\n' "$bare_name"
+  exit 1
+fi
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  cat > "$_FAKE_PROJECT/bin/gh" << EOF
+#!/bin/bash
+echo "\$@" >> "$_GH_CALL_LOG"
+if echo "\$*" | grep -q "issue list"; then
+  echo "null"
+  exit 0
+fi
+if echo "\$*" | grep -q "issue create"; then
+  echo "https://github.com/owner/repo/issues/42"
+  exit 0
+fi
+exit 0
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/gh"
+
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash "$_FULL_SUITE_SCRIPT" --investigate
+
+  local _report
+  _report=$(find "$_FAKE_PROJECT/.rite/reports" -name "full-suite-*.md" | head -1 || true)
+  [ -n "$_report" ]
+
+  # Must NOT be listed in Unmapped section — the suffix strip enabled mapping.
+  # Use `run` so bats captures the exit status: status=0 (found) is a failure,
+  # status=1 (not found) is a pass. Bare `! pipeline` is inert under bats errexit.
+  run bash -c "awk '/^## Unmapped/{p=1; next} p && /^## /{p=0} p' '$_report' | grep -F '$bare_name'"
+  [ "$status" -ne 0 ]
+
+  # Must appear in Persistent Failures (serial re-run classified it)
+  awk '/^## Persistent Failures/{p=1; next} p && /^## /{p=0} p' "$_report" \
+      | grep -qF "$bare_name"
+}
+
+# ---------------------------------------------------------------------------
+# Test: gh issue create failure logs error text to daily log.
+# When gh exits non-zero, its stderr must appear in the daily log file before
+# the orphan artifact is written.
+# ---------------------------------------------------------------------------
+@test "investigate: gh issue create failure logs error to daily log before orphan" {
+  _write_lib_stubs
+  _write_make_stub
+
+  local test_name="persistent-gh-error-test"
+  _write_fake_bats_test "$_FAKE_PROJECT/tests" "gherr.bats" "$test_name"
+
+  mkdir -p "$_FAKE_PROJECT/bin"
+
+  cat > "$_FAKE_PROJECT/bin/bats" << EOF
+#!/bin/bash
+if echo "\$*" | grep -q -- "-r tests/"; then
+  printf '1..1\nnot ok 1 %s\n' "$test_name"
+  exit 1
+else
+  printf '1..1\nnot ok 1 %s\n  # assertion: fails serially too\n' "$test_name"
+  exit 1
+fi
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/bats"
+
+  # gh stub: issue list returns null; create writes an error to stderr and exits 1
+  local _error_message="gh: not a git repository (or any of the parent directories): .git"
+  cat > "$_FAKE_PROJECT/bin/gh" << EOF
+#!/bin/bash
+echo "\$@" >> "$_GH_CALL_LOG"
+if echo "\$*" | grep -q "issue list"; then
+  echo "null"
+  exit 0
+fi
+if echo "\$*" | grep -q "issue create"; then
+  echo "${_error_message}" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "$_FAKE_PROJECT/bin/gh"
+
+  run env \
+    PATH="$_FAKE_PROJECT/bin:$PATH" \
+    RITE_INSTALL_DIR="$_FAKE_PROJECT" \
+    RITE_LIB_DIR="$_FAKE_PROJECT/lib" \
+    RITE_PROJECT_ROOT="$_FAKE_PROJECT" \
+    RITE_DATA_DIR=".rite" \
+    bash "$_FULL_SUITE_SCRIPT" --investigate
+
+  # The daily log must contain the gh error text
+  local _log_file
+  _log_file=$(find "$_FAKE_PROJECT/.rite/logs" -name "full-suite-*.log" | head -1 || true)
+  [ -n "$_log_file" ]
+  grep -q "not a git repository" "$_log_file"
+
+  # The orphan artifact must still be written (findings not lost)
+  local _orphan="$_FAKE_PROJECT/.rite/orphaned-followup-items.md"
+  [ -f "$_orphan" ]
+  grep -q "$test_name" "$_orphan"
+}
