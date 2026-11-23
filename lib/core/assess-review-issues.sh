@@ -59,6 +59,7 @@ source "$RITE_LIB_DIR/utils/sanitize-output.sh"
 source "$RITE_LIB_DIR/utils/date-helpers.sh"
 source "$RITE_LIB_DIR/utils/markers.sh"
 source "$RITE_LIB_DIR/utils/review-helper.sh"
+source "$RITE_LIB_DIR/utils/format-review.sh"
 # issue-lock.sh: provides derive_followup_finding_key and write_followup_evidence
 # used to seed the local-evidence oracle (Source 1) for each ACTIONABLE_LATER finding.
 source "$RITE_LIB_DIR/utils/issue-lock.sh"
@@ -379,14 +380,10 @@ REVIEW_CONTENT=$(cat "$REVIEW_FILE")
 # When the review itself reports zero findings, there's nothing to categorize.
 # Without this check, the assessment Claude reads positive prose and invents issues.
 
-FINDINGS_LINE=$(echo "$REVIEW_CONTENT" | grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" | head -1 || true)
-if [ -n "$FINDINGS_LINE" ]; then
-  TOTAL_FINDINGS=$(echo "$FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}' || true)
-  if [ "${TOTAL_FINDINGS:-0}" -eq 0 ]; then
-    print_success "Review has zero findings — nothing to assess" >&2
-    echo "NO_ACTIONABLE_ITEMS"
-    exit 0
-  fi
+if review_reports_zero_findings "$REVIEW_CONTENT"; then
+  print_success "Review has zero findings — nothing to assess" >&2
+  echo "NO_ACTIONABLE_ITEMS"
+  exit 0
 fi
 
 # Get original issue context for scope assessment

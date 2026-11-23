@@ -146,6 +146,19 @@ provider_resolve_model() {
 }
 PROVIDER_EOF
 
+  # Stub format-review.sh — assess-review-issues.sh sources this for
+  # review_reports_zero_findings (added in issue #1828). The reviews in these
+  # tests have ACTIONABLE_NOW items (no Findings summary line), so the helper
+  # must return non-zero to let the provider call proceed.
+  cat > "$RITE_LIB_DIR/utils/format-review.sh" <<'FORMAT_EOF'
+#!/bin/bash
+if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
+_RITE_FORMAT_REVIEW_LOADED=true
+strip_pre_review_narration() { printf '%s\n' "${1:-}"; }
+parse_review_severity_counts() { _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; _PRC_TIER=0; }
+review_reports_zero_findings() { return 1; }
+FORMAT_EOF
+
   # Stub review-helper.sh — sourced at load time (line 61) to define
   # build_prior_decisions_ledger (and sibling helpers). Without this stub
   # the script dies at `source` before reaching the provider call, masking

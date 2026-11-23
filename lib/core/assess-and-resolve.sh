@@ -1733,16 +1733,14 @@ _build_gate_prepend_items
 # Early exit: if the review has zero findings AND gate found no failures,
 # skip assessment entirely and go straight to merge.
 # Guard: when gate found failures, we MUST run the fix loop regardless of review verdict.
-REVIEW_FINDINGS_LINE=$(grep -oE "Findings: CRITICAL: [0-9]+ [|] HIGH: [0-9]+ [|] MEDIUM: [0-9]+ [|] LOW: [0-9]+" "$REVIEW_FILE" 2>/dev/null | head -1 || true)
-if [ -n "$REVIEW_FINDINGS_LINE" ]; then
-  REVIEW_TOTAL_FINDINGS=$(echo "$REVIEW_FINDINGS_LINE" | grep -oE "[0-9]+" | awk '{sum += $1} END {print sum}' || true)
-  if [ "${REVIEW_TOTAL_FINDINGS:-0}" -eq 0 ] && [ "${GATE_NOW_COUNT:-0}" -eq 0 ] \
-     && [ "${_gate_verdict_is_stale:-false}" != "true" ]; then
-    print_header "🦈 Smart Assessment (Sharkrite)"
-    print_success "Review has zero findings and gate passed — skipping assessment, proceeding to merge"
-    echo ""
-    exit 0
-  fi
+_zero_review_body=$(cat "$REVIEW_FILE" 2>/dev/null || true)
+if review_reports_zero_findings "$_zero_review_body" \
+   && [ "${GATE_NOW_COUNT:-0}" -eq 0 ] \
+   && [ "${_gate_verdict_is_stale:-false}" != "true" ]; then
+  print_header "🦈 Smart Assessment (Sharkrite)"
+  print_success "Review has zero findings and gate passed — skipping assessment, proceeding to merge"
+  echo ""
+  exit 0
 fi
 
 print_header "🦈 Smart Assessment (Sharkrite)"
