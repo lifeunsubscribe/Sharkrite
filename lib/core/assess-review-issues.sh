@@ -508,8 +508,8 @@ by the fix commits:
   - If FIXED: classify it DISMISSED in this assessment (do not re-raise it).
   - If NOT FIXED or PARTIALLY FIXED: re-raise it as ACTIONABLE_NOW. The item
     output MUST include a **Prior Fix Rejected Because:** field on its own line,
-    stating concisely why the previous fix was not accepted (e.g. "Previous fix
-    grew the alias list instead of adopting the vocabulary lookup."). This field
+    stating concisely why the previous fix was not accepted (e.g. \"Previous fix
+    grew the alias list instead of adopting the vocabulary lookup.\"). This field
     is read by the next fix session to avoid repeating the rejected approach.
 
 RULE 2 — NEW ACTIONABLE_NOW BAR (tighter on retry):

@@ -159,7 +159,7 @@ teardown() {
   local _ctx _rej _exit
   _ctx=$(awk '/inject_issue_context_into_fix_prompt/ && !/^[[:space:]]*#/ && !/^inject_issue_context_into_fix_prompt\(\)/ {print NR; exit}' "$CLAUDE_WORKFLOW" || true)
   _rej=$(awk '/inject_rejection_reasons_into_fix_prompt/ && !/^[[:space:]]*#/ && !/^inject_rejection_reasons_into_fix_prompt\(\)/ {print NR; exit}' "$CLAUDE_WORKFLOW" || true)
-  _exit=$(awk '/FIX_PROMPT.*EXIT_INSTRUCTION/ {print NR; exit}' "$CLAUDE_WORKFLOW" || true)
+  _exit=$(awk '/FIX_PROMPT.*EXIT_INSTRUCTION/ && !/^[[:space:]]*#/ {print NR; exit}' "$CLAUDE_WORKFLOW" || true)
   [ -n "$_ctx" ]
   [ -n "$_rej" ]
   [ -n "$_exit" ]
