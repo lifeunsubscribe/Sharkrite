@@ -14,7 +14,9 @@
 # killed. Neither the per-test timeout (#654-adjacent) nor the outer wait
 # backstop bounded this path.
 
-setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
+setup() {
+  export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
+}
 
 @test "structural: sandbox env scrub is defined with all deny-listed vars" {
   # The scrub list is now owned by _bats_session_scrub_args in gate-runners.sh
