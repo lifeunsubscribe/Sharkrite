@@ -389,6 +389,28 @@ The plan prompt includes: "If an entity uses a shareability model and shared ite
 
 ## Review & Assessment (assess-review-issues.sh, assess-and-resolve.sh)
 
+### Zero-Findings Review Skips Assessment
+
+**Contract (introduced #1828, 2026-11):** When a review's summary reports zero findings, neither `assess-review-issues.sh` nor `assess-and-resolve.sh` calls the LLM assessor. The LLM reads the review's positive prose and invents deferred findings; skipping it eliminates that class of phantom pool entries.
+
+**Helper:** `review_reports_zero_findings REVIEW_TEXT` in `lib/utils/format-review.sh`. Calls `parse_review_severity_counts` and returns 0 (success = zero findings) only when:
+- `_PRC_TIER` is 1 (JSON block) or 2 (Findings summary line) — a parseable summary exists, and
+- `_PRC_CRITICAL + _PRC_HIGH + _PRC_MEDIUM + _PRC_LOW` equals 0.
+
+Tier 0 (no data) and Tier 3 (item markers only) return 1 (fall through to assessment) — an item-marker-only review could have items the summary line did not capture.
+
+**`assess-review-issues.sh`:** Calls `review_reports_zero_findings "$REVIEW_CONTENT"` immediately after reading the review. On success: prints `NO_ACTIONABLE_ITEMS` to stdout and exits 0. The same behaviour as before — just reliable.
+
+**`assess-and-resolve.sh`:** Calls `review_reports_zero_findings "$_zero_review_body"` with two additional guards that must ALSO hold before skipping:
+- `GATE_NOW_COUNT` is 0 — the post-commit gate found no failures.
+- `_gate_verdict_is_stale` is not `true` — the gate result is current.
+
+If either guard fails the assessment runs normally so gate failures still reach the fix loop.
+
+**Live failure that motivated this fix:** freshup issue #621, 2026-11-15: a zero-findings review still paid for assessment, which returned `0 NOW, 7 LATER, 6 DISMISSED`, appending six phantom entries to the deferred-findings pool (#1737). Root cause: both early exits used a hand-written regex (`Findings: CRITICAL: [0-9]+...`) that never matched the template's output (`**Findings:** 🔴 CRITICAL: 0 | ...`). The regex was added before the template gained bold markup and emoji; the parser was updated but these two copies were not.
+
+**Coverage:** `tests/regression/review-zero-findings.bats`.
+
 ### Fix-loop policy: NOW means fixed, LATER means deferred
 
 **Honest-classification contract (introduced #717, 2026-06):** `ACTIONABLE_NOW` is a *scope* judgment, not a severity filter. The assessor labels a finding NOW only when it (a) logically completes the issue's work, or (b) falls within the issue's scope/diff and is completable in this PR. Anything deferrable must be classified `ACTIONABLE_LATER` or `DISMISSED` by the assessor. A finding that reaches `assess-and-resolve.sh` with a NOW label is always serviced in the fix loop — there is no post-classification "skip the loop and defer" path.

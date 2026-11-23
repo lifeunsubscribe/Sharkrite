@@ -317,6 +317,29 @@ parse_review_severity_counts() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# review_reports_zero_findings: return 0 when a review summary shows all zero.
+#
+# A thin wrapper around parse_review_severity_counts that answers one boolean:
+# "Is this review parseable via a summary AND does it report no findings?"
+#
+# Returns 0 (success) only when _PRC_TIER is 1 or 2 AND the four counts sum
+# to zero.  Tier 0 (no data) and Tier 3 (item markers only) fall through to
+# the assessment — an item-marker-only review could have items the summary line
+# did not capture.
+#
+# Arg 1: review body text
+# ---------------------------------------------------------------------------
+review_reports_zero_findings() {
+  parse_review_severity_counts "${1:-}"
+  # Only a parsed summary (Tier 1 or 2) is a reliable zero-finding verdict.
+  if [ "$_PRC_TIER" -ne 1 ] && [ "$_PRC_TIER" -ne 2 ]; then
+    return 1
+  fi
+  local _total=$(( _PRC_CRITICAL + _PRC_HIGH + _PRC_MEDIUM + _PRC_LOW ))
+  [ "$_total" -eq 0 ]
+}
+
 # Run main logic only when executed directly (not sourced).
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   REVIEW_FILE="${1:-}"
