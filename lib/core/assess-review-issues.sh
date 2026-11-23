@@ -1243,7 +1243,7 @@ if [ "$ACTIONABLE_LATER_COUNT" -gt 0 ]; then
           EXISTING_BODY=$(gh_safe issue view "$DUPLICATE_ISSUE" --json body --jq '.body' || true)
           EXISTING_BODY="${EXISTING_BODY:-}"
           REASONING_SIGNATURE=$(echo "$ITEM_REASONING" | head -c 60 || true)
-          if grep -qF "$REASONING_SIGNATURE" <<< "$EXISTING_BODY" 2>/dev/null; then
+          if grep -qF -- "$REASONING_SIGNATURE" <<< "$EXISTING_BODY" 2>/dev/null; then
             print_info "  Already tracked in #$DUPLICATE_ISSUE (skipping): $ITEM_TITLE"
             # Passback: write issue number so assess-and-resolve.sh can skip consolidated rollup.
             if [ -n "${RITE_PER_ITEM_ISSUES_FILE:-}" ]; then

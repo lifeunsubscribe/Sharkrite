@@ -2625,7 +2625,7 @@ _lint_issues_strict() {
       # Warn when the target title matches multiple issues in this batch.
       # We still resolve to the first match so other checks can proceed,
       # but the ambiguity is a planarity issue that should be surfaced.
-      if grep -qxF "$_tref_lower" <<< "$_dup_titles"; then
+      if grep -qxF -- "$_tref_lower" <<< "$_dup_titles"; then
         print_warning "strict-lint: WARNING: ambiguous title ref: #[${_tref}] in '${_referencing_title}' matches multiple batch issues (resolves to first ordinal match)" >&2
         _warning_count=$((_warning_count + 1))
       fi
@@ -4952,7 +4952,7 @@ _detect_unverified_integrations() {
     fi
     # Title-space collision guard: if truncation produces a display name already used,
     # fall back to the sanitized key (which is unique per the seen_spike_keys guard).
-    if grep -qxF "$_display_name" <<< "$seen_spike_titles" 2>/dev/null; then
+    if grep -qxF -- "$_display_name" <<< "$seen_spike_titles" 2>/dev/null; then
       _display_name="$_key"
       if [ "${#_display_name}" -gt "$_spike_name_budget" ]; then
         _display_name="${_display_name:0:$((_spike_name_budget - 3))}..."
@@ -4961,7 +4961,7 @@ _detect_unverified_integrations() {
       # candidates produce an identical truncated key prefix), add a numeric suffix
       # until the display name is unique within the title budget.
       local _sfx_n=2
-      while grep -qxF "$_display_name" <<< "$seen_spike_titles" 2>/dev/null; do
+      while grep -qxF -- "$_display_name" <<< "$seen_spike_titles" 2>/dev/null; do
         local _sfx="-${_sfx_n}"
         local _base_budget=$((_spike_name_budget - ${#_sfx}))
         if [ "${#_key}" -gt "$_base_budget" ]; then
