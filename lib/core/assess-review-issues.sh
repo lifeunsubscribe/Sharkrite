@@ -689,7 +689,7 @@ For each item, use EXACTLY this format (no deviations):
 {FOR ACTIONABLE_LATER: **Suggested Fix:** {1-2 sentences describing the concrete remedy the reviewer identified}}
 {FOR ACTIONABLE_LATER: **Verification:** {a single runnable command that confirms the fix is applied}}
 
-RULE: "Scope exceeds time budget" is only valid as a Defer Reason when Fix Effort is >1hr.
+RULE: \"Scope exceeds time budget\" is only valid as a Defer Reason when Fix Effort is >1hr.
 
 DO NOT add any summary section, recommendations, or extra text after the items.
 

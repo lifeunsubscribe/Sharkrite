@@ -85,7 +85,7 @@ setup() {
 @test "assess-review-issues.sh: time budget Defer Reason requires Fix Effort >1hr" {
   # Constraint must appear as a separate RULE line after the format block so the
   # parenthetical text cannot leak verbatim into emitted model output (follow-up issues).
-  run grep -n "RULE.*Scope exceeds time budget.*only when Fix Effort is >1hr" "$ASSESS_REVIEW_SCRIPT"
+  run grep -n "RULE.*Scope exceeds time budget.*Fix Effort is >1hr" "$ASSESS_REVIEW_SCRIPT"
   [ "$status" -eq 0 ] || {
     echo "FAIL: 'Scope exceeds time budget' effort condition (>1hr) missing from RULE line"
     false
