@@ -231,7 +231,7 @@ _followup_dedup_check() {
           # NEW issues alike while preserving finding-level specificity.  This
           # mirrors Source 4 (line ~249), which already keys on _clean_title.
           if [ -n "$_s2_num" ] && [ -n "${_clean_title:-}" ] && \
-             grep -qF "$_clean_title" <<< "$_s2_title"; then
+             grep -qF -- "$_clean_title" <<< "$_s2_title"; then
             # Verify the marker is actually in the body — GitHub search can return
             # approximate matches; direct body inspection is the ground truth.
             local _candidate_body

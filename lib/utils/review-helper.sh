@@ -296,7 +296,7 @@ build_prior_decisions_ledger() {
         ITEM_END)
           if [ -n "${_cur_title:-}" ]; then
             # Skip if we already recorded this title (newest-first means first-seen = latest)
-            if ! grep -qxF "$_cur_title" <<< "$seen_titles"; then
+            if ! grep -qxF -- "$_cur_title" <<< "$seen_titles"; then
               seen_titles="${seen_titles}
 ${_cur_title}"
               local entry
