@@ -372,6 +372,7 @@ run_test_gate() {
         rm -f "${_gate_census_file:-}"
         [ -n "${_bats_tap_dir:-}" ] && rm -rf "${_bats_tap_dir:-}"
         [ -n "${_cienv_shim_dir:-}" ] && rm -rf "${_cienv_shim_dir:-}"
+      [ -n "${_bats_state_dir:-}" ] && rm -rf "${_bats_state_dir:-}"
         if [ "$_gate_exit_status" -ne 0 ]; then
           if [ ! -s "${output_file:-}" ] || ! jq empty "${output_file:-}" 2>/dev/null; then
             printf '"'"'{"lint":[],"tests":[],"exit_code":0,"skipped":true,"reason":"gate_crashed"}'"'"' > "${output_file:-/dev/null}"
@@ -678,16 +679,21 @@ run_test_gate() {
     # the batch's overall clock restarted mid-run ("Duration: 3s", mode flipped
     # to supervised, ~26 min of cumulative work lost from the session-hours cap).
     # Applied by _bats_sandbox below; also dynamic-scoped into _gate_flake_retry_pass.
-    local _bats_sandbox=(env -u RITE_LOG_FILE -u PR_NUMBER -u ISSUE_NUMBER \
-      -u _RITE_PROVIDER_PREFLIGHT_OK \
-      -u SESSION_STATE_FILE -u RITE_BATCH_ID -u BATCH_MODE -u SESSION_START_TIME \
-      -u RITE_TARGET_BRANCH -u RITE_TEST_GATE_SKIP_TRIGGERS \
-      -u RITE_STALE_BRANCH_THRESHOLD -u RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
-      -u RITE_ACCEPT_RED_MAIN \
-      -u RITE_TEST_GATE_DIFF_BASE \
-      -u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
-      -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
-      -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)
+    # Scrub list is owned by _bats_session_scrub_args (gate-runners.sh) so every
+    # bats launch site stays in sync without manual copy-paste.
+    local _bats_sandbox=(env)
+    while IFS= read -r _sg_flag _sg_var; do
+      [ -n "${_sg_var:-}" ] && _bats_sandbox+=("$_sg_flag" "$_sg_var")
+    done < <(_bats_session_scrub_args)
+    # Throwaway state dir: export a private RITE_STATE_DIR so child processes
+    # cannot read or corrupt the live session's state files (gate-prior-failing-pr*.list
+    # etc.).  config.sh falls back to real .rite/state when RITE_STATE_DIR is unset,
+    # so we must set it rather than unset it.
+    local _bats_state_dir
+    _bats_state_dir=$(mktemp -d "/tmp/rite_gate_state_${PR_NUMBER:-0}_$$_XXXXXX" 2>/dev/null || true)
+    if [ -d "${_bats_state_dir:-}" ]; then
+      _bats_sandbox+=(RITE_STATE_DIR="$_bats_state_dir")
+    fi
 
     # --- CI-equivalent environment assembly (#1607) ---
     # Three hostile-environment factors are present in CI but absent locally:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-verdict.sh
+# sharkrite-test-covers: lib/utils/test-gate.sh, lib/utils/gate-verdict.sh, lib/utils/gate-runners.sh
 #
 # Regression: session-behavioral RITE_* vars must not bleed into bats tests
 # spawned by the gate (_GATE_BATS_SCRUB_VARS deny-list, #1186).
@@ -25,50 +25,43 @@
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
-  # Build _SANDBOX_ARGS mirroring _bats_sandbox in test-gate.sh; used by
-  # behavioral probes so they test the actual deny-list, not a hardcoded subset.
-  # Removing a var from _bats_sandbox would leave it set in the probe and fail.
+  # Build _SANDBOX_ARGS by calling the shared helper in gate-runners.sh so
+  # behavioral probes always test the actual deny-list.  Removing a var from
+  # _bats_session_scrub_args would leave it set in the probe and fail.
+  source "$RITE_LIB_DIR/utils/gate-runners.sh"
   _SANDBOX_ARGS=(env)
-  while read -r _flag _var; do
-    if [ -n "$_var" ]; then
-      _SANDBOX_ARGS+=("$_flag" "$_var")
-    fi
-  done < <(sed -n '/_bats_sandbox=(env -u/,/)/p' \
-      "${RITE_LIB_DIR}/utils/test-gate.sh" | grep -oE -- '-u [A-Z_]+' || true)
-  # Scrub BATS_* IPC vars: nested bats without this inherits outer runner FDs
-  # and deadlocks at 120s (#993). Mirrors gate-flake-retry.bats setup().
-  _SANDBOX_ARGS+=(-u BATS_RUN_TMPDIR -u BATS_SUITE_TMPDIR -u BATS_FILE_TMPDIR \
-    -u BATS_TEST_TMPDIR -u BATS_ROOT_PID -u BATS_LIBEXEC_DIR \
-    -u BATS_TMPDIR -u BATS_SUITE_TEST_NUMBER)
+  while IFS= read -r _flag _var; do
+    [ -n "${_var:-}" ] && _SANDBOX_ARGS+=("$_flag" "$_var")
+  done < <(_bats_session_scrub_args)
 }
 
 # ---------------------------------------------------------------------------
 # Structural: deny-list is present in _bats_sandbox
 # ---------------------------------------------------------------------------
 
-@test "structural: _bats_sandbox scrubs all _GATE_BATS_SCRUB_VARS session vars" {
-  _def=$(sed -n '/_bats_sandbox=(env -u/,/)/p' "${RITE_LIB_DIR}/utils/test-gate.sh")
-  [ -n "$_def" ]
+@test "structural: _bats_session_scrub_args scrubs all _GATE_BATS_SCRUB_VARS session vars" {
+  # Verify the shared helper emits -u entries for every session-behavioral var.
+  _scrub_output=$(_bats_session_scrub_args)
+  [ -n "$_scrub_output" ]
   for _var in RITE_TARGET_BRANCH RITE_TEST_GATE_SKIP_TRIGGERS \
       RITE_STALE_BRANCH_THRESHOLD RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
       RITE_ACCEPT_RED_MAIN \
       RITE_TEST_GATE_DIFF_BASE _RITE_PROVIDER_PREFLIGHT_OK \
       SESSION_STATE_FILE RITE_BATCH_ID BATCH_MODE SESSION_START_TIME; do
-    echo "$_def" | grep -q -- "-u $_var" || {
-      echo "FAIL: _bats_sandbox deny-list missing -u $_var (_GATE_BATS_SCRUB_VARS)" >&2
+    grep -q -- "-u $_var" <<< "$_scrub_output" || {
+      echo "FAIL: _bats_session_scrub_args deny-list missing -u $_var (_GATE_BATS_SCRUB_VARS)" >&2
       return 1
     }
   done
 }
 
-@test "structural: structural RITE_* vars are NOT scrubbed" {
+@test "structural: structural RITE_* vars are NOT in the scrub list" {
   # RITE_REPO_ROOT, RITE_LIB_DIR, RITE_PROJECT_ROOT must pass through so
   # Rule 35 suppressions and setup.bash loaders work inside tests.
-  _def=$(sed -n '/_bats_sandbox=(env -u/,/)/p' "${RITE_LIB_DIR}/utils/test-gate.sh")
-  [ -n "$_def" ]
+  _scrub_output=$(_bats_session_scrub_args)
   for _var in RITE_REPO_ROOT RITE_LIB_DIR RITE_PROJECT_ROOT; do
-    if echo "$_def" | grep -q -- "-u $_var"; then
-      echo "FAIL: _bats_sandbox must not scrub structural var $_var" >&2
+    if grep -q -- "-u $_var" <<< "$_scrub_output"; then
+      echo "FAIL: _bats_session_scrub_args must not scrub structural var $_var" >&2
       return 1
     fi
   done
@@ -96,7 +89,22 @@ setup() {
 
 @test "structural: _GATE_BATS_SCRUB_VARS deny-list comment names the canonical constant" {
   # The constant name serves as the grep anchor for behavioral-design.md cross-refs.
-  grep -q "_GATE_BATS_SCRUB_VARS" "${RITE_LIB_DIR}/utils/test-gate.sh"
+  # Now lives in the _bats_session_scrub_args helper in gate-runners.sh.
+  grep -q "_GATE_BATS_SCRUB_VARS" "${RITE_LIB_DIR}/utils/gate-runners.sh"
+}
+
+@test "structural: _bats_session_scrub_args helper is the shared owner of the scrub list" {
+  # test-gate.sh must call the helper (not hardcode the list); otherwise
+  # removing a var from the helper leaves it in test-gate.sh silently.
+  grep -q "_bats_session_scrub_args" "${RITE_LIB_DIR}/utils/test-gate.sh"
+  grep -q "_bats_session_scrub_args" "${RITE_LIB_DIR}/utils/post-merge-verify.sh"
+}
+
+@test "structural: test-gate uses a throwaway RITE_STATE_DIR for bats children" {
+  # config.sh falls back to real .rite/state when RITE_STATE_DIR is unset;
+  # a live gate run would let gated tests read/write the session's state files.
+  grep -q "_bats_state_dir" "${RITE_LIB_DIR}/utils/test-gate.sh"
+  grep -q "RITE_STATE_DIR" "${RITE_LIB_DIR}/utils/test-gate.sh"
 }
 
 # ---------------------------------------------------------------------------
@@ -194,4 +202,42 @@ EOF
   [ -f "$live" ]
   grep -q '"mode": "batch-1338"' "$live"
   rm -rf "$_d"
+}
+
+@test "behavioral: throwaway RITE_STATE_DIR isolates gated tests from the live session state" {
+  command -v bats >/dev/null 2>&1 || skip "bats not installed"
+  _d=$(mktemp -d)
+  _live_state=$(mktemp -d)
+  printf 'tests/regression/some-test.bats\n' > "$_live_state/gate-prior-failing-pr99.list"
+  # Probe: a bats test that reads RITE_STATE_DIR must see a fresh empty dir,
+  # not the live session's state directory (which has a prior-failing list).
+  cat > "$_d/state-isolation-probe.bats" <<'EOF'
+@test "probe: state dir is private (no prior-failing list from live session)" {
+  _flag="${RITE_STATE_DIR:-}/gate-prior-failing-pr99.list"
+  [ ! -f "$_flag" ]
+}
+EOF
+  # Build a sandbox with RITE_STATE_DIR set to a throwaway dir (mirrors what
+  # run_test_gate does via _bats_sandbox+=(RITE_STATE_DIR="$_bats_state_dir")).
+  _throwaway=$(mktemp -d)
+  run env RITE_STATE_DIR="$_live_state" \
+      "${_SANDBOX_ARGS[@]}" RITE_STATE_DIR="$_throwaway" \
+      bats "$_d/state-isolation-probe.bats" < /dev/null
+  rm -rf "$_d" "$_live_state" "$_throwaway"
+  [ "$status" -eq 0 ]
+}
+
+@test "structural: bin/rite-full-suite applies _bats_session_scrub_args to all bats launches" {
+  _fs="$RITE_LIB_DIR/../bin/rite-full-suite"
+  [ -f "$_fs" ] || skip "bin/rite-full-suite not found"
+  # Helper must be called in the script.
+  grep -q "_bats_session_scrub_args" "$_fs"
+  # Throwaway state dir must be present.
+  grep -q "RITE_STATE_DIR" "$_fs"
+  # Scrub env must appear in both the deadline-armed and the manual bats launch.
+  _uses=$(grep -c '_bats_scrub_env\[@\]' "$_fs" || true)
+  [ "${_uses:-0}" -ge 3 ] || {
+    echo "FAIL: expected ≥3 _bats_scrub_env uses in bin/rite-full-suite (deadline, manual, serial), got ${_uses}" >&2
+    return 1
+  }
 }

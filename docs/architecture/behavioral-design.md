@@ -2303,22 +2303,41 @@ A lint rule cannot catch this class — the broken tests contain zero references
 to the triggering variable. Prevention is a runtime boundary at the one choke
 point where the gate spawns bats.
 
-**Fix:** `_bats_sandbox` in `run_test_gate` (`lib/utils/test-gate.sh`) was
+**Fix (#1186):** `_bats_sandbox` in `run_test_gate` (`lib/utils/test-gate.sh`) was
 extended with a deny-list of session-behavioral RITE_* vars removed via `env -u`
-from every bats child. The deny-list is located via the `_GATE_BATS_SCRUB_VARS`
-comment anchor in `test-gate.sh` (not a shell variable — grep for it to find the
-exact `env -u` args):
+from every bats child. The deny-list is owned by the `_bats_session_scrub_args`
+helper in `lib/utils/gate-runners.sh` (the `_GATE_BATS_SCRUB_VARS` comment anchor
+is the grep target — the function name is the code path). Every bats-launch site
+calls this helper via a `while-read` loop so the list has one owner:
 
 ```
-_GATE_BATS_SCRUB_VARS: RITE_TARGET_BRANCH  RITE_TEST_GATE_SKIP_TRIGGERS
+_GATE_BATS_SCRUB_VARS (see _bats_session_scrub_args in lib/utils/gate-runners.sh):
+  RITE_TARGET_BRANCH  RITE_TEST_GATE_SKIP_TRIGGERS
   RITE_STALE_BRANCH_THRESHOLD  RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD
-  RITE_ACCEPT_RED_MAIN
+  RITE_ACCEPT_RED_MAIN  RITE_TEST_GATE_DIFF_BASE  _RITE_PROVIDER_PREFLIGHT_OK
+  SESSION_STATE_FILE  RITE_BATCH_ID  BATCH_MODE  SESSION_START_TIME
+  RITE_LOG_FILE  PR_NUMBER  ISSUE_NUMBER
+  BATS_RUN_TMPDIR BATS_SUITE_TMPDIR BATS_FILE_TMPDIR BATS_TEST_TMPDIR
+  BATS_ROOT_PID BATS_LIBEXEC_DIR BATS_TMPDIR BATS_SUITE_TEST_NUMBER
 ```
+
+**Private throwaway `RITE_STATE_DIR` (#1828):** `run_test_gate` creates a
+`mktemp -d` directory and exports it as `RITE_STATE_DIR` to bats children (via
+the `_bats_sandbox` array). Without this, `config.sh`'s fallback
+(`${RITE_STATE_DIR:-$project_root/.rite/state}`) makes child processes inherit
+the live session's state dir, letting gated tests read or corrupt
+`gate-prior-failing-pr*.list` and other state files. The throwaway dir is cleaned
+up in `run_test_gate`'s EXIT trap alongside `_cienv_shim_dir`. Same pattern applied
+in `_pmv_serial_rerun_clears` (`lib/utils/post-merge-verify.sh`) and in
+`bin/rite-full-suite` (all three bats launches: deadline-armed, manual, investigate-serial).
 
 **Structural vars that are NOT scrubbed:** `RITE_REPO_ROOT`, `RITE_LIB_DIR`,
 `RITE_PROJECT_ROOT`, `BATS_TEST_TIMEOUT` (the gate sets this itself; scrubbing
-it would break per-test timeouts). Rule 35 suppressions and `setup.bash` loaders
-inside tests depend on the structural RITE_* vars passing through.
+it would break per-test timeouts; serial lanes add `-u BATS_TEST_TIMEOUT`
+separately). Rule 35 suppressions and `setup.bash` loaders inside tests depend
+on the structural RITE_* vars passing through.  `RITE_STATE_DIR` is not unsettable
+(config.sh would fall back to real `.rite/state`); it is overridden to a throwaway
+dir instead.
 
 **Coverage:** Both the main bats invocations (6 sites: full/parallel/serial ×
 pretty/TAP) and the flake-retry invocation in `_gate_flake_retry_pass` use
@@ -2326,11 +2345,12 @@ pretty/TAP) and the flake-retry invocation in `_gate_flake_retry_pass` use
 (called from within `run_test_gate` where the local is defined).
 
 **Regression:** `tests/regression/gate-session-env-scrub.bats` — structural
-checks that every deny-listed var appears in `_bats_sandbox`, that structural
-RITE_* vars are absent from the scrub list, that all 7 invocation sites use the
-sandbox, and behavioral probes that extract the deny-list from `_bats_sandbox`
-via sed and run a nested bats invocation through the same `env -u` chain,
-confirming `RITE_TARGET_BRANCH` is unset and `RITE_REPO_ROOT` passes through.
+checks that the helper emits every deny-listed var, that structural RITE_* vars
+are absent from the scrub list, that all 7 invocation sites use the sandbox, that
+`bin/rite-full-suite` calls the helper, and behavioral probes that build a sandbox
+from the helper and run a nested bats invocation through the same `env -u` chain,
+confirming `RITE_TARGET_BRANCH` is unset, `RITE_REPO_ROOT` passes through, and
+a private `RITE_STATE_DIR` hides the live session's state files.
 
 **Note on `RITE_TEST_GATE_SKIP_TRIGGERS`:** this var is consumed by the gate's
 own selection phase (before bats is spawned), so scrubbing it from the child
