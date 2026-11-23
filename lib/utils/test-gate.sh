@@ -682,7 +682,7 @@ run_test_gate() {
     # Scrub list is owned by _bats_session_scrub_args (gate-runners.sh) so every
     # bats launch site stays in sync without manual copy-paste.
     local _bats_sandbox=(env)
-    while IFS= read -r _sg_flag _sg_var; do
+    while read -r _sg_flag _sg_var; do
       [ -n "${_sg_var:-}" ] && _bats_sandbox+=("$_sg_flag" "$_sg_var")
     done < <(_bats_session_scrub_args)
     # Throwaway state dir: export a private RITE_STATE_DIR so child processes

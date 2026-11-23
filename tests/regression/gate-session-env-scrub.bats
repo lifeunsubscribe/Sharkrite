@@ -29,8 +29,9 @@ setup() {
   # behavioral probes always test the actual deny-list.  Removing a var from
   # _bats_session_scrub_args would leave it set in the probe and fail.
   source "$RITE_LIB_DIR/utils/gate-runners.sh"
+  set +u; set +o pipefail
   _SANDBOX_ARGS=(env)
-  while IFS= read -r _flag _var; do
+  while read -r _flag _var; do
     [ -n "${_var:-}" ] && _SANDBOX_ARGS+=("$_flag" "$_var")
   done < <(_bats_session_scrub_args)
 }

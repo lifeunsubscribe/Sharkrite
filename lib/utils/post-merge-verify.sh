@@ -156,7 +156,7 @@ _pmv_serial_rerun_clears() {
   # Build env prefix from shared helper so the scrub list stays in sync
   # with run_test_gate's _bats_sandbox without manual copy-paste.
   local _pmv_bats_env=(env)
-  while IFS= read -r _sg_flag _sg_var; do
+  while read -r _sg_flag _sg_var; do
     [ -n "${_sg_var:-}" ] && _pmv_bats_env+=("$_sg_flag" "$_sg_var")
   done < <(_bats_session_scrub_args)
   # Serial lane: also unset BATS_TEST_TIMEOUT — bats-core 1.13 waits out the

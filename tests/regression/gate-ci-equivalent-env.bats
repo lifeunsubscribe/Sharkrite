@@ -25,10 +25,9 @@ setup() {
 @test "structural: _bats_sandbox contains a PATH= entry for CI-equivalent env" {
   # After #1607 the sandbox must set PATH so bats children see the shim dir and
   # (when present) the GNU tool gnubin dirs.
-  _def=$(sed -n '/_bats_sandbox=(env -u/,/)/p' "${RITE_LIB_DIR}/utils/test-gate.sh")
-  [ -n "$_def" ]
-  # The PATH assignment is _outside_ the -u list (it's a VAR=VAL, not -u VAR).
-  # We look for it in the broader assembly block that follows _bats_sandbox.
+  # #1834: _bats_sandbox=(env -u ...) was replaced with a dynamic while-read
+  # loop; the sed-based extraction is obsolete.  The PATH assertions below are
+  # sufficient: they grep the broader assembly block directly.
   grep -q 'PATH=' "${RITE_LIB_DIR}/utils/test-gate.sh" || {
     echo "FAIL: test-gate.sh must set PATH= for CI-equivalent env" >&2
     return 1

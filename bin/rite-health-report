@@ -152,7 +152,7 @@ fi
 DIAG_LINES=""
 TIMING_LINES=""
 for logfile in "${RECENT_LOGS[@]+"${RECENT_LOGS[@]}"}"; do
-  DIAG_LINES+=$(grep '\[diag\]' "$logfile" 2>/dev/null || true)
+  DIAG_LINES+=$(grep '^\[diag\]' "$logfile" 2>/dev/null || true)
   DIAG_LINES+=$'\n'
   TIMING_LINES+=$(grep '\[timing\].*END' "$logfile" 2>/dev/null || true)
   TIMING_LINES+=$'\n'

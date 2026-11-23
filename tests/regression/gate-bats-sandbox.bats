@@ -17,12 +17,16 @@
 setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
 
 @test "structural: sandbox env scrub is defined with all deny-listed vars" {
-  # Workflow vars (live-freeze class, see header) plus BATS_* IPC vars (#993:
-  # inherited BATS_RUN_TMPDIR/BATS_ROOT_PID deadlock nested bats runs). The
-  # definition spans continuation lines, so extract from the opening paren to
-  # the closing paren and assert each -u flag is present.
-  _def=$(sed -n '/_bats_sandbox=(env -u/,/)/p' "${RITE_LIB_DIR}/utils/test-gate.sh")
-  [ -n "$_def" ]
+  # The scrub list is now owned by _bats_session_scrub_args in gate-runners.sh
+  # (issue #1834); test-gate.sh builds _bats_sandbox via a while-read loop
+  # that calls the helper.  Extract the helper's output directly so this test
+  # remains the authoritative check that all required vars are scrubbed.
+  _helper_output=$(bash --noprofile --norc -c "
+    export RITE_LIB_DIR=\"${RITE_LIB_DIR}\"
+    source \"${RITE_LIB_DIR}/utils/gate-runners.sh\"
+    _bats_session_scrub_args
+  " 2>/dev/null || true)
+  [ -n "$_helper_output" ]
   for _var in RITE_LOG_FILE PR_NUMBER ISSUE_NUMBER \
       RITE_TARGET_BRANCH RITE_TEST_GATE_SKIP_TRIGGERS \
       RITE_STALE_BRANCH_THRESHOLD RITE_STALE_BRANCH_HARD_RESTART_THRESHOLD \
@@ -31,24 +35,31 @@ setup() { export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"; }
       BATS_RUN_TMPDIR BATS_SUITE_TMPDIR BATS_FILE_TMPDIR \
       BATS_TEST_TMPDIR BATS_ROOT_PID BATS_LIBEXEC_DIR \
       BATS_TMPDIR BATS_SUITE_TEST_NUMBER; do
-    echo "$_def" | grep -q -- "-u $_var" || {
-      echo "FAIL: _bats_sandbox scrub is missing -u $_var" >&2
+    grep -q -- "-u $_var" <<< "$_helper_output" || {
+      echo "FAIL: _bats_session_scrub_args deny-list missing -u $_var" >&2
       return 1
     }
   done
-  # BATS_TEST_TIMEOUT must NOT be scrubbed: the gate exports its own per-test
-  # watchdog value, and -u here would strip that export from the wrapped bats,
-  # disabling per-test timeouts and breaking swallowed-test detection (live
-  # regression caught by gate-notrun-detection.bats tests 14/15 on PR #995).
-  echo "$_def" | grep -q -- "-u BATS_TEST_TIMEOUT" && {
-    echo "FAIL: _bats_sandbox must not scrub BATS_TEST_TIMEOUT (gate-owned export)" >&2
+  # BATS_TEST_TIMEOUT must NOT be in the shared helper: the gate exports its
+  # own per-test watchdog value and serial lanes add -u BATS_TEST_TIMEOUT
+  # themselves (between scrub args and RITE_STATE_DIR= so env parses it as
+  # an option, not a command — the ordering invariant from #1834).
+  grep -q -- "-u BATS_TEST_TIMEOUT" <<< "$_helper_output" && {
+    echo "FAIL: _bats_session_scrub_args must not include BATS_TEST_TIMEOUT (serial lanes add it)" >&2
+    return 1
+  }
+  # test-gate.sh must call the helper (not hardcode the list)
+  grep -q "_bats_session_scrub_args" "${RITE_LIB_DIR}/utils/test-gate.sh" || {
+    echo "FAIL: test-gate.sh must call _bats_session_scrub_args" >&2
     return 1
   }
   return 0
 }
 
 @test "structural: sandbox is defined BEFORE the first bats invocation" {
-  _sandbox_ln=$(grep -nE '_bats_sandbox=\(env -u' "${RITE_LIB_DIR}/utils/test-gate.sh" | head -1 | cut -d: -f1)
+  # #1834: _bats_sandbox is now initialised as (env) and populated via
+  # while-read loop calling _bats_session_scrub_args.  Match the initialiser.
+  _sandbox_ln=$(grep -nE 'local _bats_sandbox=\(env\)' "${RITE_LIB_DIR}/utils/test-gate.sh" | head -1 | cut -d: -f1)
   _first_bats_ln=$(grep -nE '\-\-report-formatter tap --output' "${RITE_LIB_DIR}/utils/test-gate.sh" | head -1 | cut -d: -f1)
   [ -n "$_sandbox_ln" ]
   [ -n "$_first_bats_ln" ]
