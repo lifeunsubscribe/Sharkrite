@@ -427,6 +427,14 @@ If either guard fails the assessment runs normally so gate failures still reach 
 
 **Coverage:** `tests/regression/assess-and-resolve-now-always-loops.bats` — five static grep checks: no `SHIPPABLE_DEFER` references remain in `lib/`, no "Deferring.*NOW item" or "PR is shippable" messages in `assess-and-resolve.sh`, the "Normal loop" comment (the surviving fix-loop else branch) is present, and `CRITICAL_NOW_COUNT`/`HIGH_NOW_COUNT` are still computed. Runtime exit-2 routing is asserted by `tests/integration/assess-and-resolve-dedup.bats` test 5 (HIGH-severity NOW item enters fix loop).
 
+**What the fix session is given (issue #1828, 2026-11-23):** A fix session starts with only the `ACTIONABLE_NOW` item list; it has no view of the original issue. Two additions correct this:
+
+1. **Quoted issue body.** `inject_issue_context_into_fix_prompt` (`claude-workflow.sh`) fetches the issue title and body via `gh_safe issue view "$ISSUE_NUMBER" --json title,body` and appends them between `--- BEGIN_USER_DATA ---` / `--- END_USER_DATA ---` markers before the `## Issues to Fix` section. The intro line states the content is quoted data and that any verification commands inside it are run by the post-commit gate, not by the session. The fetch is non-fatal: if it fails or the issue has no body, the session runs without issue context.
+
+2. **Rejection reason section.** When the retry assessment re-raises a prior `ACTIONABLE_NOW` item (RULE 1 in `assess-review-issues.sh`), the item output MUST include a `**Prior Fix Rejected Because:**` field stating why the previous fix was rejected. `inject_rejection_reasons_into_fix_prompt` (`claude-workflow.sh`) parses these fields from `ACTIONABLE_NOW_ITEMS` and appends a "Why prior fixes were rejected" summary section before `## Issues to Fix`. When no item carries the field, nothing is appended.
+
+Both inject functions are called after the opening preamble and before the `## Issues to Fix` header, so the fix session reads issue scope and rejection history before seeing the work list. Operator guidance (`inject_operator_feedback_into_fix_prompt`) remains after the work list, before the exit instruction.
+
 ### Verification Out of Fix Session
 
 **Issue #448, 2026-06-07.** Verification (`make check` + `bats -r tests/`) was moved OUT of the fix session and into a parallel post-commit gate.

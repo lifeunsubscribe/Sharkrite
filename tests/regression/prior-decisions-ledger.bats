@@ -107,3 +107,7 @@ EOF
   [ "$output" = "0" ]
   grep -q 'source "$RITE_LIB_DIR/utils/review-helper.sh"' "$RITE_LIB_DIR/core/assess-review-issues.sh"
 }
+
+@test "RULE 1 requires Prior Fix Rejected Because field on re-raised items" {
+  grep -q 'Prior Fix Rejected Because' "$RITE_LIB_DIR/core/assess-review-issues.sh"
+}
