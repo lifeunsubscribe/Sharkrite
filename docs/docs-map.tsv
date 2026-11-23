@@ -194,9 +194,9 @@ docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	no
 docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	local-outside-function	a26ee54b49bea8d15d3657e99877b7d25c1c0e69f1c853498b98a61afaac8363	feature	-	-	-
 docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	defensive-sourcing-must-be-idempotent	e2c1f96141fc234623442e9b5c490d32cd78464e1f628aaa24ea17134ca248c0	feature	-	-	-
 docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	set-e-pipefail-grep-silent-death	7f54931f59709a789e2ed717a4c0fb568b8404257346ec6790e39b81a327ce9c	feature	-	-	-
-docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	structured-header-matching	90c6fc916831ff28583f8c95daa7debfc8f8709283bbd17508410c3f9a59fd08	feature	-	-	-
+docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	structured-header-matching	90c6fc916831ff28583f8c95daa7debfc8f8709283bbd17508410c3f9a59fd08	feature	-	Pooled	-
 docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	grep-c-output-vs-exit-code	770abe8c79b9041c66203d22ef41b1cd0c6537e24840e995a3cf25180b7f07e8	feature	-	-	-
-docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	marker-must-anchor-format	7a45751a4503cd4361cdebd40bbaffad17cb79f2ef5c616c14375f476b1cae9c	feature	-	-	-
+docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	marker-must-anchor-format	7a45751a4503cd4361cdebd40bbaffad17cb79f2ef5c616c14375f476b1cae9c	feature	-	Pooled	-
 docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	No `sleep infinity` (BSD /bin/sleep rejects it)	b6feae692f1f41c4a3ba0ad12bd695b92be939d7e9ba03ec705ed7fc4dbfc865	feature	-	-	-
 docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	tr cannot emit a multibyte UTF-8 replacement	81c32de237c8996329e1d7fe969acc747e6abb5da5b26b5180eb05b4817ca078	feature	-	-	-
 docs/architecture/conventions.md	2990a76d8e3e1e6c9167b292442b799f9b15d69e	-	2	BSD `date -jf` parsing a UTC timestamp needs `-u`	90cc57b4bf0000cfe28244086c7bbda384cb52148d2b3448e28d3f6f7db2a02a	feature	-	-	-
