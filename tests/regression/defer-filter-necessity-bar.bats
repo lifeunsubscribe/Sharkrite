@@ -69,3 +69,23 @@ setup() {
     false
   }
 }
+
+# ─── Test 4: fourth Defer Reason is present ───────────────────────────────────
+
+@test "assess-review-issues.sh: fourth Defer Reason 'Outside the issue's acceptance criteria' is present" {
+  run grep -n "Outside the issue's acceptance criteria" "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: fourth Defer Reason 'Outside the issue's acceptance criteria' missing"
+    false
+  }
+}
+
+# ─── Test 5: 'Scope exceeds time budget' is restricted to >1hr effort ─────────
+
+@test "assess-review-issues.sh: time budget Defer Reason requires Fix Effort >1hr" {
+  run grep -n "Scope exceeds time budget (only when Fix Effort is >1hr)" "$ASSESS_REVIEW_SCRIPT"
+  [ "$status" -eq 0 ] || {
+    echo "FAIL: 'Scope exceeds time budget' effort condition (>1hr) is missing"
+    false
+  }
+}
