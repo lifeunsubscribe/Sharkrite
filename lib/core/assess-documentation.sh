@@ -1123,11 +1123,12 @@ COVERAGE_EOF
   return 0
 }
 
-# commit_catalog_files — best-effort commit (and push) of the two auto-written
+# commit_catalog_files — best-effort commit (and push) of the three auto-written
 # catalog files after the writers run.
 #
 # Context: update_conventions_from_marker() and update_tag_index_from_block()
-# write docs/architecture/conventions.md and docs/architecture/tag-index.md
+# write docs/architecture/conventions.md and docs/architecture/tag-index.md,
+# and docs_map_tag_section_by_pointer() writes docs/docs-map.tsv,
 # directly into the main worktree ($RITE_PROJECT_ROOT). Without a commit step
 # the changes are stranded as uncommitted/untracked state and silently lost
 # when any clean-tree operation (checkout, stash, reset) runs.  This helper
@@ -1177,24 +1178,26 @@ commit_catalog_files() {
       ;;
   esac
 
-  # Check whether either catalog file has uncommitted changes (modified or untracked).
+  # Check whether any catalog file has uncommitted changes (modified or untracked).
   # `git status --porcelain -- <paths>` outputs one line per changed path; empty = clean.
   # `|| true` prevents the pipeline from killing the script under set -e when no
   # paths are listed (git exits 0 anyway, but the || true is defensive).
   local _status
   _status=$(git -C "$RITE_PROJECT_ROOT" status --porcelain \
-    -- "docs/architecture/conventions.md" "docs/architecture/tag-index.md" 2>/dev/null || true)
+    -- "docs/architecture/conventions.md" "docs/architecture/tag-index.md" \
+    "docs/docs-map.tsv" 2>/dev/null || true)
 
   if [ -z "$_status" ]; then
     # No changes to either catalog file — nothing to commit.
     return 0
   fi
 
-  # Stage exactly the two catalog paths (no broad git add -A / git add .).
+  # Stage exactly the three catalog paths (no broad git add -A / git add .).
   # Add each file individually so a missing tag-index.md (first PR with tags)
   # does not cause git add to exit non-zero and skip staging conventions.md.
   git -C "$RITE_PROJECT_ROOT" add "docs/architecture/conventions.md" 2>/dev/null || true
   git -C "$RITE_PROJECT_ROOT" add "docs/architecture/tag-index.md" 2>/dev/null || true
+  git -C "$RITE_PROJECT_ROOT" add "docs/docs-map.tsv" 2>/dev/null || true
 
   # Commit best-effort.  `git commit` exits non-zero if there is nothing to commit
   # (e.g. the add above was a no-op because the file was already staged); that is

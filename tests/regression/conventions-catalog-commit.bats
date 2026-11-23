@@ -7,9 +7,9 @@
 # The function:
 #   1. Is a no-op when the main worktree HEAD is not on main/master (skips with
 #      one info line so user's feature checkouts are never polluted).
-#   2. Is a no-op when neither catalog file has changes (empty git status).
-#   3. Stages and commits exactly docs/architecture/conventions.md and
-#      docs/architecture/tag-index.md when they have changes.
+#   2. Is a no-op when no catalog file has changes (empty git status).
+#   3. Stages and commits docs/architecture/conventions.md,
+#      docs/architecture/tag-index.md, and docs/docs-map.tsv when they have changes.
 #   4. Handles an untracked tag-index.md (created for the first time).
 #   5. Treats push failure as non-fatal: rolls back the commit so local main
 #      stays fast-forwardable, prints a push-failed warning, returns 0.
@@ -22,6 +22,8 @@
 #      (d1) no remote configured   → push fails, commit rolled back
 #      (d2) remote advanced (non-ff) → push rejected, commit rolled back, local main stays ff-able
 #   (e) non-default branch        → skip with info line, no commit
+#   (f) docs map changed          → commit created containing docs/docs-map.tsv
+#   (g) docs map and tag-index both changed → land in same commit
 
 load '../helpers/setup.bash'
 
@@ -58,6 +60,11 @@ setup() {
 
 ---
 EOF
+
+  # Seed docs-map.tsv (committed baseline so the map is a tracked file).
+  mkdir -p "${RITE_TEST_TMPDIR}/docs"
+  printf 'path\tsection\ttag\n' > "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
+  printf 'docs/architecture/behavioral-design.md\tSeed Section\t\n' >> "${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
 
   # Initialise a git repo so commit_catalog_files() has a real git repo to
   # work with.  Tests can override the branch after setup() returns.
@@ -346,4 +353,86 @@ EOF
 
   # Switch back to main so teardown is clean.
   git -C "$RITE_TEST_TMPDIR" checkout -q main
+}
+
+# ---------------------------------------------------------------------------
+# Test (f): only docs-map.tsv changed → commit created containing it
+# ---------------------------------------------------------------------------
+
+@test "(f) docs map changed: commit created containing docs/docs-map.tsv" {
+  local docs_map_file="${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
+  local before_count
+  before_count=$(commit_count)
+
+  # Confirm the map is tracked and clean before the test.
+  run git -C "$RITE_TEST_TMPDIR" status --porcelain -- "docs/docs-map.tsv"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # Append a tag update (simulates docs_map_tag_section_by_pointer output).
+  printf 'docs/architecture/behavioral-design.md\tNew Section\tUpdated\n' >> "$docs_map_file"
+
+  # Confirm it is now dirty.
+  run git -C "$RITE_TEST_TMPDIR" status --porcelain -- "docs/docs-map.tsv"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+
+  commit_catalog_files "103"
+
+  # Exactly one new commit must have been created.
+  local after_count
+  after_count=$(commit_count)
+  [ "$after_count" -eq $((before_count + 1)) ]
+
+  # The commit must contain docs/docs-map.tsv.
+  local changed_paths
+  changed_paths=$(git -C "$RITE_TEST_TMPDIR" diff-tree --no-commit-id -r --name-only HEAD)
+  grep -q "docs/docs-map.tsv" <<< "$changed_paths"
+
+  # conventions.md must NOT be in the commit (it was not changed).
+  local path_count
+  path_count=$(grep -c "conventions.md" <<< "$changed_paths" || true)
+  [ "$path_count" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Test (g): docs-map.tsv and tag-index.md both changed → land in same commit
+# ---------------------------------------------------------------------------
+
+@test "(g) docs map and tag-index both changed: land in same commit" {
+  local docs_map_file="${RITE_TEST_TMPDIR}/docs/docs-map.tsv"
+  local tag_index_file="${RITE_TEST_TMPDIR}/docs/architecture/tag-index.md"
+  local before_count
+  before_count=$(commit_count)
+
+  # Modify the docs map (tagged section update).
+  printf 'docs/architecture/behavioral-design.md\tAnother Section\tUpdated\n' >> "$docs_map_file"
+
+  # Create the tag-index for the first time (untracked state).
+  cat > "$tag_index_file" <<'EOF'
+# Tag Index
+
+**Auto-maintained — do not hand-edit.**
+
+---
+
+## set-e
+
+- behavioral-design.md → Another Section
+
+---
+EOF
+
+  commit_catalog_files "104"
+
+  # Exactly one new commit must have been created.
+  local after_count
+  after_count=$(commit_count)
+  [ "$after_count" -eq $((before_count + 1)) ]
+
+  # Both docs/docs-map.tsv and docs/architecture/tag-index.md must be in the same commit.
+  local changed_paths
+  changed_paths=$(git -C "$RITE_TEST_TMPDIR" diff-tree --no-commit-id -r --name-only HEAD)
+  grep -q "docs/docs-map.tsv" <<< "$changed_paths"
+  grep -q "docs/architecture/tag-index.md" <<< "$changed_paths"
 }
