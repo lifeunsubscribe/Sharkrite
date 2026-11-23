@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/format-review.sh::review_reports_zero_findings
+# sharkrite-test-covers: lib/utils/format-review.sh::review_reports_zero_findings, lib/core/assess-and-resolve.sh
 
 setup() {
   export RITE_LIB_DIR="${BATS_TEST_DIRNAME}/../../lib"
@@ -129,42 +129,61 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# assess-and-resolve.sh gate conditions (all three must hold)
+# assess-and-resolve.sh gate conditions (combined guard regression coverage)
+#
+# Each test runs the exact three-clause guard from assess-and-resolve.sh
+# (lines 1737-1739) in a subshell.  If any clause is dropped or inverted
+# the test that exercises that clause will fail.
+#
+#   if review_reports_zero_findings "$body" \
+#      && [ "${GATE_NOW_COUNT:-0}" -eq 0 ] \
+#      && [ "${_gate_verdict_is_stale:-false}" != "true" ]; then exit 0; fi
+#   exit 1
 # ---------------------------------------------------------------------------
 
-@test "gate conditions: zero-findings review with gate=0 and stale=false exits 0" {
-  local body
-  body='**Findings:** 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 0 | 🟢 LOW: 0'
-  GATE_NOW_COUNT=0
-  _gate_verdict_is_stale=false
-  run review_reports_zero_findings "$body"
-  [ "$status" -eq 0 ]
-  # Both gate guards would also pass — the combined condition would skip assessment.
-  [ "${GATE_NOW_COUNT:-0}" -eq 0 ]
-  [ "${_gate_verdict_is_stale}" != "true" ]
+_run_guard() {
+  # Run the combined guard in a subshell.  Args: body gate_count stale_flag.
+  local _body="$1" _gate="$2" _stale="$3"
+  local _lib="$RITE_LIB_DIR"
+  export _GUARD_BODY="$_body"
+  export _GUARD_GATE="$_gate"
+  export _GUARD_STALE="$_stale"
+  run bash -c "
+    source \"$_lib/utils/format-review.sh\" 2>/dev/null
+    set +u; set +o pipefail
+    GATE_NOW_COUNT=\"\$_GUARD_GATE\"
+    _gate_verdict_is_stale=\"\$_GUARD_STALE\"
+    if review_reports_zero_findings \"\$_GUARD_BODY\" \\
+       && [ \"\${GATE_NOW_COUNT:-0}\" -eq 0 ] \\
+       && [ \"\${_gate_verdict_is_stale:-false}\" != 'true' ]; then
+      exit 0
+    fi
+    exit 1
+  "
 }
 
-@test "gate conditions: zero-findings review with GATE_NOW_COUNT=1 does not skip" {
-  local body
-  body='**Findings:** 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 0 | 🟢 LOW: 0'
-  GATE_NOW_COUNT=1
-  _gate_verdict_is_stale=false
-  run review_reports_zero_findings "$body"
-  # review_reports_zero_findings itself succeeds (review is zero)…
+@test "gate conditions: all three clauses pass — guard fires, assessment skipped" {
+  local body='**Findings:** 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 0 | 🟢 LOW: 0'
+  _run_guard "$body" "0" "false"
   [ "$status" -eq 0 ]
-  # …but GATE_NOW_COUNT is non-zero so the combined condition in assess-and-resolve.sh
-  # would NOT skip the assessment — asserted by the caller's && guard.
-  [ "${GATE_NOW_COUNT:-0}" -ne 0 ]
 }
 
-@test "gate conditions: zero-findings review with stale gate does not skip" {
-  local body
-  body='**Findings:** 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 0 | 🟢 LOW: 0'
-  GATE_NOW_COUNT=0
-  _gate_verdict_is_stale=true
-  run review_reports_zero_findings "$body"
-  [ "$status" -eq 0 ]
-  [ "${_gate_verdict_is_stale}" = "true" ]
+@test "gate conditions: GATE_NOW_COUNT=1 — guard does not fire" {
+  local body='**Findings:** 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 0 | 🟢 LOW: 0'
+  _run_guard "$body" "1" "false"
+  [ "$status" -eq 1 ]
+}
+
+@test "gate conditions: stale gate verdict — guard does not fire" {
+  local body='**Findings:** 🔴 CRITICAL: 0 | 🟠 HIGH: 0 | 🟡 MEDIUM: 0 | 🟢 LOW: 0'
+  _run_guard "$body" "0" "true"
+  [ "$status" -eq 1 ]
+}
+
+@test "gate conditions: non-zero review findings — guard does not fire" {
+  local body='**Findings:** 🔴 CRITICAL: 0 | 🟠 HIGH: 1 | 🟡 MEDIUM: 0 | 🟢 LOW: 0'
+  _run_guard "$body" "0" "false"
+  [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------

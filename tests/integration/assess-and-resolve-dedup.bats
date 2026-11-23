@@ -282,20 +282,10 @@ exit 0
 ASSESS_STUB_EOF
   chmod +x "$MOCK_LIB_DIR/core/assess-review-issues.sh"
 
-  # Override: format-review.sh — sourceable no-op stub (avoids display logic in
-  # tests and is safe when assess-and-resolve.sh sources it at startup).
-  # Must define parse_review_severity_counts since assess-and-resolve.sh calls it.
-  # The dedup tests don't exercise the parse path, so stub counts returning zeros.
-  rm -f "$MOCK_LIB_DIR/utils/format-review.sh"
-  cat > "$MOCK_LIB_DIR/utils/format-review.sh" << 'FORMAT_STUB_EOF'
-#!/usr/bin/env bash
-if [ "${_RITE_FORMAT_REVIEW_LOADED:-}" = "true" ]; then return 0 2>/dev/null || true; fi
-_RITE_FORMAT_REVIEW_LOADED=true
-strip_pre_review_narration() { printf '%s\n' "${1:-}"; }
-parse_review_severity_counts() { _PRC_CRITICAL=0; _PRC_HIGH=0; _PRC_MEDIUM=0; _PRC_LOW=0; }
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then exit 0; fi
-FORMAT_STUB_EOF
-  chmod +x "$MOCK_LIB_DIR/utils/format-review.sh"
+  # format-review.sh: use the real file via the symlink created above.
+  # The real file defines review_reports_zero_findings (needed by assess-and-resolve.sh
+  # for the zero-findings early-exit path, test 6).  Its display logic is gated by
+  # BASH_SOURCE[0] == $0 and never runs when the file is sourced, so no stub is needed.
 }
 
 # _write_pr_view_json REVIEW_BODY
