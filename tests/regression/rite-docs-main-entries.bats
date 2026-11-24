@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/docs-command.sh::docs_reconcile_drift|_docs_main_entries_pass|_docs_list_main_entry_docs|_docs_bounded_context_for_doc|_docs_extract_section
+# sharkrite-test-covers: lib/core/docs-command.sh::docs_reconcile_drift|_docs_main_entries_pass|_docs_list_main_entry_docs|_docs_bounded_context_for_doc|_docs_extract_section|_docs_group_entries_by_section
 # tests/regression/rite-docs-main-entries.bats
 BATS_TEST_TIMEOUT=30
 #
@@ -565,4 +565,140 @@ _docs_list_main_entry_docs
   # Legacy path (_docs_update_engine) must have called doc_assessment —
   # before the fix this was unreachable when main-store entries existed.
   grep -q "RESOLVE:role=doc_assessment" "$STUB_CALLS_FILE"
+}
+
+# ---------------------------------------------------------------------------
+# Tests for _docs_group_entries_by_section (#1837)
+# ---------------------------------------------------------------------------
+
+@test "groups entries by section: entries routed to per-section group files in map order" {
+  local map_file="$BATS_TEST_TMPDIR/docs-map.tsv"
+  local doc="docs/test-doc.md"
+  printf '# docs-map v4\n' > "$map_file"
+  printf '%s\t-\t-\t2\tBackground\t-\tfeature\t-\n' "$doc" >> "$map_file"
+  printf '%s\t-\t-\t2\tUsage\t-\tfeature\t-\n' "$doc" >> "$map_file"
+  printf '%s\t-\t-\t2\tTroubleshooting\t-\tfeature\t-\n' "$doc" >> "$map_file"
+
+  # Entries seeded in reverse map order to verify map-order numbering
+  local entry_file="$BATS_TEST_TMPDIR/entries.log"
+  printf 'doc=%s\tbranch=main\tpr=1\tissue=-\tassertion=A1\tkind=contradiction\tevidence=assertion audit; section: Troubleshooting\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  printf 'doc=%s\tbranch=main\tpr=2\tissue=-\tassertion=A2\tkind=contradiction\tevidence=assertion audit; section: Background\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  printf 'doc=%s\tbranch=main\tpr=3\tissue=-\tassertion=A3\tkind=contradiction\tevidence=assertion audit; section: Usage\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+
+  local outdir="$BATS_TEST_TMPDIR/groups"
+  mkdir -p "$outdir"
+
+  run bash "$_DOCS_HELPER" _docs_group_entries_by_section "$entry_file" "$doc" "$map_file" "$outdir"
+  [ "$status" -eq 0 ]
+  [ "$output" = "3" ]
+
+  # Groups numbered in map order: Background=1, Usage=2, Troubleshooting=3
+  grep -q 'Background' "$outdir/group-1.meta"
+  grep -q 'Usage' "$outdir/group-2.meta"
+  grep -q 'Troubleshooting' "$outdir/group-3.meta"
+
+  # Each group has exactly one entry
+  [ "$(grep -c '^doc=' "$outdir/group-1.entries" || true)" -eq 1 ]
+  [ "$(grep -c '^doc=' "$outdir/group-2.entries" || true)" -eq 1 ]
+  [ "$(grep -c '^doc=' "$outdir/group-3.entries" || true)" -eq 1 ]
+
+  # No rest file written
+  [ ! -f "$outdir/rest.entries" ]
+}
+
+@test "rest file: no-section evidence, preamble, missing heading, duplicate heading all go to rest" {
+  local map_file="$BATS_TEST_TMPDIR/docs-map.tsv"
+  local doc="docs/test-doc.md"
+  printf '# docs-map v4\n' > "$map_file"
+  printf '%s\t-\t-\t2\tBackground\t-\tfeature\t-\n' "$doc" >> "$map_file"
+  # Duplicate: same heading text at two different levels
+  printf '%s\t-\t-\t2\tDuplicate\t-\tfeature\t-\n' "$doc" >> "$map_file"
+  printf '%s\t-\t-\t3\tDuplicate\t-\tfeature\t-\n' "$doc" >> "$map_file"
+
+  local entry_file="$BATS_TEST_TMPDIR/entries.log"
+  # 1. No "; section: " in evidence
+  printf 'doc=%s\tbranch=main\tpr=1\tissue=-\tassertion=A1\tkind=contradiction\tevidence=lib/core/foo.sh\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  # 2. Preamble
+  printf 'doc=%s\tbranch=main\tpr=2\tissue=-\tassertion=A2\tkind=contradiction\tevidence=assertion audit; section: (preamble)\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  # 3. Heading not in map
+  printf 'doc=%s\tbranch=main\tpr=3\tissue=-\tassertion=A3\tkind=contradiction\tevidence=assertion audit; section: NonExistent\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  # 4. Duplicate heading (matches two rows)
+  printf 'doc=%s\tbranch=main\tpr=4\tissue=-\tassertion=A4\tkind=contradiction\tevidence=assertion audit; section: Duplicate\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  # 5. This one goes to a group
+  printf 'doc=%s\tbranch=main\tpr=5\tissue=-\tassertion=A5\tkind=contradiction\tevidence=assertion audit; section: Background\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+
+  local outdir="$BATS_TEST_TMPDIR/groups"
+  mkdir -p "$outdir"
+
+  run bash "$_DOCS_HELPER" _docs_group_entries_by_section "$entry_file" "$doc" "$map_file" "$outdir"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+
+  # 4 entries go to rest
+  [ "$(grep -c '^doc=' "$outdir/rest.entries" || true)" -eq 4 ]
+
+  # 1 entry goes to group-1 (Background)
+  grep -q 'Background' "$outdir/group-1.meta"
+  [ "$(grep -c '^doc=' "$outdir/group-1.entries" || true)" -eq 1 ]
+}
+
+@test "every entry lands once: no entry is dropped or duplicated, empty file prints 0" {
+  local map_file="$BATS_TEST_TMPDIR/docs-map.tsv"
+  local doc="docs/test-doc.md"
+  printf '# docs-map v4\n' > "$map_file"
+  printf '%s\t-\t-\t2\tBackground\t-\tfeature\t-\n' "$doc" >> "$map_file"
+  printf '%s\t-\t-\t2\tUsage\t-\tfeature\t-\n' "$doc" >> "$map_file"
+
+  # Empty entry file → prints 0 and writes no group files
+  local empty_file="$BATS_TEST_TMPDIR/empty.log"
+  : > "$empty_file"
+  local outdir0="$BATS_TEST_TMPDIR/groups0"
+  mkdir -p "$outdir0"
+  run bash "$_DOCS_HELPER" _docs_group_entries_by_section "$empty_file" "$doc" "$map_file" "$outdir0"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+  [ -z "$(find "$outdir0" -name 'group-*.entries' -o -name 'rest.entries' 2>/dev/null | head -1 || true)" ]
+
+  # Partition check: every input line lands in exactly one output file
+  local entry_file="$BATS_TEST_TMPDIR/entries.log"
+  printf 'doc=%s\tbranch=main\tpr=1\tissue=-\tassertion=A1\tkind=contradiction\tevidence=assertion audit; section: Background\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  printf 'doc=%s\tbranch=main\tpr=2\tissue=-\tassertion=A2\tkind=contradiction\tevidence=assertion audit; section: Usage\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  printf 'doc=%s\tbranch=main\tpr=3\tissue=-\tassertion=A3\tkind=contradiction\tevidence=lib/core/foo.sh\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+  printf 'doc=%s\tbranch=main\tpr=4\tissue=-\tassertion=A4\tkind=contradiction\tevidence=assertion audit; section: (preamble)\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+
+  local outdir="$BATS_TEST_TMPDIR/groups"
+  mkdir -p "$outdir"
+
+  run bash "$_DOCS_HELPER" _docs_group_entries_by_section "$entry_file" "$doc" "$map_file" "$outdir"
+  [ "$status" -eq 0 ]
+
+  # Sum entries across all group and rest files must equal 4
+  local _total=0 _f _cnt
+  for _f in "$outdir"/group-*.entries "$outdir/rest.entries"; do
+    [ -f "$_f" ] || continue
+    _cnt="$(grep -c '^doc=' "$_f" || true)"
+    _total=$((_total + _cnt))
+  done
+  [ "$_total" -eq 4 ]
+}
+
+@test "no provider call: _docs_group_entries_by_section makes no provider or map-rebuild call" {
+  local map_file="$BATS_TEST_TMPDIR/docs-map.tsv"
+  local doc="docs/test-doc.md"
+  printf '# docs-map v4\n' > "$map_file"
+  printf '%s\t-\t-\t2\tBackground\t-\tfeature\t-\n' "$doc" >> "$map_file"
+
+  local entry_file="$BATS_TEST_TMPDIR/entries.log"
+  printf 'doc=%s\tbranch=main\tpr=1\tissue=-\tassertion=A1\tkind=contradiction\tevidence=assertion audit; section: Background\trecorded=2026-01-01T00:00:00Z\n' "$doc" >> "$entry_file"
+
+  local outdir="$BATS_TEST_TMPDIR/groups"
+  mkdir -p "$outdir"
+
+  run bash "$_DOCS_HELPER" _docs_group_entries_by_section "$entry_file" "$doc" "$map_file" "$outdir"
+  [ "$status" -eq 0 ]
+
+  # STUB_CALLS_FILE must have no RESOLVE:role= lines (no provider_resolve_model called)
+  local _calls
+  _calls="$(grep -c 'RESOLVE:role=' "$STUB_CALLS_FILE" || true)"
+  [ "${_calls:-0}" -eq 0 ]
 }
