@@ -259,7 +259,7 @@ ${_aa_fold_lines}"
   for _aa_pf in "${_aa_dir}"/approved_*.txt; do
     [ -f "$_aa_pf" ] || continue
 
-    local _aa_action="" _aa_file="" _aa_drift="" _aa_content=""
+    local _aa_action="" _aa_file="" _aa_drift="" _aa_content="" _aa_section=""
     local _aa_in_content=0
     local _aa_ln
 
@@ -270,6 +270,7 @@ ${_aa_fold_lines}"
         case "$_aa_ln" in
           "ACTION: "*)     _aa_action="${_aa_ln#ACTION: }"; _aa_action="${_aa_action// /}" ;;
           "FILE: "*)       _aa_file="${_aa_ln#FILE: }" ;;
+          "SECTION: "*)    _aa_section="${_aa_ln#SECTION: }" ;;
           "DRIFT_REFS: "*) _aa_drift="${_aa_ln#DRIFT_REFS: }" ;;
           "---CONTENT---") _aa_in_content=1 ;;
         esac
@@ -291,9 +292,9 @@ ${_aa_fold_lines}"
     # Reject unrecognized actions before any write — malformed LLM output must not
     # fall through to the else-path and overwrite a file with partial content.
     case "$_aa_action" in
-      EDIT|CREATE|REFINE) : ;;
+      EDIT|CREATE|REFINE|EDIT_SECTION) : ;;
       *)
-        print_warning "Skipping proposal for '${_aa_file}': unknown ACTION '${_aa_action}' — expected EDIT, CREATE, or REFINE" >&2
+        print_warning "Skipping proposal for '${_aa_file}': unknown ACTION '${_aa_action}' — expected EDIT, CREATE, REFINE, or EDIT_SECTION" >&2
         continue
         ;;
     esac
@@ -312,6 +313,73 @@ ${_aa_fold_lines}"
     # If it was deleted between preview and apply, skip rather than create.
     if [ "$_aa_action" = "REFINE" ] && [ ! -f "$_aa_target_file" ]; then
       print_warning "Skipping REFINE for '${_aa_file}': file no longer exists in worktree — cannot append to a missing file" >&2
+      continue
+    fi
+
+    # EDIT_SECTION: validate and splice.
+    if [ "$_aa_action" = "EDIT_SECTION" ]; then
+      if [ ! -f "$_aa_target_file" ]; then
+        print_warning "Skipping EDIT_SECTION for '${_aa_file}': file does not exist in worktree" >&2
+        continue
+      fi
+      # Parse SECTION: <level> <occurrence> <heading text>
+      local _aa_es_level="" _aa_es_occ="" _aa_es_heading=""
+      if [ -n "$_aa_section" ]; then
+        _aa_es_level="${_aa_section%% *}"
+        local _aa_es_rest="${_aa_section#* }"
+        # _aa_es_rest must contain a space to have both occurrence and heading
+        case "$_aa_es_rest" in
+          *" "*)
+            _aa_es_occ="${_aa_es_rest%% *}"
+            _aa_es_heading="${_aa_es_rest#* }"
+            ;;
+          *) _aa_es_heading="" ;;
+        esac
+      fi
+      if [ -z "$_aa_es_level" ] || [ -z "$_aa_es_occ" ] || [ -z "$_aa_es_heading" ] \
+         || ! grep -qE '^[1-6]$' <<< "$_aa_es_level" \
+         || ! grep -qE '^[0-9]+$' <<< "$_aa_es_occ"; then
+        print_warning "Skipping EDIT_SECTION for '${_aa_file}': SECTION: line missing or malformed (expected 'SECTION: <1-6> <N> <heading text>')" >&2
+        continue
+      fi
+      # Validate first content line is a heading of the declared level
+      local _aa_es_first_line
+      _aa_es_first_line="${_aa_content%%$'\n'*}"
+      local _aa_es_expected_prefix
+      _aa_es_expected_prefix="$(printf '%*s' "$_aa_es_level" '' | tr ' ' '#')"
+      case "$_aa_es_first_line" in
+        "${_aa_es_expected_prefix} "*) : ;;
+        *)
+          print_warning "Skipping EDIT_SECTION for '${_aa_file}': first content line is not a level-${_aa_es_level} heading" >&2
+          continue
+          ;;
+      esac
+      # Validate content does not reach outside the section: no heading after line 1 outside a code fence
+      local _aa_es_later_heading
+      _aa_es_later_heading="$(printf '%s' "$_aa_content" | awk '
+        NR==1{next}
+        /^```/||/^~~~/{inf=!inf;next}
+        !inf&&/^#/{n=0;s=$0;while(substr(s,1,1)=="#"){n++;s=substr(s,2)};if(n>=1&&n<=6){found=1;exit}}
+        END{if(found)print "yes"}
+      ' || true)"
+      if [ "$_aa_es_later_heading" = "yes" ]; then
+        print_warning "Skipping EDIT_SECTION for '${_aa_file}': content contains a heading outside a code fence — proposal would reach beyond the target section" >&2
+        continue
+      fi
+      # Write content to a temp file and splice
+      local _aa_es_tmp
+      _aa_es_tmp="$(mktemp "${TMPDIR:-/tmp}/rite_es_content_XXXXXX")"
+      printf '%s' "$_aa_content" > "$_aa_es_tmp"
+      if ! _docs_splice_section_own \
+           "$_aa_target_file" "$_aa_es_level" "$_aa_es_heading" "$_aa_es_occ" "$_aa_es_tmp"; then
+        print_warning "Skipping EDIT_SECTION for '${_aa_file}': section '${_aa_es_heading}' (level ${_aa_es_level}, occurrence ${_aa_es_occ}) not found" >&2
+        rm -f "$_aa_es_tmp"
+        continue
+      fi
+      rm -f "$_aa_es_tmp"
+      if [ -n "$_aa_drift" ] && [ "$_aa_drift" != "none" ]; then
+        _aa_all_drift_refs="${_aa_all_drift_refs} ${_aa_drift}"
+      fi
       continue
     fi
 
@@ -354,6 +422,8 @@ ${_aa_fold_lines}"
   if git -C "$_aa_wt_path" diff --cached --quiet 2>/dev/null; then
     print_warning "Nothing staged in docs worktree — no changes to commit"
     git -C "$RITE_PROJECT_ROOT" worktree remove "$_aa_wt_path" --force 2>/dev/null || true
+    git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
+    git -C "$RITE_PROJECT_ROOT" branch -D "$_aa_branch" 2>/dev/null || true
     return 0
   fi
 
@@ -1287,6 +1357,118 @@ _docs_extract_section_own() {
     }
     capturing{print}
   ' "$_deo_file"
+}
+
+# ---------------------------------------------------------------------------
+# _docs_splice_section_own FILE HEADING_LEVEL HEADING_TEXT OCCURRENCE CONTENT_FILE
+#
+# Replace the lines that _docs_extract_section_own returns for (FILE,
+# HEADING_LEVEL, HEADING_TEXT, OCCURRENCE) with the contents of CONTENT_FILE,
+# via a temp file that is moved into place atomically.
+#
+# Splicing a section's own extracted text back leaves the file byte-identical.
+#
+# Returns 1 (file unchanged) when HEADING_LEVEL is empty, the section cannot
+# be found, or any argument is missing.
+#
+# Blank-line preservation: if the last line of the original section is blank
+# and the last line of CONTENT_FILE is not blank, one blank line is inserted
+# before the next heading so the following section is not run-on.
+# ---------------------------------------------------------------------------
+_docs_splice_section_own() {
+  local _dss_file="$1"
+  local _dss_level="$2"
+  local _dss_text="$3"
+  local _dss_occ="${4:-1}"
+  local _dss_content_file="$5"
+
+  [ -f "$_dss_file" ] || return 1
+  [ -n "$_dss_level" ] || return 1
+  [ -f "$_dss_content_file" ] || return 1
+
+  # Find the start and end line numbers of the section (same matching logic as
+  # _docs_extract_section_own: heading outside a code fence, occurrence index).
+  local _dss_range
+  _dss_range="$(TGT_TEXT="$_dss_text" awk \
+    -v tgt_level="$_dss_level" -v tgt_occ="$_dss_occ" '
+    BEGIN{
+      capturing=0;inf=0;seen=0;start=0;end_ln=0
+      tgt_l=tgt_level+0;tgt_o=tgt_occ+0
+      tgt_text=ENVIRON["TGT_TEXT"]
+    }
+    /^```/||/^~~~/{inf=!inf; next}
+    !inf&&/^#/{
+      n=0; line=$0
+      while(substr(line,1,1)=="#"){n++;line=substr(line,2)}
+      if(n<=6){
+        if(capturing){end_ln=NR-1; exit}
+        if(substr(line,1,1)==" ")  line=substr(line,2)
+        if(substr(line,1,1)=="\t") line=substr(line,2)
+        if(length(line)>0&&substr(line,length(line),1)==" ")  line=substr(line,1,length(line)-1)
+        if(length(line)>0&&substr(line,length(line),1)=="\t") line=substr(line,1,length(line)-1)
+        gsub(/\t/,"",line)
+        if(n==tgt_l&&line==tgt_text){
+          seen++
+          if(seen==tgt_o){capturing=1;start=NR}
+        }
+        next
+      }
+    }
+    END{
+      if(start==0){exit 1}
+      if(capturing&&end_ln==0) end_ln=NR
+      printf "%d %d\n",start,end_ln
+    }
+  ' "$_dss_file" || true)"
+
+  [ -n "$_dss_range" ] || return 1
+
+  local _dss_start _dss_end
+  _dss_start="${_dss_range%% *}"
+  _dss_end="${_dss_range##* }"
+  [ "$_dss_start" -gt 0 ] || return 1
+  [ "$_dss_end" -ge "$_dss_start" ] || return 1
+
+  # Blank-line preservation: does the original section's last line end blank?
+  local _dss_orig_last_blank=false
+  local _dss_last_orig
+  _dss_last_orig="$(awk "NR==${_dss_end}{print;exit}" "$_dss_file" || true)"
+  case "$_dss_last_orig" in "") _dss_orig_last_blank=true ;; esac
+
+  # Does the replacement content's last non-EOF token end blank?
+  local _dss_content_last_blank=false
+  local _dss_last_content
+  _dss_last_content="$(tail -1 "$_dss_content_file" 2>/dev/null || true)"
+  case "$_dss_last_content" in "") _dss_content_last_blank=true ;; esac
+
+  local _dss_tmp
+  _dss_tmp="$(mktemp "${TMPDIR:-/tmp}/rite_splice_XXXXXX")"
+
+  # Lines before the section
+  if [ "$_dss_start" -gt 1 ]; then
+    awk "NR<${_dss_start}" "$_dss_file" >> "$_dss_tmp"
+  fi
+
+  # Replacement content — always ensure the last line is properly terminated
+  # before appending the next-section lines or the blank separator.
+  cat "$_dss_content_file" >> "$_dss_tmp"
+  local _dss_content_last_char
+  _dss_content_last_char="$(tail -c 1 "$_dss_content_file" 2>/dev/null || true)"
+  if [ -n "$_dss_content_last_char" ]; then
+    # Content file has no trailing newline; terminate the last line.
+    printf '\n' >> "$_dss_tmp"
+  fi
+
+  # Insert blank separator when the original section's trailing blank would
+  # otherwise be lost (content already ends with \n from above or file).
+  if [ "$_dss_orig_last_blank" = "true" ] && [ "$_dss_content_last_blank" = "false" ]; then
+    printf '\n' >> "$_dss_tmp"
+  fi
+
+  # Lines after the section
+  awk "NR>${_dss_end}" "$_dss_file" >> "$_dss_tmp"
+
+  mv "$_dss_tmp" "$_dss_file"
 }
 
 # ---------------------------------------------------------------------------

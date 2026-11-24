@@ -2919,6 +2919,13 @@ Contract:
   changing. A prompt rule, plus a flag-only check that highlights dates and git
   committer names in proposed text. The human decides; the check never
   auto-rejects (keyword matching may flag, never decide).
+- **Section edits.** A proposal may replace one section by using
+  `ACTION: EDIT_SECTION` with a `SECTION: <level> <occurrence> <heading text>`
+  header. Only the lines `_docs_extract_section_own` would return for those
+  coordinates are rewritten; every other byte of the file is preserved. A
+  proposal that reaches outside its section — a heading outside a code fence
+  after the first content line, or a missing/malformed `SECTION:` header — is
+  skipped with a warning and nothing is written.
 
 ### Rubrics — every doc is checked twice
 

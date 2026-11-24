@@ -349,3 +349,175 @@ DRIFT_EOF
   feedback_guard_count=$(grep -c 'grow the backlog\|grows the trigger store\|feedback' "$DOCS_CMD" || true)
   [ "$feedback_guard_count" -ge 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# Test 8: EDIT_SECTION replaces only the named section, rest of file unchanged
+# ---------------------------------------------------------------------------
+
+@test "EDIT_SECTION replaces only the named section, every other byte is preserved" {
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  # Build a doc with two sections in the fake project
+  mkdir -p "$FAKE_PROJECT/docs"
+  printf '%s\n' \
+    '# Doc' \
+    '' \
+    '## Alpha' \
+    '' \
+    'Original alpha body.' \
+    '' \
+    '## Beta' \
+    '' \
+    'Original beta body.' \
+    > "$FAKE_PROJECT/docs/large-doc.md"
+  git -C "$FAKE_PROJECT" add "$FAKE_PROJECT/docs/large-doc.md"
+  git -C "$FAKE_PROJECT" commit -q -m "add sections"
+  # Update origin/main so the worktree is forked from the commit with Alpha/Beta sections
+  git -C "$FAKE_PROJECT" update-ref refs/remotes/origin/main HEAD
+
+  printf '%s\n' \
+    'ACTION: EDIT_SECTION' \
+    'FILE: docs/large-doc.md' \
+    'SECTION: 2 1 Alpha' \
+    'DRIFT_REFS: none' \
+    '---CONTENT---' \
+    '## Alpha' \
+    '' \
+    'Replaced alpha body.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'section splice test' directed main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  [ "$status" -eq 0 ]
+
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/directed-' | head -1 || true)"
+  [ -n "$docs_branch" ]
+
+  local committed
+  committed="$(git -C "$FAKE_PROJECT" show "${docs_branch}:docs/large-doc.md" 2>/dev/null || true)"
+  # Alpha section must be replaced
+  printf '%s' "$committed" | grep -q "Replaced alpha body."
+  # Beta section must be untouched
+  printf '%s' "$committed" | grep -q "Original beta body."
+  # Original alpha body must be gone
+  ! printf '%s' "$committed" | grep -q "Original alpha body."
+}
+
+# ---------------------------------------------------------------------------
+# Test 9: EDIT_SECTION is skipped for various malformed/missing conditions
+# ---------------------------------------------------------------------------
+
+@test "EDIT_SECTION is skipped with warning when SECTION: line is missing" {
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  printf '%s\n' \
+    'ACTION: EDIT_SECTION' \
+    'FILE: docs/large-doc.md' \
+    'DRIFT_REFS: none' \
+    '---CONTENT---' \
+    '## Large Doc' \
+    '' \
+    'New content.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'malformed section test' directed main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  # Must warn about the malformed SECTION: line
+  printf '%s\n' "$output" | grep -qi "SECTION.*missing\|malformed"
+  # No docs branch created
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
+  [ -z "$docs_branch" ]
+}
+
+@test "EDIT_SECTION is skipped when first content line is not the right heading level" {
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  # level 2 declared but content starts with level 3 heading
+  printf '%s\n' \
+    'ACTION: EDIT_SECTION' \
+    'FILE: docs/large-doc.md' \
+    'SECTION: 2 1 Large Doc' \
+    'DRIFT_REFS: none' \
+    '---CONTENT---' \
+    '### Large Doc' \
+    '' \
+    'Wrong level heading.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'wrong heading level test' directed main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  printf '%s\n' "$output" | grep -qi "first content line\|not a level"
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
+  [ -z "$docs_branch" ]
+}
+
+@test "EDIT_SECTION is skipped when content holds a later heading outside a code fence" {
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  printf '%s\n' \
+    'ACTION: EDIT_SECTION' \
+    'FILE: docs/large-doc.md' \
+    'SECTION: 1 1 Large Doc' \
+    'DRIFT_REFS: none' \
+    '---CONTENT---' \
+    '# Large Doc' \
+    '' \
+    'Intro line.' \
+    '' \
+    '## Sneaked in heading' \
+    '' \
+    'Extra content.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'later heading test' directed main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  printf '%s\n' "$output" | grep -qi "later heading\|beyond the target section"
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
+  [ -z "$docs_branch" ]
+}
+
+@test "EDIT_SECTION is skipped when the section cannot be found in the file" {
+  local appr_dir
+  appr_dir="$(mktemp -d)"
+
+  printf '%s\n' \
+    'ACTION: EDIT_SECTION' \
+    'FILE: docs/large-doc.md' \
+    'SECTION: 2 1 Nonexistent Section' \
+    'DRIFT_REFS: none' \
+    '---CONTENT---' \
+    '## Nonexistent Section' \
+    '' \
+    'Some content.' \
+    > "$appr_dir/approved_1.txt"
+
+  run bash -c "
+    bash '${_DOCS_HELPER}' _docs_apply_approved '${appr_dir}' '' 'missing section test' directed main 2>&1
+  "
+  rm -rf "$appr_dir"
+
+  printf '%s\n' "$output" | grep -qi "not found\|section.*Nonexistent"
+  local docs_branch
+  docs_branch="$(git -C "$FAKE_PROJECT" branch --format='%(refname:short)' | grep '^docs/' | head -1 || true)"
+  [ -z "$docs_branch" ]
+}
