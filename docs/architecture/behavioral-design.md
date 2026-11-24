@@ -2884,7 +2884,10 @@ through the docs map, read by anchor), the ADR section that references the
 doc, the entries, and a diff summary. **Output:** a narrative of what changed
 and why the doc should change, *and* the explicit list of proposed edits. Both
 are required; narrative alone is not reviewable and a diff alone is not
-readable.
+readable. Audit entries carry their section's heading and are sorted by section
+without a model call (`_docs_group_entries_by_section`); an entry whose heading
+is missing from the map, appears more than once, or is the preamble stays with
+the whole-doc pass.
 
 Contract:
 

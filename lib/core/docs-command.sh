@@ -1505,6 +1505,137 @@ _docs_list_branch_entry_docs() {
 }
 
 # ---------------------------------------------------------------------------
+# _docs_group_entries_by_section ENTRY_FILE DOC MAPFILE OUTDIR
+#
+# Sort a doc's drift entries into per-section group files and a rest file.
+# No model call; no docs-map rebuild.
+#
+# ENTRY_FILE  — structured drift entry file (tab-separated key=value lines,
+#               format written by drift_log_append with 7 args)
+# DOC         — repo-relative doc path (used to query MAPFILE)
+# MAPFILE     — docs-map TSV (passed to _docs_audit_list_sections)
+# OUTDIR      — directory where output files are written (created if absent)
+#
+# For each entry the evidence field is inspected for "; section: <label>".
+# If <label> matches exactly one section heading in the map for DOC, the
+# entry goes to group-N.entries (N = 1-based map order of that section).
+# A meta file group-N.meta is written alongside, holding one field per line:
+#   line 1 — heading level (integer column from docs map)
+#   line 2 — heading text
+#   line 3 — occurrence (1-based count of this heading in the doc)
+#
+# Entries that cannot be placed go to rest.entries unchanged:
+#   - evidence has no "; section: " substring
+#   - label is "(preamble)"
+#   - label matches no heading in the map for DOC
+#   - label matches more than one heading in the map for DOC
+#
+# Stdout: group count (integer ≥ 0).
+# Empty or missing ENTRY_FILE: prints 0, writes nothing.
+# ---------------------------------------------------------------------------
+_docs_group_entries_by_section() {
+  local _dge_entry_file="$1"
+  local _dge_doc="$2"
+  local _dge_map="$3"
+  local _dge_outdir="$4"
+
+  # Empty or missing entry file → print 0, write no group
+  if [ ! -f "$_dge_entry_file" ]; then
+    echo "0"
+    return 0
+  fi
+  local _dge_line_count
+  _dge_line_count="$(grep -c '^doc=' "$_dge_entry_file" || true)"
+  if [ "${_dge_line_count:-0}" -eq 0 ]; then
+    echo "0"
+    return 0
+  fi
+
+  mkdir -p "$_dge_outdir"
+
+  # Build section list: level\001heading\001type\001rubric\001occurrence
+  local _dge_tmp_secs
+  _dge_tmp_secs="$(mktemp)"
+  _docs_audit_list_sections "$_dge_map" "$_dge_doc" > "$_dge_tmp_secs" || true
+
+  # Build heading→(mappos, level, occ) index; only include uniquely-named headings.
+  # count[ht]>1 means the heading appears more than once and cannot be placed.
+  local _dge_tmp_index
+  _dge_tmp_index="$(mktemp)"
+  awk -F'\001' '
+    { count[$2]++; if (count[$2]==1) { pos[$2]=NR; lev[$2]=$1; occ[$2]=$5 } }
+    END { for (ht in count) if (count[ht]==1) printf "%s\t%d\t%s\t%s\n", ht, pos[ht], lev[ht], occ[ht] }
+  ' "$_dge_tmp_secs" > "$_dge_tmp_index" || true
+  rm -f "$_dge_tmp_secs"
+
+  # Positions file: one mappos per line for each section that received entries.
+  local _dge_tmp_positions
+  _dge_tmp_positions="$(mktemp)"
+
+  # Process each entry, routing to position-keyed temp files or rest.entries.
+  local _dge_line
+  while IFS= read -r _dge_line || [ -n "$_dge_line" ]; do
+    [ -n "$_dge_line" ] || continue
+
+    # Extract the evidence field value
+    local _dge_ev
+    _dge_ev="$(awk -F'\t' \
+      '{for(i=1;i<=NF;i++){if(substr($i,1,9)=="evidence="){print substr($i,10); exit}}}' \
+      <<< "$_dge_line" || true)"
+
+    # Extract label after the last "; section: " occurrence
+    local _dge_label=""
+    case "$_dge_ev" in
+      *"; section: "*) _dge_label="${_dge_ev##*; section: }" ;;
+    esac
+
+    # Route to rest: no label, preamble, or not in index
+    if [ -z "$_dge_label" ] || [ "$_dge_label" = "(preamble)" ]; then
+      printf '%s\n' "$_dge_line" >> "$_dge_outdir/rest.entries"
+      continue
+    fi
+
+    local _dge_match
+    _dge_match="$(awk -F'\t' -v lbl="$_dge_label" \
+      '$1==lbl{printf "%d\t%s\t%s", $2, $3, $4; exit}' "$_dge_tmp_index" || true)"
+
+    if [ -z "$_dge_match" ]; then
+      printf '%s\n' "$_dge_line" >> "$_dge_outdir/rest.entries"
+      continue
+    fi
+
+    local _dge_pos _dge_level _dge_occ
+    _dge_pos="$(printf '%s' "$_dge_match" | awk -F'\t' '{print $1}')"
+    _dge_level="$(printf '%s' "$_dge_match" | awk -F'\t' '{print $2}')"
+    _dge_occ="$(printf '%s' "$_dge_match" | awk -F'\t' '{print $3}')"
+
+    printf '%s\n' "$_dge_line" >> "$_dge_outdir/.pos_${_dge_pos}.entries"
+    # Write meta once per unique position (guard on absence of .meta)
+    if [ ! -f "$_dge_outdir/.pos_${_dge_pos}.meta" ]; then
+      printf '%s\n%s\n%s\n' "$_dge_level" "$_dge_label" "$_dge_occ" \
+        > "$_dge_outdir/.pos_${_dge_pos}.meta"
+      printf '%s\n' "$_dge_pos" >> "$_dge_tmp_positions"
+    fi
+  done < "$_dge_entry_file"
+
+  rm -f "$_dge_tmp_index"
+
+  # Assign group numbers in map order and rename .pos_N.* → group-N.*
+  local _dge_group_count=0
+  local _dge_p
+  while IFS= read -r _dge_p || [ -n "$_dge_p" ]; do
+    [ -n "$_dge_p" ] || continue
+    _dge_group_count=$((_dge_group_count + 1))
+    mv "$_dge_outdir/.pos_${_dge_p}.meta"    "$_dge_outdir/group-${_dge_group_count}.meta"
+    mv "$_dge_outdir/.pos_${_dge_p}.entries" "$_dge_outdir/group-${_dge_group_count}.entries"
+  done < <(sort -n "$_dge_tmp_positions" || true)
+
+  rm -f "$_dge_tmp_positions"
+
+  echo "$_dge_group_count"
+}
+
+# ---------------------------------------------------------------------------
 # _docs_is_adr_in_map DOC
 #
 # Returns 0 (true) when DOC is classified as an ADR type in the docs-map
