@@ -271,6 +271,8 @@ _load_docs_cmd() {
   printf '%s' "$result" | grep -q "^## Section B"
   # Body of B must be intact
   printf '%s' "$result" | grep -q "Body of B."
-  # A blank line must exist between the new content and ## Section B
-  printf '%s' "$result" | grep -q "^$"
+  # A blank line must immediately precede ## Section B (not just exist anywhere)
+  local blank_before_b
+  blank_before_b="$(printf '%s' "$result" | awk 'prev=="" && /^## Section B/{print "yes";exit} {prev=$0}' || true)"
+  [ "$blank_before_b" = "yes" ]
 }

@@ -359,7 +359,7 @@ ${_aa_fold_lines}"
       _aa_es_later_heading="$(printf '%s' "$_aa_content" | awk '
         NR==1{next}
         /^```/||/^~~~/{inf=!inf;next}
-        !inf&&/^#{1,6} /{found=1;exit}
+        !inf&&/^#/{n=0;s=$0;while(substr(s,1,1)=="#"){n++;s=substr(s,2)};if(n>=1&&n<=6){found=1;exit}}
         END{if(found)print "yes"}
       ' || true)"
       if [ "$_aa_es_later_heading" = "yes" ]; then
@@ -422,6 +422,8 @@ ${_aa_fold_lines}"
   if git -C "$_aa_wt_path" diff --cached --quiet 2>/dev/null; then
     print_warning "Nothing staged in docs worktree — no changes to commit"
     git -C "$RITE_PROJECT_ROOT" worktree remove "$_aa_wt_path" --force 2>/dev/null || true
+    git -C "$RITE_PROJECT_ROOT" worktree prune 2>/dev/null || true
+    git -C "$RITE_PROJECT_ROOT" branch -D "$_aa_branch" 2>/dev/null || true
     return 0
   fi
 
@@ -1447,10 +1449,18 @@ _docs_splice_section_own() {
     awk "NR<${_dss_start}" "$_dss_file" >> "$_dss_tmp"
   fi
 
-  # Replacement content
+  # Replacement content — always ensure the last line is properly terminated
+  # before appending the next-section lines or the blank separator.
   cat "$_dss_content_file" >> "$_dss_tmp"
+  local _dss_content_last_char
+  _dss_content_last_char="$(tail -c 1 "$_dss_content_file" 2>/dev/null || true)"
+  if [ -n "$_dss_content_last_char" ]; then
+    # Content file has no trailing newline; terminate the last line.
+    printf '\n' >> "$_dss_tmp"
+  fi
 
-  # Insert blank separator when the original gap would otherwise be lost
+  # Insert blank separator when the original section's trailing blank would
+  # otherwise be lost (content already ends with \n from above or file).
   if [ "$_dss_orig_last_blank" = "true" ] && [ "$_dss_content_last_blank" = "false" ]; then
     printf '\n' >> "$_dss_tmp"
   fi
