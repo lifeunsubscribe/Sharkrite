@@ -2934,8 +2934,12 @@ Contract:
 
 1. **Accuracy, every doc including the ADR:** each assertion matches the code.
 2. **Role, by doc type:**
-   - *Feature doc* — stays within one feature; every assertion names an
-     enforcing test or is flagged; no overlap with sibling feature docs.
+   - *Feature doc* — stays within one feature; no overlap with sibling feature
+     docs. Declared enforcing tests (`<!-- sharkrite-enforced-by: a.bats -->`)
+     are checked without a model call: each path is resolved against the project
+     root and a missing file is recorded once per doc as a `reference-missing`
+     drift entry. Docs that declare no enforcing test are counted and shown in
+     the summary — no drift entry and no warning.
    - *ADR* — links every feature doc; no feature doc contradicts it; no area of
      the code is covered by zero feature docs; its decisions still hold.
 
