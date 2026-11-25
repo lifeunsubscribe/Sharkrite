@@ -1774,6 +1774,351 @@ _docs_warn_doc_pass_threshold() {
 }
 
 # ---------------------------------------------------------------------------
+# _docs_section_entries_pass DOC BRANCH TARGET KIND GROUPS_DIR GROUP_COUNT TIMEOUT APPR_DIR APPR_ENTRIES_FILE
+#
+# Tier 2 section-by-section engine: called from _docs_main_entries_pass when
+# the doc exceeds 8 KB (the whole-file EDIT guard threshold).
+#
+# For each section group produced by _docs_group_entries_by_section:
+#   1. Extracts the section's own text from the doc.
+#   2. Calls the doc_update model with the section text + entries.
+#   3. Validates response (EDIT_SECTION proposal format or NO_PROPOSALS_NEEDED).
+#   4. Shows a diff preview and runs the y/n/f/q approval loop.
+#   5. Approved proposals are written to APPR_DIR; consumed entries are
+#      appended to APPR_ENTRIES_FILE for burndown by _docs_apply_approved.
+#
+# Returns:
+#   0  all groups processed (or user quit early)
+#   1  three consecutive provider failures — caller may still apply approved
+#   5  usage cap hit mid-pass — caller should stop and apply approved so far
+#   18 provider auth failure mid-pass
+# ---------------------------------------------------------------------------
+_docs_section_entries_pass() {
+  local _sep_doc="$1"
+  local _sep_branch="${2:-main}"
+  local _sep_target="${3:-${RITE_TARGET_BRANCH:-main}}"
+  local _sep_kind="${4:-docs}"
+  local _sep_groups_dir="$5"
+  local _sep_group_count="$6"
+  local _sep_timeout="${7:-${RITE_DOC_ASSESSMENT_TIMEOUT:-300}}"
+  local _sep_appr_dir="$8"
+  local _sep_appr_entries_file="$9"
+
+  local _sep_consec_fail=0
+  local _sep_appr_count=0
+  local _sep_gi=1
+
+  while [ "$_sep_gi" -le "$_sep_group_count" ]; do
+    local _sep_meta="${_sep_groups_dir}/group-${_sep_gi}.meta"
+    local _sep_entries_file="${_sep_groups_dir}/group-${_sep_gi}.entries"
+    if [ ! -f "$_sep_meta" ] || [ ! -f "$_sep_entries_file" ]; then
+      _sep_gi=$((_sep_gi + 1))
+      continue
+    fi
+
+    local _sep_level="" _sep_heading="" _sep_occ=""
+    _sep_level="$(sed -n '1p' "$_sep_meta" || true)"
+    _sep_heading="$(sed -n '2p' "$_sep_meta" || true)"
+    _sep_occ="$(sed -n '3p' "$_sep_meta" || true)"
+    _sep_occ="${_sep_occ:-1}"
+
+    local _sep_section_text=""
+    _sep_section_text="$(_docs_extract_section_own \
+      "${RITE_PROJECT_ROOT}/${_sep_doc}" \
+      "$_sep_level" "$_sep_heading" "$_sep_occ" || true)"
+
+    local _sep_entries_text=""
+    local _sep_ev_line
+    while IFS= read -r _sep_ev_line || [ -n "$_sep_ev_line" ]; do
+      [ -n "$_sep_ev_line" ] || continue
+      _sep_entries_text="${_sep_entries_text}${_sep_ev_line}"$'\n'
+    done < "$_sep_entries_file"
+
+    local _sep_provider_failed=false
+    local _sep_accum_fb="" _sep_attempt=0 _sep_inner_done=false
+    local _sep_end_token="---END-${RANDOM}${RANDOM}---"
+    local _sep_llm_elapsed_s=0 _sep_input_bytes=0
+
+    while [ "$_sep_attempt" -lt 5 ] && [ "$_sep_inner_done" = "false" ]; do
+      _sep_attempt=$((_sep_attempt + 1))
+
+      local _sep_fb_section=""
+      if [ -n "$_sep_accum_fb" ]; then
+        _sep_fb_section="
+Feedback from previous proposal round:
+${_sep_accum_fb}
+"
+      fi
+
+      local _sep_heading_prefix=""
+      _sep_heading_prefix="$(printf '%*s' "$_sep_level" '' | tr ' ' '#')"
+
+      local _sep_prompt_file
+      _sep_prompt_file="$(mktemp)"
+      # sharkrite-lint disable UNQUOTED_HEREDOC - Reason: doc, section, entry, and feedback vars must expand
+      cat > "$_sep_prompt_file" <<SECTION_PROMPT_EOF
+You are a documentation writer performing a Tier 2 section correction pass.
+
+Target doc: ${_sep_doc}
+Section: ${_sep_heading_prefix} ${_sep_heading} (level ${_sep_level}, occurrence ${_sep_occ})
+${_sep_fb_section}
+Current section text:
+${_sep_section_text:-<section not found in file>}
+
+Drift entries for this section (tab-separated fields: doc=, branch=, pr=, assertion=, kind=, evidence=):
+${_sep_entries_text}
+
+Output EITHER:
+  NO_PROPOSALS_NEEDED  (if no changes are needed)
+
+OR a single EDIT_SECTION proposal (the section's own text only — do NOT include child-section headings):
+---PROPOSAL---
+ACTION: EDIT_SECTION
+FILE: ${_sep_doc}
+SECTION: ${_sep_level} ${_sep_occ} ${_sep_heading}
+DRIFT_REFS: <space-separated pr:N from the entries above, or "none">
+DESCRIPTION: <one-line summary>
+---CONTENT---
+${_sep_heading_prefix} ${_sep_heading}
+<replacement body — heading's own text, no child-section headings>
+${_sep_end_token}
+SECTION_PROMPT_EOF
+
+      _sep_input_bytes="$(wc -c < "$_sep_prompt_file" 2>/dev/null | tr -d ' ' || true)"
+      _sep_input_bytes="${_sep_input_bytes:-0}"
+      local _sep_call_start _sep_call_end
+      _sep_call_start=$(date +%s)
+      local _sep_raw="" _sep_llm_rc=0
+      _sep_raw="$(provider_run_prompt_with_timeout \
+        "$(cat "$_sep_prompt_file")" \
+        "$(provider_resolve_model doc_update)" \
+        true \
+        "$_sep_timeout" 2>/dev/null)" || _sep_llm_rc=$?
+      _sep_call_end=$(date +%s)
+      _sep_llm_elapsed_s=$((_sep_llm_elapsed_s + _sep_call_end - _sep_call_start))
+      rm -f "$_sep_prompt_file"
+
+      if [ "$_sep_llm_rc" -eq 5 ] || [ "$_sep_llm_rc" -eq 18 ]; then
+        local _sep_remaining
+        _sep_remaining=$((_sep_group_count - _sep_gi + 1))
+        print_warning "Section pass stopped (exit ${_sep_llm_rc}): ${_sep_remaining} section(s) still pending for ${_sep_doc}" >&2
+        _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+        return "$_sep_llm_rc"
+      fi
+
+      if [ "$_sep_llm_rc" -ne 0 ]; then
+        print_warning "Section pass provider failure (exit ${_sep_llm_rc}) for § ${_sep_heading}" >&2
+        _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+        _sep_provider_failed=true
+        _sep_inner_done=true
+        continue
+      fi
+
+      if grep -q "^NO_PROPOSALS_NEEDED" <<< "$_sep_raw"; then
+        _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+        local _sep_drop_input="n"
+        read -p "  § ${_sep_heading}: no changes needed — drop these entries? (y)es / (n)o: " \
+          -r _sep_drop_input || true
+        echo "" >&2
+        case "$_sep_drop_input" in
+          [Yy]*)
+            local _sep_dl _sep_dd="" _sep_db="" _sep_da=""
+            while IFS= read -r _sep_dl || [ -n "$_sep_dl" ]; do
+              [ -n "$_sep_dl" ] || continue
+              _sep_dd="$(printf '%s' "$_sep_dl" | awk -F'\t' \
+                '{for(i=1;i<=NF;i++){if(substr($i,1,4)=="doc="){print substr($i,5);exit}}}' || true)"
+              _sep_db="$(printf '%s' "$_sep_dl" | awk -F'\t' \
+                '{for(i=1;i<=NF;i++){if(substr($i,1,7)=="branch="){print substr($i,8);exit}}}' || true)"
+              _sep_da="$(printf '%s' "$_sep_dl" | awk -F'\t' \
+                '{for(i=1;i<=NF;i++){if(substr($i,1,10)=="assertion="){print substr($i,11);exit}}}' || true)"
+              [ -n "$_sep_dd" ] || continue
+              drift_log_remove_entry "$_sep_dd" "${_sep_db:-$_sep_branch}" "$_sep_da" || true
+            done < "$_sep_entries_file"
+            print_info "  Dropped entries for § ${_sep_heading}"
+            ;;
+          *)
+            print_info "  Kept entries for § ${_sep_heading}"
+            ;;
+        esac
+        _sep_consec_fail=0
+        _sep_inner_done=true
+        continue
+      fi
+
+      local _sep_has_proposal=0 _sep_has_edit_section=0
+      grep -q "^---PROPOSAL---" <<< "$_sep_raw" && _sep_has_proposal=1 || true
+      grep -q "^ACTION: EDIT_SECTION" <<< "$_sep_raw" && _sep_has_edit_section=1 || true
+
+      if [ "$_sep_has_proposal" -eq 0 ] || [ "$_sep_has_edit_section" -eq 0 ]; then
+        local _sep_missing=""
+        [ "$_sep_has_proposal" -eq 0 ] && _sep_missing="---PROPOSAL--- marker"
+        if [ "$_sep_has_edit_section" -eq 0 ]; then
+          _sep_missing="${_sep_missing:+${_sep_missing} and }ACTION: EDIT_SECTION"
+        fi
+        local _sep_val_fb="Response is missing ${_sep_missing}. Use ACTION: EDIT_SECTION or NO_PROPOSALS_NEEDED."
+        if [ -n "$_sep_accum_fb" ]; then
+          _sep_accum_fb="${_sep_accum_fb}
+---
+${_sep_val_fb}"
+        else
+          _sep_accum_fb="$_sep_val_fb"
+        fi
+        print_warning "  § ${_sep_heading}: missing ${_sep_missing} — retrying (${_sep_attempt}/5)..." >&2
+        continue
+      fi
+
+      local _sep_p_drift="" _sep_p_desc="" _sep_p_content=""
+      local _sep_in_prop=0 _sep_in_content=0
+      local _sep_prl
+      while IFS= read -r _sep_prl || [ -n "$_sep_prl" ]; do
+        case "$_sep_prl" in
+          "---PROPOSAL---")
+            if [ "$_sep_in_content" = "0" ]; then
+              _sep_in_prop=1; _sep_p_drift=""; _sep_p_desc=""; _sep_p_content=""
+            else
+              _sep_p_content="${_sep_p_content}${_sep_prl}"$'\n'
+            fi
+            ;;
+          "---CONTENT---")
+            if [ "$_sep_in_prop" = "1" ] && [ "$_sep_in_content" = "0" ]; then
+              _sep_in_content=1
+            elif [ "$_sep_in_content" = "1" ]; then
+              _sep_p_content="${_sep_p_content}${_sep_prl}"$'\n'
+            fi
+            ;;
+          "${_sep_end_token}")
+            _sep_in_prop=0; _sep_in_content=0
+            ;;
+          *)
+            if [ "$_sep_in_prop" = "1" ]; then
+              if [ "$_sep_in_content" = "1" ]; then
+                _sep_p_content="${_sep_p_content}${_sep_prl}"$'\n'
+              else
+                case "$_sep_prl" in
+                  "DRIFT_REFS: "*)  _sep_p_drift="${_sep_prl#DRIFT_REFS: }" ;;
+                  "DESCRIPTION: "*) _sep_p_desc="${_sep_prl#DESCRIPTION: }" ;;
+                esac
+              fi
+            fi
+            ;;
+        esac
+      done <<EOF_PARSE_SEP
+$_sep_raw
+EOF_PARSE_SEP
+
+      echo "" >&2
+      echo "──────────────────────────────────────────────" >&2
+      printf '  [%d/%d] § %s  [EDIT_SECTION]  %s\n' \
+        "$_sep_gi" "$_sep_group_count" "$_sep_heading" "$_sep_doc" >&2
+      [ -n "$_sep_p_drift" ] && [ "$_sep_p_drift" != "none" ] && \
+        printf '  Covers: %s\n' "$_sep_p_drift" >&2
+      [ -n "$_sep_p_desc" ] && printf '  %s\n' "$_sep_p_desc" >&2
+      echo "" >&2
+      printf '%s\n' "$_sep_p_content" | head -20 >&2
+      local _sep_total_lines
+      _sep_total_lines="$(printf '%s\n' "$_sep_p_content" | wc -l | tr -d ' ' || true)"
+      [ "${_sep_total_lines:-0}" -gt 20 ] && \
+        printf '  ... (%s lines total)\n' "$_sep_total_lines" >&2
+      echo "" >&2
+
+      local _sep_ui=""
+      read -p "  Apply this section edit? (y)es / (n)o / (f)eedback / (q)uit: " \
+        -r _sep_ui || _sep_ui="q"
+      echo "" >&2
+
+      case "$_sep_ui" in
+        [Yy]*)
+          _sep_appr_count=$((_sep_appr_count + 1))
+          {
+            printf 'ACTION: EDIT_SECTION\n'
+            printf 'FILE: %s\n' "$_sep_doc"
+            printf 'SECTION: %s %s %s\n' "$_sep_level" "$_sep_occ" "$_sep_heading"
+            printf 'DRIFT_REFS: %s\n' "${_sep_p_drift:-none}"
+            printf 'DESCRIPTION: %s\n' "${_sep_p_desc:-}"
+            printf -- '---CONTENT---\n'
+            printf '%s' "$_sep_p_content"
+          } > "${_sep_appr_dir}/approved_${_sep_appr_count}.txt"
+          cat "$_sep_entries_file" >> "$_sep_appr_entries_file"
+          print_info "  Approved: § ${_sep_heading}"
+          _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=accepted"
+          _sep_consec_fail=0
+          _sep_inner_done=true
+          ;;
+        [Nn]*|"")
+          print_info "  Skipped: § ${_sep_heading} — entries kept"
+          _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+          _sep_consec_fail=0
+          _sep_inner_done=true
+          ;;
+        [Ff]*)
+          echo "  What changes do you want? (press Enter twice when done)" >&2
+          local _sep_this_fb="" _sep_fb_empty_ct=0
+          while IFS= read -r _sep_fb_line; do
+            if [ -z "$_sep_fb_line" ]; then
+              _sep_fb_empty_ct=$((_sep_fb_empty_ct + 1))
+              [ "$_sep_fb_empty_ct" -ge 2 ] && break
+              _sep_this_fb="${_sep_this_fb}"$'\n'
+            else
+              _sep_fb_empty_ct=0
+              _sep_this_fb="${_sep_this_fb}${_sep_fb_line}"$'\n'
+            fi
+          done
+          _sep_this_fb="$(printf '%s' "$_sep_this_fb" | sed 's/[[:space:]]*$//' || true)"
+          if [ -n "$_sep_this_fb" ]; then
+            if [ -n "$_sep_accum_fb" ]; then
+              _sep_accum_fb="${_sep_accum_fb}
+---
+${_sep_this_fb}"
+            else
+              _sep_accum_fb="$_sep_this_fb"
+            fi
+            print_info "  Feedback captured — regenerating for § ${_sep_heading}..."
+          else
+            print_warning "  No feedback entered — skipping § ${_sep_heading}" >&2
+            _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+            _sep_consec_fail=0
+            _sep_inner_done=true
+          fi
+          ;;
+        [Qq]*)
+          local _sep_rem
+          _sep_rem=$((_sep_group_count - _sep_gi))
+          [ "$_sep_rem" -gt 0 ] && \
+            print_info "  ${_sep_rem} section(s) still pending for ${_sep_doc}"
+          _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+          return 0
+          ;;
+        *)
+          print_warning "  Unrecognized response '${_sep_ui}' — skipping § ${_sep_heading}" >&2
+          _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+          _sep_consec_fail=0
+          _sep_inner_done=true
+          ;;
+      esac
+    done
+
+    if [ "$_sep_inner_done" = "false" ]; then
+      _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
+      print_warning "  Max retries for § ${_sep_heading} — skipping" >&2
+    fi
+
+    if [ "$_sep_provider_failed" = "true" ]; then
+      _sep_consec_fail=$((_sep_consec_fail + 1))
+      if [ "$_sep_consec_fail" -ge 3 ]; then
+        local _sep_still
+        _sep_still=$((_sep_group_count - _sep_gi))
+        print_warning "Section pass stopped: three consecutive provider failures (${_sep_still} section(s) still pending for ${_sep_doc})" >&2
+        return 1
+      fi
+    fi
+
+    _sep_gi=$((_sep_gi + 1))
+  done
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # _docs_main_entries_pass DOC
 #
 # Tier 2 per-doc engine for branch=main drift entries.
@@ -1807,17 +2152,93 @@ _docs_main_entries_pass() {
   local _mp_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
   # kind=promote when called from the post-promote doc pass; kind=docs otherwise.
   local _mp_kind="${4:-docs}"
+  # Entry-file override: when set, bypass drift-store lookup and size branch.
+  # Used by the section path to recurse with rest.entries.
+  local _mp_entry_file_override="${5:-}"
 
   # DOC_PASS diag tracking: accumulated LLM time, last prompt bytes, feedback flag.
   local _mp_llm_elapsed_s=0 _mp_input_bytes=0 _mp_had_feedback=0
   local _mp_call_start _mp_call_end
 
-  # Read entry file for this doc from the branch's drift store
+  # Read entry file for this doc from the branch's drift store (or use override)
   local _mp_entry_file
-  _mp_entry_file="$(_drift_entry_path "$_mp_doc" "$_mp_branch" || true)"
-  if [ -z "$_mp_entry_file" ] || [ ! -f "$_mp_entry_file" ]; then
-    print_info "  No main-branch entries for ${_mp_doc}"
-    return 0
+  if [ -n "$_mp_entry_file_override" ]; then
+    _mp_entry_file="$_mp_entry_file_override"
+  else
+    _mp_entry_file="$(_drift_entry_path "$_mp_doc" "$_mp_branch" || true)"
+    if [ -z "$_mp_entry_file" ] || [ ! -f "$_mp_entry_file" ]; then
+      print_info "  No main-branch entries for ${_mp_doc}"
+      return 0
+    fi
+  fi
+
+  # Large-doc size branch: docs > 8 KB are reconciled section by section to avoid
+  # the #1208 whole-file EDIT guard rejecting every proposal.
+  # Entry-file override callers come from the size branch itself (rest.entries)
+  # and always use the whole-doc pass to avoid infinite recursion.
+  if [ -z "$_mp_entry_file_override" ]; then
+    local _mp_abs_sz="${RITE_PROJECT_ROOT}/${_mp_doc}"
+    local _mp_doc_sz=0
+    if [ -f "$_mp_abs_sz" ]; then
+      _mp_doc_sz="$(wc -c < "$_mp_abs_sz" 2>/dev/null | tr -d ' ' || true)"
+      _mp_doc_sz="${_mp_doc_sz:-0}"
+    fi
+    if [ "${_mp_doc_sz:-0}" -gt 8000 ]; then
+      local _mp_smap_file
+      _mp_smap_file="$(docs_map_path)"
+      local _mp_sg_dir
+      _mp_sg_dir="$(mktemp -d)"
+      local _mp_sg_count=0
+      _mp_sg_count="$(_docs_group_entries_by_section \
+        "$_mp_entry_file" "$_mp_doc" "$_mp_smap_file" "$_mp_sg_dir" || true)"
+      _mp_sg_count="${_mp_sg_count:-0}"
+
+      local _mp_sec_rc=0
+      if [ "$_mp_sg_count" -gt 0 ]; then
+        local _mp_sec_appr_dir
+        _mp_sec_appr_dir="$(mktemp -d)"
+        local _mp_sec_entries
+        _mp_sec_entries="$(mktemp)"
+        : > "$_mp_sec_entries"
+        _docs_section_entries_pass \
+          "$_mp_doc" "$_mp_branch" "$_mp_target" "$_mp_kind" \
+          "$_mp_sg_dir" "$_mp_sg_count" "$_mp_timeout" \
+          "$_mp_sec_appr_dir" "$_mp_sec_entries" || _mp_sec_rc=$?
+
+        local _mp_sec_appr_count=0
+        _mp_sec_appr_count="$(find "$_mp_sec_appr_dir" -name 'approved_*.txt' \
+          -type f 2>/dev/null | wc -l | tr -d ' ' || true)"
+        _mp_sec_appr_count="${_mp_sec_appr_count:-0}"
+        if [ "${_mp_sec_appr_count:-0}" -gt 0 ]; then
+          git -C "$RITE_PROJECT_ROOT" fetch origin "$_mp_target" 2>/dev/null || {
+            print_warning "Could not fetch origin/${_mp_target} — apply may use stale base" >&2
+          }
+          _docs_apply_approved \
+            "$_mp_sec_appr_dir" "" "" "reconcile" "$_mp_target" "true" \
+            "$_mp_sec_entries" || true
+        fi
+        rm -rf "$_mp_sec_appr_dir"
+        rm -f "$_mp_sec_entries"
+      fi
+
+      if [ "$_mp_sec_rc" -ne 5 ] && [ "$_mp_sec_rc" -ne 18 ]; then
+        local _mp_rest_file="${_mp_sg_dir}/rest.entries"
+        if [ -f "$_mp_rest_file" ]; then
+          local _mp_rest_cnt=0
+          _mp_rest_cnt="$(grep -c '^doc=' "$_mp_rest_file" || true)"
+          if [ "${_mp_rest_cnt:-0}" -gt 0 ]; then
+            _docs_main_entries_pass \
+              "$_mp_doc" "$_mp_branch" "$_mp_target" "$_mp_kind" "$_mp_rest_file" || true
+          fi
+        fi
+      fi
+
+      rm -rf "$_mp_sg_dir"
+      if [ "$_mp_sec_rc" -eq 5 ] || [ "$_mp_sec_rc" -eq 18 ]; then
+        return "$_mp_sec_rc"
+      fi
+      return 0
+    fi
   fi
 
   # Collect entries as formatted text; extract evidence for diff summary
