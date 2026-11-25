@@ -451,3 +451,37 @@ teardown() {
   entry_count="$(grep -c "reference-missing" "$drift_calls" || true)"
   [ "$entry_count" -eq 1 ]
 }
+
+@test "marker check runs when all sections already done from a prior run" {
+  # Exercises the AC scenario: "also runs when every section of the doc is
+  # already marked done from an earlier run" (_aau_todo=0, _aau_done>0).
+  # The enforcing-test check at the top of the call pass runs unconditionally
+  # after the confirmation gate, so it must fire on a resumed all-done audit.
+  printf '# Feature A\n\n<!-- sharkrite-enforced-by: tests/regression/nonexistent-et-resume-1836.bats -->\n\nContent.\n' \
+    > "$RITE_PROJECT_ROOT/docs/feature-a.md"
+
+  _write_map "$RITE_PROJECT_ROOT/docs/docs-map.tsv" \
+    "docs/feature-a.md|1|Feature A|feature|-"
+
+  local drift_1="${BATS_TEST_TMPDIR}/drift_1.log"
+  local drift_2="${BATS_TEST_TMPDIR}/drift_2.log"
+  local helper
+
+  # Run 1: process the section normally so done.tsv records it as checked.
+  helper="$(_audit_helper "NOTHING_FOUND" "y" "" "" "" "$drift_1")"
+  run bash "$helper" <<< $'y\n'
+  [ "$status" -eq 0 ]
+  # Confirm the done state was actually saved before proceeding.
+  [ -f "$RITE_STATE_DIR/doc-audit/done.tsv" ]
+
+  # Run 2: every section is already done (_aau_todo=0, _aau_done=1).
+  # The confirmation prompt is now r/s/n — user presses "r" to resume.
+  # The enforcing-test check must still run and record the missing test file.
+  helper="$(_audit_helper "NOTHING_FOUND" "r" "" "" "" "$drift_2")"
+  run bash "$helper" <<< $'r\n'
+  [ "$status" -eq 0 ]
+
+  [ -f "$drift_2" ] && [ -s "$drift_2" ]
+  grep -qF "reference-missing" "$drift_2"
+  grep -qF "nonexistent-et-resume-1836.bats" "$drift_2"
+}
