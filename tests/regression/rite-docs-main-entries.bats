@@ -88,7 +88,7 @@ provider_run_prompt_with_timeout() {
   # Record (model, prompt-excerpt) for assertions
   printf 'CALL:model=%s\n' "$_model" >> "${STUB_CALLS_FILE}"
   printf 'CALL:has_narrative=%s\n' \
-    "$(printf '%s\n' "$_prompt" | grep -c '---NARRATIVE---' || true)" >> "${STUB_CALLS_FILE}"
+    "$(printf '%s\n' "$_prompt" | grep -c -- '---NARRATIVE---' || true)" >> "${STUB_CALLS_FILE}"
   printf 'CALL:has_endtoken=%s\n' \
     "$(printf '%s\n' "$_prompt" | grep -cE -- '---END-[0-9]+---' || true)" >> "${STUB_CALLS_FILE}"
   printf 'CALL:has_section_markers=%s\n' \
