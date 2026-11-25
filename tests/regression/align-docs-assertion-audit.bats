@@ -59,6 +59,7 @@ _audit_helper() {
   local adr_log="${4:-}"
   local adr_return="${5:-}"
   local drift_log="${6:-}"
+  local info_log="${7:-}"
 
   local helper="${BATS_TEST_TMPDIR}/audit_helper.sh"
   cat > "$helper" << HELPER_EOF
@@ -100,7 +101,11 @@ drift_log_append() {
 }
 lock_acquire() { return 0; }
 lock_release() { return 0; }
-print_info()    { true; }
+print_info() {
+  if [ -n "${info_log}" ]; then
+    printf '%s\n' "\$@" >> "${info_log}"
+  fi
+}
 print_warning() { true; }
 print_success() { true; }
 git() {
@@ -208,7 +213,7 @@ teardown() {
   [ "$status" -eq 0 ]
 
   # The feature rubric keyword must appear in the logged prompt
-  grep -q "enforcing test\|sharkrite-enforced-by\|feature boundary\|sibling feature" "$call_log"
+  grep -q "feature boundary\|sibling feature" "$call_log"
 }
 
 @test "rubric selection: ADR doc section receives ADR rubric" {
@@ -244,7 +249,7 @@ teardown() {
   # The custom rubric content must appear in the prompt (override wins)
   grep -q "CUSTOM_RUBRIC_SENTINEL_XYZ" "$call_log"
   # The shipped feature rubric must NOT appear (it was overridden)
-  ! grep -q "enforcing test\|sharkrite-enforced-by" "$call_log"
+  ! grep -q "feature boundary\|sibling feature" "$call_log"
 }
 
 # ---------------------------------------------------------------------------
@@ -341,4 +346,108 @@ teardown() {
 
   # drift_log_append must NOT have been called (no finding accepted)
   [ ! -f "$drift_calls" ] || [ ! -s "$drift_calls" ]
+}
+
+# ---------------------------------------------------------------------------
+# Tests for deterministic enforcing-test marker check (#1836-1838).
+# Covers: rubric removal, missing/existing path recording, no-marker count,
+#         and check runs even when all sections are already done.
+# ---------------------------------------------------------------------------
+@test "feature rubric has no marker item" {
+  # The shipped default feature rubric must not ask the model about enforcing tests.
+  local rubric_line
+  rubric_line="$(grep -m1 '_DOCS_AUDIT_RUBRIC_FEATURE.*:-' \
+    "$RITE_LIB_DIR/core/docs-command.sh" || true)"
+  [ -n "$rubric_line" ]
+  ! grep -qE "enforcing test|sharkrite-enforced-by|path[.]bats" <<< "$rubric_line"
+}
+
+@test "missing enforcing test is recorded as reference-missing drift entry" {
+  # Feature doc declares a test file that does not exist.
+  printf '# Feature A\n\n<!-- sharkrite-enforced-by: tests/regression/nonexistent-et-1836.bats -->\n\nContent.\n' \
+    > "$RITE_PROJECT_ROOT/docs/feature-a.md"
+
+  _write_map "$RITE_PROJECT_ROOT/docs/docs-map.tsv" \
+    "docs/feature-a.md|1|Feature A|feature|-"
+
+  local drift_calls="${BATS_TEST_TMPDIR}/drift_calls.log"
+  local helper
+  helper="$(_audit_helper "NOTHING_FOUND" "y" "" "" "" "$drift_calls")"
+
+  run bash "$helper" <<< $'y\n'
+  [ "$status" -eq 0 ]
+
+  # drift_log_append must have been called with reference-missing for the path
+  [ -f "$drift_calls" ] && [ -s "$drift_calls" ]
+  grep -qF "reference-missing" "$drift_calls"
+  grep -qF "tests/regression/nonexistent-et-1836.bats" "$drift_calls"
+}
+
+@test "existing enforcing test records nothing" {
+  # Feature doc declares a test file that DOES exist — no drift entry.
+  mkdir -p "$RITE_PROJECT_ROOT/tests/regression"
+  touch "$RITE_PROJECT_ROOT/tests/regression/existing-et-1836.bats"
+  printf '# Feature A\n\n<!-- sharkrite-enforced-by: tests/regression/existing-et-1836.bats -->\n\nContent.\n' \
+    > "$RITE_PROJECT_ROOT/docs/feature-a.md"
+
+  _write_map "$RITE_PROJECT_ROOT/docs/docs-map.tsv" \
+    "docs/feature-a.md|1|Feature A|feature|-"
+
+  local drift_calls="${BATS_TEST_TMPDIR}/drift_calls.log"
+  local helper
+  helper="$(_audit_helper "NOTHING_FOUND" "y" "" "" "" "$drift_calls")"
+
+  run bash "$helper" <<< $'y\n'
+  [ "$status" -eq 0 ]
+
+  # No reference-missing entry for the existing path
+  [ ! -f "$drift_calls" ] || ! grep -qF "existing-et-1836.bats" "$drift_calls"
+}
+
+@test "docs without enforcing tests are counted, no drift entry recorded" {
+  # Feature doc has no enforced-by marker: counted in info summary, no drift entry.
+  _write_map "$RITE_PROJECT_ROOT/docs/docs-map.tsv" \
+    "docs/feature-a.md|1|Feature A|feature|-"
+
+  local drift_calls="${BATS_TEST_TMPDIR}/drift_calls.log"
+  local info_log="${BATS_TEST_TMPDIR}/info.log"
+  local helper
+  helper="$(_audit_helper "NOTHING_FOUND" "y" "" "" "" "$drift_calls" "$info_log")"
+
+  run bash "$helper" <<< $'y\n'
+  [ "$status" -eq 0 ]
+
+  # No drift entry recorded for a doc with no marker
+  [ ! -f "$drift_calls" ] || [ ! -s "$drift_calls" ]
+
+  # Info summary must mention the no-marker count
+  [ -f "$info_log" ] && grep -qF "declare no enforcing test" "$info_log"
+}
+
+@test "marker check runs once per doc not once per section" {
+  # A doc with 2 sections and 1 missing enforcing test must produce exactly
+  # 1 drift entry — the check is per-doc, so it runs once regardless of how
+  # many sections the doc contains.
+  printf '# Feature A\n\n<!-- sharkrite-enforced-by: tests/regression/nonexistent-et-once-1836.bats -->\n\nSection A content.\n\n## Sub-section B\n\nSection B content.\n' \
+    > "$RITE_PROJECT_ROOT/docs/feature-a.md"
+
+  _write_map "$RITE_PROJECT_ROOT/docs/docs-map.tsv" \
+    "docs/feature-a.md|1|Feature A|feature|-" \
+    "docs/feature-a.md|2|Sub-section B|feature|-"
+
+  local drift_calls="${BATS_TEST_TMPDIR}/drift_calls.log"
+  local helper
+  helper="$(_audit_helper "NOTHING_FOUND" "y" "" "" "" "$drift_calls")"
+
+  run bash "$helper" <<< $'y\n'
+  [ "$status" -eq 0 ]
+
+  # The path must appear in the drift log
+  [ -f "$drift_calls" ] && [ -s "$drift_calls" ]
+  grep -qF "nonexistent-et-once-1836.bats" "$drift_calls"
+
+  # The check runs once per doc: exactly 1 "reference-missing" drift call
+  local entry_count
+  entry_count="$(grep -c "reference-missing" "$drift_calls" || true)"
+  [ "$entry_count" -eq 1 ]
 }

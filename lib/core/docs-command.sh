@@ -4041,8 +4041,7 @@ DOCS_LOOP_EOF
 # ---------------------------------------------------------------------------
 _DOCS_AUDIT_RUBRIC_ACCURACY="${_DOCS_AUDIT_RUBRIC_ACCURACY:-"Accuracy check — verify every assertion in this section against the code it references: (1) does the code actually behave as described? (2) are referenced interfaces, flags, defaults, or return values still current? Flag incorrect or stale assertions."}"
 
-# sharkrite-lint disable UNDOCUMENTED_RITE_VAR - Reason: RITE_MARKER_ENFORCED_BY is a marker constant defined in markers.sh; _RITE_ prefix cannot be used as RITE_MARKER_* is the canonical convention; ledger frozen per 2026-07-14 rule
-_DOCS_AUDIT_RUBRIC_FEATURE="${_DOCS_AUDIT_RUBRIC_FEATURE:-"Feature-doc role check: (1) does this section stay within one feature boundary — flag anything that describes a sibling feature? (2) does every observable-behavior assertion name an enforcing test via a '<!-- ${RITE_MARKER_ENFORCED_BY}: path.bats -->' marker, or is the assertion flagged as un-enforced? (3) does any assertion duplicate content in a sibling feature doc?"}"
+_DOCS_AUDIT_RUBRIC_FEATURE="${_DOCS_AUDIT_RUBRIC_FEATURE:-"Feature-doc role check: (1) does this section stay within one feature boundary — flag anything that describes a sibling feature? (2) does any assertion duplicate content in a sibling feature doc?"}"
 
 _DOCS_AUDIT_RUBRIC_ADR="${_DOCS_AUDIT_RUBRIC_ADR:-"ADR role check — compare across docs: (1) does this ADR section link every feature doc it covers? List any feature docs in the project not linked. (2) does any feature doc contradict a decision in this section? (3) are there code areas this section claims to cover with zero feature-doc coverage? (4) do the architectural decisions in this section still hold given the current codebase?"}"
 
@@ -4379,12 +4378,15 @@ docs_run_assertion_audit() {
   : > "${_aau_work_dir}/empty"
 
   local _aau_n=0 _aau_todo=0 _aau_done=0 _aau_skipped=0 _aau_doc_count=0
+  local _aau_feature_docs=""
   local _aau_d
   while IFS= read -r _aau_d <&3 || [ -n "$_aau_d" ]; do
     [ -n "$_aau_d" ] || continue
     _aau_doc_count=$((_aau_doc_count + 1))
+    local _aau_doc_is_feature=false
     local _aau_hl _aau_ht _aau_dt _aau_rb _aau_occ
     while IFS=$'\001' read -r _aau_hl _aau_ht _aau_dt _aau_rb _aau_occ <&4; do
+      [ "$_aau_dt" = "feature" ] && _aau_doc_is_feature=true
       local _aau_pf="${_aau_work_dir}/p.$((_aau_n + 1))"
       if ! _docs_audit_build_prompt "$_aau_d" "$_aau_hl" "$_aau_ht" "$_aau_dt" "$_aau_rb" \
         "$_aau_occ" "$_aau_map_file" "$_aau_pf"; then
@@ -4405,6 +4407,7 @@ docs_run_assertion_audit() {
         "$_aau_state" "$_aau_n" "$_aau_id" "$_aau_d" "${_aau_ht:-(preamble)}" >> "$_aau_work"
       printf '%s\t%s\n' "$_aau_d" "$_aau_id" >> "$_aau_cur"
     done 4< <(_docs_audit_list_sections "$_aau_map_file" "$_aau_d")
+    [ "$_aau_doc_is_feature" = "true" ] && _aau_feature_docs="${_aau_feature_docs}${_aau_d}"$'\n'
   done 3<<DOCS_SCOPE_EOF
 $_aau_docs_raw
 DOCS_SCOPE_EOF
@@ -4480,6 +4483,37 @@ RESET_DOCS_EOF
   local _aau_timeout="${RITE_DOC_ASSESSMENT_TIMEOUT:-300}"
   local _aau_branch
   _aau_branch="$(git -C "${RITE_PROJECT_ROOT:-.}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")"
+
+  # Enforcing-test check: once per feature doc, no model call.
+  # For each path declared via sharkrite-enforced-by markers, record a
+  # reference-missing drift entry when the file does not exist. Dedup is
+  # natural: drift_log_append is idempotent for the same (pr=0, doc,
+  # assertion) triple, so a re-run of the audit adds no second entry.
+  local _aau_et_no_marker=0 _aau_et_recorded=0
+  local _aau_et_d _aau_et_paths _aau_et_path _aau_et_full
+  while IFS= read -r _aau_et_d <&8 || [ -n "$_aau_et_d" ]; do
+    [ -n "$_aau_et_d" ] || continue
+    _aau_et_paths="$(docs_map_enforcing_tests "$_aau_et_d" 2>/dev/null || true)"
+    if [ -z "$_aau_et_paths" ]; then
+      _aau_et_no_marker=$((_aau_et_no_marker + 1))
+      continue
+    fi
+    while IFS= read -r _aau_et_path <&9 || [ -n "$_aau_et_path" ]; do
+      [ -n "$_aau_et_path" ] || continue
+      _aau_et_full="${RITE_PROJECT_ROOT:-.}/${_aau_et_path}"
+      if [ ! -f "$_aau_et_full" ]; then
+        drift_log_append \
+          "$_aau_et_d" "$_aau_branch" "0" "-" \
+          "declared test file missing: ${_aau_et_path}" "reference-missing" \
+          "enforcing test not found: ${_aau_et_path}" || true
+        _aau_et_recorded=$((_aau_et_recorded + 1))
+      fi
+    done 9<<ET_INNER_EOF
+$_aau_et_paths
+ET_INNER_EOF
+  done 8<<ET_OUTER_EOF
+$_aau_feature_docs
+ET_OUTER_EOF
 
   # Call pass: one model call per unchecked section, serial. Each result is
   # saved the moment its call returns.
@@ -4771,6 +4805,9 @@ FIN_DOCS_EOF
   if [ "$_aau_total" -gt 0 ]; then
     echo "" >&2
     print_info "Assertion audit: ${_aau_recorded} finding(s) recorded (${_aau_auto} auto-refinement, ${_aau_approved} user-accepted)"
+  fi
+  if [ "$_aau_et_no_marker" -gt 0 ]; then
+    print_info "Assertion audit: ${_aau_et_no_marker} in-scope feature doc(s) declare no enforcing test"
   fi
   if [ "$_aau_quit" = "true" ]; then
     _DOCS_AUDIT_STOPPED=true
