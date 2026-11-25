@@ -467,9 +467,14 @@ teardown() {
   local drift_2="${BATS_TEST_TMPDIR}/drift_2.log"
   local helper
 
-  # Run 1: process the section normally so done.tsv records it as checked.
-  helper="$(_audit_helper "NOTHING_FOUND" "y" "" "" "" "$drift_1")"
-  run bash "$helper" <<< $'y\n'
+  # Run 1: return an accuracy finding and quit at the review prompt ("y" then
+  # "q"). This writes done.tsv for the section (LLM call succeeds) but leaves
+  # it un-reviewed, so the doc stays in _aau_incomplete and
+  # _docs_audit_state_drop_doc is NOT called — done.tsv survives.
+  # Using NOTHING_FOUND would complete the doc cleanly and delete done.tsv,
+  # making Run 2 start fresh instead of resuming.
+  helper="$(_audit_helper "FINDING: accuracy|The description is inaccurate" "y" "" "" "" "$drift_1")"
+  run bash "$helper" <<< $'y\nq\n'
   [ "$status" -eq 0 ]
   # Confirm the done state was actually saved before proceeding.
   [ -f "$RITE_STATE_DIR/doc-audit/done.tsv" ]
