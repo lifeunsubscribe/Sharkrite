@@ -516,7 +516,7 @@ TRUNCSCRIPT
   # The result must not end with a partial number (no trailing non-dash digit after a dash)
   # Specifically: every numeric token in the suffix must be a complete number from the list.
   # Quick check: result must not contain "32" as a final token (the bad truncation artifact).
-  if echo "$_result" | grep -qE '-32$'; then
+  if echo "$_result" | grep -qE -- '-32$'; then
     echo "FAIL: Batch-suffix truncation produced a partial number: '$_result'" >&2
     echo "      Expected last token to be a complete issue number, not '32'." >&2
     return 1

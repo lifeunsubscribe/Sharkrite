@@ -219,7 +219,7 @@ _gate_flake_retry_pass() {
     [ -z "$_fr_name" ] && continue
     # Strip a trailing " # timeout after Ns"-style TAP directive before matching.
     _fr_name="${_fr_name%% # *}"
-    _fr_hit=$(grep -lF "$_fr_name" "${_fr_selection[@]+"${_fr_selection[@]}"}" 2>/dev/null | head -1 || true)
+    _fr_hit=$(grep -lF -- "$_fr_name" "${_fr_selection[@]+"${_fr_selection[@]}"}" 2>/dev/null | head -1 || true)
     [ -n "$_fr_hit" ] && _fr_files="${_fr_files}${_fr_hit}"$'\n'
   done <<< "$_fr_names"
   _fr_files=$(printf '%s' "$_fr_files" | sort -u | grep -v '^$' || true)
@@ -265,7 +265,7 @@ _gate_flake_retry_pass() {
   while IFS= read -r _fr_name; do
     [ -z "$_fr_name" ] && continue
     local _fr_clean="${_fr_name%% # *}"
-    if grep -qxF "$_fr_clean" <<< "$_fr_persist"; then
+    if grep -qxF -- "$_fr_clean" <<< "$_fr_persist"; then
       _fr_persisted=$((_fr_persisted + 1))
       continue
     fi
