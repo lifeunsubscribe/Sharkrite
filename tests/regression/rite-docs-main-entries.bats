@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/docs-command.sh::docs_reconcile_drift|_docs_main_entries_pass|_docs_list_main_entry_docs|_docs_bounded_context_for_doc|_docs_extract_section|_docs_group_entries_by_section
+# sharkrite-test-covers: lib/core/docs-command.sh::docs_reconcile_drift|_docs_main_entries_pass|_docs_list_main_entry_docs|_docs_bounded_context_for_doc|_docs_extract_section|_docs_group_entries_by_section|_docs_section_entries_pass
 # tests/regression/rite-docs-main-entries.bats
 BATS_TEST_TIMEOUT=30
 #
@@ -701,4 +701,313 @@ _docs_list_main_entry_docs
   local _calls
   _calls="$(grep -c 'RESOLVE:role=' "$STUB_CALLS_FILE" || true)"
   [ "${_calls:-0}" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Helper: write a large doc (> 8000 bytes) over docs/test-doc.md in FAKE_PROJECT
+# ---------------------------------------------------------------------------
+_write_large_doc() {
+  printf '# Test Doc\n\n## Background\n\n' > "$FAKE_PROJECT/docs/test-doc.md"
+  # 8100 x's — well over the 8000-byte threshold
+  printf '%8100s\n' '' | tr ' ' 'x' >> "$FAKE_PROJECT/docs/test-doc.md"
+  printf '\n## Usage\n\nUse it.\n' >> "$FAKE_PROJECT/docs/test-doc.md"
+}
+
+# ---------------------------------------------------------------------------
+# _docs_section_entries_pass: large doc routes to section pass
+# ---------------------------------------------------------------------------
+
+@test "large doc: _docs_main_entries_pass uses section pass not whole-doc pass" {
+  _write_large_doc
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+
+  # NO_PROPOSALS_NEEDED prevents early quit after first section (non-interactive)
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Section pass prompts do not include ---NARRATIVE--- (whole-doc prompts do,
+  # exactly twice). has_narrative=0 → section pass was triggered.
+  local _narrative_calls
+  _narrative_calls="$(grep -c 'CALL:has_narrative=0' "$STUB_CALLS_FILE" || true)"
+  [ "${_narrative_calls:-0}" -ge 1 ]
+}
+
+@test "small doc: _docs_main_entries_pass uses whole-doc pass (narrative required)" {
+  # docs/test-doc.md is small by default (from setup — a few dozen bytes)
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Whole-doc pass includes ---NARRATIVE--- in the prompt template (count = 2)
+  grep -q 'CALL:has_narrative=2' "$STUB_CALLS_FILE"
+}
+
+@test "section pass: provider called once per section group" {
+  _write_large_doc
+  # Seed entries for two distinct sections
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+  _seed_main_entry "docs/test-doc.md" "Usage stale" "contradiction" \
+    "assertion audit; section: Usage"
+
+  # NO_PROPOSALS_NEEDED: each section processes fully without early quit
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Exactly 2 provider calls (one per section group)
+  local _calls
+  _calls="$(grep -c 'RESOLVE:role=doc_update' "$STUB_CALLS_FILE" || true)"
+  [ "${_calls:-0}" -eq 2 ]
+}
+
+@test "section pass: NO_PROPOSALS_NEEDED in non-interactive mode keeps entries" {
+  _write_large_doc
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  local _entry_file="$FAKE_PROJECT/.rite/state/doc-drift/main/docs--test-doc.md.log"
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Non-interactive read defaults to "n" (keep) — entry file must still exist
+  [ -f "$_entry_file" ]
+  local _cnt
+  _cnt="$(grep -c '^doc=' "$_entry_file" || true)"
+  [ "${_cnt:-0}" -ge 1 ]
+}
+
+@test "section pass: entry-file override bypasses size branch, uses whole-doc pass" {
+  _write_large_doc
+
+  # Build a custom rest.entries file to pass as override
+  local _rest="$BATS_TEST_TMPDIR/rest.entries"
+  printf 'doc=docs/test-doc.md\tbranch=main\tpr=99\tissue=-\tassertion=rest\tkind=contradiction\tevidence=lib/core/foo.sh\trecorded=2026-01-01T00:00:00Z\n' \
+    > "$_rest"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  # Pass the override as the 5th argument — bypasses size branch
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass \
+    "docs/test-doc.md" "main" "main" "docs" "$_rest" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Whole-doc pass: prompt includes ---NARRATIVE--- requirement (count = 2)
+  grep -q 'CALL:has_narrative=2' "$STUB_CALLS_FILE"
+}
+
+@test "section pass: cap exit code (5) propagated from _docs_section_entries_pass" {
+  _write_large_doc
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+
+  local _cap_helper="$BATS_TEST_TMPDIR/cap_helper_$$.sh"
+  cat > "$_cap_helper" <<CAP_HELPER_EOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="${PROJECT_ROOT}/lib"
+export RITE_PROJECT_ROOT="${FAKE_PROJECT}"
+export RITE_DATA_DIR=".rite"
+export RITE_STATE_DIR="${FAKE_PROJECT}/.rite/state"
+export RITE_TARGET_BRANCH=main
+export PATH="${STUB_BIN}:${PATH}"
+source "${DOCS_CMD}"
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs must be post-source
+load_provider()                    { return 0; }
+provider_run_prompt_with_timeout() { return 5; }
+provider_resolve_model()           { echo "claude-sonnet-4-6"; }
+docs_map_ensure()                  { return 0; }
+docs_map_path() { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
+gh_safe()                          { return 0; }
+cd "${FAKE_PROJECT}"
+_docs_main_entries_pass "docs/test-doc.md"
+CAP_HELPER_EOF
+  chmod +x "$_cap_helper"
+
+  run bash "$_cap_helper" </dev/null
+  [ "$status" -eq 5 ]
+}
+
+@test "section pass: three consecutive provider failures return 1" {
+  _write_large_doc
+  # Seed entries for three sections to give the failure loop something to fail on
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+  _seed_main_entry "docs/test-doc.md" "Usage stale" "contradiction" \
+    "assertion audit; section: Usage"
+  # Third entry has no section label — goes to rest.entries, not groups
+  # We only need 3 provider failures; two section groups + one retry is enough:
+  # each group attempts up to 5 times before giving up, but provider rc=1 triggers
+  # _sep_provider_failed=true immediately. Three distinct sections → three failures.
+
+  local _fail_helper="$BATS_TEST_TMPDIR/fail_helper_$$.sh"
+  cat > "$_fail_helper" <<FAIL_HELPER_EOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="${PROJECT_ROOT}/lib"
+export RITE_PROJECT_ROOT="${FAKE_PROJECT}"
+export RITE_DATA_DIR=".rite"
+export RITE_STATE_DIR="${FAKE_PROJECT}/.rite/state"
+export RITE_TARGET_BRANCH=main
+export PATH="${STUB_BIN}:${PATH}"
+source "${DOCS_CMD}"
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs must be post-source
+load_provider()                    { return 0; }
+provider_run_prompt_with_timeout() { return 1; }
+provider_resolve_model()           { echo "claude-sonnet-4-6"; }
+docs_map_ensure()                  { return 0; }
+docs_map_path() { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
+gh_safe()                          { return 0; }
+cd "${FAKE_PROJECT}"
+_rc=0
+_docs_section_entries_pass "docs/test-doc.md" "main" "main" "docs" \
+  "${FAKE_PROJECT}/.rite/state/group_test" "3" "10" \
+  "${FAKE_PROJECT}/.rite/state/appr_test" "${FAKE_PROJECT}/.rite/state/entries_test" || _rc=\$?
+exit \$_rc
+FAIL_HELPER_EOF
+  chmod +x "$_fail_helper"
+
+  # Build 3 groups manually
+  local _grp_dir="$FAKE_PROJECT/.rite/state/group_test"
+  mkdir -p "$_grp_dir"
+  local _doc="docs/test-doc.md"
+  local _entry='doc=docs/test-doc.md	branch=main	pr=1	issue=-	assertion=A	kind=contradiction	evidence=x	recorded=2026-01-01T00:00:00Z'
+  for _gi in 1 2 3; do
+    printf '2\nSection%s\n1\n' "$_gi" > "$_grp_dir/group-${_gi}.meta"
+    printf '%s\n' "$_entry" > "$_grp_dir/group-${_gi}.entries"
+  done
+  mkdir -p "$FAKE_PROJECT/.rite/state"
+  touch "$FAKE_PROJECT/.rite/state/entries_test"
+
+  run bash "$_fail_helper" </dev/null
+  [ "$status" -eq 1 ]
+}
+
+@test "one docs PR: approved section triggers one _docs_apply_approved call" {
+  _write_large_doc
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+
+  export STUB_PROPOSALS
+  STUB_PROPOSALS='---PROPOSAL---
+ACTION: EDIT_SECTION
+FILE: docs/test-doc.md
+SECTION: 2 1 Background
+DRIFT_REFS: pr:42
+DESCRIPTION: Update Background
+---CONTENT---
+## Background
+
+Updated.
+@@END@@'
+
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" < <(printf 'y\n')
+  [ "$status" -eq 0 ]
+
+  # Real _docs_apply_approved must have reached PR creation — proves the writer→parser
+  # round-trip succeeded (a format mismatch emits a warning and skips the proposal,
+  # leaving nothing staged, so gh_safe pr create is never called).
+  grep -q "gh_safe:pr create" "$STUB_CALLS_FILE"
+}
+
+@test "declined section keeps its entries in the drift store" {
+  _write_large_doc
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+
+  export STUB_PROPOSALS
+  STUB_PROPOSALS='---PROPOSAL---
+ACTION: EDIT_SECTION
+FILE: docs/test-doc.md
+DRIFT_REFS: pr:42
+DESCRIPTION: Update Background
+---CONTENT---
+## Background
+
+Updated.
+@@END@@'
+
+  local _entry_file="$FAKE_PROJECT/.rite/state/doc-drift/main/docs--test-doc.md.log"
+
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" < <(printf 'n\n')
+  [ "$status" -eq 0 ]
+
+  [ -f "$_entry_file" ]
+  local _cnt
+  _cnt="$(grep -c '^doc=' "$_entry_file" || true)"
+  [ "${_cnt:-0}" -ge 1 ]
+}
+
+@test "rest entries: entries without section labels run the whole-doc pass" {
+  _write_large_doc
+  # Entry WITH section label → goes to group (section pass)
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+  # Entry WITHOUT section label → goes to rest.entries (whole-doc pass)
+  _seed_main_entry "docs/test-doc.md" "general stale" "contradiction" \
+    "lib/core/foo.sh"
+
+  export STUB_PROPOSALS="NO_PROPOSALS_NEEDED"
+
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" </dev/null
+  [ "$status" -eq 0 ]
+
+  # Section pass call: prompt has no ---NARRATIVE--- requirement (count=0)
+  local _section_calls
+  _section_calls="$(grep -c 'CALL:has_narrative=0' "$STUB_CALLS_FILE" || true)"
+  [ "${_section_calls:-0}" -ge 1 ]
+
+  # Whole-doc pass for rest entries: prompt has ---NARRATIVE--- requirement (count=2)
+  grep -q 'CALL:has_narrative=2' "$STUB_CALLS_FILE"
+}
+
+@test "section pass: DOC_PASS diag emitted per section with correct fields" {
+  _write_large_doc
+  _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
+    "assertion audit; section: Background"
+
+  local _log_file="$BATS_TEST_TMPDIR/diag_$$.log"
+  touch "$_log_file"
+
+  local _diag_helper="$BATS_TEST_TMPDIR/diag_helper_$$.sh"
+  cat > "$_diag_helper" <<DIAG_HELPER_EOF
+#!/bin/bash
+set -euo pipefail
+export RITE_LIB_DIR="${PROJECT_ROOT}/lib"
+export RITE_PROJECT_ROOT="${FAKE_PROJECT}"
+export RITE_DATA_DIR=".rite"
+export RITE_STATE_DIR="${FAKE_PROJECT}/.rite/state"
+export RITE_TARGET_BRANCH=main
+export RITE_LOG_FILE="${_log_file}"
+export PATH="${STUB_BIN}:${PATH}"
+source "${DOCS_CMD}"
+# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs must be post-source
+load_provider()                    { return 0; }
+provider_run_prompt_with_timeout() { printf 'NO_PROPOSALS_NEEDED\n'; }
+provider_resolve_model()           { echo "claude-fable-5"; }
+docs_map_ensure()                  { return 0; }
+docs_map_path() { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
+gh_safe()                          { return 0; }
+cd "${FAKE_PROJECT}"
+_docs_main_entries_pass "docs/test-doc.md"
+DIAG_HELPER_EOF
+  chmod +x "$_diag_helper"
+
+  run bash "$_diag_helper" </dev/null
+  [ "$status" -eq 0 ]
+
+  # DOC_PASS diag must appear in the log file with correct kind and doc fields
+  [ -f "$_log_file" ]
+  grep -q "DOC_PASS kind=docs doc=docs/test-doc.md " "$_log_file"
+  grep -q "outcome=rejected" "$_log_file"
 }

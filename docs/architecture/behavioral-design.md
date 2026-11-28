@@ -2887,7 +2887,10 @@ are required; narrative alone is not reviewable and a diff alone is not
 readable. Audit entries carry their section's heading, and `_docs_group_entries_by_section`
 groups them sorted by section without a model call, ready for the per-section
 pass; an entry whose heading is missing from the map, appears more than once, or
-is the preamble stays with the whole-doc pass.
+is the preamble stays with the whole-doc pass. Docs larger than 8 KB are
+reconciled section by section: `_docs_section_entries_pass` processes each
+section group with one provider call and one EDIT_SECTION proposal, using the
+same y/n/f/q approval loop; docs smaller than 8 KB use the whole-file EDIT path.
 
 Contract:
 
@@ -2905,6 +2908,10 @@ Contract:
   verify an assertion deterministically ("the sync experience is smooth"), it
   records a `refinement` entry proposing enforceable wording. Each accepted
   rewording makes the next pass cheaper.
+- **Large-doc section pass.** Docs larger than 8 KB are reconciled section by
+  section: approved section edits land in one docs PR per batch; a stopped pass
+  (user quit, three consecutive provider failures, cap/auth) leaves remaining
+  section and whole-doc entries in the drift store for the next run.
 
 ### Editing rules — every pass that proposes doc text
 
