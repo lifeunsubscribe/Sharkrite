@@ -2123,7 +2123,12 @@ line of pytest's short test summary:
 - **File = the test file.** `_parse_bats_failure_line` takes it from the node
   id (and, for a normalized jest/vitest line, from the `*.test.*` path), so
   the fix item's Location names a real file instead of the constant `bats`.
-  A plain bats TAP line keeps `file: "bats"`. The batch circuit breaker's
+  Bats failures carry their file and line: `_tap_bats_items_json` reads the
+  `# (in test file <path>, line N)` comment that follows each `not ok` line
+  and sets `file` to the repo-relative path; `reason` is `line N: assertion`.
+  When no comment follows (synthetic `[tests_not_run]` lines, pre-comment
+  bats output), the item falls back to `file: "bats"` via
+  `_parse_bats_failure_line`. The batch circuit breaker's
   signature is the sorted set of those files, so it changes with this: pytest
   failures used to produce an empty signature (never counted) and jest/vitest
   failures the constant `bats` (any three consecutive failed issues matched).
