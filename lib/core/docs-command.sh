@@ -1788,8 +1788,9 @@ _docs_warn_doc_pass_threshold() {
 #      appended to APPR_ENTRIES_FILE for burndown by _docs_apply_approved.
 #
 # Returns:
-#   0  all groups processed (or user quit early)
+#   0  all groups processed
 #   1  three consecutive provider failures — caller may still apply approved
+#   3  user quit early — caller skips the rest pass
 #   5  usage cap hit mid-pass — caller should stop and apply approved so far
 #   18 provider auth failure mid-pass
 # ---------------------------------------------------------------------------

@@ -898,41 +898,26 @@ FAIL_HELPER_EOF
   _seed_main_entry "docs/test-doc.md" "Background stale" "contradiction" \
     "assertion audit; section: Background"
 
-  local _appr_helper="$BATS_TEST_TMPDIR/appr_helper_$$.sh"
-  cat > "$_appr_helper" <<APPR_EOF
-#!/bin/bash
-set -euo pipefail
-export RITE_LIB_DIR="${PROJECT_ROOT}/lib"
-export RITE_PROJECT_ROOT="${FAKE_PROJECT}"
-export RITE_DATA_DIR=".rite"
-export RITE_STATE_DIR="${FAKE_PROJECT}/.rite/state"
-export RITE_TARGET_BRANCH=main
-export PATH="${STUB_BIN}:${PATH}"
-source "${DOCS_CMD}"
-# sharkrite-lint disable BATS_PRE_SOURCE_STUB_OVERWRITE - Reason: docs-command.sh uses declare -f rite_docs sentinel guard; stubs must be post-source
-load_provider()                    { return 0; }
-provider_run_prompt_with_timeout() {
-  local _tok
-  _tok="\$(grep -oE -- '---END-[0-9]+---' <<< "\$1" | head -1 || true)"
-  printf '---PROPOSAL---\nACTION: EDIT_SECTION\nFILE: docs/test-doc.md\nDRIFT_REFS: pr:42\nDESCRIPTION: Update Background\n---CONTENT---\n## Background\n\nUpdated.\n%s\n' "\${_tok}"
-}
-provider_resolve_model()           { echo "claude-fable-5"; }
-docs_map_ensure()                  { return 0; }
-docs_map_path()                    { printf '%s/.rite/state/docs-map.tsv\n' "${FAKE_PROJECT}"; }
-gh_safe()                          { return 0; }
-_docs_apply_approved()             { printf 'apply_approved_called\n' >> "${STUB_CALLS_FILE}"; return 0; }
-cd "${FAKE_PROJECT}"
-_docs_main_entries_pass "docs/test-doc.md"
-APPR_EOF
-  chmod +x "$_appr_helper"
+  export STUB_PROPOSALS
+  STUB_PROPOSALS='---PROPOSAL---
+ACTION: EDIT_SECTION
+FILE: docs/test-doc.md
+SECTION: 2 1 Background
+DRIFT_REFS: pr:42
+DESCRIPTION: Update Background
+---CONTENT---
+## Background
 
-  printf 'y\n' | run bash "$_appr_helper"
+Updated.
+@@END@@'
+
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" < <(printf 'y\n')
   [ "$status" -eq 0 ]
 
-  grep -q "apply_approved_called" "$STUB_CALLS_FILE"
-  local _apply_cnt
-  _apply_cnt="$(grep -c 'apply_approved_called' "$STUB_CALLS_FILE" || true)"
-  [ "${_apply_cnt:-0}" -eq 1 ]
+  # Real _docs_apply_approved must have reached PR creation — proves the writer→parser
+  # round-trip succeeded (a format mismatch emits a warning and skips the proposal,
+  # leaving nothing staged, so gh_safe pr create is never called).
+  grep -q "gh_safe:pr create" "$STUB_CALLS_FILE"
 }
 
 @test "declined section keeps its entries in the drift store" {
@@ -954,7 +939,7 @@ Updated.
 
   local _entry_file="$FAKE_PROJECT/.rite/state/doc-drift/main/docs--test-doc.md.log"
 
-  printf 'n\n' | run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md"
+  run bash "$_DOCS_HELPER" _docs_main_entries_pass "docs/test-doc.md" < <(printf 'n\n')
   [ "$status" -eq 0 ]
 
   [ -f "$_entry_file" ]
