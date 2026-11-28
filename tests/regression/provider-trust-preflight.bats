@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/providers/claude.sh::claude_provider_healthcheck, lib/core/batch-process-issues.sh, lib/providers/provider-interface.sh, lib/core/workflow-runner.sh::main, lib/core/promote-branch.sh, lib/core/plan-issues.sh, lib/core/docs-command.sh, lib/utils/conflict-resolver.sh, bin/rite-health-report
+# sharkrite-test-covers: lib/providers/claude.sh::claude_provider_healthcheck, lib/core/batch-process-issues.sh, lib/providers/provider-interface.sh, lib/core/workflow-runner.sh::main, lib/core/promote-branch.sh, lib/core/plan-issues.sh, lib/core/docs-command.sh::rite_docs, lib/utils/conflict-resolver.sh, bin/rite-health-report
 # Regression tests for the provider trust preflight (issues #1488, #1492).
 #
 # Claude CLI >=2.1.284 emits "has not been trusted" to stderr in untrusted

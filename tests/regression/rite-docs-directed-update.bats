@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/docs-command.sh
+# sharkrite-test-covers: lib/core/docs-command.sh::_docs_apply_approved|_docs_update_engine|docs_directed_update|docs_reconcile_drift|rite_docs
 # tests/regression/rite-docs-directed-update.bats
 BATS_TEST_TIMEOUT=30
 #

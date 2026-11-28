@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/utils/docs-map.sh, lib/core/docs-command.sh
+# sharkrite-test-covers: lib/utils/docs-map.sh, lib/core/docs-command.sh::_docs_apply_approved
 # Regression tests for:
 #   1. docs-map committed path (docs/docs-map.tsv, not .rite/state/)
 #   2. type and rubric columns in the v3 format
