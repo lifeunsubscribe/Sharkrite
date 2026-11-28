@@ -69,7 +69,11 @@ teardown() {
 }
 
 @test "config.sh: RITE_STATE_DIR defaults to .rite/state under project root" {
+  # The gate and the full-suite runner export a throwaway RITE_STATE_DIR to
+  # their bats children. This test asserts the default, so it clears the
+  # inherited value first (live: full-suite 2026-11-25, issue #1855).
   run bash -c "
+    unset RITE_STATE_DIR
     export RITE_PROJECT_ROOT='${RITE_PROJECT_ROOT}'
     export RITE_DATA_DIR='${RITE_DATA_DIR}'
     export RITE_LIB_DIR='${RITE_LIB_DIR}'
