@@ -136,6 +136,28 @@ _write_toggle_fixture() {
   [ "$(echo "$output" | tail -1)" = "1" ]
 }
 
+@test "dash-name: a failing test whose name starts with '--' is found and retried" {
+  # Verifies that grep -lF -- "$_fr_name" correctly handles a test name starting
+  # with '--' (which grep would otherwise parse as options, finding no file).
+  local raw="$FIX_ROOT/raw.tap"
+  # Write a bats fixture whose @test name starts with '--'.
+  # printf avoids heredoc @test rewriting by bats' preprocessor (runbook rule 7).
+  printf '#!/usr/bin/env bats\n@test "--dash-leading name passes on retry" {\n  true\n}\n' \
+    > "$FIX_ROOT/tests/dash.bats"
+  # Simulate an initial run that failed this test.
+  printf '1..1\nnot ok 1 --dash-leading name passes on retry\n' > "$raw"
+  _parallel_files=("$FIX_ROOT/tests/dash.bats")
+  _serial_files=()
+
+  run _gate_flake_retry_pass "$raw" "$FIX_ROOT"
+  [ "$status" -eq 0 ]
+  # The retry must have located the bats file (found > 0 files) and cleared
+  # the failure (the fixture always passes on the quiet serial rerun).
+  [[ "$output" == *"cleared=1 persisted=0"* ]]
+  [ "$(echo "$output" | tail -1)" = "0" ]
+  grep -q "^ok 1 --dash-leading name passes on retry" "$raw"
+}
+
 @test "source: retry call is guarded by watchdog flag and off-switch" {
   run grep -E '_fr_watchdog:-false' "${RITE_REPO_ROOT}/lib/utils/test-gate.sh"
   [ "$status" -eq 0 ]

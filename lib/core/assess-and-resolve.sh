@@ -777,7 +777,7 @@ _build_gate_prepend_items() {
         # Attribution check: is this test name also failing on main?
         _test_is_inherited=false
         if [ "$_gate_accept_red_main" = "true" ] && [ -n "$_gate_main_baseline_tests" ]; then
-          if grep -qxF "$_test_name" <<< "$_gate_main_baseline_tests" 2>/dev/null; then
+          if grep -qxF -- "$_test_name" <<< "$_gate_main_baseline_tests" 2>/dev/null; then
             _test_is_inherited=true
           fi
         fi

@@ -1783,7 +1783,7 @@ run_test_gate() {
       done <<< "$_selection"
       while IFS= read -r _vp_name; do
         [ -z "$_vp_name" ] && continue
-        _vp_hit=$(grep -lF "$_vp_name" "${_vp_sel_arr[@]+"${_vp_sel_arr[@]}"}" 2>/dev/null | head -1 || true)
+        _vp_hit=$(grep -lF -- "$_vp_name" "${_vp_sel_arr[@]+"${_vp_sel_arr[@]}"}" 2>/dev/null | head -1 || true)
         [ -n "$_vp_hit" ] && _vp_out="${_vp_out}${_vp_hit#"$project_root"/}"$'\n'
       done <<< "$_vp_names"
       _vp_out=$(printf '%s' "$_vp_out" | sort -u | grep -v '^$' || true)
