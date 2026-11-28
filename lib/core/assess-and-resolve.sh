@@ -782,14 +782,15 @@ _build_gate_prepend_items() {
           fi
         fi
 
-        # A finding names the runner that produced it. file is "bats" (a TAP
-        # line carries no path) or a *.bats path for sharkrite's own suite;
-        # any other value is the target repo's test file (pytest nodeid,
-        # jest/vitest test file). Calling a pytest failure a "bats failure"
-        # reported by `bats -r tests/` sent fix sessions in a Python repo
-        # looking for a runner that does not exist there.
+        # A finding names the runner that produced it. file is "bats" (TAP
+        # fallback when no location comment follows the not-ok line) or a
+        # *.bats path (from the TAP location comment); any other value is the
+        # target repo's test file (pytest nodeid, jest/vitest test file).
+        # Calling a pytest failure a "bats failure" reported by `bats -r
+        # tests/` sent fix sessions in a Python repo looking for a runner
+        # that does not exist there.
         local _test_kind="bats failure"
-        local _test_how="\`bats -r tests/\` (post-commit gate) reported this failure. Fix: identify root cause and address the failing test assertion."
+        local _test_how="\`bats -r tests/\` (post-commit gate) reported this failure. Location is the test file; Reason is the line and failed assertion. Fix: identify root cause and address the failing test assertion."
         case "$_test_file" in
           bats|*.bats) ;;
           *)

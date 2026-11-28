@@ -82,8 +82,9 @@ _extract_gate_signature() {
     return 0
   fi
   # Sorted unique file paths from both tests[] and lint[].
-  # For bats failures .tests[].file is always "bats"; for jest/vitest and
-  # pytest findings it is the test file's path (_parse_bats_failure_line).
+  # For bats failures .tests[].file is the *.bats path from the TAP location
+  # comment, or "bats" when no comment follows the not-ok line (fallback).
+  # For jest/vitest and pytest findings it is the test file's path.
   # Including lint[] catches repeated lint-only gate failures.
   # `// empty` drops null entries (e.g. a bats record without a file field).
   local _sig

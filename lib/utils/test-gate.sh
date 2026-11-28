@@ -274,22 +274,12 @@ run_test_gate() {
     _cmd_tests_count=$(grep -c "^not ok " "$_tests_raw_file_cmd" || true)
     local _cmd_overall_exit=0
     [ "$_cmd_tests_exit" -ne 0 ] && _cmd_overall_exit=1
-    # Build tests[] JSON from the (possibly normalizer-augmented) raw file —
-    # same loop as the main path (lines ~2191-2201). Previously this was
-    # hardcoded to "[]", so a failing RITE_TEST_COMMAND reported a nonzero
-    # test_count in the diag but gave the fix loop zero named findings
-    # (diag/JSON inconsistency, PR #838 review finding, issue #846).
-    local _cmd_tests_items="["
-    local _cmd_first_test=true
-    while IFS= read -r _raw; do
-      _item=$(_parse_bats_failure_line "$_raw" 2>/dev/null || true)
-      if [ -n "$_item" ]; then
-        [ "$_cmd_first_test" = "true" ] || _cmd_tests_items+=","
-        _cmd_tests_items+="$_item"
-        _cmd_first_test=false
-      fi
-    done < "$_tests_raw_file_cmd"
-    _cmd_tests_items+="]"
+    # Build tests[] JSON from the (possibly normalizer-augmented) raw file.
+    # _tap_bats_items_json reads TAP location comments after each "not ok" line
+    # so bats failures carry their file and line; pytest/jest normalised lines
+    # fall back to _parse_bats_failure_line's existing file/reason extraction.
+    local _cmd_tests_items
+    _cmd_tests_items=$(_tap_bats_items_json "$_tests_raw_file_cmd" "$project_root" 2>/dev/null || printf '[]')
     local _gate_end_cmd _duration_cmd
     _gate_end_cmd=$(date +%s)
     _duration_cmd=$(( _gate_end_cmd - _gate_start ))

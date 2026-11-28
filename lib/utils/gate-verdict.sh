@@ -690,6 +690,150 @@ _synthesize_notrun_findings() {
 }
 
 # ---------------------------------------------------------------------------
+# _tap_bats_item_with_loc NOT_OK_LINE LOC_FILE LOC_LINE ASSERTION [PROJECT_ROOT]
+#
+# Build one gate JSON item from a bats "not ok" TAP line.
+# When LOC_FILE is non-empty (the TAP location comment was found): file is set
+# to the repo-relative test file path and reason is "line N: assertion" (or
+# "line N" when no assertion text was captured).  PROJECT_ROOT is stripped from
+# the front of an absolute LOC_FILE path to produce a repo-relative value.
+# When LOC_FILE is empty: delegates to _parse_bats_failure_line unchanged so
+# synthetic [tests_not_run] lines, normalised pytest/jest lines, and plain bats
+# TAP lines without location comments are handled identically to before.
+# ---------------------------------------------------------------------------
+_tap_bats_item_with_loc() {
+  local _not_ok="$1" _loc_file="${2:-}" _loc_line="${3:-}" _assertion="${4:-}" _root="${5:-}"
+  if [ -z "$_loc_file" ]; then
+    _parse_bats_failure_line "$_not_ok"
+    return $?
+  fi
+  if [ -n "$_root" ]; then
+    case "$_loc_file" in
+      "$_root/"*) _loc_file="${_loc_file#"$_root/"}" ;;
+    esac
+  fi
+  local _stripped _tab _test_name
+  _stripped=$(printf '%s' "$_not_ok" | sed 's/^not ok [0-9]* //' || true)
+  _tab=$'\t'
+  case "$_stripped" in
+    *"$_tab"*) _stripped="${_stripped%%"$_tab"*}" ;;
+  esac
+  _test_name=$(_sanitize_json_value "$_stripped" || true)
+  local _reason
+  if [ -n "$_assertion" ]; then
+    _reason="line ${_loc_line}: ${_assertion}"
+  else
+    _reason="line ${_loc_line}"
+  fi
+  local _file_j _reason_j
+  _file_j=$(_sanitize_json_value "$_loc_file" || true)
+  _reason_j=$(_sanitize_json_value "$_reason" || true)
+  printf '{"file":"%s","test_name":"%s","reason":"%s"}' "${_file_j:-bats}" "$_test_name" "$_reason_j"
+}
+
+# ---------------------------------------------------------------------------
+# _tap_bats_items_json TAP_FILE [PROJECT_ROOT]
+#
+# Read a bats TAP report file (or a normaliser-augmented copy) and return a
+# JSON array of gate test items.  For each "not ok" line, reads the following
+# "# " comment lines to extract the test file and line number from the TAP
+# location comment and the failing assertion text, then emits a JSON item via
+# _tap_bats_item_with_loc.  Falls back to _parse_bats_failure_line defaults
+# (file="bats", reason="assertion failed") when no location comment follows
+# the not-ok line — preserving existing behaviour for synthetic
+# [tests_not_run] findings and normalised pytest/jest lines.
+# Comments under a "not ok" line that the flake retry flipped to "ok" are
+# skipped: the state machine only enters COLLECTING state for a "not ok" line.
+#
+# Two TAP location comment forms are handled:
+#   single-line : # (in test file <path>, line N)
+#   two-line    : # (from function ... in file <helper>, line M,
+#                 #  in test file <path>, line N)
+# ---------------------------------------------------------------------------
+_tap_bats_items_json() {
+  local _tap_file="${1:-}"
+  local _project_root="${2:-}"
+  local _items="["
+  local _first=true
+  local _notok="" _loc_file="" _loc_line="" _assertion="" _in_mloc=false
+  local _item _comment _loc_rest _atext _line
+  [ -f "$_tap_file" ] || { printf '[]'; return 0; }
+  while IFS= read -r _line; do
+    case "$_line" in
+      "not ok "*)
+        # Flush any pending item before resetting for the new one.
+        if [ -n "$_notok" ]; then
+          _item=$(_tap_bats_item_with_loc "$_notok" "$_loc_file" "$_loc_line" "$_assertion" "$_project_root" 2>/dev/null || true)
+          if [ -n "$_item" ]; then
+            [ "$_first" = "true" ] || _items+=","
+            _items+="$_item"
+            _first=false
+          fi
+        fi
+        _notok="$_line"; _loc_file=""; _loc_line=""; _assertion=""; _in_mloc=false
+        ;;
+      "# "*)
+        # Comment line: collect location and assertion info for the pending not-ok.
+        if [ -n "$_notok" ]; then
+          _comment="${_line#\# }"
+          if [ -z "$_loc_file" ]; then
+            case "$_comment" in
+              "(in test file "*)
+                _loc_rest="${_comment#(in test file }"
+                _loc_file="${_loc_rest%%, line *}"
+                _loc_line="${_loc_rest##*, line }"; _loc_line="${_loc_line%)}"
+                ;;
+              "(from function "*)
+                _in_mloc=true
+                ;;
+              " in test file "*)
+                if [ "$_in_mloc" = "true" ]; then
+                  _loc_rest="${_comment# in test file }"
+                  _loc_file="${_loc_rest%%, line *}"
+                  _loc_line="${_loc_rest##*, line }"; _loc_line="${_loc_line%)}"
+                  _in_mloc=false
+                fi
+                ;;
+            esac
+          fi
+          if [ -z "$_assertion" ]; then
+            case "$_comment" in
+              "  \`"*)
+                _atext="${_comment#  \`}"
+                _atext="${_atext%%\' failed*}"
+                [ -n "$_atext" ] && _assertion="$_atext"
+                ;;
+            esac
+          fi
+        fi
+        ;;
+      *)
+        # Non-comment: flush the pending not-ok item and exit COLLECTING state.
+        if [ -n "$_notok" ]; then
+          _item=$(_tap_bats_item_with_loc "$_notok" "$_loc_file" "$_loc_line" "$_assertion" "$_project_root" 2>/dev/null || true)
+          if [ -n "$_item" ]; then
+            [ "$_first" = "true" ] || _items+=","
+            _items+="$_item"
+            _first=false
+          fi
+          _notok=""; _loc_file=""; _loc_line=""; _assertion=""; _in_mloc=false
+        fi
+        ;;
+    esac
+  done < "$_tap_file"
+  # Flush the final pending item (EOF with no trailing non-comment line).
+  if [ -n "$_notok" ]; then
+    _item=$(_tap_bats_item_with_loc "$_notok" "$_loc_file" "$_loc_line" "$_assertion" "$_project_root" 2>/dev/null || true)
+    if [ -n "$_item" ]; then
+      [ "$_first" = "true" ] || _items+=","
+      _items+="$_item"
+    fi
+  fi
+  _items+="]"
+  printf '%s' "$_items"
+}
+
+# ---------------------------------------------------------------------------
 # _gate_build_verdict — pure assembly: raw runner output → findings JSON
 #
 # Reads lint and test raw output files, builds findings JSON arrays using the
@@ -744,17 +888,11 @@ _gate_build_verdict() {
   _gbv_lint_items+="]"
 
   # Build tests JSON array from the TAP output (synthetic not-ok lines included).
-  local _gbv_tests_items="["
-  local _gbv_first_test=true
-  while IFS= read -r _raw; do
-    _gbv_item=$(_parse_bats_failure_line "$_raw" 2>/dev/null || true)
-    if [ -n "$_gbv_item" ]; then
-      [ "$_gbv_first_test" = "true" ] || _gbv_tests_items+=","
-      _gbv_tests_items+="$_gbv_item"
-      _gbv_first_test=false
-    fi
-  done < "$_gbv_tests_file"
-  _gbv_tests_items+="]"
+  # _tap_bats_items_json reads location comments after each "not ok" line and
+  # populates file/reason from them; falls back to _parse_bats_failure_line for
+  # lines with no location comment (synthetic [tests_not_run], pytest/jest).
+  local _gbv_tests_items
+  _gbv_tests_items=$(_tap_bats_items_json "$_gbv_tests_file" "${RITE_PROJECT_ROOT:-}" 2>/dev/null || printf '[]')
 
   # Determine overall exit: any lint or test failure blocks (block-on-any).
   local _gbv_overall_exit=0

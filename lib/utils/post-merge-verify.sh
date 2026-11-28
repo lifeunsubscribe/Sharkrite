@@ -104,7 +104,7 @@ _pmv_serial_rerun_clears() {
   [ "${_lint_n:-1}" = "0" ] || return 1
 
   local _names
-  _names=$(jq -r '.tests[]? | select(.file == "bats") | .test_name' "$_gate_json" 2>/dev/null || true)
+  _names=$(jq -r '.tests[]? | select(.file == "bats" or (.file | endswith(".bats"))) | .test_name' "$_gate_json" 2>/dev/null || true)
   [ -n "${_names:-}" ] || return 1
 
   local _name _hit _files="" _unmapped=0
