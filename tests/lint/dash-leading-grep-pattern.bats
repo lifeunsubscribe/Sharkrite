@@ -17,25 +17,31 @@ setup() {
   LINT_SCRIPT="${RITE_REPO_ROOT}/tools/sharkrite-lint.sh"
   FIXTURE_DIR=$(mktemp -d)
   export FIXTURE_DIR
-  # Rule 43 also scans `find tests -name '*.bats'` relative to cwd.
-  mkdir -p "$FIXTURE_DIR/tests/regression" "$FIXTURE_DIR/tests/fixtures"
+  # SH_FIXTURE_DIR: injected via RITE_LINT_EXTRA_DIRS so the driver scans shell
+  # fixtures without touching the project tree.  Rule 43 also scans
+  # `find tests -name '*.bats'` relative to cwd; bats-file tests cd into
+  # FIXTURE_DIR (which has tests/regression/ and tests/fixtures/) separately.
+  SH_FIXTURE_DIR="${FIXTURE_DIR}/extra-sh"
+  mkdir -p "$SH_FIXTURE_DIR" "$FIXTURE_DIR/tests/regression" "$FIXTURE_DIR/tests/fixtures"
+  export RITE_LINT_EXTRA_DIRS="$SH_FIXTURE_DIR"
 }
 
-teardown() { rm -rf "$FIXTURE_DIR"; }
+teardown() {
+  unset RITE_LINT_EXTRA_DIRS
+  rm -rf "$FIXTURE_DIR"
+}
 
 # ---------------------------------------------------------------------------
 # Should FIRE
 # ---------------------------------------------------------------------------
 
 @test "DASH_LEADING_GREP_PATTERN: flags flags single-quoted pattern starting with dash in a shell file" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/example.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/example.sh" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 # BAD: pattern '-32$' parsed as flags
 if grep -qE '-32$' <<< "$result"; then echo found; fi
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 1 ]
   [[ "$output" =~ "DASH_LEADING_GREP_PATTERN" ]]
@@ -43,24 +49,20 @@ EOF
 }
 
 @test "DASH_LEADING_GREP_PATTERN: flags flags triple-dash literal (the live failure pattern)" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/example.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/example.sh" <<'EOF'
 #!/bin/bash
 COUNT=$(grep -c '---NARRATIVE---' "$file" || true)
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 1 ]
   [[ "$output" =~ "DASH_LEADING_GREP_PATTERN" ]]
 }
 
 @test "DASH_LEADING_GREP_PATTERN: flags double-quoted dash-leading pattern" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/example.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/example.sh" <<'EOF'
 #!/bin/bash
 grep -qE "-option" <<< "$line"
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 1 ]
   [[ "$output" =~ "DASH_LEADING_GREP_PATTERN" ]]
@@ -86,81 +88,71 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "DASH_LEADING_GREP_PATTERN: does NOT flag when -- precedes the pattern" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/good.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/good.sh" <<'EOF'
 #!/bin/bash
 grep -qE -- '-32$' <<< "$result"
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
 
 @test "DASH_LEADING_GREP_PATTERN: does NOT flag when -e precedes the pattern" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/good.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/good.sh" <<'EOF'
 #!/bin/bash
 grep -qF -e '-option' <<< "$line"
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
 
 @test "DASH_LEADING_GREP_PATTERN: does NOT flag a lone '-' pattern" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/lone.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/lone.sh" <<'EOF'
 #!/bin/bash
 grep '-' "$file"
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
 
 @test "DASH_LEADING_GREP_PATTERN: does NOT flag a full-line comment" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/commented.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/commented.sh" <<'EOF'
 #!/bin/bash
 # grep -qE '-32$' would be bad but this is a comment
 true
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
 
 @test "DASH_LEADING_GREP_PATTERN: does NOT flag an @test title line in a .bats file" {
-  cat > "$FIXTURE_DIR/tests/regression/title.bats" <<'EOF'
-#!/usr/bin/env bats
-@test "Rule 43 fires on grep '-pattern' without --" { true; }
-EOF
+  # printf, not heredoc: bats preprocesses literal @test lines in this file,
+  # corrupting heredoc fixture bodies (test-authoring runbook rule 7).
+  printf '%s\n' \
+    '#!/usr/bin/env bats' \
+    '@test "Rule 43 fires on grep '"'"'-pattern'"'"' without --" { true; }' \
+    > "$FIXTURE_DIR/tests/regression/title.bats"
   cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
 
 @test "DASH_LEADING_GREP_PATTERN: does NOT flag inside a single-quoted heredoc body" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/hd.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/hd.sh" <<'EOF'
 #!/bin/bash
 # Content of the heredoc is literal data, not code.
 cat > "$tmp" <<'INNER'
 grep -qE '-32$' <<< "$x"
 INNER
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
 
 @test "DASH_LEADING_GREP_PATTERN: does NOT flag a variable pattern (not a literal)" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/var.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/var.sh" <<'EOF'
 #!/bin/bash
 grep -lF "$_name" "${files[@]}" 2>/dev/null | head -1 || true
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
@@ -180,13 +172,11 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "DASH_LEADING_GREP_PATTERN: suppression comment on preceding line prevents the finding" {
-  mkdir -p "$FIXTURE_DIR/lib/utils"
-  cat > "$FIXTURE_DIR/lib/utils/suppressed.sh" <<'EOF'
+  cat > "$SH_FIXTURE_DIR/suppressed.sh" <<'EOF'
 #!/bin/bash
 # sharkrite-lint disable DASH_LEADING_GREP_PATTERN - Reason: pattern is a negative lookahead that cannot start with a letter
 grep -qP '-(?!foo)' <<< "$line"
 EOF
-  cd "$FIXTURE_DIR"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
@@ -210,6 +200,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 @test "DASH_LEADING_GREP_PATTERN: the real codebase is clean" {
+  unset RITE_LINT_EXTRA_DIRS   # scan only the project tree, not fixtures
   cd "$RITE_REPO_ROOT"
   SHARKRITE_LINT_ONLY=43 run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ] || {
