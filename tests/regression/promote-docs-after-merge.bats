@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/promote-branch.sh, lib/core/docs-command.sh, lib/utils/drift-log.sh
+# sharkrite-test-covers: lib/core/promote-branch.sh, lib/core/docs-command.sh::docs_run_promote_doc_pass|_docs_main_entries_pass|_docs_list_branch_entry_docs|_docs_is_adr_in_map, lib/utils/drift-log.sh
 # tests/regression/promote-docs-after-merge.bats
 #
 # Regression tests for #1435: post-merge Tier 2 doc pass in rite --promote.

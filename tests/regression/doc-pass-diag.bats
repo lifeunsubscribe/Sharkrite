@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: lib/core/docs-command.sh, lib/core/promote-branch.sh
+# sharkrite-test-covers: lib/core/docs-command.sh::_docs_update_engine|_docs_warn_doc_pass_threshold|_docs_main_entries_pass|docs_run_promote_doc_pass|docs_run_restructure_assessment|docs_run_assertion_audit|_docs_list_branch_entry_docs|_docs_is_adr_in_map|docs_resolve_doc_scope|_docs_restructure_should_propose|_docs_restructure_record_decision|rite_docs, lib/core/promote-branch.sh
 # tests/regression/doc-pass-diag.bats
 #
 # Regression tests for #1443: DOC_PASS diag emission.

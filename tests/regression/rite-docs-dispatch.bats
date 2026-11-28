@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# sharkrite-test-covers: bin/rite, lib/core/docs-command.sh
+# sharkrite-test-covers: bin/rite, lib/core/docs-command.sh::_docs_resolve_state|_docs_ensure_map|_docs_update_engine|docs_reconcile_drift|rite_docs
 # tests/regression/rite-docs-dispatch.bats
 #
 # Tests for the `rite docs` verb (#1045): parser wiring, dispatch key,
