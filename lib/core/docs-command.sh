@@ -1821,6 +1821,10 @@ _docs_section_entries_pass() {
     _sep_heading="$(sed -n '2p' "$_sep_meta" || true)"
     _sep_occ="$(sed -n '3p' "$_sep_meta" || true)"
     _sep_occ="${_sep_occ:-1}"
+    # Validate _sep_level is a positive integer; fall back to 2 (H2) for malformed meta
+    case "${_sep_level}" in
+      *[!0-9]* | '') _sep_level=2 ;;
+    esac
 
     local _sep_section_text=""
     _sep_section_text="$(_docs_extract_section_own \
@@ -1851,7 +1855,7 @@ ${_sep_accum_fb}
       fi
 
       local _sep_heading_prefix=""
-      _sep_heading_prefix="$(printf '%*s' "$_sep_level" '' | tr ' ' '#')"
+      _sep_heading_prefix="$(printf '%*s' "$_sep_level" '' | tr ' ' '#' || true)"
 
       local _sep_prompt_file
       _sep_prompt_file="$(mktemp)"
@@ -2086,7 +2090,7 @@ ${_sep_this_fb}"
           [ "$_sep_rem" -gt 0 ] && \
             print_info "  ${_sep_rem} section(s) still pending for ${_sep_doc}"
           _diag "DOC_PASS kind=${_sep_kind} doc=${_sep_doc} duration_s=${_sep_llm_elapsed_s} input_bytes=${_sep_input_bytes} outcome=rejected"
-          return 0
+          return 3
           ;;
         *)
           print_warning "  Unrecognized response '${_sep_ui}' — skipping § ${_sep_heading}" >&2
@@ -2221,7 +2225,7 @@ _docs_main_entries_pass() {
         rm -f "$_mp_sec_entries"
       fi
 
-      if [ "$_mp_sec_rc" -ne 5 ] && [ "$_mp_sec_rc" -ne 18 ]; then
+      if [ "$_mp_sec_rc" -eq 0 ]; then
         local _mp_rest_file="${_mp_sg_dir}/rest.entries"
         if [ -f "$_mp_rest_file" ]; then
           local _mp_rest_cnt=0
